@@ -463,6 +463,7 @@ test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, shared, m
         { avatar: 'C.png', name: '无书角色', shallow: false, data: { extensions: { world: '' } } },
         { avatar: 'D.png', name: '缺书角色', shallow: false, data: { extensions: { world: '已删世界书' } } },
         { avatar: 'E.png', name: '多书角色', shallow: false, data: { extensions: { world: '主书E' } } },
+        { avatar: 'F.png', name: '同名旧内嵌角色', shallow: false, data: { extensions: { world: '主书F' } } },
     ];
     const bindingMap = new Map([
         ['共用书', [
@@ -471,12 +472,14 @@ test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, shared, m
         ]],
         ['主书E', [{ avatar: 'E.png', charName: '多书角色', source: 'primary' }]],
         ['附书E', [{ avatar: 'E.png', charName: '多书角色', source: 'extra' }]],
+        ['主书F', [{ avatar: 'F.png', charName: '同名旧内嵌角色', source: 'primary' }]],
+        ['旧内嵌F', [{ avatar: 'F.png', charName: '同名旧内嵌角色', source: 'embedded' }]],
         ['已删角色附书', [{ avatar: 'Gone.png', charName: 'Gone', source: 'extra' }]],
     ]);
     const cov = summarizeCharacterWorldCoverage({
         characters: chars,
         bindingMap,
-        worldNamesSet: new Set(['共用书', '主书E', '附书E', '已删角色附书']),
+        worldNamesSet: new Set(['共用书', '主书E', '附书E', '主书F', '旧内嵌F', '已删角色附书']),
     });
     assert.equal(cov.unboundChars.length, 1);
     assert.equal(cov.unboundChars[0].charName, '无书角色');
@@ -485,10 +488,14 @@ test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, shared, m
     assert.equal(cov.sharedBooks.length, 1);
     assert.equal(cov.sharedBooks[0].owners.length, 2);
     assert.equal(cov.sharedBooks[0].owners[0].avatar, 'A.png');
+    // Passive embedded name-match MUST NOT trigger a false-positive multi-book character!
     assert.equal(cov.multiBookChars.length, 1);
     assert.equal(cov.multiBookChars[0].avatar, 'E.png');
     assert.equal(cov.multiBookChars[0].charName, '多书角色');
     assert.equal(cov.multiBookChars[0].books.length, 2);
+    assert.equal(cov.embeddedNameMatches.length, 1);
+    assert.equal(cov.embeddedNameMatches[0].charName, '同名旧内嵌角色');
+    assert.equal(cov.embeddedNameMatches[0].worldName, '旧内嵌F');
     assert.equal(cov.orphanExtraBooks.length, 1);
     assert.equal(cov.orphanExtraBooks[0].worldName, '已删角色附书');
 });

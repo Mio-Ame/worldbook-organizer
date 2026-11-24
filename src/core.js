@@ -44,6 +44,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     includeEmbeddedNameMatch: true,
     autoImportMissingCharBook: false,
     autoHideInCharBindPopup: true,
+    adaptCharBindPopup: true,
+    adaptPersonaBindPopup: true,
+    adaptChatBindPopup: true,
+    adaptMoveEntryPopup: true,
     showNativeOptgroups: true,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
@@ -529,6 +533,7 @@ export function summarizeCharacterWorldCoverage({
     const boundAvatars = new Set();
     const sharedBooks = [];
     const booksByAvatar = new Map();
+    const embeddedByAvatar = new Map();
     const liveAvatarSet = new Set(
         (characters || []).map((c) => String(c?.avatar ?? '').trim()).filter(Boolean),
     );
@@ -544,6 +549,13 @@ export function summarizeCharacterWorldCoverage({
                     charKey: charaFileName(o.avatar) || o.charName,
                     source: o.source,
                 });
+            } else if (o.source === 'embedded') {
+                let list = embeddedByAvatar.get(o.avatar);
+                if (!list) {
+                    list = { avatar: o.avatar, charName: o.charName, books: [] };
+                    embeddedByAvatar.set(o.avatar, list);
+                }
+                list.books.push({ worldName, source: 'embedded' });
             } else {
                 let list = booksByAvatar.get(o.avatar);
                 if (!list) {
@@ -569,10 +581,27 @@ export function summarizeCharacterWorldCoverage({
         }
     }
 
+    // Only real SillyTavern bindings (primary + extra) belong in `multiBookChars`;
+    // passive embedded-name matches are reported separately so users are never misled!
     const multiBookChars = [];
     for (const info of booksByAvatar.values()) {
         if (info.books.length > 1) {
             multiBookChars.push(info);
+        }
+    }
+
+    const embeddedNameMatches = [];
+    for (const [avatar, emb] of embeddedByAvatar.entries()) {
+        const realInfo = booksByAvatar.get(avatar);
+        if (realInfo && realInfo.books.length > 0) {
+            for (const b of emb.books) {
+                embeddedNameMatches.push({
+                    avatar,
+                    charName: emb.charName,
+                    worldName: b.worldName,
+                    primaryWorld: realInfo.books[0]?.worldName || '',
+                });
+            }
         }
     }
 
@@ -603,6 +632,7 @@ export function summarizeCharacterWorldCoverage({
         sharedBooks,
         multiBookChars,
         orphanExtraBooks,
+        embeddedNameMatches,
     };
 }
 
@@ -1716,6 +1746,10 @@ export function exportConfigData(settings) {
             includeExtraCharBooks: cfg.includeExtraCharBooks,
             includeEmbeddedNameMatch: cfg.includeEmbeddedNameMatch,
             autoHideInCharBindPopup: cfg.autoHideInCharBindPopup,
+            adaptCharBindPopup: cfg.adaptCharBindPopup,
+            adaptPersonaBindPopup: cfg.adaptPersonaBindPopup,
+            adaptChatBindPopup: cfg.adaptChatBindPopup,
+            adaptMoveEntryPopup: cfg.adaptMoveEntryPopup,
             showNativeOptgroups: cfg.showNativeOptgroups,
             sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,

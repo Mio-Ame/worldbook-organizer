@@ -1052,6 +1052,71 @@ async function confirmAndDeleteWorldbooks(bookNames) {
 }
 
 /**
+ * Enable smooth viewport-clamped dragging on desktop (`> 680px`) via a modal's header bar.
+ * On mobile (`<= 680px`), modals run full-screen so dragging is automatically bypassed.
+ * @param {HTMLElement} modal
+ * @param {HTMLElement | null} handleEl
+ */
+function attachDesktopModalDrag(modal, handleEl) {
+    if (!modal || !handleEl) return;
+    let dx = 0;
+    let dy = 0;
+    let dragging = false;
+    let startX = 0;
+    let startY = 0;
+    let baseDx = 0;
+    let baseDy = 0;
+    let baseRect = null;
+
+    handleEl.addEventListener('pointerdown', (ev) => {
+        if (ev.button !== 0) return;
+        if ((globalThis.innerWidth || 0) <= 680) return;
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (target?.closest('button, input, select, textarea, a, label')) return;
+
+        dragging = true;
+        startX = ev.clientX;
+        startY = ev.clientY;
+        baseDx = dx;
+        baseDy = dy;
+        baseRect = modal.getBoundingClientRect();
+        modal.classList.add('is-dragging-modal');
+        try { handleEl.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+        ev.preventDefault();
+    });
+
+    handleEl.addEventListener('pointermove', (ev) => {
+        if (!dragging || !baseRect) return;
+        const vw = globalThis.innerWidth || document.documentElement.clientWidth || 1200;
+        const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+        const rawDeltaX = ev.clientX - startX;
+        const rawDeltaY = ev.clientY - startY;
+
+        // Keep at least 100px of header visible horizontally and full header inside viewport vertically
+        const minDeltaX = -(baseRect.right - 100);
+        const maxDeltaX = vw - baseRect.left - 100;
+        const minDeltaY = -(baseRect.top - 8);
+        const maxDeltaY = vh - baseRect.top - 48;
+
+        const clampedX = Math.max(minDeltaX, Math.min(maxDeltaX, rawDeltaX));
+        const clampedY = Math.max(minDeltaY, Math.min(maxDeltaY, rawDeltaY));
+
+        dx = baseDx + clampedX;
+        dy = baseDy + clampedY;
+        modal.style.transform = `translate3d(${Math.round(dx)}px, ${Math.round(dy)}px, 0)`;
+    });
+
+    const endDrag = (ev) => {
+        if (!dragging) return;
+        dragging = false;
+        modal.classList.remove('is-dragging-modal');
+        try { handleEl.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+    };
+    handleEl.addEventListener('pointerup', endDrag);
+    handleEl.addEventListener('pointercancel', endDrag);
+}
+
+/**
  * Open the standalone Group Manager modal (zero space occupied in `#WorldInfo` when closed!).
  */
 function openManagerModal() {
@@ -1065,21 +1130,26 @@ function openManagerModal() {
 
     const overlay = document.createElement('div');
     overlay.id = MANAGER_OVERLAY_ID;
-    overlay.className = 'wbo-modal-overlay';
+    overlay.className = 'wbo-modal-overlay wbo-floating-overlay';
     applyTauriSurface(overlay, 'backdrop');
 
     const modal = document.createElement('div');
     modal.className = 'wbo-modal wbo-manager-modal';
     applyThemeClass(modal);
     applyTauriSurface(modal, 'fullscreen-window');
-    // Lock a stable height at open time so mobile virtual keyboards never shrink/bounce the modal
+    // Lock a stable height at open time so desktop tab/list shifts never bounce the window
     const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
     const stableH = Math.round(Math.min(baseVh * 0.84, 720));
     modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
 
     modal.innerHTML = `
-        <div class="wbo-modal-header">
-            <span class="wbo-modal-title">世界书分组管理</span>
+        <div class="wbo-modal-header wbo-draggable-header">
+            <div class="wbo-modal-header-top">
+                <span class="wbo-modal-title">世界书分组管理</span>
+                <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
             <div class="wbo-mgr-header-tools">
                 <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="本地一键整理 / AI 智能整理">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
@@ -1093,9 +1163,6 @@ function openManagerModal() {
                     <i class="fa-solid fa-gear"></i>
                     <span>设置</span>
                 </button>
-                <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
             </div>
         </div>
         <div class="wbo-mgr-subbar${_mgrPillsExpanded ? ' is-pills-expanded' : ''}">
@@ -1108,8 +1175,8 @@ function openManagerModal() {
                 </div>
                 <div class="wbo-mgr-group-actions">
                     <button type="button" class="wbo-tool-btn" data-action="create-group" title="新建自定义分组">
-                        <i class="fa-solid fa-plus"></i>
-                        <span>新建</span>
+                        <i class="fa-solid fa-folder-plus"></i>
+                        <span>新建分组</span>
                     </button>
                     <button type="button" class="wbo-tool-btn" id="wbo-mgr-manage-groups-btn" data-action="open-manage-groups" title="集中查看、排序、合并或批量删除分组">
                         <i class="fa-solid fa-sliders"></i>
@@ -1129,7 +1196,7 @@ function openManagerModal() {
                         <span id="wbo-mgr-char-label">角色书 0</span>
                     </label>
                     <button type="button" class="wbo-tool-btn" id="wbo-mgr-list-create-btn" data-action="create-group" title="新建自定义分组" hidden>
-                        <i class="fa-solid fa-plus"></i>
+                        <i class="fa-solid fa-folder-plus"></i>
                         <span>新建分组</span>
                     </button>
                     <button type="button" class="wbo-tool-btn" id="wbo-mgr-batch-btn" data-action="toggle-batch-mode" title="批量勾选世界书移入分组、解除分组或删除">
@@ -1154,27 +1221,12 @@ function openManagerModal() {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // Isolate all pointer/mouse/click events so `#WorldInfo` never auto-closes,
-    // AND only close on backdrop click when mousedown ALSO started on the backdrop
-    // (dragging text selection out onto the backdrop will NEVER accidentally close the modal!)
-    let mouseDownOnBackdrop = false;
+    // Isolate modal events from SillyTavern's unpinned-drawer auto-closer, and close ONLY via the `×` button!
     const stopAll = (ev) => ev.stopPropagation();
-    for (const evtName of ['mouseup', 'pointerup', 'touchstart', 'touchend']) {
-        overlay.addEventListener(evtName, stopAll);
+    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
+        modal.addEventListener(evtName, stopAll);
     }
-    overlay.addEventListener('mousedown', (ev) => {
-        ev.stopPropagation();
-        mouseDownOnBackdrop = ev.target === overlay;
-    });
-    overlay.addEventListener('pointerdown', (ev) => {
-        ev.stopPropagation();
-        mouseDownOnBackdrop = ev.target === overlay;
-    });
-    overlay.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (ev.target === overlay && mouseDownOnBackdrop) closeManagerModal();
-        mouseDownOnBackdrop = false;
-    });
+    attachDesktopModalDrag(modal, modal.querySelector('.wbo-modal-header'));
     modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
         closeManagerModal();
@@ -1929,11 +1981,13 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
     }
 
     modal.innerHTML = `
-        <div class="wbo-modal-header">
-            <span class="wbo-modal-title">${esc(title)}</span>
-            <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
-                <i class="fa-solid fa-xmark"></i>
-            </button>
+        <div class="wbo-modal-header wbo-draggable-header">
+            <div class="wbo-modal-header-top">
+                <span class="wbo-modal-title">${esc(title)}</span>
+                <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
         </div>
         <div class="wbo-modal-body">${bodyHtml}</div>
     `;
@@ -1941,27 +1995,12 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // Only close sub-modal when BOTH mousedown/pointerdown AND click land on the backdrop
-    // so dragging text inside an input/textarea outside the modal box NEVER accidentally closes it!
-    let mouseDownOnBackdrop = false;
+    // Isolate events from SillyTavern and close ONLY via the `×` / action buttons (never backdrop click!)
     const stopAll = (ev) => ev.stopPropagation();
-    for (const evtName of ['mouseup', 'pointerup', 'touchstart', 'touchend']) {
+    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
         overlay.addEventListener(evtName, stopAll);
     }
-    overlay.addEventListener('mousedown', (ev) => {
-        ev.stopPropagation();
-        mouseDownOnBackdrop = ev.target === overlay;
-    });
-    overlay.addEventListener('pointerdown', (ev) => {
-        ev.stopPropagation();
-        mouseDownOnBackdrop = ev.target === overlay;
-    });
-
-    overlay.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (ev.target === overlay && mouseDownOnBackdrop) closeSubModal();
-        mouseDownOnBackdrop = false;
-    });
+    attachDesktopModalDrag(modal, modal.querySelector('.wbo-modal-header'));
     modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
         closeSubModal();
@@ -4251,6 +4290,31 @@ function openScanAndImportModal() {
                 `,
             });
         }
+        if (coverage.embeddedNameMatches?.length > 0) {
+            covTabs.push({
+                key: 'embedded',
+                label: '卡内同名书',
+                count: coverage.embeddedNameMatches.length,
+                rowsHtml: `
+                    <div class="wbo-cov-orphan-bar">
+                        <span>这些角色卡已绑定主世界书，同时卡内嵌世界书名称与硬盘另一本世界书同名（非附加绑定，仅用于自动归入角色书隐藏）。</span>
+                    </div>
+                    ${renderCovTable(coverage.embeddedNameMatches.map((m) => `
+                        <div class="wbo-cov-row-wrap">
+                            <div class="wbo-cov-row">
+                                <div class="wbo-cov-subject">
+                                    ${charJumpBtn(m.avatar, m.charName)}
+                                </div>
+                                <div class="wbo-cov-targets">
+                                    ${worldChipHtml(m.worldName, { suffix: '卡内同名' })}
+                                </div>
+                            </div>
+                            <div class="wbo-cov-drawer" hidden></div>
+                        </div>
+                    `).join(''))}
+                `,
+            });
+        }
         if (coverage.unboundChars.length > 0) {
             covTabs.push({
                 key: 'unbound',
@@ -4856,12 +4920,32 @@ function openSettingsModal() {
                     <span>打开角色卡时自动导入缺失的卡内世界书</span>
                 </label>
                 <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="autoHideInCharBindPopup">
-                    <span>角色绑定弹窗默认隐藏其他角色世界书</span>
-                </label>
-                <label class="wbo-check-line">
                     <input type="checkbox" data-setting="showNativeOptgroups">
                     <span>编辑器下拉框按分组显示</span>
+                </label>
+            </div>
+
+            <div class="wbo-card">
+                <div class="wbo-ai-section-head"><span>弹窗适配范围</span></div>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="adaptCharBindPopup">
+                    <span>角色卡世界书绑定弹窗</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="autoHideInCharBindPopup">
+                    <span>角色卡绑定弹窗默认排除其他角色世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="adaptPersonaBindPopup">
+                    <span>User 人设世界书弹窗</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="adaptChatBindPopup">
+                    <span>当前聊天世界书弹窗</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="adaptMoveEntryPopup">
+                    <span>移动/复制条目目标世界书弹窗</span>
                 </label>
             </div>
 

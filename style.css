@@ -520,6 +520,22 @@
     z-index: 10010;
 }
 
+@media (min-width: 681px) {
+    .wbo-modal-overlay.wbo-floating-overlay {
+        pointer-events: none;
+    }
+    .wbo-modal-overlay.wbo-floating-overlay > .wbo-modal {
+        pointer-events: auto;
+    }
+    .wbo-draggable-header {
+        cursor: grab;
+        user-select: none;
+    }
+    .wbo-modal.is-dragging-modal .wbo-draggable-header {
+        cursor: grabbing;
+    }
+}
+
 .wbo-modal {
     width: min(480px, 100%);
     max-height: min(86svh, calc(100vh - 28px));
@@ -547,9 +563,8 @@
 
 .wbo-modal-header {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
-    justify-content: space-between;
     gap: 8px;
     padding: 10px 14px;
     background: var(--wbo-bg-elevated);
@@ -559,11 +574,31 @@
     flex-shrink: 0;
 }
 
+.wbo-modal-header-top {
+    display: contents;
+}
+
+.wbo-modal-title {
+    order: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-right: auto;
+}
+
 .wbo-mgr-header-tools {
+    order: 2;
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
+}
+
+.wbo-modal-header .wbo-modal-close {
+    order: 3;
+    flex-shrink: 0;
 }
 
 /* Clean 2-row subbar: Row 1 = group filter pills + group create/manage; Row 2 = search + char toggle + batch */
@@ -1353,7 +1388,7 @@ li.wbo-dd-group-hidden,
     flex-shrink: 0;
 }
 
-/* Character bind popup filter bar */
+/* Character / Persona / Chat / Move-entry popup filter bar */
 .wbo-charpopup-bar {
     display: flex;
     flex-wrap: wrap;
@@ -1366,21 +1401,37 @@ li.wbo-dd-group-hidden,
     background: rgba(128, 128, 128, 0.05);
 }
 
+.wbo-popup-brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 0.84em;
+    font-weight: 600;
+    opacity: 0.78;
+    white-space: nowrap;
+    margin-right: 2px;
+}
+
 .wbo-charpopup-bar .menu_button {
     display: inline-flex !important;
     align-items: center !important;
+    gap: 5px !important;
     height: 28px !important;
     width: auto !important;
     white-space: nowrap !important;
     padding: 0 10px !important;
     margin: 0 !important;
+    font-size: 0.84em !important;
 }
 
 .wbo-charpopup-select {
-    flex: 1 1 160px;
+    flex: 1 1 140px;
+    min-width: 120px;
+    height: 28px !important;
+    min-height: 28px !important;
     margin: 0 !important;
-    min-height: 28px;
-    font-size: 0.86em !important;
+    padding: 0 8px !important;
+    font-size: 0.85em !important;
 }
 
 /* Sub-modal fields, collapsibles, coverage lists */
@@ -3400,26 +3451,81 @@ details[open] > summary .wbo-details-chev {
     margin-top: 4px;
 }
 
-@media (max-width: 640px) {
+@media (max-width: 680px) {
     .wbo-modal-overlay {
-        align-items: flex-start;
-        padding-top: max(10px, var(--tt-inset-top, env(safe-area-inset-top, 0px)));
+        align-items: stretch;
+        justify-content: stretch;
+        padding: 0;
+        pointer-events: auto;
     }
+    .wbo-modal,
+    .wbo-modal.is-wide,
     .wbo-modal.wbo-manager-modal {
-        height: var(--wbo-stable-h, 78vh);
-        min-height: 260px;
-        max-height: calc(100svh - 20px);
+        width: 100%;
+        max-width: 100%;
+        height: 100svh;
+        height: 100dvh;
+        min-height: 100%;
+        max-height: 100dvh;
+        border-radius: 0;
+        border: none;
+        box-shadow: none;
+        transform: none !important;
+        padding-top: var(--tt-inset-top, env(safe-area-inset-top, 0px));
+        padding-bottom: var(--tt-inset-bottom, env(safe-area-inset-bottom, 0px));
+        padding-left: var(--tt-inset-left, env(safe-area-inset-left, 0px));
+        padding-right: var(--tt-inset-right, env(safe-area-inset-right, 0px));
     }
     .wbo-modal-header {
+        flex-direction: column;
+        align-items: stretch;
         padding: 8px 12px;
+        gap: 8px;
+    }
+    .wbo-modal-header-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+    }
+    .wbo-modal-title {
+        order: unset;
+        margin-right: 0;
+        font-size: 15px;
+    }
+    .wbo-modal-header .wbo-modal-close {
+        order: unset;
+        width: 32px !important;
+        height: 32px !important;
+        font-size: 15px !important;
+    }
+    .wbo-mgr-header-tools {
+        order: unset;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
         gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-header-tools > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 32px !important;
+        min-height: 32px !important;
+        max-height: 32px !important;
     }
     .wbo-mgr-subbar {
-        gap: 6px;
-        padding: 7px 12px;
+        gap: 8px;
+        padding: 8px 12px;
     }
     .wbo-mgr-groupbar {
-        flex-wrap: wrap;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-mgr-group-actions {
+        display: flex;
+        justify-content: flex-end;
         gap: 6px;
     }
     .wbo-mgr-listbar {
@@ -3428,14 +3534,18 @@ details[open] > summary .wbo-details-chev {
         gap: 6px;
     }
     .wbo-mgr-list-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
         justify-content: space-between;
+        gap: 6px;
     }
     .wbo-scope-grid,
     .wbo-diff-grid {
         grid-template-columns: 1fr;
     }
     .wbo-pills {
-        flex: 0 0 auto;
+        flex: 1 1 auto;
         flex-wrap: nowrap;
         overflow-x: auto;
         scrollbar-width: none;
@@ -3451,6 +3561,21 @@ details[open] > summary .wbo-details-chev {
         flex: 0 0 auto;
         width: 100%;
         max-width: none;
+    }
+    .wbo-book-row {
+        flex-wrap: wrap;
+        align-items: flex-start;
+        gap: 6px;
+        padding: 8px 10px;
+    }
+    .wbo-book-main {
+        flex: 1 1 calc(100% - 46px);
+    }
+    .wbo-book-actions {
+        width: 100%;
+        justify-content: flex-end;
+        padding-left: 22px;
+        gap: 6px;
     }
     .wbo-prop-grid {
         grid-template-columns: 1fr;

@@ -29,7 +29,7 @@ import {
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
 } from './core.js';
-import { getCurrentCharacterAvatar, getHostContext, saveSettings } from './host.js';
+import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, saveSettings } from './host.js';
 
 /** @type {Map<string, HTMLOptionElement>} */
 const _globalDetachedMap = new Map();
@@ -663,6 +663,7 @@ export function setGlobalWorldActive(realName, active) {
 function enhanceCharBindPopup(charWorldEl) {
     if (!charWorldEl || charWorldEl.dataset.wboEnhanced === '1') return;
     if (!_latestClassification || !_latestSettings) return;
+    if (_latestSettings.adaptCharBindPopup === false) return;
     charWorldEl.dataset.wboEnhanced = '1';
 
     const primarySelect = charWorldEl.querySelector('.character_world_info_selector');
@@ -671,7 +672,7 @@ function enhanceCharBindPopup(charWorldEl) {
 
     const currentAvatar = getCurrentCharacterAvatar();
     let hideOthers = Boolean(_latestSettings.autoHideInCharBindPopup);
-    let filterGroupId = SPECIAL_GROUPS.DEFAULT;
+    let filterGroupId = hideOthers ? SPECIAL_GROUPS.DEFAULT : SPECIAL_GROUPS.ALL;
 
     /** @type {Map<HTMLSelectElement, Map<string, HTMLOptionElement>>} */
     const popupDetached = new Map();
@@ -681,22 +682,27 @@ function enhanceCharBindPopup(charWorldEl) {
     const bar = document.createElement('div');
     bar.className = 'wbo-charpopup-bar';
 
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.className = 'menu_button wbo-btn-compact';
+    const brand = document.createElement('span');
+    brand.className = 'wbo-popup-brand';
+    brand.title = '由「世界书分组管理」插件提供筛选';
+    brand.innerHTML = '<i class="fa-solid fa-layer-group"></i><span>分组筛选</span>';
 
     const groupSelect = document.createElement('select');
     groupSelect.className = 'text_pole wbo-charpopup-select';
     groupSelect.title = '按分组筛选世界书';
 
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'menu_button wbo-btn-compact';
+
     const populateGroupOptions = () => {
         groupSelect.innerHTML = '';
         const items = [
-            { id: SPECIAL_GROUPS.DEFAULT, label: '默认（排除其他角色书）' },
-            { id: SPECIAL_GROUPS.ALL, label: '显示全部世界书' },
-            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: `分组：${g.name}` })),
-            { id: SPECIAL_GROUPS.UNGROUPED, label: '仅未分组' },
-            { id: SPECIAL_GROUPS.CHARACTER, label: '仅角色世界书' },
+            { id: SPECIAL_GROUPS.DEFAULT, label: '当前角色 + 非角色书' },
+            { id: SPECIAL_GROUPS.ALL, label: '全部世界书' },
+            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: g.name })),
+            { id: SPECIAL_GROUPS.UNGROUPED, label: '未分组' },
+            { id: SPECIAL_GROUPS.CHARACTER, label: '角色世界书' },
         ];
         for (const item of items) {
             const opt = document.createElement('option');
@@ -708,7 +714,6 @@ function enhanceCharBindPopup(charWorldEl) {
     };
 
     const applyPopupFilter = () => {
-        let hiddenCount = 0;
         const targets = [primarySelect, extrasSelect].filter(Boolean);
         const $ = globalThis.jQuery;
 
@@ -745,7 +750,6 @@ function enhanceCharBindPopup(charWorldEl) {
                 } else {
                     opt.remove();
                     detached.set(realName, opt);
-                    if (sel === primarySelect) hiddenCount += 1;
                 }
             }
 
@@ -764,8 +768,9 @@ function enhanceCharBindPopup(charWorldEl) {
         }
 
         toggleBtn.innerHTML = hideOthers
-            ? `<i class="fa-solid fa-eye-slash"></i> 已隐藏其他角色书${hiddenCount > 0 ? ` (${hiddenCount})` : ''}`
-            : `<i class="fa-solid fa-eye"></i> 显示全部角色书`;
+            ? '<i class="fa-solid fa-user-slash"></i> 仅看非他卡'
+            : '<i class="fa-solid fa-user"></i> 含其他角色书';
+        toggleBtn.title = hideOthers ? '当前已排除其他角色卡的世界书，点击显示全部' : '点击排除其他角色卡的世界书';
         toggleBtn.classList.toggle('wbo-btn-active', hideOthers);
     };
 
@@ -791,7 +796,7 @@ function enhanceCharBindPopup(charWorldEl) {
     });
 
     populateGroupOptions();
-    bar.append(toggleBtn, groupSelect);
+    bar.append(brand, groupSelect, toggleBtn);
     charWorldEl.prepend(bar);
 
     // Let upstream Select2 finish initializing in `Popup.onOpen`, then filter & patch in place
@@ -809,6 +814,153 @@ function enhanceCharBindPopup(charWorldEl) {
             }
         }
     }, 220);
+}
+
+/**
+ * Enhance any standard SillyTavern single-select worldbook popup:
+ * - User Persona worldbook (`.persona_world` -> `.persona_world_info_selector`)
+ * - Chat worldbook (`.chat_world` -> `.chat_world_info_selector`)
+ * - Move/Copy entry target (`#move_entry_target_select`)
+ * Safely groups visible options into `<optgroup>`s without altering `option.value`,
+ * and injects a compact group-filter + character-book visibility bar above the select.
+ *
+ * @param {HTMLElement} hostContainer
+ * @param {HTMLSelectElement} selectEl
+ * @param {{ settingKey: string }} opts
+ */
+function enhanceStandardWorldSelectPopup(hostContainer, selectEl, { settingKey }) {
+    if (!hostContainer || !selectEl || selectEl.dataset.wboEnhanced === '1') return;
+    if (!_latestClassification || !_latestSettings) return;
+    if (settingKey && _latestSettings[settingKey] === false) return;
+    selectEl.dataset.wboEnhanced = '1';
+
+    let showCharBooks = Boolean(_latestSettings.showCharBooks);
+    let filterGroupId = SPECIAL_GROUPS.DEFAULT;
+    /** @type {Map<string, HTMLOptionElement>} */
+    const detached = new Map();
+
+    const bar = document.createElement('div');
+    bar.className = 'wbo-charpopup-bar';
+
+    const brand = document.createElement('span');
+    brand.className = 'wbo-popup-brand';
+    brand.title = '由「世界书分组管理」插件提供筛选';
+    brand.innerHTML = '<i class="fa-solid fa-layer-group"></i><span>分组筛选</span>';
+
+    const groupSelect = document.createElement('select');
+    groupSelect.className = 'text_pole wbo-charpopup-select';
+    groupSelect.title = '按分组筛选世界书';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'menu_button wbo-btn-compact';
+
+    const populateGroupOptions = () => {
+        groupSelect.innerHTML = '';
+        const items = [
+            { id: SPECIAL_GROUPS.DEFAULT, label: showCharBooks ? '全部世界书' : '非角色世界书' },
+            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: g.name })),
+            ...(_latestClassification.customGroups.length > 0 ? [{ id: SPECIAL_GROUPS.UNGROUPED, label: '未分组' }] : []),
+            ...(_latestClassification.charCount > 0 ? [{ id: SPECIAL_GROUPS.CHARACTER, label: '角色世界书' }] : []),
+        ];
+        for (const item of items) {
+            const opt = document.createElement('option');
+            opt.value = item.id;
+            opt.textContent = item.label;
+            if (item.id === filterGroupId) opt.selected = true;
+            groupSelect.appendChild(opt);
+        }
+    };
+
+    const applyFilter = () => {
+        const prevValue = selectEl.value;
+        restoreSelectOptions(selectEl, detached);
+
+        const placeholders = [];
+        const visibleByGroup = new Map();
+
+        for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
+            if (opt.value === '') {
+                placeholders.push(opt);
+                continue;
+            }
+            const realName = (opt.dataset.wboRealName || opt.textContent || '').trim();
+            opt.dataset.wboRealName = realName;
+            const meta = _latestClassification.byName.get(realName);
+            const show = isBookVisibleInSelector({
+                bookMeta: meta,
+                activeFilterGroupId: filterGroupId,
+                showCharBooks,
+                isSelected: opt.selected || (prevValue !== '' && opt.value === prevValue),
+                isCurrentlyEditing: false,
+            });
+            if (show) {
+                // Show clean alias when available while preserving `option.value` untouched!
+                if (meta && meta.primaryTitle && meta.primaryTitle !== realName) {
+                    opt.textContent = meta.subtitle ? `${meta.primaryTitle} (${meta.subtitle})` : meta.primaryTitle;
+                } else {
+                    opt.textContent = realName;
+                }
+                const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+                if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
+                visibleByGroup.get(gid).push(opt);
+            } else {
+                opt.remove();
+                detached.set(realName, opt);
+            }
+        }
+
+        for (const opt of placeholders) selectEl.appendChild(opt);
+
+        const orderedSections = (_latestClassification.orderedSections || []).filter(
+            (sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0,
+        );
+        const useOptgroups = filterGroupId === SPECIAL_GROUPS.DEFAULT && orderedSections.length >= 2;
+
+        for (const sec of orderedSections) {
+            const opts = visibleByGroup.get(sec.id) || [];
+            opts.sort((a, b) => (a.textContent || '').localeCompare(b.textContent || '', 'zh-CN'));
+            if (useOptgroups) {
+                const grp = document.createElement('optgroup');
+                grp.label = `${sec.name} (${opts.length})`;
+                for (const opt of opts) grp.appendChild(opt);
+                selectEl.appendChild(grp);
+            } else {
+                for (const opt of opts) selectEl.appendChild(opt);
+            }
+        }
+
+        if (prevValue !== '') selectEl.value = prevValue;
+
+        toggleBtn.innerHTML = showCharBooks
+            ? '<i class="fa-solid fa-user"></i> 含角色书'
+            : '<i class="fa-solid fa-user-slash"></i> 隐藏角色书';
+        toggleBtn.title = showCharBooks ? '点击隐藏角色世界书' : '点击显示角色世界书';
+        toggleBtn.classList.toggle('wbo-btn-active', !showCharBooks);
+    };
+
+    bar.addEventListener('click', (ev) => ev.stopPropagation());
+    bar.addEventListener('mousedown', (ev) => ev.stopPropagation());
+
+    toggleBtn.addEventListener('click', () => {
+        showCharBooks = !showCharBooks;
+        if (!showCharBooks && filterGroupId === SPECIAL_GROUPS.CHARACTER) {
+            filterGroupId = SPECIAL_GROUPS.DEFAULT;
+        }
+        populateGroupOptions();
+        applyFilter();
+    });
+
+    groupSelect.addEventListener('change', () => {
+        filterGroupId = groupSelect.value;
+        if (filterGroupId === SPECIAL_GROUPS.CHARACTER) showCharBooks = true;
+        applyFilter();
+    });
+
+    populateGroupOptions();
+    bar.append(brand, groupSelect, toggleBtn);
+    selectEl.parentElement?.insertBefore(bar, selectEl);
+    applyFilter();
 }
 
 /** @type {(() => void) | null} */
@@ -1660,6 +1812,15 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             if (chatWorld) {
                 ensureEditorOptionAttached(chatWorld);
             }
+            return;
+        }
+
+        if (t.closest('#persona_lore_button')) {
+            const pu = getPowerUserSettings();
+            const personaWorld = pu?.persona_description_lorebook || '';
+            if (personaWorld) {
+                ensureEditorOptionAttached(personaWorld);
+            }
         }
     };
     document.addEventListener('click', _docWorldJumpPreAttach, true);
@@ -1714,9 +1875,33 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                     }
                 } else if (node.classList.contains('character_world')) {
                     enhanceCharBindPopup(node);
+                } else if (node.classList.contains('persona_world')) {
+                    const sel = node.querySelector('.persona_world_info_selector');
+                    if (sel instanceof HTMLSelectElement) {
+                        enhanceStandardWorldSelectPopup(node, sel, { settingKey: 'adaptPersonaBindPopup' });
+                    }
+                } else if (node.classList.contains('chat_world')) {
+                    const sel = node.querySelector('.chat_world_info_selector');
+                    if (sel instanceof HTMLSelectElement) {
+                        enhanceStandardWorldSelectPopup(node, sel, { settingKey: 'adaptChatBindPopup' });
+                    }
                 } else if (node.tagName === 'DIALOG' || node.classList.contains('popup') || node.id === 'dialogue_popup') {
                     const cw = node.querySelector('.character_world');
                     if (cw instanceof HTMLElement) enhanceCharBindPopup(cw);
+                    const pw = node.querySelector('.persona_world');
+                    const pwSel = pw?.querySelector('.persona_world_info_selector');
+                    if (pw instanceof HTMLElement && pwSel instanceof HTMLSelectElement) {
+                        enhanceStandardWorldSelectPopup(pw, pwSel, { settingKey: 'adaptPersonaBindPopup' });
+                    }
+                    const chatW = node.querySelector('.chat_world');
+                    const chatSel = chatW?.querySelector('.chat_world_info_selector');
+                    if (chatW instanceof HTMLElement && chatSel instanceof HTMLSelectElement) {
+                        enhanceStandardWorldSelectPopup(chatW, chatSel, { settingKey: 'adaptChatBindPopup' });
+                    }
+                    const moveSel = node.querySelector('#move_entry_target_select');
+                    if (moveSel instanceof HTMLSelectElement) {
+                        enhanceStandardWorldSelectPopup(node, moveSel, { settingKey: 'adaptMoveEntryPopup' });
+                    }
                 }
             }
         }
