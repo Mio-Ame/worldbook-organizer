@@ -433,12 +433,36 @@ export function summarizeCharacterWorldCoverage({
 }) {
     const boundAvatars = new Set();
     const sharedBooks = [];
+    const booksByAvatar = new Map();
+    const liveAvatarSet = new Set(
+        (characters || []).map((c) => String(c?.avatar ?? '').trim()).filter(Boolean),
+    );
+    const orphanExtraBooks = [];
 
     for (const [worldName, owners] of bindingMap.entries()) {
-        for (const o of owners) boundAvatars.add(o.avatar);
+        for (const o of owners) {
+            boundAvatars.add(o.avatar);
+            if (!liveAvatarSet.has(o.avatar)) {
+                orphanExtraBooks.push({ worldName, charName: o.charName, source: o.source });
+            } else {
+                let list = booksByAvatar.get(o.avatar);
+                if (!list) {
+                    list = { charName: o.charName, books: [] };
+                    booksByAvatar.set(o.avatar, list);
+                }
+                list.books.push({ worldName, source: o.source });
+            }
+        }
         const uniqueOwners = [...new Set(owners.map((o) => o.charName))];
         if (uniqueOwners.length > 1) {
             sharedBooks.push({ worldName, charNames: uniqueOwners });
+        }
+    }
+
+    const multiBookChars = [];
+    for (const info of booksByAvatar.values()) {
+        if (info.books.length > 1) {
+            multiBookChars.push(info);
         }
     }
 
@@ -467,6 +491,8 @@ export function summarizeCharacterWorldCoverage({
         unboundChars,
         missingFileChars,
         sharedBooks,
+        multiBookChars,
+        orphanExtraBooks,
     };
 }
 

@@ -167,7 +167,10 @@ export async function syncFallbackSettingsData(force = false) {
                 parsedSettings = null;
             }
         }
-        const charLore = parsedSettings?.world_info?.charLore;
+        const charLore =
+            parsedSettings?.world_info?.charLore ||
+            parsedSettings?.world_info_settings?.world_info?.charLore ||
+            data?.world_info?.charLore;
         _cachedSettingsCharLore = Array.isArray(charLore) ? charLore : [];
     } catch {
         if (_cachedSettingsCharLore === null) _cachedSettingsCharLore = [];

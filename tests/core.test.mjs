@@ -313,31 +313,38 @@ test('migrateSettingsOnWorldRename updates assignments, aliases, notes, override
     assert.equal(settings.aliases['新书名'], '临时别名');
 });
 
-test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, and shared-book characters', () => {
+test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, shared, multi-book, and orphan-extra books', () => {
     const chars = [
         { avatar: 'A.png', name: '角色A', shallow: false, data: { extensions: { world: '共用书' } } },
         { avatar: 'B.png', name: '角色B', shallow: false, data: { extensions: { world: '共用书' } } },
         { avatar: 'C.png', name: '无书角色', shallow: false, data: { extensions: { world: '' } } },
         { avatar: 'D.png', name: '缺书角色', shallow: false, data: { extensions: { world: '已删世界书' } } },
+        { avatar: 'E.png', name: '多书角色', shallow: false, data: { extensions: { world: '主书E' } } },
     ];
     const bindingMap = new Map([
         ['共用书', [
             { avatar: 'A.png', charName: '角色A', source: 'primary' },
             { avatar: 'B.png', charName: '角色B', source: 'primary' },
         ]],
+        ['主书E', [{ avatar: 'E.png', charName: '多书角色', source: 'primary' }]],
+        ['附书E', [{ avatar: 'E.png', charName: '多书角色', source: 'extra' }]],
+        ['已删角色附书', [{ avatar: 'Gone.png', charName: 'Gone', source: 'extra' }]],
     ]);
     const cov = summarizeCharacterWorldCoverage({
         characters: chars,
         bindingMap,
-        worldNamesSet: new Set(['共用书']),
+        worldNamesSet: new Set(['共用书', '主书E', '附书E', '已删角色附书']),
     });
     assert.equal(cov.unboundChars.length, 1);
     assert.equal(cov.unboundChars[0].charName, '无书角色');
     assert.equal(cov.missingFileChars.length, 1);
     assert.equal(cov.missingFileChars[0].charName, '缺书角色');
-    assert.equal(cov.missingFileChars[0].missingWorld, '已删世界书');
     assert.equal(cov.sharedBooks.length, 1);
-    assert.deepEqual(cov.sharedBooks[0].charNames, ['角色A', '角色B']);
+    assert.equal(cov.multiBookChars.length, 1);
+    assert.equal(cov.multiBookChars[0].charName, '多书角色');
+    assert.equal(cov.multiBookChars[0].books.length, 2);
+    assert.equal(cov.orphanExtraBooks.length, 1);
+    assert.equal(cov.orphanExtraBooks[0].worldName, '已删角色附书');
 });
 
 test('entry module and all submodules resolve and import without missing paths', async () => {

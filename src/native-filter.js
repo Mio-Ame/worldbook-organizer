@@ -310,9 +310,28 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
 }
 
 /**
+ * Patch an already-initialized Select2 instance's options IN PLACE without ever
+ * calling `select2('destroy')`! This preserves native Select2 DOM, theme arrows,
+ * and compatibility with other extensions with zero artifacts or flicker.
+ * @param {any} $select
+ * @param {Record<string, any>} patch
+ * @returns {boolean} true if patched in place
+ */
+function patchExistingSelect2InPlace($select, patch) {
+    try {
+        const inst = $select?.data?.('select2');
+        const optsObj = inst?.options?.options;
+        if (!optsObj || typeof optsObj !== 'object') return false;
+        Object.assign(optsObj, patch);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Apply filtering and group ordering to `#world_info` (global multi-select).
- * NEVER uses `<optgroup>` and NEVER detaches selected options!
- * Skips Select2 rebuild completely when signature is unchanged (zero flicker!).
+ * NEVER uses `<optgroup>`, NEVER detaches selected options, and NEVER destroys native Select2!
  * @param {any} classification
  * @param {Record<string, any>} settings
  */
@@ -327,17 +346,6 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
-    const needsSelect2Upgrade = hasSelect2 && selectEl.dataset.wboS2Ready !== '1';
-
-    // Only re-initialize Select2 ONCE to attach our custom matcher/templateResult.
-    // Subsequent filter switches ONLY move `<option>` nodes without destroying Select2 -> instant (<3ms), zero lag!
-    if (needsSelect2Upgrade) {
-        try {
-            $select.select2('destroy');
-        } catch {
-            // Ignore destroy errors
-        }
-    }
 
     restoreSelectOptions(selectEl, _globalDetachedMap);
 
@@ -386,20 +394,13 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         selectEl.appendChild(opt);
     }
 
-    if (needsSelect2Upgrade && $select) {
-        try {
-            $select.select2({
-                width: '100%',
-                placeholder: 'No Worlds active. Click here to select.',
-                allowClear: true,
-                closeOnSelect: false,
-                matcher: customSelect2Matcher,
-                templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
-            });
+    if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
+        const patched = patchExistingSelect2InPlace($select, {
+            matcher: customSelect2Matcher,
+            templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
+        });
+        if (patched) {
             selectEl.dataset.wboS2Ready = '1';
-            bindGlobalSelect2ChipClick($select);
-        } catch {
-            // Fallback to native select if Select2 fails
         }
     }
 }
@@ -407,8 +408,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 /**
  * Apply filtering and `<optgroup>` grouping to `#world_editor_select`.
  * Safe for both desktop Select2 and mobile native `<select>`.
- * Skips Select2 destroy/re-init after initial hookup for instant zero-lag switching,
- * and adds `wbo-editor-s2-dropdown` so single-select editor doesn't show multiselect checkboxes.
+ * Patches existing Select2 in place (NEVER destroys Select2 DOM or creates stray arrow artifacts!).
  * @param {any} classification
  * @param {Record<string, any>} settings
  */
@@ -423,15 +423,6 @@ function applyEditorWorldSelectFilter(classification, settings) {
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
-    const needsSelect2Upgrade = hasSelect2 && selectEl.dataset.wboS2Ready !== '1';
-
-    if (needsSelect2Upgrade) {
-        try {
-            $select.select2('destroy');
-        } catch {
-            // Ignore destroy errors
-        }
-    }
 
     const prevValue = selectEl.value;
     restoreSelectOptions(selectEl, _editorDetachedMap);
@@ -477,7 +468,6 @@ function applyEditorWorldSelectFilter(classification, settings) {
     }));
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
-    // Only wrap with <optgroup> when user has >1 visible section (or explicitly wants optgroups)
     const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length > 0;
 
     for (const sec of nonEmptySections) {
@@ -510,22 +500,15 @@ function applyEditorWorldSelectFilter(classification, settings) {
         selectEl.value = prevValue;
     }
 
-    if (needsSelect2Upgrade && $select) {
-        try {
-            $select.select2({
-                placeholder: '--- Pick to Edit ---',
-                searchInputPlaceholder: 'Search...',
-                allowClear: true,
-                closeOnSelect: true,
-                multiple: false,
-                dropdownCssClass: 'wbo-editor-s2-dropdown',
-                matcher: customSelect2Matcher,
-                templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: false }),
-                templateSelection: renderEditorSelect2Selection,
-            });
+    if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
+        const patched = patchExistingSelect2InPlace($select, {
+            dropdownCssClass: 'wbo-editor-s2-dropdown',
+            matcher: customSelect2Matcher,
+            templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: false }),
+            templateSelection: renderEditorSelect2Selection,
+        });
+        if (patched) {
             selectEl.dataset.wboS2Ready = '1';
-        } catch {
-            // Fallback to native select
         }
     }
 }
