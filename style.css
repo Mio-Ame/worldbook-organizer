@@ -1336,7 +1336,8 @@ li.wbo-dd-collapsed > .select2-results__group.wbo-dd-group-head::before,
 
 .select2-results__group.wbo-dd-group-head.is-isolated::before,
 .gr-group-label.wbo-dd-group-head.is-isolated::before {
-    display: none;
+    content: '•';
+    opacity: 0.45;
 }
 
 li.wbo-dd-collapsed > ul.select2-results__options--nested,
@@ -1923,6 +1924,28 @@ details[open] > summary .wbo-details-chev {
     overflow-y: auto;
     font-size: 12px;
     line-height: 1.5;
+}
+
+.wbo-starter-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-accent-soft);
+    font-size: 12.5px;
+    color: var(--wbo-fg);
+}
+
+.wbo-starter-btn {
+    height: 26px !important;
+    min-height: 26px !important;
+    max-height: 26px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
 }
 
 .wbo-sens-banner {

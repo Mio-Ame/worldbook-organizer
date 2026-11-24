@@ -10,6 +10,7 @@ import {
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
+    buildLocalOrganizeProposals,
     cleanupDeletedWorldSettings,
     createApiChannelId,
     deepClone,
@@ -855,9 +856,9 @@ function openManagerModal() {
                     <i class="fa-solid fa-list-check"></i>
                     <span>批量</span>
                 </button>
-                <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="AI 整理与撤销">
+                <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="本地一键整理 / AI 智能整理">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    <span>AI整理</span>
+                    <span>整理</span>
                 </button>
                 <button type="button" class="wbo-tool-btn" id="wbo-mgr-scan-btn" data-action="open-scan-modal" title="扫描角色世界书">
                     <i class="fa-solid fa-arrows-rotate"></i>
@@ -1338,6 +1339,10 @@ function openManagerModal() {
                 openAiOrganizeModal();
                 break;
             }
+            case 'open-local-organize': {
+                openAiOrganizeModal({ initialTab: 'local' });
+                break;
+            }
             case 'open-scan-modal': {
                 openScanAndImportModal();
                 break;
@@ -1403,7 +1408,7 @@ function refreshManagerModalContent() {
                 count: settings.showCharBooks ? classification.totalCount : classification.nonCharCount,
             },
             ...orderedSections
-                .filter((sec) => !(sec.kind === 'ungrouped' && !hasCustomGroups))
+                .filter((sec) => !(sec.kind === 'ungrouped' && !hasCustomGroups) && !(sec.kind === 'character' && !settings.showCharBooks))
                 .map((sec) => ({
                     id: sec.id,
                     label: sec.name,
@@ -1569,8 +1574,17 @@ function renderManagerGroupsListOnly() {
         }
     });
 
+    const starterBanner = !hasCustomGroups && !q && classification.nonCharCount > 0
+        ? `
+            <div class="wbo-starter-banner">
+                <span>还没建分组？可用「本地整理」0 消耗 1 秒按前缀与用途自动归类</span>
+                <button type="button" class="wbo-btn wbo-btn-primary wbo-starter-btn" data-action="open-local-organize">一键自动整理</button>
+            </div>
+        `
+        : '';
+
     listEl.innerHTML = sections.length > 0
-        ? sections.join('')
+        ? `${starterBanner}${sections.join('')}`
         : '<div class="wbo-empty-hint">无匹配世界书</div>';
 
     listEl.scrollTop = prevScroll;
@@ -2031,7 +2045,7 @@ function openMoveGroupModal(bookMeta) {
  * - Collapsible saved multi-channel API config (cross-device via extensionSettings)
  * - Supports optional real filename normalization when user allows it
  */
-function openAiOrganizeModal() {
+function openAiOrganizeModal({ initialTab = null } = {}) {
     if (!_callbacks) return;
     const { settings, classification } = _callbacks.getState();
 
@@ -2052,7 +2066,7 @@ function openAiOrganizeModal() {
 
     const getUndoButtonLabel = () => {
         const snaps = Array.isArray(settings.undoSnapshots) ? settings.undoSnapshots : [];
-        if (snaps.length === 0) return '暂无可撤销的 AI 整理';
+        if (snaps.length === 0) return '暂无可撤销的整理';
         const latest = snaps[0];
         const dt = latest?.at ? new Date(latest.at) : null;
         const timeText = dt
@@ -2060,7 +2074,7 @@ function openAiOrganizeModal() {
             : '';
         const countText = latest?.count ? `${latest.count} 本` : '';
         const meta = [timeText, countText].filter(Boolean).join(' · ');
-        return meta ? `撤销上次 AI 整理 · ${meta}` : '撤销上次 AI 整理';
+        return meta ? `撤销上次整理 · ${meta}` : '撤销上次整理';
     };
     const hasUndo = Array.isArray(settings.undoSnapshots) && settings.undoSnapshots.length > 0;
 
@@ -2078,7 +2092,7 @@ function openAiOrganizeModal() {
         allBooks.filter((b) => isPotentiallySensitiveTitle(b.realName)).map((b) => b.realName),
     );
     // Protect users from wasting API quota on safety refusals: uncheck likely-sensitive books by default
-    // (still clearly announced in a prominent banner with a 1-click button to re-include if using an uncensored model).
+    // (still clearly announced in a prominent banner with a 1-click button to re-include if using a lax model).
     for (const sName of sensitiveSet) {
         defaultChecked.delete(sName);
     }
@@ -2101,16 +2115,69 @@ function openAiOrganizeModal() {
         .join('');
 
     const activeCh = getActiveChannel();
+    const startTab = initialTab || 'local';
 
     const { modal } = createSubModal(
-        'AI 整理世界书',
+        '整理世界书',
         `
             <div class="wbo-tabs" id="wbo-ai-tabs">
-                <button type="button" class="wbo-tab is-active" data-ai-tab="organize">整理世界书</button>
-                <button type="button" class="wbo-tab" data-ai-tab="api">API 配置 · <span id="wbo-api-tab-badge">${esc(getApiSummaryText())}</span></button>
+                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地快速整理</button>
+                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
+                <button type="button" class="wbo-tab${startTab === 'api' ? ' is-active' : ''}" data-ai-tab="api">API 配置 · <span id="wbo-api-tab-badge">${esc(getApiSummaryText())}</span></button>
             </div>
 
-            <div class="wbo-ai-step" id="wbo-ai-step-select">
+            <div class="wbo-ai-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
+                <div class="wbo-card wbo-ai-card">
+                    <div class="wbo-ai-section-head">
+                        <span>无需 API，按本地规则 1 秒自动归类</span>
+                        <span class="wbo-subtle-tip">零额度消耗 · 敏感书也能分 · 预览后生效</span>
+                    </div>
+                    <div class="wbo-ai-options">
+                        <div class="wbo-radio-row">
+                            <label class="wbo-radio-opt">
+                                <input type="radio" name="wbo-local-scope" value="ungrouped"${classification.ungroupedBooks.length > 0 ? ' checked' : ''}>
+                                <span>仅未分组（${classification.ungroupedBooks.length} 本）</span>
+                            </label>
+                            <label class="wbo-radio-opt">
+                                <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
+                                <span>全部非角色书（${classification.nonCharCount} 本）</span>
+                            </label>
+                        </div>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" id="wbo-local-use-prefix" checked>
+                            <span>识别书名前缀自动归组（如 [文风]、【缝合】、[世界观]、[小剧场]）</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" id="wbo-local-use-keywords" checked>
+                            <span>按酒馆常见用途关键词自动归类（文风 / 缝合 / 场景 / 世界观 / 小剧场 / 敏感向）</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" id="wbo-local-clean-titles">
+                            <span>同时清理显示名多余尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
+                        </label>
+                        <div class="wbo-field">
+                            <label class="wbo-label">自定义关键词规则（可选，每行一条，格式：关键词 => 分组名）</label>
+                            <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-local-custom-rules" rows="3" placeholder="例如：&#10;穿搭|发型|外貌 => 人设素材&#10;咒回|哈利波特 => 同人世界观"></textarea>
+                        </div>
+                    </div>
+                </div>
+                <div class="wbo-ai-status" id="wbo-local-status"></div>
+                <div class="wbo-modal-footer wbo-ai-footer">
+                    <div class="wbo-ai-footer-left">
+                        <button type="button" class="wbo-btn" id="wbo-local-undo-btn" ${hasUndo ? '' : 'hidden'}>
+                            <i class="fa-solid fa-rotate-left"></i> <span id="wbo-local-undo-label">${esc(getUndoButtonLabel())}</span>
+                        </button>
+                    </div>
+                    <div class="wbo-ai-footer-right">
+                        <button type="button" class="wbo-btn" id="wbo-goto-ai-tab-btn">改用 AI 整理</button>
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-local-run-btn">
+                            <i class="fa-solid fa-bolt"></i> 立即生成预览
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="wbo-ai-step" id="wbo-ai-step-select"${startTab === 'organize' ? '' : ' hidden'}>
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
                         <span>1. 选择世界书</span>
@@ -2322,9 +2389,11 @@ function openAiOrganizeModal() {
     const refusalBox = modal.querySelector('#wbo-ai-refusal-box');
     const previewStatusEl = modal.querySelector('#wbo-ai-preview-status');
     const channelStatusEl = modal.querySelector('#wbo-api-channel-status');
+    const stepLocal = modal.querySelector('#wbo-ai-step-local');
     const stepSelect = modal.querySelector('#wbo-ai-step-select');
     const stepApi = modal.querySelector('#wbo-ai-step-api');
     const stepPreview = modal.querySelector('#wbo-ai-step-preview');
+    const localStatusEl = modal.querySelector('#wbo-local-status');
     const tabsBar = modal.querySelector('#wbo-ai-tabs');
     const previewList = modal.querySelector('#wbo-ai-preview-list');
     const customApiBox = modal.querySelector('#wbo-custom-api-box');
@@ -2337,8 +2406,13 @@ function openAiOrganizeModal() {
     const modelInput = modal.querySelector('#wbo-api-model');
 
     let editingChannelId = activeCh?.id || null;
+    let lastOrganizeSourceTab = startTab === 'organize' ? 'organize' : 'local';
 
     const switchAiTab = (tabName) => {
+        if (tabName === 'local' || tabName === 'organize') {
+            lastOrganizeSourceTab = tabName;
+        }
+        if (stepLocal instanceof HTMLElement) stepLocal.hidden = tabName !== 'local';
         if (stepSelect instanceof HTMLElement) stepSelect.hidden = tabName !== 'organize';
         if (stepApi instanceof HTMLElement) stepApi.hidden = tabName !== 'api';
         if (stepPreview instanceof HTMLElement) stepPreview.hidden = true;
@@ -2350,12 +2424,45 @@ function openAiOrganizeModal() {
 
     modal.querySelectorAll('.wbo-tab').forEach((btn) => {
         btn.addEventListener('click', () => {
-            const tab = btn.getAttribute('data-ai-tab') || 'organize';
+            const tab = btn.getAttribute('data-ai-tab') || 'local';
             switchAiTab(tab);
         });
     });
+    modal.querySelector('#wbo-goto-ai-tab-btn')?.addEventListener('click', () => switchAiTab('organize'));
     modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
     modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
+
+    modal.querySelector('#wbo-local-run-btn')?.addEventListener('click', () => {
+        const scope = modal.querySelector('input[name="wbo-local-scope"]:checked')?.value || 'ungrouped';
+        const targetBooks = scope === 'ungrouped'
+            ? classification.ungroupedBooks
+            : allBooks.filter((b) => !b.isInCharGroup);
+        if (targetBooks.length === 0) {
+            if (localStatusEl) {
+                localStatusEl.textContent = '当前范围内没有需要整理的世界书，可切换为「全部非角色书」。';
+                localStatusEl.className = 'wbo-ai-status is-error';
+            }
+            return;
+        }
+        const usePrefix = Boolean(modal.querySelector('#wbo-local-use-prefix')?.checked);
+        const useKeywords = Boolean(modal.querySelector('#wbo-local-use-keywords')?.checked);
+        const cleanTitles = Boolean(modal.querySelector('#wbo-local-clean-titles')?.checked);
+        const customRulesText = modal.querySelector('#wbo-local-custom-rules')?.value || '';
+        const proposals = buildLocalOrganizeProposals({
+            books: targetBooks.map((b) => ({
+                realName: b.realName,
+                currentAlias: b.alias || '',
+                currentGroup: b.groupName || '',
+            })),
+            usePrefix,
+            useKeywords,
+            cleanTitles,
+            customRulesText,
+        });
+        if (localStatusEl) localStatusEl.textContent = '';
+        lastOrganizeSourceTab = 'local';
+        showPreview(proposals, 0, { fromLocal: true });
+    });
 
     const externalAiDrawer = modal.querySelector('#wbo-external-ai-drawer');
     const toggleExternalAiBtn = modal.querySelector('#wbo-toggle-external-ai-btn');
@@ -2540,17 +2647,23 @@ function openAiOrganizeModal() {
         setStatus(`已删除配置「${removed.name}」`, false, 'channel');
     });
 
-    modal.querySelector('#wbo-ai-undo-btn')?.addEventListener('click', async () => {
+    const performUndoAction = async () => {
         if (!undoLastAiOrganize(settings)) return;
         await _callbacks.onMutation({ save: true });
-        const undoBtn = modal.querySelector('#wbo-ai-undo-btn');
-        const undoLbl = modal.querySelector('#wbo-ai-undo-label');
         const stillHas = Array.isArray(settings.undoSnapshots) && settings.undoSnapshots.length > 0;
-        if (undoBtn instanceof HTMLElement) undoBtn.hidden = !stillHas;
-        if (undoLbl) undoLbl.textContent = getUndoButtonLabel();
-        setStatus('已撤销上一次 AI 整理，恢复为整理前的分组与显示名。');
-        showToast('success', '已撤销上一次 AI 整理');
-    });
+        for (const id of ['#wbo-ai-undo-btn', '#wbo-local-undo-btn']) {
+            const btn = modal.querySelector(id);
+            if (btn instanceof HTMLElement) btn.hidden = !stillHas;
+        }
+        for (const id of ['#wbo-ai-undo-label', '#wbo-local-undo-label']) {
+            const lbl = modal.querySelector(id);
+            if (lbl) lbl.textContent = getUndoButtonLabel();
+        }
+        setStatus('已撤销上一次整理，恢复为整理前的分组与显示名。');
+        showToast('success', '已撤销上一次整理');
+    };
+    modal.querySelector('#wbo-ai-undo-btn')?.addEventListener('click', performUndoAction);
+    modal.querySelector('#wbo-local-undo-btn')?.addEventListener('click', performUndoAction);
 
     modal.querySelector('#wbo-toggle-key-btn')?.addEventListener('click', (ev) => {
         if (!(keyInput instanceof HTMLInputElement)) return;
@@ -2880,7 +2993,7 @@ function openAiOrganizeModal() {
         syncRedoBarUi();
     };
 
-    const showPreview = (proposals, ignoredCount) => {
+    const showPreview = (proposals, ignoredCount, { fromLocal = false } = {}) => {
         currentProposals = proposals.map((p) => ({
             ...p,
             selected: true,
@@ -2890,14 +3003,15 @@ function openAiOrganizeModal() {
         if (!previewList || !(stepSelect instanceof HTMLElement) || !(stepPreview instanceof HTMLElement)) return;
         if (redoPasteBox instanceof HTMLElement) redoPasteBox.hidden = true;
 
-        // Pre-select real rename radio if user checked "允许规范修改世界书真实文件名"
-        const allowReal = Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
+        // Pre-select real rename radio only when coming from AI tab with real-rename enabled
+        const allowReal = !fromLocal && Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
         const targetRadio = modal.querySelector(`input[name="wbo-ai-apply-mode"][value="${allowReal ? 'real' : 'alias'}"]`);
         if (targetRadio instanceof HTMLInputElement) targetRadio.checked = true;
         syncRealHint();
 
         renderPreviewContent();
 
+        if (stepLocal instanceof HTMLElement) stepLocal.hidden = true;
         stepSelect.hidden = true;
         if (stepApi instanceof HTMLElement) stepApi.hidden = true;
         if (tabsBar instanceof HTMLElement) tabsBar.hidden = true;
@@ -3183,7 +3297,7 @@ function openAiOrganizeModal() {
     });
 
     modal.querySelector('#wbo-ai-back-btn')?.addEventListener('click', () => {
-        switchAiTab('organize');
+        switchAiTab(lastOrganizeSourceTab);
     });
 
     modal.querySelector('#wbo-ai-cancel-btn')?.addEventListener('click', closeSubModal);

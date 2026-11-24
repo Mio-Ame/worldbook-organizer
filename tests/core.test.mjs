@@ -6,6 +6,7 @@ import {
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
+    buildLocalOrganizeProposals,
     buildCharacterBindingIndex,
     buildPersonaBindingIndex,
     classifyWorldbooks,
@@ -270,6 +271,26 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.match(redoPrompt.userPrompt, /previousGroup/);
     assert.match(redoPrompt.userPrompt, /世界观与角色/);
     assert.match(redoPrompt.userPrompt, /缝合/);
+
+    // Local zero-API organize handles prefixes, ST keywords, sensitive books, custom rules, and title cleanup
+    const localProps = buildLocalOrganizeProposals({
+        books: [
+            { realName: '[缝]不因爱失去自我v1.7 (1)' },
+            { realName: '约会场景与流程指南' },
+            { realName: '名器倒模评测' },
+            { realName: '我的咒回设定集 by作者A' },
+        ],
+        usePrefix: true,
+        useKeywords: true,
+        cleanTitles: true,
+        customRulesText: '咒回 => 同人专区',
+    });
+    assert.equal(localProps[0].group, '缝合与规则');
+    assert.equal(localProps[0].alias, '[缝]不因爱失去自我v1.7');
+    assert.equal(localProps[1].group, '场景与互动');
+    assert.equal(localProps[2].group, '成人与敏感向');
+    assert.equal(localProps[3].group, '同人专区');
+    assert.equal(localProps[3].alias, '我的咒回设定集');
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({
