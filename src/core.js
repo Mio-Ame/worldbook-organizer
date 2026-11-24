@@ -1056,13 +1056,18 @@ export function matchesSearch(bookMeta, query) {
 
 /**
  * Heuristically detect whether a worldbook title contains common NSFW / sensitive
- * keywords that may trigger strict safety refusals on commercial AI models.
+ * keywords (including titles where `nsfw` or `18+` is adjacent to CJK chars like
+ * `18+温柔向Nsfw`) that may trigger strict safety refusals on commercial AI models.
  * @param {string} text
  * @returns {boolean}
  */
 export function isPotentiallySensitiveTitle(text) {
     const s = String(text ?? '');
-    return /(?:^|[\s_\-[【(（])(?:18\+|r18|r-18|nsfw|bdsm|sm)(?:$|[\s_\-\]】)）])|(?:色情|黄文|肉文|调教|性爱|涩涩|涩图|成人向|涩情|高h|纯肉|擦边)/i.test(s);
+    if (/(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|porn|色情|黄文|肉文|纯肉|调教|性爱|涩涩|涩图|成人向|成人|涩情|情色|高h|h文|擦边|开车|做爱|啪啪|榨精|触手|媚药|催眠|凌辱|拘束|母狗|肉便器)/i.test(s)) {
+        return true;
+    }
+    // Short ASCII tokens require non-letter boundaries so words like "small" or "smart" never false-positive
+    return /(?<![a-z])(?:sm|sex)(?![a-z])/i.test(s);
 }
 
 /**

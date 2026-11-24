@@ -528,6 +528,13 @@
     transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
+.wbo-pill:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    box-shadow: 6px 0 8px -4px var(--wbo-bg) !important;
+}
+
 .wbo-pill.wbo-drop-target {
     border-color: var(--wbo-accent) !important;
     background: var(--wbo-accent-soft) !important;
@@ -764,10 +771,14 @@
     box-shadow: none !important;
 }
 
+.wbo-group-toggle.is-static {
+    cursor: default;
+}
+
 .wbo-book-title-line {
     display: flex;
     flex-wrap: wrap;
-    align-items: baseline;
+    align-items: center;
     gap: 6px;
 }
 
@@ -1004,6 +1015,15 @@
     background: color-mix(in srgb, currentColor 11%, transparent) !important;
 }
 
+.wbo-dd-pill.is-pinned-all {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: var(--SmartThemeBlurTintColor, rgba(240, 243, 246, 0.96)) !important;
+    backdrop-filter: blur(8px);
+    box-shadow: 6px 0 8px -4px rgba(0, 0, 0, 0.14) !important;
+}
+
 .wbo-dd-pill.is-active {
     opacity: 1;
     font-weight: 600 !important;
@@ -1196,10 +1216,136 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-book-chev {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 15px;
     font-size: 10px;
+    line-height: 1;
+    color: var(--wbo-fg-muted);
+    flex-shrink: 0;
+    transition: transform 0.14s ease;
+}
+
+.wbo-modal input[type="checkbox"].wbo-batch-check {
+    width: 15px !important;
+    height: 15px !important;
+    min-width: 15px !important;
+    min-height: 15px !important;
+    border-radius: 4px !important;
+}
+
+.wbo-modal input[type="checkbox"].wbo-batch-check::after {
+    width: 4px !important;
+    height: 8px !important;
+}
+
+/* Preset prompt chips in AI Organize */
+.wbo-preset-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-preset-group {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+}
+
+.wbo-preset-label {
+    font-size: 11.5px;
     color: var(--wbo-fg-muted);
     margin-right: 2px;
-    transition: transform 0.14s ease;
+    flex-shrink: 0;
+}
+
+.wbo-preset-chip {
+    display: inline-flex !important;
+    align-items: center !important;
+    height: 24px !important;
+    padding: 0 9px !important;
+    margin: 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-bg) !important;
+    color: var(--wbo-fg) !important;
+    font-size: 11.5px !important;
+    line-height: 1 !important;
+    cursor: pointer;
+    box-shadow: none !important;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.wbo-preset-chip:hover {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+}
+
+.wbo-preset-chip.is-active {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
+    font-weight: 600 !important;
+}
+
+/* Aligned 2-line cards for Scan Coverage report */
+.wbo-cov-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-cov-card {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg);
+}
+
+.wbo-cov-card-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-cov-kind {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--wbo-bg-elevated);
+    color: var(--wbo-fg-muted);
+    flex-shrink: 0;
+}
+
+.wbo-cov-kind.is-world {
+    background: var(--wbo-accent-soft);
+    color: var(--wbo-accent);
+}
+
+.wbo-cov-meta {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-cov-card-items {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    padding-left: 0;
+}
+
+.wbo-cov-missing {
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
 }
 
 .wbo-book-row.is-preview-open .wbo-book-chev {

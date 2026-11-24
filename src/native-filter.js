@@ -927,7 +927,7 @@ function enhanceOpenEditorDropdown() {
             ...groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })),
         ];
         filterBar.innerHTML = pillItems
-            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === SPECIAL_GROUPS.ALL ? ' is-pinned-all' : ''}${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
             .join('');
 
         // Keep dropdown open and search intact when tapping a pill
@@ -1182,7 +1182,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             })),
         ];
         filterBar.innerHTML = pillItems
-            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === SPECIAL_GROUPS.ALL ? ' is-pinned-all' : ''}${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
             .join('');
 
         for (const evtName of ['mousedown', 'touchstart']) {

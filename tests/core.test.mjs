@@ -239,7 +239,11 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(refusal.isRefusal, true);
     assert.equal(detectAiRefusal('抱歉，我无法处理包含敏感内容的请求。'), true);
     assert.equal(isPotentiallySensitiveTitle('18+ 温柔向Nsfw'), true);
+    assert.equal(isPotentiallySensitiveTitle('温柔向NSFW'), true);
+    assert.equal(isPotentiallySensitiveTitle('18+纯爱文风'), true);
+    assert.equal(isPotentiallySensitiveTitle('【R18】描写增强'), true);
     assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);
+    assert.equal(isPotentiallySensitiveTitle('smart_prompt_small'), false);
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({
