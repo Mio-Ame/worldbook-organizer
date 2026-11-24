@@ -52,7 +52,7 @@ import {
     setGlobalWorldActive,
 } from './native-filter.js';
 
-const HEADER_BAR_ID = 'wbo-header-bar';
+const CHAR_TOGGLE_BTN_ID = 'wbo-hdr-show-char';
 const WAND_ENTRY_ID = 'wbo-wand-entry';
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const MANAGER_OVERLAY_ID = 'wbo-manager-overlay';
@@ -196,42 +196,32 @@ function ensureWandMenuEntry() {
 function ensureHeaderBar() {
     ensureWandMenuEntry();
 
-    let bar = document.getElementById(HEADER_BAR_ID);
-    if (bar) return bar;
+    // Remove any legacy standalone row from earlier versions
+    document.getElementById('wbo-header-bar')?.remove();
 
+    let btn = document.getElementById(CHAR_TOGGLE_BTN_ID);
+    if (btn) return btn;
+
+    const importBtn = document.getElementById('world_import_button');
     const editorSelect = document.getElementById('world_editor_select');
-    const editorRow = editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
-    const worldPopup = document.getElementById('world_popup');
-    const wiDrawer = document.getElementById('WorldInfo');
-    if (!wiDrawer) return null;
+    const editorRow = importBtn?.parentElement || editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
+    if (!editorRow) return null;
 
-    bar = document.createElement('div');
-    bar.id = HEADER_BAR_ID;
-    bar.className = 'wbo-header-bar';
-    bar.innerHTML = `
-        <button type="button" class="menu_button menu_button_icon wbo-native-hdr-btn" id="wbo-hdr-show-char" title="点击切换显示或隐藏角色卡世界书">
-            <i class="fa-solid fa-eye-slash" id="wbo-hdr-char-icon"></i>
-            <span id="wbo-hdr-char-label">角色书 0</span>
-        </button>
-        <button type="button" class="menu_button menu_button_icon wbo-native-hdr-btn" id="wbo-hdr-open-manager" title="打开世界书分组管理">
-            <i class="fa-solid fa-layer-group"></i>
-            <span id="wbo-hdr-manager-label">分组管理</span>
-        </button>
-    `;
+    // Blend seamlessly into SillyTavern's native `#world_popup` toolbar row (0 extra rows, 100% native icon!)
+    btn = document.createElement('div');
+    btn.id = CHAR_TOGGLE_BTN_ID;
+    btn.className = 'menu_button fa-solid fa-user-slash wbo-native-char-btn';
+    btn.tabIndex = 0;
+    btn.setAttribute('role', 'button');
+    btn.title = '角色世界书已隐藏，点击显示';
 
-    // Place cleanly right above the `#world_editor_select` row inside `#world_popup`
-    if (worldPopup && editorRow && editorRow.parentElement === worldPopup) {
-        worldPopup.insertBefore(bar, editorRow);
-    } else if (worldPopup) {
-        worldPopup.prepend(bar);
+    if (importBtn && importBtn.parentElement === editorRow) {
+        editorRow.insertBefore(btn, importBtn);
     } else {
-        const pinDiv = document.getElementById('WI_panel_pin_div');
-        const titleRow = pinDiv?.parentElement || wiDrawer.querySelector('.flex-container');
-        if (!titleRow) return null;
-        titleRow.appendChild(bar);
+        editorRow.appendChild(btn);
     }
 
-    bar.querySelector('#wbo-hdr-show-char')?.addEventListener('click', async (ev) => {
+    btn.addEventListener('click', async (ev) => {
         ev.stopPropagation();
         if (!_callbacks) return;
         const { settings } = _callbacks.getState();
@@ -246,53 +236,30 @@ function ensureHeaderBar() {
         await _callbacks.onMutation({ save: true });
     });
 
-    bar.querySelector('#wbo-hdr-open-manager')?.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        openManagerModal();
-    });
-
-    return bar;
+    return btn;
 }
 
 /**
- * Sync the lightweight theme-following header controls AND the Group Manager modal (if open).
+ * Sync the native inline char-toggle icon AND the Group Manager modal (ONLY if open — 0 work when closed!).
  */
 export function renderEmbeddedPanel() {
     if (!_callbacks) return;
-    const bar = ensureHeaderBar();
+    const showCharBtn = ensureHeaderBar();
 
     const { settings, classification } = _callbacks.getState();
 
-    const characters = getCharactersInMemory();
-    const unscannedShallowCount = findUnscannedShallowCharacters(characters, settings.cachedCharBindings).length;
-    const unimportedBookCount = findCardsWithUnimportedBooks({
-        characters,
-        worldNamesSet: new Set(classification.byName.keys()),
-        cachedCharBindings: settings.cachedCharBindings,
-    }).length;
-    const scanBadgeCount = unscannedShallowCount + unimportedBookCount;
-
-    if (bar) {
-        const showCharBtn = bar.querySelector('#wbo-hdr-show-char');
-        const charIcon = bar.querySelector('#wbo-hdr-char-icon');
-        const lbl = bar.querySelector('#wbo-hdr-char-label');
+    if (showCharBtn) {
         const shown = Boolean(settings.showCharBooks);
-        if (showCharBtn) {
-            showCharBtn.classList.toggle('is-active', shown);
-            showCharBtn.setAttribute('aria-pressed', String(shown));
-        }
-        if (charIcon) {
-            charIcon.className = shown ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
-        }
-        if (lbl) lbl.textContent = `角色书 ${classification.charCount}`;
-
-        const mgrLabel = bar.querySelector('#wbo-hdr-manager-label');
-        if (mgrLabel) {
-            mgrLabel.textContent = scanBadgeCount > 0 ? `分组管理 · ${scanBadgeCount}` : '分组管理';
-        }
+        showCharBtn.classList.toggle('fa-user', shown);
+        showCharBtn.classList.toggle('fa-user-slash', !shown);
+        showCharBtn.classList.toggle('is-active', shown);
+        showCharBtn.setAttribute('aria-pressed', String(shown));
+        showCharBtn.title = shown
+            ? `正在显示角色世界书（${classification.charCount} 本），点击隐藏`
+            : `已隐藏角色世界书（${classification.charCount} 本），点击显示`;
     }
 
-    // If the Group Manager modal is currently open, refresh it cleanly in place
+    // Only refresh Group Manager when it is actually open (0 background scanning when closed!)
     if (document.getElementById(MANAGER_OVERLAY_ID)) {
         refreshManagerModalContent();
     }
@@ -2153,7 +2120,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             <div class="wbo-ai-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>不消耗 API，1 秒按规则自动归组</span>
+                        <span>自动按书名前缀与用途归组（零额度，1 秒完成）</span>
                     </div>
                     <div class="wbo-ai-options">
                         <div class="wbo-radio-row">
@@ -2166,24 +2133,21 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                                 <span>整理全部非角色书（${classification.nonCharCount} 本）</span>
                             </label>
                         </div>
-                        <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-local-use-prefix" checked>
-                            <span>自动识别前缀和用途关键词归组（文风 / 缝合 / 场景 / 世界观 / 小剧场等）</span>
-                        </label>
-                        <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-local-clean-titles">
-                            <span>顺手清理显示名尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
-                        </label>
+                        <input type="checkbox" id="wbo-local-use-prefix" checked hidden>
                         <details class="wbo-collapse-box" id="wbo-local-rules-details">
                             <summary class="wbo-collapse-summary">
-                                <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>补充自定义归类规则（可选）</span></span>
-                                <span class="wbo-collapse-hint" id="wbo-local-rules-count">点击展开</span>
+                                <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>更多选项（清理书名尾巴 / 自定义归类词）</span></span>
+                                <span class="wbo-collapse-hint" id="wbo-local-rules-count">可选</span>
                             </summary>
                             <div class="wbo-collapse-body">
+                                <label class="wbo-check-line">
+                                    <input type="checkbox" id="wbo-local-clean-titles">
+                                    <span>顺手清理显示名尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
+                                </label>
                                 <div class="wbo-rule-builder-row">
                                     <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="书名包含词，如：穿搭">
                                     <span class="wbo-rule-arrow">归入</span>
-                                    <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设素材">
+                                    <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设">
                                     <button type="button" class="wbo-btn" id="wbo-local-rule-add-btn">添加</button>
                                 </div>
                                 <datalist id="wbo-existing-groups-datalist">
@@ -2203,7 +2167,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </div>
                     <div class="wbo-ai-footer-right">
                         <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-local-run-btn">
-                            <i class="fa-solid fa-bolt"></i> 一键整理并预览
+                            <i class="fa-solid fa-bolt"></i> 一键自动归类
                         </button>
                     </div>
                 </div>
@@ -2365,10 +2329,10 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
             <div class="wbo-ai-step" id="wbo-ai-step-preview" hidden>
                 <div class="wbo-ai-section-head">
-                    <span>预览与微调</span>
+                    <span>预览分组结果</span>
                     <button type="button" class="wbo-link-btn" id="wbo-ai-back-btn">返回重选</button>
                 </div>
-                <div class="wbo-radio-row">
+                <div class="wbo-radio-row" id="wbo-preview-apply-mode-row">
                     <label class="wbo-radio-opt">
                         <input type="radio" name="wbo-ai-apply-mode" value="alias" checked>
                         <span>仅改显示名</span>
@@ -2379,7 +2343,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </label>
                 </div>
                 <div class="wbo-real-hint" id="wbo-ai-real-hint" hidden>
-                    将按下方「新名称」真实重命名世界书文件，并同步更新角色卡主/附绑定、User 人设绑定、当前聊天与全局激活。
+                    将按修改后的名称真实重命名世界书文件，并同步更新角色卡主/附绑定、User 人设绑定、当前聊天与全局激活。
                 </div>
                 <div class="wbo-preview-toolbar">
                     <div class="wbo-preview-group-pills" id="wbo-preview-group-pills"></div>
@@ -2391,28 +2355,30 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <datalist id="wbo-preview-groups-datalist"></datalist>
                 <div class="wbo-ai-preview-list" id="wbo-ai-preview-list"></div>
 
-                <div class="wbo-card wbo-redo-card" id="wbo-preview-redo-card">
-                    <div class="wbo-ai-section-head">
-                        <span id="wbo-redo-summary">有分组不满意？点下方分组标签选中后让 AI 重排</span>
+                <details class="wbo-collapse-box" id="wbo-preview-redo-details">
+                    <summary class="wbo-collapse-summary">
+                        <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span id="wbo-redo-summary">不满意部分分组？点此选组让 AI 重排</span></span>
                         <button type="button" class="wbo-link-btn" id="wbo-redo-clear-btn" hidden>清除重排</button>
-                    </div>
-                    <div class="wbo-redo-group-chips" id="wbo-redo-group-chips"></div>
-                    <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-redo-reason" rows="2" placeholder="可选：说明不满意的原因或期望（例如：约会指南不要放进世界观，请归入「场景与互动」）"></textarea>
-                    <div class="wbo-ai-actions-row">
-                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-run-btn" disabled>
-                            <i class="fa-solid fa-rotate"></i> 重新发送给 AI
-                        </button>
-                        <button type="button" class="wbo-btn" id="wbo-ai-redo-copy-btn" disabled>
-                            <i class="fa-regular fa-copy"></i> 复制重排提示词
-                        </button>
-                    </div>
-                    <div class="wbo-redo-paste-box" id="wbo-redo-paste-box" hidden>
-                        <textarea class="wbo-textarea" id="wbo-ai-redo-json-input" rows="3" placeholder="将外部 AI 返回的重排 JSON 粘贴到此处，仅更新已选中的重排项"></textarea>
+                    </summary>
+                    <div class="wbo-collapse-body">
+                        <div class="wbo-redo-group-chips" id="wbo-redo-group-chips"></div>
+                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-redo-reason" rows="2" placeholder="可选：说明不满意的原因或期望（例如：约会指南不要放进世界观，请归入「场景与互动」）"></textarea>
                         <div class="wbo-ai-actions-row">
-                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-merge-btn">解析并合并重排结果</button>
+                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-run-btn" disabled>
+                                <i class="fa-solid fa-rotate"></i> 重新发送给 AI
+                            </button>
+                            <button type="button" class="wbo-btn" id="wbo-ai-redo-copy-btn" disabled>
+                                <i class="fa-regular fa-copy"></i> 复制重排提示词
+                            </button>
+                        </div>
+                        <div class="wbo-redo-paste-box" id="wbo-redo-paste-box" hidden>
+                            <textarea class="wbo-textarea" id="wbo-ai-redo-json-input" rows="3" placeholder="将外部 AI 返回的重排 JSON 粘贴到此处，仅更新已选中的重排项"></textarea>
+                            <div class="wbo-ai-actions-row">
+                                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-merge-btn">解析并合并重排结果</button>
+                            </div>
                         </div>
                     </div>
-                </div>
+                </details>
 
                 <div class="wbo-apply-progress-box" id="wbo-apply-progress-box" hidden></div>
                 <div class="wbo-ai-status" id="wbo-ai-preview-status"></div>
@@ -2935,13 +2901,16 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         });
     };
 
-    /** @type {Array<{ realName: string, alias: string, group: string, note: string, selected: boolean, redo: boolean }>} */
+    /** @type {Array<{ realName: string, alias: string, group: string, note: string, selected: boolean, redo: boolean, editing: boolean }>} */
     let currentProposals = [];
     let activePreviewGroupFilter = '__all__';
+    let previewFromLocal = false;
 
     const previewPillsEl = modal.querySelector('#wbo-preview-group-pills');
     const previewSelCountEl = modal.querySelector('#wbo-preview-sel-count');
     const previewGroupsDatalist = modal.querySelector('#wbo-preview-groups-datalist');
+    const previewApplyModeRow = modal.querySelector('#wbo-preview-apply-mode-row');
+    const previewRedoDetails = modal.querySelector('#wbo-preview-redo-details');
     const redoSummaryEl = modal.querySelector('#wbo-redo-summary');
     const redoChipsEl = modal.querySelector('#wbo-redo-group-chips');
     const redoClearBtn = modal.querySelector('#wbo-redo-clear-btn');
@@ -2962,13 +2931,17 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     };
 
     const syncRedoBarUi = () => {
+        if (previewRedoDetails instanceof HTMLElement) {
+            previewRedoDetails.hidden = previewFromLocal;
+        }
+        if (previewFromLocal) return;
         const grouped = getOrderedPreviewGroups();
         const redoItems = currentProposals.filter((p) => p.redo);
         const count = redoItems.length;
         if (redoSummaryEl) {
             redoSummaryEl.textContent = count > 0
-                ? `已选 ${count} 本待重新分组`
-                : '有分组不满意？直接点下方分组标签，告诉 AI 怎么改';
+                ? `已选 ${count} 本待 AI 重新分组`
+                : '不满意部分分组？点此选组让 AI 重排';
         }
         if (redoChipsEl) {
             redoChipsEl.innerHTML = [...grouped.entries()].map(([gname, entries]) => {
@@ -3006,18 +2979,16 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (!previewList) return;
         const grouped = getOrderedPreviewGroups();
         const groupNames = [...grouped.keys()];
+        const allGroupChoices = [...new Set([...groupNames, ...settings.groups.map((g) => g.name), '未分组'])];
 
         if (activePreviewGroupFilter !== '__all__' && !grouped.has(activePreviewGroupFilter)) {
             activePreviewGroupFilter = '__all__';
         }
 
-        // Update datalist of available groups for quick manual edits
         if (previewGroupsDatalist) {
-            const allSuggest = [...new Set([...groupNames, ...settings.groups.map((g) => g.name)])];
-            previewGroupsDatalist.innerHTML = allSuggest.map((g) => `<option value="${esc(g)}"></option>`).join('');
+            previewGroupsDatalist.innerHTML = allGroupChoices.map((g) => `<option value="${esc(g)}"></option>`).join('');
         }
 
-        // Render group filter pills
         if (previewPillsEl) {
             const pills = [
                 { key: '__all__', label: `全部 ${currentProposals.length}` },
@@ -3043,36 +3014,51 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             const entries = grouped.get(gname) || [];
             const selInGroup = entries.filter((e) => e.item.selected).length;
             const allSel = entries.length > 0 && selInGroup === entries.length;
-            const rowsHtml = entries.map(({ item, idx }) => `
-                <div class="wbo-ai-prop-row${item.redo ? ' is-redo' : ''}" data-idx="${idx}">
-                    <label class="wbo-ai-prop-check" title="勾选以应用此项">
-                        <input type="checkbox" class="wbo-prop-selected"${item.selected ? ' checked' : ''}>
-                    </label>
-                    <div class="wbo-ai-prop-fields">
-                        <div class="wbo-ai-prop-top">
-                            <span class="wbo-prop-badge">原名</span>
-                            <span class="wbo-ai-prop-orig" title="${esc(item.realName)}">${esc(item.realName)}</span>
-                            <button type="button" class="wbo-redo-toggle${item.redo ? ' is-active' : ''}" data-action="toggle-redo-item" data-idx="${idx}" title="标记此书为不满意，稍后一起重排">
-                                <i class="fa-solid fa-rotate"></i> ${item.redo ? '待重排' : '重排'}
-                            </button>
-                        </div>
-                        <div class="wbo-prop-grid">
+            const rowsHtml = entries.map(({ item, idx }) => {
+                const curGroup = (item.group || '').trim() || '未分组';
+                const renamed = Boolean(item.alias && item.alias !== item.realName);
+                const titleHtml = renamed
+                    ? `<span class="wbo-prop-name-new">${esc(item.alias)}</span><span class="wbo-prop-name-old" title="${esc(item.realName)}">${esc(item.realName)}</span>`
+                    : `<span class="wbo-prop-name-new" title="${esc(item.realName)}">${esc(item.realName)}</span>`;
+                const noteHint = item.note ? `<div class="wbo-prop-note-sub">${esc(item.note)}</div>` : '';
+                const groupOptsHtml = allGroupChoices
+                    .map((gc) => `<option value="${esc(gc)}"${gc === curGroup ? ' selected' : ''}>${esc(gc)}</option>`)
+                    .join('') + '<option value="__new__">+ 新建分组...</option>';
+
+                const editBlockHtml = item.editing
+                    ? `
+                        <div class="wbo-prop-edit-drawer">
                             <label class="wbo-prop-field">
                                 <span class="wbo-prop-label">新名称</span>
                                 <input type="text" class="wbo-input wbo-prop-alias" value="${esc(item.alias)}" placeholder="规范后的显示名">
                             </label>
                             <label class="wbo-prop-field">
-                                <span class="wbo-prop-label">分组</span>
-                                <input type="text" class="wbo-input wbo-prop-group" list="wbo-preview-groups-datalist" value="${esc(item.group)}" placeholder="归属分组">
-                            </label>
-                            <label class="wbo-prop-field is-full">
                                 <span class="wbo-prop-label">说明</span>
-                                <input type="text" class="wbo-input wbo-prop-note" value="${esc(item.note)}" placeholder="一句话用途说明">
+                                <input type="text" class="wbo-input wbo-prop-note" value="${esc(item.note)}" placeholder="可选：一句话用途说明">
                             </label>
                         </div>
+                    `
+                    : '';
+
+                return `
+                    <div class="wbo-ai-prop-row is-compact${item.redo ? ' is-redo' : ''}" data-idx="${idx}">
+                        <div class="wbo-prop-compact-line">
+                            <label class="wbo-ai-prop-check" title="勾选以应用此项">
+                                <input type="checkbox" class="wbo-prop-selected"${item.selected ? ' checked' : ''}>
+                            </label>
+                            <div class="wbo-prop-compact-text">
+                                <div class="wbo-prop-compact-title">${titleHtml}</div>
+                                ${noteHint}
+                            </div>
+                            <select class="wbo-select wbo-prop-group-select" title="快速更换分组">${groupOptsHtml}</select>
+                            <button type="button" class="wbo-icon-btn wbo-prop-edit-btn${item.editing ? ' is-active' : ''}" data-action="toggle-edit-item" data-idx="${idx}" title="微调名称或说明">
+                                <i class="fa-solid fa-pen"></i>
+                            </button>
+                        </div>
+                        ${editBlockHtml}
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
 
             return `
                 <div class="wbo-preview-group-sec" data-preview-group="${esc(gname)}">
@@ -3087,7 +3073,6 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             `;
         }).join('');
 
-        // Apply indeterminate visual state for partially-selected groups
         previewList.querySelectorAll('.wbo-preview-group-check').forEach((cb) => {
             if (!(cb instanceof HTMLInputElement)) return;
             const gname = cb.getAttribute('data-group-name') || '';
@@ -3102,17 +3087,25 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     };
 
     const showPreview = (proposals, ignoredCount, { fromLocal = false } = {}) => {
+        previewFromLocal = Boolean(fromLocal);
         currentProposals = proposals.map((p) => ({
             ...p,
             selected: true,
             redo: false,
+            editing: false,
         }));
         activePreviewGroupFilter = '__all__';
         if (!previewList || !(stepSelect instanceof HTMLElement) || !(stepPreview instanceof HTMLElement)) return;
         if (redoPasteBox instanceof HTMLElement) redoPasteBox.hidden = true;
+        if (previewRedoDetails instanceof HTMLDetailsElement) previewRedoDetails.open = false;
 
-        // Pre-select real rename radio only when coming from AI tab with real-rename enabled
-        const allowReal = !fromLocal && Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
+        // Hide rename-mode radios for pure local grouping when no names changed
+        const hasAnyRename = currentProposals.some((p) => p.alias && p.alias !== p.realName);
+        if (previewApplyModeRow instanceof HTMLElement) {
+            previewApplyModeRow.hidden = previewFromLocal && !hasAnyRename;
+        }
+
+        const allowReal = !previewFromLocal && Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
         const targetRadio = modal.querySelector(`input[name="wbo-ai-apply-mode"][value="${allowReal ? 'real' : 'alias'}"]`);
         if (targetRadio instanceof HTMLInputElement) targetRadio.checked = true;
         syncRealHint();
@@ -3173,6 +3166,21 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
     previewList?.addEventListener('change', (ev) => {
         const target = ev.target;
+        if (target instanceof HTMLSelectElement && target.classList.contains('wbo-prop-group-select')) {
+            const row = target.closest('.wbo-ai-prop-row[data-idx]');
+            if (!row) return;
+            const idx = Number(row.getAttribute('data-idx'));
+            const item = currentProposals[idx];
+            if (!item) return;
+            if (target.value === '__new__') {
+                const customName = globalThis.prompt('输入新分组名称：')?.trim();
+                if (customName) item.group = customName;
+            } else {
+                item.group = target.value;
+            }
+            renderPreviewContent();
+            return;
+        }
         if (!(target instanceof HTMLInputElement)) return;
         if (target.classList.contains('wbo-preview-group-check')) {
             const gname = target.getAttribute('data-group-name') || '';
@@ -3203,7 +3211,13 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         const btn = ev.target instanceof Element ? ev.target.closest('[data-action]') : null;
         if (!btn) return;
         const action = btn.getAttribute('data-action');
-        if (action === 'toggle-redo-item') {
+        if (action === 'toggle-edit-item') {
+            const idx = Number(btn.getAttribute('data-idx'));
+            if (currentProposals[idx]) {
+                currentProposals[idx].editing = !currentProposals[idx].editing;
+                renderPreviewContent();
+            }
+        } else if (action === 'toggle-redo-item') {
             const idx = Number(btn.getAttribute('data-idx'));
             if (currentProposals[idx]) {
                 currentProposals[idx].redo = !currentProposals[idx].redo;
@@ -3218,7 +3232,9 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         }
     });
 
-    redoClearBtn?.addEventListener('click', () => {
+    redoClearBtn?.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
         currentProposals.forEach((p) => { p.redo = false; });
         renderPreviewContent();
     });
@@ -4214,7 +4230,8 @@ function openSettingsModal() {
 export function teardownPanels() {
     closeSubModal();
     closeManagerModal();
-    document.getElementById(HEADER_BAR_ID)?.remove();
+    document.getElementById(CHAR_TOGGLE_BTN_ID)?.remove();
+    document.getElementById('wbo-header-bar')?.remove();
     document.getElementById(WAND_ENTRY_ID)?.remove();
     document.getElementById(SETTINGS_ROOT_ID)?.remove();
 }

@@ -1149,23 +1149,25 @@ export function buildLocalOrganizeProposals({
     }
 
     const prefixMap = [
-        [/^(?:缝|缝合|规则|预设|指令|系统|功能|补丁|防抢话|状态栏|前端)$/i, '缝合与规则'],
-        [/^(?:文风|写法|风格|润色|文笔|叙事)$/i, '文风与写法'],
-        [/^(?:世界观|背景|设定|世界)$/i, '世界观设定'],
+        [/^(?:人设|user|用户|主角|自设)$/i, '人设'],
+        [/^(?:缝|缝合|规则|预设|指令|系统|功能|补丁|防抢话|状态栏|前端)$/i, '缝合'],
+        [/^(?:文风|写法|风格|润色|文笔|叙事)$/i, '文风'],
+        [/^(?:世界观|背景|设定|世界)$/i, '世界观'],
         [/^(?:场景|约会|互动|剧情|日常|事件)$/i, '场景与互动'],
-        [/^(?:小剧场|剧场|彩蛋|随机|玩法|扩展)$/i, '小剧场与扩展'],
-        [/^(?:补充|人设|穿搭|素材|通用|常识|百科|词库|语料)$/i, '补充与素材'],
-        [/^(?:nsfw|18\+|r18|成人|敏感|肉|车)$/i, '成人与敏感向'],
+        [/^(?:小剧场|剧场|彩蛋|随机|玩法|扩展)$/i, '小剧场'],
+        [/^(?:补充|穿搭|素材|通用|常识|百科|词库|语料)$/i, '补充素材'],
+        [/^(?:nsfw|18\+|r18|成人|敏感|肉|车)$/i, '成人向'],
     ];
 
     const keywordRules = [
-        { test: (s) => isPotentiallySensitiveTitle(s), group: '成人与敏感向', note: '按敏感关键词归类' },
-        { test: (s) => /(?:文风|去八股|去ai味|叙事|文笔|描写|对话风格|散文|古风写作|网文风|小说风|节奏控制|遣词)/i.test(s), group: '文风与写法', note: '按文风写作关键词归类' },
-        { test: (s) => /(?:缝合|防抢话|不抢话|思维链|破限|输出格式|状态栏|前端|美化|记忆增强|防复读|防重复|规则指令|系统指令|提示词|模板|插件|mvu|变量)/i.test(s), group: '缝合与规则', note: '按预设缝合与规则关键词归类' },
-        { test: (s) => /(?:约会|恋爱|互动|日常|情景|场景|流程|指南|攻略|相处|暧昧)/i.test(s), group: '场景与互动', note: '按场景与互动关键词归类' },
-        { test: (s) => /(?:世界观|设定集|历史|地理|势力|魔法体系|时代背景|朝代|社会结构|物价|货币|年表|同人库|咒术|哈利波特|赛博|修仙|末世|古代|串商|电竞)/i.test(s), group: '世界观设定', note: '按世界观背景关键词归类' },
-        { test: (s) => /(?:小剧场|随机事件|彩蛋|抽卡|盲盒|论坛体|微博体|朋友圈|短信|直播|弹幕)/i.test(s), group: '小剧场与扩展', note: '按小剧场与扩展关键词归类' },
-        { test: (s) => /(?:穿搭|外貌|人设|职业|食谱|美食|词库|语料|粤语|方言|常识|百科|补充)/i.test(s), group: '补充与素材', note: '按生活与素材关键词归类' },
+        { test: (s) => isPotentiallySensitiveTitle(s), group: '成人向' },
+        { test: (s) => /(?:人设|user|自设|娇妻|软萌|性格设定|主角设定)/i.test(s), group: '人设' },
+        { test: (s) => /(?:文风|去八股|去ai味|叙事|文笔|描写|对话风格|散文|古风写作|网文风|小说风|节奏控制|遣词)/i.test(s), group: '文风' },
+        { test: (s) => /(?:缝合|防抢话|不抢话|思维链|破限|输出格式|状态栏|前端|美化|记忆增强|防复读|防重复|规则指令|系统指令|提示词|模板|插件|mvu|变量)/i.test(s), group: '缝合' },
+        { test: (s) => /(?:约会|恋爱|互动|日常|情景|场景|流程|指南|攻略|相处|暧昧)/i.test(s), group: '场景与互动' },
+        { test: (s) => /(?:世界观|设定集|历史|地理|势力|魔法体系|时代背景|朝代|社会结构|物价|货币|年表|同人库|咒术|哈利波特|赛博|修仙|末世|古代|串商|电竞)/i.test(s), group: '世界观' },
+        { test: (s) => /(?:小剧场|随机事件|彩蛋|抽卡|盲盒|论坛体|微博体|朋友圈|短信|直播|弹幕)/i.test(s), group: '小剧场' },
+        { test: (s) => /(?:穿搭|外貌|职业|食谱|美食|词库|语料|粤语|方言|常识|百科|补充)/i.test(s), group: '补充素材' },
     ];
 
     const cleanDisplayTitle = (raw) => {
@@ -1182,25 +1184,22 @@ export function buildLocalOrganizeProposals({
         const realName = String(b?.realName ?? '').trim();
         const lower = realName.toLowerCase();
         let group = '';
-        let note = '';
 
         // 1. User custom rules (highest priority)
         for (const rule of customRules) {
             if (rule.keywords.some((kw) => lower.includes(kw))) {
                 group = rule.group;
-                note = '命中自定义规则';
                 break;
             }
         }
 
-        // 2. Leading bracket prefix (e.g. [文风] xxx / 【缝合】xxx)
+        // 2. Leading bracket prefix (e.g. [人设] xxx / [文风] xxx / 【缝合】xxx)
         if (!group && usePrefix) {
             const pm = realName.match(/^[\s\-–—·]*[\[【(（「『]\s*([^\[\]【】()（）「」『』]{1,10})\s*[\]】)）」』]/);
             if (pm && pm[1]) {
                 const rawTag = pm[1].trim();
                 const mapped = prefixMap.find(([re]) => re.test(rawTag));
                 group = mapped ? mapped[1] : rawTag;
-                note = `按前缀「${rawTag}」归类`;
             }
         }
 
@@ -1209,7 +1208,6 @@ export function buildLocalOrganizeProposals({
             for (const rule of keywordRules) {
                 if (rule.test(realName)) {
                     group = rule.group;
-                    note = rule.note;
                     break;
                 }
             }
@@ -1219,11 +1217,11 @@ export function buildLocalOrganizeProposals({
             group = (b.currentGroup && b.currentGroup !== '未分组' && b.currentGroup !== '非角色世界书')
                 ? b.currentGroup
                 : '未分组';
-            note = group === '未分组' ? '未命中规则，可手动微调' : '保留原分组';
         }
 
         const alias = cleanTitles ? cleanDisplayTitle(realName) : (b.currentAlias || realName);
-        return { realName, alias, group, note };
+        // Never pollute book `note` with internal rule-match labels!
+        return { realName, alias, group, note: '' };
     });
 }
 

@@ -217,51 +217,15 @@
     box-sizing: border-box;
 }
 
-/* Minimal theme-native controls docked directly above `#world_editor_select` inside `#world_popup` */
-.wbo-header-bar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 6px;
-    margin: 2px 0 6px;
+/* Native inline char-worldbook visibility icon merged seamlessly into `#world_popup` toolbar */
+.wbo-native-char-btn {
+    opacity: 0.72;
+    transition: opacity 0.14s ease;
 }
 
-/* Inherit active SillyTavern theme's `.menu_button` surface/blur/radius while keeping tidy uniform height */
-.wbo-header-bar .wbo-native-hdr-btn {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    gap: 5px !important;
-    height: 28px !important;
-    min-height: 28px !important;
-    max-height: 28px !important;
-    width: auto !important;
-    min-width: max-content !important;
-    padding: 0 9px !important;
-    margin: 0 !important;
-    font-size: 12px !important;
-    font-weight: 500 !important;
-    line-height: 1 !important;
-    white-space: nowrap !important;
-    word-break: keep-all !important;
-    writing-mode: horizontal-tb !important;
-    opacity: 0.86;
-    transition: opacity 0.14s ease, transform 0.12s ease;
-}
-
-.wbo-header-bar .wbo-native-hdr-btn:hover {
+.wbo-native-char-btn:hover,
+.wbo-native-char-btn.is-active {
     opacity: 1;
-}
-
-.wbo-header-bar .wbo-native-hdr-btn.is-active {
-    opacity: 1;
-    font-weight: 600 !important;
-}
-
-.wbo-header-bar .wbo-native-hdr-btn > i {
-    font-size: 11.5px;
-    flex-shrink: 0;
 }
 
 /* Unified controls: exact uniform height, radius, border, and 14px icons across all toolbars & modals */
@@ -2670,6 +2634,83 @@ details[open] > summary .wbo-details-chev {
     background: var(--wbo-surface);
     border: 1px solid var(--wbo-border);
     transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+
+.wbo-ai-prop-row.is-compact {
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 8px;
+}
+
+.wbo-prop-compact-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+}
+
+.wbo-prop-compact-text {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.wbo-prop-compact-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.wbo-prop-name-new {
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--wbo-fg);
+    word-break: break-word;
+}
+
+.wbo-prop-name-old {
+    font-size: 11px;
+    color: var(--wbo-fg-muted);
+    text-decoration: line-through;
+    word-break: break-all;
+}
+
+.wbo-prop-note-sub {
+    font-size: 11px;
+    color: var(--wbo-fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-prop-group-select {
+    flex: 0 0 auto;
+    width: auto !important;
+    min-width: 96px !important;
+    max-width: 150px !important;
+    height: 26px !important;
+    min-height: 26px !important;
+    padding: 0 8px !important;
+    font-size: 12px !important;
+}
+
+.wbo-prop-edit-btn.is-active {
+    color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+}
+
+.wbo-prop-edit-drawer {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px 0 2px 24px;
+    border-top: 1px dashed var(--wbo-border);
+    width: 100%;
 }
 
 .wbo-ai-prop-row.is-redo {

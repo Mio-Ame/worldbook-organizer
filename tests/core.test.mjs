@@ -276,6 +276,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     const localProps = buildLocalOrganizeProposals({
         books: [
             { realName: '[缝]不因爱失去自我v1.7 (1)' },
+            { realName: '[人设] 娇妻软萌User' },
             { realName: '约会场景与流程指南' },
             { realName: '名器倒模评测' },
             { realName: '我的咒回设定集 by作者A' },
@@ -285,12 +286,15 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
         cleanTitles: true,
         customRulesText: '咒回 => 同人专区',
     });
-    assert.equal(localProps[0].group, '缝合与规则');
+    assert.equal(localProps[0].group, '缝合');
     assert.equal(localProps[0].alias, '[缝]不因爱失去自我v1.7');
-    assert.equal(localProps[1].group, '场景与互动');
-    assert.equal(localProps[2].group, '成人与敏感向');
-    assert.equal(localProps[3].group, '同人专区');
-    assert.equal(localProps[3].alias, '我的咒回设定集');
+    assert.equal(localProps[0].note, '');
+    assert.equal(localProps[1].group, '人设');
+    assert.equal(localProps[1].note, '');
+    assert.equal(localProps[2].group, '场景与互动');
+    assert.equal(localProps[3].group, '成人向');
+    assert.equal(localProps[4].group, '同人专区');
+    assert.equal(localProps[4].alias, '我的咒回设定集');
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({

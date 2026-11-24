@@ -219,25 +219,6 @@ function sortByNativeValue(options) {
 }
 
 /**
- * Re-attach click-to-open-editor on `#world_info` Select2 chips after Select2 re-init.
- * Matches upstream behavior without losing quick editing.
- * @param {any} $select
- */
-function bindGlobalSelect2ChipClick($select) {
-    const $container = $select.next('.select2-container');
-    if (!$container.length) return;
-    $container.off('click.wboChip').on('click.wboChip', '.select2-selection__choice', (ev) => {
-        // Ignore clicks on the remove "×" button
-        if (ev.target && ev.target.closest('.select2-selection__choice__remove')) return;
-        const choiceEl = ev.currentTarget;
-        const rawTitle = choiceEl.getAttribute('title') || choiceEl.textContent || '';
-        const worldName = rawTitle.replace(/^×\s*/, '').trim();
-        if (!worldName) return;
-        openWorldInNativeEditor(worldName);
-    });
-}
-
-/**
  * Compute a stable signature of what `#world_info` or `#world_editor_select`
  * should contain, so we skip touching Select2 completely when nothing changed.
  */
@@ -1251,11 +1232,18 @@ function enhanceOpenEditorDropdown() {
 
 /**
  * Synchronously assert our custom `<optgroup>`s on `#world_editor_select` right
- * before the dropdown opens (beats any capture-phase or document-level handlers
- * that may have reorganized `<optgroup>`s on pointerdown/opening).
+ * before the dropdown opens — ONLY doing work when foreign `<optgroup>`s were
+ * injected or the live signature changed (0ms no-op in hide-only & steady state!).
  */
 function syncEditorBeforeOpen() {
     if (_isApplying || !_latestClassification || !_latestSettings) return;
+    const selectEl = document.getElementById('world_editor_select');
+    if (!selectEl) return;
+    const hasForeign = Boolean(selectEl.querySelector('optgroup:not([data-wbo-group])'));
+    if (!hasForeign) {
+        const curSig = computeSelectSignature(selectEl, _editorDetachedMap, _latestClassification, _latestSettings, 'editor');
+        if (curSig === _lastEditorSignature) return;
+    }
     _isApplying = true;
     try {
         _lastEditorSignature = null;
@@ -1717,7 +1705,13 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             for (const node of mutation.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
                 if (node.id === 'gr-global-dropdown-container' || node.classList.contains('gr-container-enhanced')) {
-                    requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
+                    // Zero overhead in hide-only mode (when no custom groups & char books hidden)
+                    const needsPopoverGrouping =
+                        (_latestClassification?.customGroups?.length || 0) > 0 ||
+                        Boolean(_latestSettings?.showCharBooks);
+                    if (needsPopoverGrouping) {
+                        requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
+                    }
                 } else if (node.classList.contains('character_world')) {
                     enhanceCharBindPopup(node);
                 } else if (node.tagName === 'DIALOG' || node.classList.contains('popup') || node.id === 'dialogue_popup') {
