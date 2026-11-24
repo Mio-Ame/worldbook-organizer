@@ -18,6 +18,7 @@ import {
     matchesSearch,
     moveSectionOrder,
     parseAiOrganizeResponse,
+    reorderSection,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -300,7 +301,8 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
         `;
 
     return `
-        <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}" data-book="${esc(book.realName)}">
+        <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}" data-book="${esc(book.realName)}" draggable="true">
+            <span class="wbo-drag-handle" title="拖动移动到分组"><i class="fa-solid fa-grip-vertical"></i></span>
             <button type="button" class="wbo-book-main" data-action="edit-book" title="${esc(book.realName)}">
                 <div class="wbo-book-title-line">
                     <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
@@ -325,7 +327,40 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
 }
 
 /**
- * Render one collapsible group section with sticky header (`position: sticky; top: 0`).
+ * Assign a worldbook to a target group (`customId`, `UNGROUPED`, or `CHARACTER`).
+ * Returns false if disallowed (e.g. dropping a non-character book into `角色世界书`).
+ */
+function assignBookToGroup(settings, bookMeta, targetGroupId) {
+    if (!bookMeta || !targetGroupId) return false;
+    if (bookMeta.groupId === targetGroupId) return false;
+
+    if (targetGroupId === SPECIAL_GROUPS.CHARACTER) {
+        if (!bookMeta.isCharBound) {
+            showToast('warning', '只有角色卡绑定的世界书可以放入「角色世界书」');
+            return false;
+        }
+        delete settings.assignments[bookMeta.realName];
+        delete settings.charBookOverrides[bookMeta.realName];
+        return true;
+    }
+
+    if (targetGroupId === SPECIAL_GROUPS.UNGROUPED) {
+        delete settings.assignments[bookMeta.realName];
+        if (bookMeta.isCharBound) {
+            settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
+        }
+        return true;
+    }
+
+    settings.assignments[bookMeta.realName] = targetGroupId;
+    if (bookMeta.isCharBound) {
+        settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
+    }
+    return true;
+}
+
+/**
+ * Render one collapsible group section with sticky header and drag-reorder support.
  */
 function renderGroupSectionHtml({
     id,
@@ -351,7 +386,7 @@ function renderGroupSectionHtml({
     `;
     const customActions = isCustom
         ? `
-            <button type="button" class="wbo-icon-btn" data-action="rename-group" data-group-id="${esc(id)}" title="重命名">
+            <button type="button" class="wbo-icon-btn" data-action="rename-group" data-group-id="${esc(id)}" title="编辑分组与世界书">
                 <i class="fa-solid fa-pen"></i>
             </button>
             <button type="button" class="wbo-icon-btn" data-action="delete-group" data-group-id="${esc(id)}" title="删除分组">
@@ -364,11 +399,12 @@ function renderGroupSectionHtml({
         ? ''
         : (books.length > 0
             ? `<div class="wbo-group-body">${books.map((b) => renderBookRowHtml(b, activeGlobals, currentEditor)).join('')}</div>`
-            : `<div class="wbo-group-body wbo-empty-hint">暂无世界书</div>`);
+            : `<div class="wbo-group-body wbo-empty-hint">暂无世界书，可直接拖动世界书到此处</div>`);
 
     return `
         <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}">
-            <div class="wbo-group-header">
+            <div class="wbo-group-header" draggable="true" data-drag-group-id="${esc(id)}">
+                <span class="wbo-group-drag-handle" title="拖动调整分组顺序"><i class="fa-solid fa-grip-vertical"></i></span>
                 <button type="button" class="wbo-group-toggle" data-action="toggle-group-collapse" data-group-id="${esc(id)}" aria-expanded="${!collapsed}">
                     <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>
                     <span class="wbo-group-dot" style="background:${esc(color)}"></span>
@@ -497,6 +533,156 @@ function openManagerModal() {
             settings.charGroupCollapsed = false;
         }
         await _callbacks.onMutation({ save: true });
+    });
+
+    // Smooth horizontal wheel scroll on the single-row group pill strip
+    const pillsRow = modal.querySelector('#wbo-mgr-pills');
+    if (pillsRow instanceof HTMLElement) {
+        pillsRow.addEventListener('wheel', (ev) => {
+            if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && pillsRow.scrollWidth > pillsRow.clientWidth) {
+                ev.preventDefault();
+                pillsRow.scrollLeft += ev.deltaY;
+            }
+        }, { passive: false });
+    }
+
+    // Drag & Drop inside Group Manager:
+    // 1. Drag any `.wbo-book-row` onto any `.wbo-group` or `.wbo-pill` to move that book.
+    // 2. Drag any `.wbo-group-header` onto another `.wbo-group` to reorder sections!
+    /** @type {{ type: 'book', bookName: string } | { type: 'group', groupId: string } | null} */
+    let dragState = null;
+
+    const clearDropHighlights = () => {
+        modal.querySelectorAll('.wbo-drop-target, .wbo-drop-before, .wbo-drop-after, .is-dragging').forEach((el) => {
+            el.classList.remove('wbo-drop-target', 'wbo-drop-before', 'wbo-drop-after', 'is-dragging');
+        });
+    };
+
+    modal.addEventListener('dragstart', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target) return;
+
+        const bookRow = target.closest('.wbo-book-row[data-book]');
+        if (bookRow instanceof HTMLElement) {
+            const bookName = bookRow.getAttribute('data-book');
+            if (!bookName) return;
+            dragState = { type: 'book', bookName };
+            if (ev.dataTransfer) {
+                ev.dataTransfer.effectAllowed = 'move';
+                ev.dataTransfer.setData('text/plain', bookName);
+            }
+            bookRow.classList.add('is-dragging');
+            return;
+        }
+
+        const groupHeader = target.closest('.wbo-group-header[data-drag-group-id]');
+        if (groupHeader instanceof HTMLElement) {
+            const groupId = groupHeader.getAttribute('data-drag-group-id');
+            if (!groupId) return;
+            dragState = { type: 'group', groupId };
+            if (ev.dataTransfer) {
+                ev.dataTransfer.effectAllowed = 'move';
+                ev.dataTransfer.setData('text/plain', groupId);
+            }
+            groupHeader.closest('.wbo-group')?.classList.add('is-dragging');
+        }
+    });
+
+    modal.addEventListener('dragover', (ev) => {
+        if (!dragState) return;
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target) return;
+
+        if (dragState.type === 'book') {
+            const dropGroup = target.closest('.wbo-group[data-group-id]');
+            const dropPill = target.closest('.wbo-pill[data-group-id]');
+            const pillGid = dropPill?.getAttribute('data-group-id');
+            const validPill = dropPill && pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL
+                ? dropPill
+                : null;
+            const dropEl = dropGroup || validPill;
+            if (!dropEl) return;
+
+            ev.preventDefault();
+            if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+            if (!dropEl.classList.contains('wbo-drop-target')) {
+                modal.querySelectorAll('.wbo-drop-target').forEach((el) => el.classList.remove('wbo-drop-target'));
+                dropEl.classList.add('wbo-drop-target');
+            }
+            return;
+        }
+
+        if (dragState.type === 'group') {
+            const targetGroup = target.closest('.wbo-group[data-group-id]');
+            if (!(targetGroup instanceof HTMLElement)) return;
+            const targetId = targetGroup.getAttribute('data-group-id');
+            if (!targetId || targetId === dragState.groupId) return;
+
+            ev.preventDefault();
+            if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+            const rect = targetGroup.getBoundingClientRect();
+            const isBefore = ev.clientY < rect.top + rect.height / 2;
+            modal.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => {
+                if (el !== targetGroup) el.classList.remove('wbo-drop-before', 'wbo-drop-after');
+            });
+            targetGroup.classList.toggle('wbo-drop-before', isBefore);
+            targetGroup.classList.toggle('wbo-drop-after', !isBefore);
+        }
+    });
+
+    modal.addEventListener('drop', async (ev) => {
+        if (!dragState || !_callbacks) return;
+        const activeDrag = dragState;
+        const target = ev.target instanceof Element ? ev.target : null;
+        const { settings, classification } = _callbacks.getState();
+
+        if (activeDrag.type === 'book' && target) {
+            const dropGroup = target.closest('.wbo-group[data-group-id]');
+            const dropPill = target.closest('.wbo-pill[data-group-id]');
+            const pillGid = dropPill?.getAttribute('data-group-id');
+            const targetGroupId = dropGroup?.getAttribute('data-group-id') ||
+                (pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL ? pillGid : null);
+
+            clearDropHighlights();
+            dragState = null;
+            if (!targetGroupId) return;
+
+            ev.preventDefault();
+            const meta = classification.byName.get(activeDrag.bookName);
+            if (meta && assignBookToGroup(settings, meta, targetGroupId)) {
+                await _callbacks.onMutation({ save: true });
+                const targetName = targetGroupId === SPECIAL_GROUPS.UNGROUPED
+                    ? '未分组'
+                    : targetGroupId === SPECIAL_GROUPS.CHARACTER
+                        ? '角色世界书'
+                        : settings.groups.find((g) => g.id === targetGroupId)?.name || '分组';
+                showToast('success', `已将「${meta.primaryTitle}」移入「${targetName}」`);
+            }
+            return;
+        }
+
+        if (activeDrag.type === 'group' && target) {
+            const targetGroup = target.closest('.wbo-group[data-group-id]');
+            const targetId = targetGroup?.getAttribute('data-group-id');
+            const pos = targetGroup?.classList.contains('wbo-drop-after') ? 'after' : 'before';
+            clearDropHighlights();
+            dragState = null;
+            if (!targetId || targetId === activeDrag.groupId) return;
+
+            ev.preventDefault();
+            if (reorderSection(settings, activeDrag.groupId, targetId, pos)) {
+                await _callbacks.onMutation({ save: true });
+            }
+            return;
+        }
+
+        clearDropHighlights();
+        dragState = null;
+    });
+
+    modal.addEventListener('dragend', () => {
+        clearDropHighlights();
+        dragState = null;
     });
 
     modal.addEventListener('click', async (ev) => {
@@ -703,8 +889,9 @@ function renderManagerGroupsListOnly() {
     const { settings, classification } = _callbacks.getState();
     const q = _searchQuery.trim();
     const orderedSections = classification.orderedSections || [];
+    const liveGroupById = new Map((settings.groups || []).map((g) => [g.id, g]));
 
-    // Avoid rebuilding list DOM if structure hasn't changed (e.g. async host event after toggling global)
+    // Read LIVE collapse state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
         q,
         settings.activeFilterGroupId,
@@ -715,7 +902,7 @@ function renderManagerGroupsListOnly() {
             sec.id,
             sec.name,
             sec.color,
-            Boolean(sec.collapsed),
+            sec.kind === 'custom' ? Boolean(liveGroupById.get(sec.id)?.collapsed) : false,
             sec.books.map((b) => `${b.realName}|${b.primaryTitle}|${b.subtitle}|${b.note}`).join(','),
         ]),
     ]);
@@ -745,12 +932,14 @@ function renderManagerGroupsListOnly() {
             if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== SPECIAL_GROUPS.ALL && filterId !== sec.id) return;
             const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
             if (q && books.length === 0) return;
+            const liveCollapsed = Boolean(liveGroupById.get(sec.id)?.collapsed);
+            const forceOpen = Boolean(q) || filterId === sec.id;
             sections.push(
                 renderGroupSectionHtml({
                     id: sec.id,
                     name: sec.name,
                     color: sec.color,
-                    collapsed: q ? false : Boolean(sec.collapsed),
+                    collapsed: forceOpen ? false : liveCollapsed,
                     isCustom: true,
                     canMoveUp,
                     canMoveDown,
@@ -770,12 +959,13 @@ function renderManagerGroupsListOnly() {
             ) return;
             const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
             if (q && books.length === 0) return;
+            const forceOpen = Boolean(q) || filterId === SPECIAL_GROUPS.UNGROUPED;
             sections.push(
                 renderGroupSectionHtml({
                     id: SPECIAL_GROUPS.UNGROUPED,
                     name: hasCustomGroups ? '未分组' : '通用世界书',
                     color: '#8c99a6',
-                    collapsed: q ? false : Boolean(settings.ungroupedCollapsed),
+                    collapsed: forceOpen ? false : Boolean(settings.ungroupedCollapsed),
                     isCustom: false,
                     canMoveUp,
                     canMoveDown,
@@ -791,12 +981,13 @@ function renderManagerGroupsListOnly() {
             const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
             if (includeCharExplicitly) {
                 if (q && matchedCharBooks.length === 0) return;
+                const forceOpen = Boolean(q) || filterId === SPECIAL_GROUPS.CHARACTER;
                 sections.push(
                     renderGroupSectionHtml({
                         id: SPECIAL_GROUPS.CHARACTER,
                         name: '角色世界书',
                         color: '#7c8594',
-                        collapsed: q ? false : Boolean(settings.charGroupCollapsed),
+                        collapsed: forceOpen ? false : Boolean(settings.charGroupCollapsed),
                         isCustom: false,
                         canMoveUp,
                         canMoveDown,
@@ -875,9 +1066,7 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
 }
 
 /**
- * Create or rename a custom group.
- * When creating, optionally lets the user pick initial worldbooks and immediately
- * switch the active filter to the new group in one click.
+ * Create or edit a custom group (including batch member selection for BOTH new and existing groups).
  */
 function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
     if (!_callbacks) return;
@@ -889,27 +1078,39 @@ function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
         (c) => `<button type="button" class="wbo-swatch${c === initialColor ? ' is-selected' : ''}" data-color="${c}" style="background:${c}" aria-label="颜色 ${c}"></button>`,
     ).join('');
 
-    const candidateBooks = isEdit
-        ? []
-        : [
-            ...classification.ungroupedBooks,
-            ...classification.customGroups.flatMap((g) => g.books),
-            ...(initialBookName && classification.byName.get(initialBookName)?.isInCharGroup
-                ? [classification.byName.get(initialBookName)]
-                : []),
-        ].filter(Boolean);
+    const currentMemberSet = new Set(
+        isEdit && group
+            ? Object.entries(settings.assignments || {})
+                .filter(([, gid]) => gid === group.id)
+                .map(([name]) => name)
+            : (initialBookName ? [initialBookName] : []),
+    );
 
-    const pickSectionHtml = !isEdit && candidateBooks.length > 0
+    // Show current members first when editing, followed by ungrouped & other custom groups
+    const rawCandidates = [
+        ...classification.ungroupedBooks,
+        ...classification.customGroups.flatMap((g) => g.books),
+        ...(initialBookName && classification.byName.get(initialBookName)?.isInCharGroup
+            ? [classification.byName.get(initialBookName)]
+            : []),
+    ].filter(Boolean);
+
+    const candidateBooks = [
+        ...rawCandidates.filter((b) => currentMemberSet.has(b.realName)),
+        ...rawCandidates.filter((b) => !currentMemberSet.has(b.realName)),
+    ];
+
+    const pickSectionHtml = candidateBooks.length > 0
         ? `
             <div class="wbo-field">
                 <div class="wbo-ai-section-head">
-                    <span>选择要加入此分组的世界书</span>
+                    <span>${isEdit ? '管理分组内的世界书' : '选择要加入此分组的世界书'}</span>
                     <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-group-pick-filter" placeholder="筛选世界书..." autocomplete="off">
                 </div>
                 <div class="wbo-ai-book-list wbo-group-pick-list" id="wbo-group-pick-list">
                     ${candidateBooks.map((b) => `
                         <label class="wbo-ai-pick-row" data-pick-search="${esc(b.searchableText || b.realName.toLowerCase())}">
-                            <input type="checkbox" class="wbo-group-pick-check" value="${esc(b.realName)}"${b.realName === initialBookName ? ' checked' : ''}>
+                            <input type="checkbox" class="wbo-group-pick-check" value="${esc(b.realName)}"${currentMemberSet.has(b.realName) ? ' checked' : ''}>
                             <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
                             <span class="wbo-tag">${esc(b.groupName)}</span>
                         </label>
@@ -938,7 +1139,7 @@ function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
                     : '<button type="button" class="wbo-btn" id="wbo-save-group-btn">仅创建</button><button type="button" class="wbo-btn wbo-btn-primary" id="wbo-save-select-group-btn">创建并选中</button>'}
             </div>
         `,
-        { wide: !isEdit && candidateBooks.length > 0 },
+        { wide: candidateBooks.length > 0 },
     );
 
     let chosenColor = initialColor;
@@ -978,15 +1179,32 @@ function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
             showToast('warning', '请输入分组名称');
             return;
         }
+        const pickedSet = new Set(
+            Array.from(modal.querySelectorAll('.wbo-group-pick-check:checked'))
+                .map((el) => (el instanceof HTMLInputElement ? el.value : ''))
+                .filter(Boolean),
+        );
+
         if (isEdit && group) {
             group.name = name;
             group.color = chosenColor;
+            // Remove books unchecked from this group
+            for (const prevBook of currentMemberSet) {
+                if (!pickedSet.has(prevBook) && settings.assignments[prevBook] === group.id) {
+                    delete settings.assignments[prevBook];
+                }
+            }
+            // Add newly checked books into this group
+            for (const bookName of pickedSet) {
+                settings.assignments[bookName] = group.id;
+                const meta = classification.byName.get(bookName);
+                if (meta?.isCharBound) {
+                    settings.charBookOverrides[bookName] = 'exclude_from_char';
+                }
+            }
         } else {
             const created = addCustomGroup(settings, { name, color: chosenColor });
-            const pickedNames = Array.from(modal.querySelectorAll('.wbo-group-pick-check:checked'))
-                .map((el) => (el instanceof HTMLInputElement ? el.value : ''))
-                .filter(Boolean);
-            for (const bookName of pickedNames) {
+            for (const bookName of pickedSet) {
                 settings.assignments[bookName] = created.id;
                 const meta = classification.byName.get(bookName);
                 if (meta?.isCharBound) {

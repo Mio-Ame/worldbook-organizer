@@ -20,6 +20,7 @@ import {
     moveSectionOrder,
     normalizeSettings,
     parseAiOrganizeResponse,
+    reorderSection,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -280,17 +281,23 @@ test('findUnscannedShallowCharacters and findCardsWithUnimportedBooks detect pen
     assert.equal(unimported[0].entryCount, 1);
 });
 
-test('addCustomGroup places new groups first, character books default to bottom, and v1 order migrates cleanly', () => {
+test('addCustomGroup preserves creation order (g1 -> g2 -> ungrouped -> char) and reorderSection drags cleanly', () => {
     const settings = normalizeSettings(null);
     assert.deepEqual(settings.sectionOrder, [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
 
     const g1 = addCustomGroup(settings, { name: '文风设定' });
     const g2 = addCustomGroup(settings, { name: '世界观' });
-    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
+    const g3 = addCustomGroup(settings, { name: '系统规则' });
+    assert.deepEqual(settings.sectionOrder, [g1.id, g2.id, g3.id, SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
 
     assert.equal(moveSectionOrder(settings, SPECIAL_GROUPS.CHARACTER, -1), true);
-    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
-    assert.equal(moveSectionOrder(settings, g2.id, -1), false);
+    assert.deepEqual(settings.sectionOrder, [g1.id, g2.id, g3.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
+    assert.equal(moveSectionOrder(settings, g1.id, -1), false);
+
+    // Drag g3 before g1
+    assert.equal(reorderSection(settings, g3.id, g1.id, 'before'), true);
+    assert.deepEqual(settings.sectionOrder, [g3.id, g1.id, g2.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
+    assert.deepEqual(settings.groups.map((g) => g.id), [g3.id, g1.id, g2.id]);
 
     // Legacy v1 default [__char__, __ungrouped__] auto-migrates to [__ungrouped__, __char__]
     const migrated = normalizeSettings({

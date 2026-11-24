@@ -166,9 +166,20 @@ export function normalizeSettings(raw) {
             cleanedOrder.push(id);
         }
     }
-    // Any newly present custom groups not yet in sectionOrder go to the front
+    // Any newly present custom groups not yet in sectionOrder are inserted
+    // after existing custom groups and before builtin sections (`__ungrouped__`, `__char__`).
     const missingCustom = merged.groups.map((g) => g.id).filter((id) => !seenOrder.has(id));
-    const finalOrder = [...missingCustom, ...cleanedOrder];
+    const finalOrder = [...cleanedOrder];
+    if (missingCustom.length > 0) {
+        const firstBuiltinIdx = finalOrder.findIndex(
+            (id) => id === SPECIAL_GROUPS.UNGROUPED || id === SPECIAL_GROUPS.CHARACTER,
+        );
+        if (firstBuiltinIdx >= 0) {
+            finalOrder.splice(firstBuiltinIdx, 0, ...missingCustom);
+        } else {
+            finalOrder.push(...missingCustom);
+        }
+    }
     for (const builtin of [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]) {
         if (!seenOrder.has(builtin)) finalOrder.push(builtin);
     }
@@ -214,7 +225,39 @@ export function moveSectionOrder(settings, sectionId, delta) {
 }
 
 /**
- * Insert a new custom group at the front of both `groups` and `sectionOrder`.
+ * Reorder a section ID by dragging it before or after a target section ID,
+ * keeping `settings.groups` order synchronized for custom groups.
+ * @param {Record<string, any>} settings
+ * @param {string} draggedId
+ * @param {string} targetId
+ * @param {'before' | 'after'} [position='before']
+ * @returns {boolean}
+ */
+export function reorderSection(settings, draggedId, targetId, position = 'before') {
+    if (!draggedId || !targetId || draggedId === targetId) return false;
+    const normalized = normalizeSettings(settings);
+    const order = [...normalized.sectionOrder];
+    const fromIdx = order.indexOf(draggedId);
+    const rawTargetIdx = order.indexOf(targetId);
+    if (fromIdx < 0 || rawTargetIdx < 0) return false;
+
+    order.splice(fromIdx, 1);
+    const targetIdx = order.indexOf(targetId);
+    const insertIdx = position === 'after' ? targetIdx + 1 : targetIdx;
+    order.splice(insertIdx, 0, draggedId);
+
+    const unchanged = order.every((id, i) => id === normalized.sectionOrder[i]);
+    if (unchanged) return false;
+
+    settings.sectionOrder = order;
+    const groupById = new Map((settings.groups || []).map((g) => [g.id, g]));
+    settings.groups = order.filter((id) => groupById.has(id)).map((id) => groupById.get(id));
+    return true;
+}
+
+/**
+ * Append a new custom group in chronological creation order:
+ * first-created -> second-created -> ... -> ungrouped -> character worldbooks.
  * @param {Record<string, any>} settings
  * @param {{ name: string, color?: string }} input
  */
@@ -226,8 +269,17 @@ export function addCustomGroup(settings, { name, color }) {
         color: color || GROUP_COLOR_PALETTE[normalized.groups.length % GROUP_COLOR_PALETTE.length],
         collapsed: false,
     };
-    settings.groups = [group, ...normalized.groups];
-    settings.sectionOrder = [group.id, ...normalized.sectionOrder.filter((id) => id !== group.id)];
+    settings.groups = [...normalized.groups, group];
+    const nextOrder = normalized.sectionOrder.filter((id) => id !== group.id);
+    const firstBuiltinIdx = nextOrder.findIndex(
+        (id) => id === SPECIAL_GROUPS.UNGROUPED || id === SPECIAL_GROUPS.CHARACTER,
+    );
+    if (firstBuiltinIdx >= 0) {
+        nextOrder.splice(firstBuiltinIdx, 0, group.id);
+    } else {
+        nextOrder.push(group.id);
+    }
+    settings.sectionOrder = nextOrder;
     return group;
 }
 
