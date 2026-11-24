@@ -604,10 +604,11 @@ export async function fetchFullCharacterOnDemand(avatar) {
  * @param {{ onProgress?: (done: number, total: number, currentName: string) => void, signal?: { cancelled: boolean } }} [opts]
  * @returns {Promise<{ scanned: Array<any>, done: number, cancelled: boolean }>}
  */
-export async function scanShallowCharactersInBatches(targets, { onProgress, signal, batchSize = 2 } = {}) {
+export async function scanShallowCharactersInBatches(targets, { onProgress, signal, batchSize = 2, yieldMs = 30 } = {}) {
     const scanned = [];
     const total = targets.length;
     const step = Math.max(1, Math.min(3, Number(batchSize) || 2));
+    const pauseMs = Math.max(16, Number(yieldMs) || 30);
     let done = 0;
 
     for (let i = 0; i < total; i += step) {
@@ -653,7 +654,7 @@ export async function scanShallowCharactersInBatches(targets, { onProgress, sign
             if (summary && summary.avatar) scanned.push(summary);
         }
         // Yield briefly between batches so mobile UI stays smooth and GC can reclaim full card payloads
-        await new Promise((r) => setTimeout(r, 30));
+        await new Promise((r) => setTimeout(r, pauseMs));
     }
 
     return { scanned, done, cancelled: false };

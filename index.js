@@ -55,7 +55,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-const STYLE_ASSET_VERSION = '2.34.3-dev.7';
+const STYLE_ASSET_VERSION = '2.34.3-dev.8';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;
@@ -106,7 +106,7 @@ let _domEditorChangeHandler = null;
  *
  * @param {{ save?: boolean }} [opts]
  */
-function recomputeAndRender({ save = false } = {}) {
+function recomputeAndRender({ save = false, deferGlobal = false } = {}) {
     const settings = getSettings();
     const characters = getCharactersInMemory();
 
@@ -146,11 +146,18 @@ function recomputeAndRender({ save = false } = {}) {
 
     if (save) {
         clearTimeout(_deferredSaveTimer);
-        _deferredSaveTimer = null;
-        saveSettings();
+        if (deferGlobal) {
+            _deferredSaveTimer = setTimeout(() => {
+                _deferredSaveTimer = null;
+                if (_initialized) saveSettings();
+            }, 300);
+        } else {
+            _deferredSaveTimer = null;
+            saveSettings();
+        }
     }
 
-    applyAllNativeWorldFilters(_classification, settings);
+    applyAllNativeWorldFilters(_classification, settings, { deferGlobal });
     renderEmbeddedPanel();
 
     // One-time gentle initial auto-scan on first install (handles lazyLoadCharacters seamlessly
@@ -194,14 +201,14 @@ function recomputeAndRender({ save = false } = {}) {
         !_incrementalAutoScanRunning &&
         characters.length > 0
     ) {
-        // Incremental auto-scan for newly imported lazy-loaded character cards only
-        // (zero re-scanning of already cached cards; coalesced via 600ms debounce).
+        // Incremental auto-scan for newly imported lazy-loaded character cards only.
+        // Wait until native import/UI painting is completely idle (2.2s debounce + requestIdleCallback,
+        // 1 card at a time with 80ms yield) so native character import stays 100% stutter-free!
         const pending = findUnscannedShallowCharacters(characters, settings.cachedCharBindings)
             .filter((item) => item?.avatar && !_autoScanAttemptedAvatars.has(item.avatar));
         if (pending.length > 0) {
             clearTimeout(_incrementalAutoScanTimer);
-            _incrementalAutoScanTimer = setTimeout(async () => {
-                _incrementalAutoScanTimer = null;
+            const runIncrementalScan = async () => {
                 if (!_initialized || _incrementalAutoScanRunning) return;
                 const curSettings = getSettings();
                 if (curSettings.autoScanNewCharacters === false) return;
@@ -214,20 +221,31 @@ function recomputeAndRender({ save = false } = {}) {
                     _autoScanAttemptedAvatars.add(item.avatar);
                 }
                 try {
-                    const scanned = await scanShallowCharactersInBatches(freshTargets, { batchSize: 2 });
+                    const scanned = await scanShallowCharactersInBatches(freshTargets, {
+                        batchSize: 1,
+                        yieldMs: 80,
+                    });
                     if (!_initialized) return;
                     const latestSettings = getSettings();
                     const { cached, changed } = updateCachedCharBindings(latestSettings.cachedCharBindings, scanned, { pruneDeleted: false });
                     if (changed) {
                         latestSettings.cachedCharBindings = cached;
                     }
-                    recomputeAndRender({ save: true });
+                    recomputeAndRender({ save: true, deferGlobal: true });
                 } catch {
                     // Non-fatal: user can still trigger manual scan from the Scan modal
                 } finally {
                     _incrementalAutoScanRunning = false;
                 }
-            }, 600);
+            };
+            _incrementalAutoScanTimer = setTimeout(() => {
+                _incrementalAutoScanTimer = null;
+                if (typeof globalThis.requestIdleCallback === 'function') {
+                    globalThis.requestIdleCallback(() => { void runIncrementalScan(); }, { timeout: 2000 });
+                } else {
+                    void runIncrementalScan();
+                }
+            }, 2200);
         }
     }
 }
@@ -276,11 +294,19 @@ function applyCharToggleFastPath({ save = true } = {}) {
  * Debounced refresh triggered by character or worldbook mutation events.
  * @param {number} [delayMs=450]
  */
-function scheduleRefresh(delayMs = 450) {
+function scheduleRefresh(delayMs = 550) {
     clearTimeout(_debounceTimer);
     _debounceTimer = setTimeout(() => {
         if (!_initialized) return;
-        recomputeAndRender({ save: false });
+        const run = () => {
+            if (!_initialized) return;
+            recomputeAndRender({ save: false, deferGlobal: true });
+        };
+        if (typeof globalThis.requestIdleCallback === 'function') {
+            globalThis.requestIdleCallback(run, { timeout: 1200 });
+        } else {
+            run();
+        }
     }, delayMs);
 }
 
@@ -433,7 +459,7 @@ async function init() {
 
     // Watch only direct `<option>` changes in `#world_info` / `#world_editor_select` + bind popup
     startNativeObservers(() => {
-        scheduleRefresh(150);
+        scheduleRefresh(380);
     });
 
     // Listen to native select changes so checkboxes & active indicators stay in sync
@@ -459,7 +485,7 @@ async function init() {
     const eventSource = ctx.eventSource;
     const et = ctx.eventTypes || ctx.event_types || {};
 
-    const onCharOrWorldChanged = () => scheduleRefresh(500);
+    const onCharOrWorldChanged = () => scheduleRefresh(700);
     trackHostEvent(eventSource, et.CHARACTER_EDITED, onCharOrWorldChanged);
     trackHostEvent(eventSource, et.CHARACTER_DELETED, onCharOrWorldChanged);
     trackHostEvent(eventSource, et.CHARACTER_RENAMED, onCharOrWorldChanged);
