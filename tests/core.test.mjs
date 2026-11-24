@@ -361,7 +361,10 @@ test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, shared, m
     assert.equal(cov.missingFileChars.length, 1);
     assert.equal(cov.missingFileChars[0].charName, '缺书角色');
     assert.equal(cov.sharedBooks.length, 1);
+    assert.equal(cov.sharedBooks[0].owners.length, 2);
+    assert.equal(cov.sharedBooks[0].owners[0].avatar, 'A.png');
     assert.equal(cov.multiBookChars.length, 1);
+    assert.equal(cov.multiBookChars[0].avatar, 'E.png');
     assert.equal(cov.multiBookChars[0].charName, '多书角色');
     assert.equal(cov.multiBookChars[0].books.length, 2);
     assert.equal(cov.orphanExtraBooks.length, 1);

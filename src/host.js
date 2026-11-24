@@ -305,6 +305,81 @@ export function getCurrentEditorWorldName() {
 }
 
 /**
+ * On-demand preview of a single worldbook's entries for in-modal inspection.
+ * NEVER called automatically in the background; reads only when the user clicks to expand a book.
+ *
+ * @param {string} worldName
+ * @returns {Promise<{ total: number, enabledCount: number, entries: Array<{ uid: string, title: string, keys: string[], content: string, disabled: boolean, constant: boolean }> }>}
+ */
+export async function fetchWorldbookPreviewEntries(worldName) {
+    const data = await loadWorldInfoPayload(worldName);
+    const entriesObj = data?.entries;
+    if (!entriesObj || typeof entriesObj !== 'object') {
+        return { total: 0, enabledCount: 0, entries: [] };
+    }
+    const list = Object.values(entriesObj)
+        .filter((e) => e && typeof e === 'object')
+        .sort((a, b) => (Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0)))
+        .map((e, idx) => {
+            const keys = Array.isArray(e.key)
+                ? e.key.map((k) => String(k || '').trim()).filter(Boolean)
+                : [];
+            return {
+                uid: String(e.uid ?? idx),
+                title: String(e.comment || '').trim() || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
+                keys: keys.slice(0, 6),
+                content: String(e.content || '').trim(),
+                disabled: Boolean(e.disable),
+                constant: Boolean(e.constant),
+            };
+        });
+    const enabledCount = list.filter((x) => !x.disabled).length;
+    return { total: list.length, enabledCount, entries: list };
+}
+
+/**
+ * Jump directly to a character card by its avatar filename so users can inspect
+ * or fix character-worldbook bindings reported by the scan modal.
+ * @param {string} avatar
+ * @returns {Promise<boolean>}
+ */
+export async function openCharacterByAvatar(avatar) {
+    const clean = String(avatar ?? '').trim();
+    if (!clean) return false;
+    const ctx = getHostContext();
+    const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
+    const chid = list.findIndex((c) => c?.avatar === clean);
+    if (chid < 0) return false;
+
+    try {
+        // Close WorldInfo drawer if unpinned so the character card is visible
+        const wiDrawer = document.getElementById('WorldInfo');
+        const wiPin = document.getElementById('WI_panel_pin');
+        if (wiDrawer && !wiDrawer.classList.contains('closedDrawer') && !(wiPin instanceof HTMLInputElement && wiPin.checked)) {
+            const wiIcon = document.querySelector('#WI-SP-button .drawer-icon');
+            if (wiIcon instanceof HTMLElement) wiIcon.click();
+        }
+
+        if (typeof ctx?.selectCharacterById === 'function') {
+            await ctx.selectCharacterById(chid);
+        } else {
+            const cardEl = document.querySelector(`.character_select[chid="${chid}"]`);
+            if (cardEl instanceof HTMLElement) cardEl.click();
+        }
+
+        // Ensure right-hand character management drawer is open on the selected character
+        const rightDrawer = document.getElementById('right-nav-panel');
+        if (rightDrawer && rightDrawer.classList.contains('closedDrawer')) {
+            const rightIcon = document.querySelector('#rightNavDrawerIcon');
+            if (rightIcon instanceof HTMLElement) rightIcon.click();
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * On-demand read of a single worldbook's entry titles/keys for AI Organize clues.
  * NEVER called automatically in the background!
  *

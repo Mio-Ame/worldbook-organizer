@@ -999,6 +999,222 @@ function syncEditorBeforeOpen() {
 }
 
 /**
+ * Progressively enhance custom third-party select popovers (e.g. `.gr-container-enhanced`)
+ * when they open for `#world_editor_select` / `#world_info`:
+ * - Reorganizes the existing live `.gr-option` nodes in place (preserving all click/touch
+ *   listeners and styling!) into collapsible user groups + in-dropdown group filter pills!
+ * @param {HTMLElement} containerEl
+ */
+function enhanceCustomDropdownPopover(containerEl) {
+    if (!containerEl || !containerEl.isConnected || containerEl.dataset.wboPopoverReady === '1') return;
+    if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) return;
+
+    const optionNodes = Array.from(containerEl.querySelectorAll('.gr-option'));
+    if (optionNodes.length === 0) return;
+
+    const optionsHost = optionNodes[0].parentElement;
+    if (!(optionsHost instanceof HTMLElement)) return;
+
+    const getOptionText = (el) => {
+        // Read text excluding any nested pin/icon spans
+        let txt = '';
+        for (const node of el.childNodes) {
+            if (node.nodeType === 3) txt += node.textContent || '';
+            else if (node instanceof HTMLElement && !node.classList.contains('gr-option-pin')) {
+                txt += node.textContent || '';
+            }
+        }
+        return txt.trim() || (el.textContent || '').trim();
+    };
+
+    // Verify this popover is actually displaying worldbooks (not presets/themes/etc.)
+    let nonEmptyCount = 0;
+    let matchedWorldCount = 0;
+    for (const optEl of optionNodes) {
+        const val = optEl.dataset?.value ?? '';
+        const text = getOptionText(optEl);
+        if (!val || !text || text.startsWith('---')) continue;
+        nonEmptyCount += 1;
+        if (_latestClassification.byName.has(text)) {
+            matchedWorldCount += 1;
+        }
+    }
+    if (nonEmptyCount === 0) return;
+    const isWorldbookPopover =
+        (matchedWorldCount >= 2 && matchedWorldCount / nonEmptyCount >= 0.45) ||
+        (matchedWorldCount >= 1 && matchedWorldCount === nonEmptyCount);
+    if (!isWorldbookPopover) return;
+
+    containerEl.dataset.wboPopoverReady = '1';
+
+    if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
+        _latestSettings.dropdownCollapsed = {};
+    }
+
+    const placeholders = [];
+    /** @type {Map<string, HTMLElement[]>} */
+    const bucketByGroup = new Map();
+
+    for (const optEl of optionNodes) {
+        const val = optEl.dataset?.value ?? '';
+        const text = getOptionText(optEl);
+        if (val === '' || text.startsWith('---')) {
+            placeholders.push(optEl);
+            continue;
+        }
+        const meta = _latestClassification.byName.get(text);
+        const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+        if (!bucketByGroup.has(gid)) bucketByGroup.set(gid, []);
+        bucketByGroup.get(gid).push(optEl);
+    }
+
+    const orderedSections = (_latestClassification.orderedSections || []).filter(
+        (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0,
+    );
+    if (orderedSections.length === 0) return;
+
+    // Remove flat default labels before inserting our grouped sections
+    optionsHost.querySelectorAll(':scope > .gr-group-label').forEach((el) => el.remove());
+
+    for (const ph of placeholders) {
+        optionsHost.appendChild(ph);
+    }
+
+    let activePillGroupId = SPECIAL_GROUPS.ALL;
+    const searchInput = containerEl.querySelector('input[type="text"], input[type="search"], .gr-search-input');
+    const isSearching = () =>
+        searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
+
+    /** @type {HTMLElement[]} */
+    const sectionEls = [];
+
+    for (const sec of orderedSections) {
+        const items = bucketByGroup.get(sec.id) || [];
+        items.sort((a, b) => {
+            const ma = _latestClassification.byName.get(getOptionText(a));
+            const mb = _latestClassification.byName.get(getOptionText(b));
+            const ta = ma?.primaryTitle || getOptionText(a);
+            const tb = mb?.primaryTitle || getOptionText(b);
+            return ta.localeCompare(tb, 'zh-CN');
+        });
+
+        const secEl = document.createElement('div');
+        secEl.className = 'wbo-gr-section';
+        secEl.setAttribute('data-wbo-dd-group', sec.id);
+
+        const headEl = document.createElement('div');
+        headEl.className = 'gr-group-label wbo-dd-group-head';
+        headEl.setAttribute('data-wbo-dd-group', sec.id);
+        headEl.textContent = `${sec.name} (${items.length})`;
+        headEl.title = '点击展开或折叠该分组';
+
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'wbo-gr-group-body';
+        for (const optEl of items) {
+            bodyEl.appendChild(optEl);
+        }
+
+        secEl.append(headEl, bodyEl);
+        optionsHost.appendChild(secEl);
+        sectionEls.push(secEl);
+    }
+
+    let filterBar = null;
+    const syncPillButtons = () => {
+        if (!filterBar) return;
+        filterBar.querySelectorAll('.wbo-dd-pill').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-wbo-pill') === activePillGroupId);
+        });
+    };
+
+    const syncSections = () => {
+        const searching = isSearching();
+        for (const secEl of sectionEls) {
+            const gid = secEl.getAttribute('data-wbo-dd-group') || '';
+            if (searching) {
+                const hasVisibleChild = Array.from(secEl.querySelectorAll('.gr-option')).some(
+                    (o) => o instanceof HTMLElement && o.style.display !== 'none',
+                );
+                secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild);
+                secEl.classList.remove('wbo-dd-collapsed');
+            } else {
+                const hiddenByPill = activePillGroupId !== SPECIAL_GROUPS.ALL && gid !== activePillGroupId;
+                secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
+                const collapsed = activePillGroupId === SPECIAL_GROUPS.ALL && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                secEl.classList.toggle('wbo-dd-collapsed', collapsed);
+            }
+        }
+    };
+
+    optionsHost.addEventListener('mousedown', (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+        if (!head) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const gid = head.getAttribute('data-wbo-dd-group');
+        if (!gid) return;
+        if (activePillGroupId !== SPECIAL_GROUPS.ALL) {
+            activePillGroupId = SPECIAL_GROUPS.ALL;
+            syncPillButtons();
+        }
+        _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
+        saveSettings();
+        syncSections();
+    }, true);
+
+    optionsHost.addEventListener('click', (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+        if (!head) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+    }, true);
+
+    if (orderedSections.length >= 2) {
+        filterBar = document.createElement('div');
+        filterBar.className = 'wbo-dd-filter-bar wbo-gr-filter-bar';
+        const pillItems = [
+            { id: SPECIAL_GROUPS.ALL, label: '全部' },
+            ...orderedSections.map((sec) => ({
+                id: sec.id,
+                label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length}`,
+            })),
+        ];
+        filterBar.innerHTML = pillItems
+            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+            .join('');
+
+        for (const evtName of ['mousedown', 'touchstart']) {
+            filterBar.addEventListener(evtName, (ev) => {
+                ev.stopPropagation();
+            });
+        }
+        filterBar.addEventListener('click', (ev) => {
+            const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+            activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
+                ? SPECIAL_GROUPS.ALL
+                : gid;
+            syncPillButtons();
+            syncSections();
+            optionsHost.scrollTop = 0;
+        });
+
+        optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
+    }
+
+    if (searchInput instanceof HTMLInputElement) {
+        searchInput.addEventListener('input', () => {
+            requestAnimationFrame(syncSections);
+        });
+    }
+
+    syncSections();
+}
+
+/**
  * Install lightweight observers on `#world_info`, `#world_editor_select`, and
  * `.character_world` popups so upstream `updateWorldInfoList()` refreshes keep
  * filtering intact without any polling!
@@ -1067,12 +1283,14 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         $(window).on('select2:close.wboEditorOpen', _editorSelect2CloseHandler);
     }
 
-    // Lightweight popup observer: inspects only newly added top-level dialog/popup nodes
+    // Lightweight popup observer: inspects only newly added top-level dialog/popup/custom-dropdown nodes
     _charPopupObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
-                if (node.classList.contains('character_world')) {
+                if (node.id === 'gr-global-dropdown-container' || node.classList.contains('gr-container-enhanced')) {
+                    requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
+                } else if (node.classList.contains('character_world')) {
                     enhanceCharBindPopup(node);
                 } else if (node.tagName === 'DIALOG' || node.classList.contains('popup') || node.id === 'dialogue_popup') {
                     const cw = node.querySelector('.character_world');

@@ -515,15 +515,25 @@ export function summarizeCharacterWorldCoverage({
             } else {
                 let list = booksByAvatar.get(o.avatar);
                 if (!list) {
-                    list = { charName: o.charName, books: [] };
+                    list = { avatar: o.avatar, charName: o.charName, books: [] };
                     booksByAvatar.set(o.avatar, list);
                 }
                 list.books.push({ worldName, source: o.source });
             }
         }
-        const uniqueOwners = [...new Set(owners.map((o) => o.charName))];
-        if (uniqueOwners.length > 1) {
-            sharedBooks.push({ worldName, charNames: uniqueOwners });
+        const uniqueOwnerMap = new Map();
+        for (const o of owners) {
+            if (!uniqueOwnerMap.has(o.avatar)) {
+                uniqueOwnerMap.set(o.avatar, { avatar: o.avatar, charName: o.charName });
+            }
+        }
+        if (uniqueOwnerMap.size > 1) {
+            const ownerList = [...uniqueOwnerMap.values()];
+            sharedBooks.push({
+                worldName,
+                charNames: ownerList.map((x) => x.charName),
+                owners: ownerList,
+            });
         }
     }
 
