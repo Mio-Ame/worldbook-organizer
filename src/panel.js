@@ -388,7 +388,20 @@ export function renderEmbeddedPanel() {
 
     const { settings, classification } = _callbacks.getState();
 
+    // Sync native WorldInfo title-bar shortcut buttons (`排除` / `搜条目`) visibility
+    const quickBox = document.getElementById(WI_QUICK_ACTIONS_ID);
+    if (quickBox) {
+        const showExclude = settings.showNativeExcludeBtn !== false;
+        const showEntrySearch = settings.showNativeEntrySearchBtn !== false;
+        const exBtn = quickBox.querySelector('#wbo-wi-exclude-btn');
+        const esBtn = quickBox.querySelector('#wbo-wi-entry-search-btn');
+        if (exBtn instanceof HTMLElement) exBtn.hidden = !showExclude;
+        if (esBtn instanceof HTMLElement) esBtn.hidden = !showEntrySearch;
+        quickBox.hidden = !showExclude && !showEntrySearch;
+    }
+
     if (showCharBtn) {
+        showCharBtn.hidden = settings.showNativeCharToggleBtn === false;
         const shown = Boolean(settings.showCharBooks);
         showCharBtn.classList.toggle('fa-user', shown);
         showCharBtn.classList.toggle('fa-user-slash', !shown);
@@ -1368,15 +1381,17 @@ function openManagerModal() {
                 </div>
             </div>
             <div class="wbo-mgr-listbar">
-                <div class="wbo-search-wrap">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
-                </div>
-                <div class="wbo-mgr-list-tools">
+                <div class="wbo-mgr-search-row">
+                    <div class="wbo-search-wrap">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
+                    </div>
                     <button type="button" class="wbo-tool-btn" id="wbo-mgr-entry-search-btn" data-action="open-entry-search" title="跨世界书按需搜索条目内容">
                         <i class="fa-solid fa-file-lines"></i>
                         <span>搜条目</span>
                     </button>
+                </div>
+                <div class="wbo-mgr-list-tools">
                     <label class="wbo-tool-switch" title="开启后显示角色卡世界书，关闭则隐藏">
                         <input type="checkbox" class="wbo-show-char-checkbox" id="wbo-mgr-show-char">
                         <span class="wbo-switch-track"></span>
@@ -1703,7 +1718,8 @@ function openManagerModal() {
                 break;
             }
             case 'open-entry-search': {
-                openEntrySearchModal(_searchQuery.trim());
+                const autoRun = target.getAttribute('data-auto-run') === '1';
+                openEntrySearchModal(_searchQuery.trim(), { autoRun });
                 break;
             }
             case 'open-manage-groups': {
@@ -2159,6 +2175,17 @@ function renderManagerGroupsListOnly() {
             }
         }
     });
+
+    if (q) {
+        sections.push(`
+            <div class="wbo-entry-search-hint-bar">
+                <span>想在世界书条目正文中找「${esc(q)}」？</span>
+                <button type="button" class="wbo-btn wbo-entry-search-hint-btn" data-action="open-entry-search" data-auto-run="1">
+                    <i class="fa-solid fa-magnifying-glass"></i> 搜条目内容
+                </button>
+            </div>
+        `);
+    }
 
     listEl.innerHTML = sections.length > 0
         ? sections.join('')
@@ -5186,121 +5213,150 @@ function openSettingsModal() {
     const { modal } = createSubModal(
         '显示与行为设置',
         `
-            <div class="wbo-card">
-                <div class="wbo-ai-section-head"><span>面板配色</span></div>
-                <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
-                <div class="wbo-setting-inline-row">
-                    <span>明暗模式</span>
-                    <div class="wbo-mode-group">${modeButtonsHtml}</div>
-                </div>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="outsideDropdownFollowHostTheme">
-                    <span>插件面板外的下拉筛选框跟随酒馆主题</span>
-                </label>
+            <div class="wbo-tabs" id="wbo-settings-tabs">
+                <button type="button" class="wbo-tab is-active" data-settings-tab="appearance">外观与入口</button>
+                <button type="button" class="wbo-tab" data-settings-tab="display">标题与排除</button>
+                <button type="button" class="wbo-tab" data-settings-tab="behavior">识别与适配</button>
             </div>
 
-            <div class="wbo-card">
-                <div class="wbo-ai-section-head"><span>标题显示</span></div>
-                <div class="wbo-setting-inline-row">
-                    <span>角色世界书标题</span>
-                    <select class="wbo-select" data-setting-select="charBookTitleMode">
-                        <option value="char_with_sub">角色名 + 小字原标题</option>
-                        <option value="char_only">仅角色名</option>
-                        <option value="original">原标题</option>
-                    </select>
+            <div class="wbo-settings-tab-pane" data-settings-pane="appearance">
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>面板配色</span></div>
+                    <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
+                    <div class="wbo-setting-inline-row">
+                        <span>明暗模式</span>
+                        <div class="wbo-mode-group">${modeButtonsHtml}</div>
+                    </div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="outsideDropdownFollowHostTheme">
+                        <span>插件面板外的下拉筛选框跟随酒馆主题</span>
+                    </label>
                 </div>
-                <div class="wbo-setting-inline-row">
-                    <span>显示名展示方式</span>
-                    <select class="wbo-select" data-setting-select="aliasTitleMode">
-                        <option value="alias_with_sub">显示名 + 小字原名</option>
-                        <option value="alias_only">仅显示名</option>
-                    </select>
-                </div>
-                <div class="wbo-setting-inline-row">
-                    <span id="wbo-alias-count-label">当前已自定义 ${Object.keys(settings.aliases || {}).length} 个显示名</span>
-                    <button type="button" class="wbo-btn" id="wbo-reset-all-aliases-btn"${Object.keys(settings.aliases || {}).length === 0 ? ' disabled' : ''}>
-                        <i class="fa-solid fa-rotate-left"></i> 恢复全部为原文件名
-                    </button>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>世界书原生面板快捷按钮</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeCharToggleBtn">
+                        <span>显示编辑下拉框旁「角色书显隐」按钮</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeExcludeBtn">
+                        <span>显示顶栏右侧「排除」快捷按钮</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeEntrySearchBtn">
+                        <span>显示顶栏右侧「搜条目」快捷按钮</span>
+                    </label>
+                    <div class="wbo-subtle-tip">关闭后原生世界书面板保持零额外图标，仍可在魔棒菜单的分组管理面板中使用全部功能。</div>
                 </div>
             </div>
 
-            <div class="wbo-card">
-                <div class="wbo-ai-section-head"><span>识别与默认行为</span></div>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="hideCharBooksByDefault">
-                    <span>默认隐藏角色卡绑定的世界书</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="includeExtraCharBooks">
-                    <span>将角色附加世界书归入角色世界书</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="includeEmbeddedNameMatch">
-                    <span>识别角色卡内嵌同名世界书</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="autoImportMissingCharBook">
-                    <span>打开角色卡时自动导入缺失的卡内世界书</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="showNativeOptgroups">
-                    <span>编辑器下拉框按分组显示</span>
-                </label>
-            </div>
-
-            <div class="wbo-card">
-                <div class="wbo-ai-section-head"><span>下拉框默认排除分组</span></div>
-                <div class="wbo-exclude-block">
-                    <div class="wbo-exclude-head">
-                        <span>全局激活框</span>
-                        <span class="wbo-ai-quick-picks">
-                            <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
-                            <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
-                        </span>
+            <div class="wbo-settings-tab-pane" data-settings-pane="display" hidden>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>标题显示</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>角色世界书标题</span>
+                        <select class="wbo-select" data-setting-select="charBookTitleMode">
+                            <option value="char_with_sub">角色名 + 小字原标题</option>
+                            <option value="char_only">仅角色名</option>
+                            <option value="original">原标题</option>
+                        </select>
                     </div>
-                    <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
-                        ${renderExcludeChipsHtml('globalHiddenGroupIds', settings.globalHiddenGroupIds)}
+                    <div class="wbo-setting-inline-row">
+                        <span>显示名展示方式</span>
+                        <select class="wbo-select" data-setting-select="aliasTitleMode">
+                            <option value="alias_with_sub">显示名 + 小字原名</option>
+                            <option value="alias_only">仅显示名</option>
+                        </select>
+                    </div>
+                    <div class="wbo-setting-inline-row">
+                        <span id="wbo-alias-count-label">当前已自定义 ${Object.keys(settings.aliases || {}).length} 个显示名</span>
+                        <button type="button" class="wbo-btn" id="wbo-reset-all-aliases-btn"${Object.keys(settings.aliases || {}).length === 0 ? ' disabled' : ''}>
+                            <i class="fa-solid fa-rotate-left"></i> 恢复全部为原文件名
+                        </button>
                     </div>
                 </div>
-                <div class="wbo-local-divider"></div>
-                <div class="wbo-exclude-block">
-                    <div class="wbo-exclude-head">
-                        <span>编辑下拉框</span>
-                        <span class="wbo-ai-quick-picks">
-                            <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
-                            <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
-                            <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
-                        </span>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>下拉框默认排除分组</span></div>
+                    <div class="wbo-exclude-block">
+                        <div class="wbo-exclude-head">
+                            <span>全局激活框</span>
+                            <span class="wbo-ai-quick-picks">
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
+                            </span>
+                        </div>
+                        <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
+                            ${renderExcludeChipsHtml('globalHiddenGroupIds', settings.globalHiddenGroupIds)}
+                        </div>
                     </div>
-                    <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
-                        ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
+                    <div class="wbo-local-divider"></div>
+                    <div class="wbo-exclude-block">
+                        <div class="wbo-exclude-head">
+                            <span>编辑下拉框</span>
+                            <span class="wbo-ai-quick-picks">
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
+                            </span>
+                        </div>
+                        <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
+                            ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
+                        </div>
                     </div>
+                    <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏。</div>
                 </div>
-                <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏，点原生栏按钮可随时全部展开。</div>
             </div>
 
-            <div class="wbo-card">
-                <div class="wbo-ai-section-head"><span>弹窗适配范围</span></div>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="adaptCharBindPopup">
-                    <span>角色卡世界书绑定弹窗</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="autoHideInCharBindPopup">
-                    <span>角色卡绑定弹窗默认排除其他角色世界书</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="adaptPersonaBindPopup">
-                    <span>User 人设世界书弹窗</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="adaptChatBindPopup">
-                    <span>当前聊天世界书弹窗</span>
-                </label>
-                <label class="wbo-check-line">
-                    <input type="checkbox" data-setting="adaptMoveEntryPopup">
-                    <span>移动/复制条目目标世界书弹窗</span>
-                </label>
+            <div class="wbo-settings-tab-pane" data-settings-pane="behavior" hidden>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>识别与默认行为</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="hideCharBooksByDefault">
+                        <span>默认隐藏角色卡绑定的世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="includeExtraCharBooks">
+                        <span>将角色附加世界书归入角色世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="includeEmbeddedNameMatch">
+                        <span>识别角色卡内嵌同名世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoImportMissingCharBook">
+                        <span>打开角色卡时自动导入缺失的卡内世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeOptgroups">
+                        <span>编辑器下拉框按分组显示</span>
+                    </label>
+                </div>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>弹窗适配范围</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptCharBindPopup">
+                        <span>角色卡世界书绑定弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoHideInCharBindPopup">
+                        <span>角色卡绑定弹窗默认排除其他角色世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptPersonaBindPopup">
+                        <span>User 人设世界书弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptChatBindPopup">
+                        <span>当前聊天世界书弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptMoveEntryPopup">
+                        <span>移动/复制条目目标世界书弹窗</span>
+                    </label>
+                </div>
             </div>
 
             <div class="wbo-modal-footer">
@@ -5316,6 +5372,20 @@ function openSettingsModal() {
             </div>
         `,
     );
+
+    modal.querySelectorAll('[data-settings-tab]').forEach((tabBtn) => {
+        tabBtn.addEventListener('click', () => {
+            const targetTab = tabBtn.getAttribute('data-settings-tab') || 'appearance';
+            modal.querySelectorAll('[data-settings-tab]').forEach((b) => {
+                b.classList.toggle('is-active', b.getAttribute('data-settings-tab') === targetTab);
+            });
+            modal.querySelectorAll('[data-settings-pane]').forEach((pane) => {
+                if (pane instanceof HTMLElement) {
+                    pane.hidden = pane.getAttribute('data-settings-pane') !== targetTab;
+                }
+            });
+        });
+    });
 
     syncSettingControlsInPlace(modal, settings);
     bindSettingControlListeners(modal);
@@ -5758,7 +5828,7 @@ function highlightTokensHtml(text, tokens) {
  * Never runs in background and bypasses `worldInfoCache` so TauriTavern iOS never OOM-crashes!
  * @param {string} [initialQuery='']
  */
-function openEntrySearchModal(initialQuery = '') {
+function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     if (!_callbacks) return;
     const { classification } = _callbacks.getState();
 
@@ -5985,7 +6055,9 @@ function openEntrySearchModal(initialQuery = '') {
         closeManagerModal();
     });
 
-    if (queryInput instanceof HTMLInputElement) {
+    if (autoRun && String(initialQuery).trim()) {
+        setTimeout(() => { void runSearch(); }, 30);
+    } else if (queryInput instanceof HTMLInputElement) {
         setTimeout(() => queryInput.focus(), 20);
     }
 }
