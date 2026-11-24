@@ -534,25 +534,34 @@ function mirrorNativeSelectAppearance(selectEl, triggerEl) {
     const wasHidden = selectEl.classList.contains('wbo-mobile-select-hidden');
     if (wasHidden) selectEl.classList.remove('wbo-mobile-select-hidden');
     try {
-        const cs = globalThis.getComputedStyle(selectEl);
-        const rect = selectEl.getBoundingClientRect();
-        if (rect.height > 14) {
-            triggerEl.style.height = `${Math.round(rect.height)}px`;
-            triggerEl.style.minHeight = `${Math.round(rect.height)}px`;
-        } else if (cs.height && cs.height !== 'auto') {
-            triggerEl.style.height = cs.height;
-            triggerEl.style.minHeight = cs.height;
+        // For `<select multiple>`, browsers default to a tall 4-row list box; mirror a clean single-line
+        // height from the sibling primary `<select>` (or cap at 36px) so it never looks bloated!
+        const styleSource = (selectEl.multiple && selectEl.closest('.character_world')?.querySelector('.character_world_info_selector'))
+            || selectEl;
+        const srcWasHidden = styleSource !== selectEl && styleSource.classList.contains('wbo-mobile-select-hidden');
+        if (srcWasHidden) styleSource.classList.remove('wbo-mobile-select-hidden');
+        try {
+            const cs = globalThis.getComputedStyle(styleSource);
+            const rect = styleSource.getBoundingClientRect();
+            const rawH = rect.height > 14 ? Math.round(rect.height) : parseFloat(cs.height);
+            const finalH = Number.isFinite(rawH) && rawH > 14
+                ? Math.min(selectEl.multiple ? 38 : 44, Math.max(28, Math.round(rawH)))
+                : 32;
+            triggerEl.style.height = `${finalH}px`;
+            triggerEl.style.minHeight = `${finalH}px`;
+            triggerEl.style.borderRadius = cs.borderRadius;
+            triggerEl.style.border = `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`;
+            triggerEl.style.backgroundColor = cs.backgroundColor;
+            triggerEl.style.color = cs.color;
+            triggerEl.style.fontSize = cs.fontSize;
+            triggerEl.style.fontFamily = cs.fontFamily;
+            triggerEl.style.fontWeight = cs.fontWeight;
+            triggerEl.style.boxShadow = cs.boxShadow;
+            const padLeft = parseFloat(cs.paddingLeft) || 10;
+            triggerEl.style.padding = `0 ${Math.max(8, Math.round(padLeft))}px`;
+        } finally {
+            if (srcWasHidden) styleSource.classList.add('wbo-mobile-select-hidden');
         }
-        triggerEl.style.borderRadius = cs.borderRadius;
-        triggerEl.style.border = `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`;
-        triggerEl.style.backgroundColor = cs.backgroundColor;
-        triggerEl.style.color = cs.color;
-        triggerEl.style.fontSize = cs.fontSize;
-        triggerEl.style.fontFamily = cs.fontFamily;
-        triggerEl.style.fontWeight = cs.fontWeight;
-        triggerEl.style.boxShadow = cs.boxShadow;
-        const padLeft = parseFloat(cs.paddingLeft) || 10;
-        triggerEl.style.padding = `0 ${Math.max(8, Math.round(padLeft))}px`;
     } catch {
         // Fallback to theme defaults
     } finally {
@@ -1283,7 +1292,9 @@ function attachGroupedSelectControl(
         if (!textSpan) return;
         const selectedOpts = Array.from(selectEl.selectedOptions || []).filter((o) => o.value !== '');
         if (selectedOpts.length === 0) {
-            const ph = selectEl.querySelector('option[value=""]')?.textContent?.trim() || placeholder;
+            const ph = multiple
+                ? placeholder
+                : (selectEl.querySelector('option[value=""]')?.textContent?.trim() || placeholder);
             textSpan.textContent = ph;
             trigger.classList.add('is-placeholder');
             return;
@@ -1785,25 +1796,38 @@ function enhanceCharBindPopup(charWorldEl) {
         });
     }
 
-    // Extra worldbooks: desktop uses ST's Select2 (patch in place after `Popup.onOpen`);
-    // mobile has no Select2 -> upgrade to grouped+searchable multi-select dropdown!
+    // Extra worldbooks:
+    // - On desktop (`!isNativeMobileSelectMode()`), SillyTavern ALWAYS initializes Select2 inside `Popup.onOpen`
+    //   (which may run slightly after the `<dialog>` is appended!). Wait cleanly for Select2 and patch it in place;
+    //   NEVER attach a duplicate native trigger button below desktop Select2!
+    // - On mobile (`isNativeMobileSelectMode()`), SillyTavern skips Select2 -> attach our clean single-line
+    //   grouped+searchable multi-select control.
     if (extrasSelect instanceof HTMLSelectElement) {
-        setTimeout(() => {
-            if (!extrasSelect.isConnected) return;
-            const $ = globalThis.jQuery;
-            const hasS2 = Boolean($ && ($(extrasSelect).data('select2') || $(extrasSelect).hasClass('select2-hidden-accessible')));
-            if (hasS2) {
-                enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar);
-            } else {
-                attachGroupedSelectControl(extrasSelect, {
-                    multiple: true,
-                    currentAvatar,
-                    collapseCharByDefault: collapseChar,
-                    prioritizeCharGroup: false,
-                    placeholder: '未选择附加世界书，点击选择...',
-                });
-            }
-        }, 80);
+        if (isNativeMobileSelectMode()) {
+            attachGroupedSelectControl(extrasSelect, {
+                multiple: true,
+                currentAvatar,
+                collapseCharByDefault: collapseChar,
+                prioritizeCharGroup: false,
+                placeholder: '未选择附加世界书，点击选择...',
+            });
+        } else {
+            let attempts = 0;
+            const waitDesktopSelect2 = () => {
+                if (!extrasSelect.isConnected) return;
+                const $ = globalThis.jQuery;
+                const hasS2 = Boolean($ && ($(extrasSelect).data('select2') || $(extrasSelect).hasClass('select2-hidden-accessible')));
+                if (hasS2) {
+                    enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar);
+                    return;
+                }
+                if (attempts < 10) {
+                    attempts += 1;
+                    setTimeout(waitDesktopSelect2, 60);
+                }
+            };
+            setTimeout(waitDesktopSelect2, 40);
+        }
     }
 }
 

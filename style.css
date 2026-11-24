@@ -883,6 +883,20 @@
 .wbo-modal-header .wbo-modal-close {
     order: 3;
     flex-shrink: 0;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    border: 1px solid var(--wbo-border) !important;
+    border-radius: 6px !important;
+    background: var(--wbo-surface) !important;
+    color: var(--wbo-fg) !important;
+    opacity: 1 !important;
+    font-size: 13px !important;
+}
+
+.wbo-modal-header .wbo-modal-close:hover {
+    border-color: var(--wbo-border-strong) !important;
+    background: var(--wbo-surface-hover) !important;
 }
 
 /* Clean 2-row subbar: Row 1 = group filter pills + group create/manage; Row 2 = search + char toggle + batch */
