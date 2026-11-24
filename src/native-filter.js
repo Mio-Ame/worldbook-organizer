@@ -567,14 +567,24 @@ function detectMobilePickerThemeClass() {
 }
 
 /**
- * Open a touch-friendly, searchable, group-filterable worldbook picker sheet on iOS / Android mobile
- * instead of the unfilterable iOS native `<select>` system menu.
+ * Open an anchored in-place dropdown panel right beneath `#wbo-mobile-editor-trigger`
+ * (behaves just like desktop Select2 — NEVER hijacks the full screen on iOS/Android!).
+ * Tapping outside dismisses it smoothly.
  */
 function openMobileEditorPickerSheet() {
     const selectEl = document.getElementById('world_editor_select');
-    if (!(selectEl instanceof HTMLSelectElement) || !_latestClassification || !_latestSettings) return;
+    const triggerEl = document.getElementById(MOBILE_TRIGGER_ID);
+    if (!(selectEl instanceof HTMLSelectElement) || !(triggerEl instanceof HTMLElement)) return;
+    if (!_latestClassification || !_latestSettings) return;
 
-    document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
+    // Toggle closed if already open
+    const existingOverlay = document.getElementById(MOBILE_PICKER_OVERLAY_ID);
+    if (existingOverlay) {
+        existingOverlay.remove();
+        triggerEl.classList.remove('is-open');
+        return;
+    }
+
     syncEditorBeforeOpen();
 
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
@@ -609,52 +619,80 @@ function openMobileEditorPickerSheet() {
 
     const overlay = document.createElement('div');
     overlay.id = MOBILE_PICKER_OVERLAY_ID;
-    overlay.className = 'wbo-modal-overlay wbo-mobile-picker-overlay';
+    overlay.className = 'wbo-mp-backdrop';
 
-    const modal = document.createElement('div');
-    modal.className = `wbo-modal wbo-mobile-picker-modal ${detectMobilePickerThemeClass()}`;
-    modal.setAttribute('data-wbo-palette', _latestSettings.themePalette || 'classic');
+    const popover = document.createElement('div');
+    popover.className = `wbo-modal wbo-mp-popover ${detectMobilePickerThemeClass()}`;
+    popover.setAttribute('data-wbo-palette', _latestSettings.themePalette || 'classic');
 
-    modal.innerHTML = `
-        <div class="wbo-modal-header">
-            <div class="wbo-modal-header-top">
-                <span class="wbo-modal-title">选择世界书</span>
-                <div class="wbo-mp-head-right">
-                    ${currentSelectedVal ? '<button type="button" class="wbo-link-btn" id="wbo-mp-clear">清除选择</button>' : ''}
-                    <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
-                </div>
+    popover.innerHTML = `
+        <div class="wbo-mp-top">
+            <div class="wbo-search-wrap wbo-mp-search-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="search" class="wbo-search-input" id="wbo-mp-search" placeholder="搜索世界书..." autocomplete="off" spellcheck="false">
             </div>
+            ${currentSelectedVal ? '<button type="button" class="wbo-mp-clear-btn" id="wbo-mp-clear" title="清除当前选择">清除</button>' : ''}
         </div>
-        <div class="wbo-mgr-subbar">
+        <div class="wbo-mp-pills-row">
             <div class="wbo-pills-rail">
                 <div class="wbo-pills" id="wbo-mp-pills"></div>
                 <button type="button" class="wbo-pill-expand-btn" id="wbo-mp-expand" title="展开全部分组"${sections.length < 2 ? ' hidden' : ''}>
                     <i class="fa-solid fa-chevron-down"></i>
                 </button>
             </div>
-            <div class="wbo-search-wrap">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="search" class="wbo-search-input" id="wbo-mp-search" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
-            </div>
         </div>
-        <div class="wbo-groups-list wbo-mgr-list" id="wbo-mp-list"></div>
+        <div class="wbo-mp-list" id="wbo-mp-list"></div>
     `;
 
-    overlay.appendChild(modal);
+    overlay.appendChild(popover);
     document.body.appendChild(overlay);
+    triggerEl.classList.add('is-open');
 
-    const closePicker = () => overlay.remove();
-    const stopAll = (ev) => ev.stopPropagation();
+    // Anchor popover directly below (or above if near bottom) the trigger box
+    const positionPopover = () => {
+        const rect = triggerEl.getBoundingClientRect();
+        const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+        const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+        const margin = 10;
+        const popWidth = Math.min(Math.max(rect.width + 64, 280), vw - margin * 2);
+        const left = Math.max(margin, Math.min(rect.left, vw - popWidth - margin));
+
+        const spaceBelow = vh - rect.bottom - 14;
+        const spaceAbove = rect.top - 14;
+        const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+        const maxH = Math.max(180, Math.min(420, Math.floor((openAbove ? spaceAbove : spaceBelow) - 6)));
+
+        popover.style.width = `${Math.round(popWidth)}px`;
+        popover.style.left = `${Math.round(left)}px`;
+        popover.style.maxHeight = `${maxH}px`;
+        if (openAbove) {
+            popover.style.top = 'auto';
+            popover.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
+        } else {
+            popover.style.bottom = 'auto';
+            popover.style.top = `${Math.round(rect.bottom + 4)}px`;
+        }
+    };
+    positionPopover();
+
+    const closePicker = () => {
+        overlay.remove();
+        triggerEl.classList.remove('is-open');
+    };
+
+    const stopPopover = (ev) => ev.stopPropagation();
     for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
-        overlay.addEventListener(evtName, stopAll);
+        popover.addEventListener(evtName, stopPopover);
     }
+    overlay.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ev.target === overlay) closePicker();
+    });
 
-    const pillsEl = modal.querySelector('#wbo-mp-pills');
-    const expandBtn = modal.querySelector('#wbo-mp-expand');
-    const searchInput = modal.querySelector('#wbo-mp-search');
-    const listEl = modal.querySelector('#wbo-mp-list');
+    const pillsEl = popover.querySelector('#wbo-mp-pills');
+    const expandBtn = popover.querySelector('#wbo-mp-expand');
+    const searchInput = popover.querySelector('#wbo-mp-search');
+    const listEl = popover.querySelector('#wbo-mp-list');
 
     const renderPills = () => {
         if (!pillsEl) return;
@@ -702,16 +740,14 @@ function openMobileEditorPickerSheet() {
                 }).join('');
 
             return `
-                <div class="wbo-group${collapsed ? ' is-collapsed' : ''}">
-                    <div class="wbo-group-header">
-                        <button type="button" class="wbo-group-toggle${isIsolated ? ' is-static' : ''}" data-mp-toggle="${escHtml(sec.id)}">
-                            ${isIsolated ? '' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
-                            <span class="wbo-group-dot" style="background:${escHtml(sec.color || '#8c99a6')}"></span>
-                            <span class="wbo-group-name">${escHtml(sec.name)}</span>
-                            <span class="wbo-group-count">${books.length}</span>
-                        </button>
-                    </div>
-                    ${collapsed ? '' : `<div class="wbo-group-body">${rowsHtml}</div>`}
+                <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}">
+                    <button type="button" class="wbo-mp-sec-head${isIsolated ? ' is-static' : ''}" data-mp-toggle="${escHtml(sec.id)}">
+                        ${isIsolated ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                        <span class="wbo-group-dot" style="background:${escHtml(sec.color || '#8c99a6')}"></span>
+                        <span class="wbo-group-name">${escHtml(sec.name)}</span>
+                        <span class="wbo-group-count">${books.length}</span>
+                    </button>
+                    ${collapsed ? '' : `<div class="wbo-mp-sec-body">${rowsHtml}</div>`}
                 </div>
             `;
         }).filter(Boolean).join('');
@@ -734,8 +770,7 @@ function openMobileEditorPickerSheet() {
         closePicker();
     };
 
-    modal.querySelector('.wbo-modal-close')?.addEventListener('click', closePicker);
-    modal.querySelector('#wbo-mp-clear')?.addEventListener('click', () => selectOptionValue(''));
+    popover.querySelector('#wbo-mp-clear')?.addEventListener('click', () => selectOptionValue(''));
 
     expandBtn?.addEventListener('click', () => {
         pillsExpanded = !pillsExpanded;
@@ -1010,17 +1045,13 @@ function enhanceCharBindPopup(charWorldEl) {
     groupSelect.className = 'text_pole wbo-charpopup-select';
     groupSelect.title = '按分组筛选世界书';
 
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.className = 'menu_button wbo-btn-compact';
-
     const populateGroupOptions = () => {
         groupSelect.innerHTML = '';
         const items = [
-            { id: SPECIAL_GROUPS.DEFAULT, label: '当前角色 + 非角色书' },
+            { id: SPECIAL_GROUPS.DEFAULT, label: '隐藏其他角色书' },
             { id: SPECIAL_GROUPS.ALL, label: '全部世界书' },
-            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: g.name })),
-            { id: SPECIAL_GROUPS.UNGROUPED, label: '未分组' },
+            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: `分组：${g.name}` })),
+            ...(_latestClassification.customGroups.length > 0 ? [{ id: SPECIAL_GROUPS.UNGROUPED, label: '未分组' }] : []),
             { id: SPECIAL_GROUPS.CHARACTER, label: '角色世界书' },
         ];
         for (const item of items) {
@@ -1085,28 +1116,10 @@ function enhanceCharBindPopup(charWorldEl) {
                 try { $sel.trigger('change.select2'); } catch { /* ignore */ }
             }
         }
-
-        toggleBtn.innerHTML = hideOthers
-            ? '<i class="fa-solid fa-user-slash"></i> 隐藏其他角色书'
-            : '<i class="fa-solid fa-user"></i> 显示其他角色书';
-        toggleBtn.title = hideOthers ? '当前已隐藏其他角色卡的世界书，点击显示全部' : '点击隐藏其他角色卡的世界书';
-        toggleBtn.classList.toggle('wbo-btn-active', hideOthers);
     };
 
     bar.addEventListener('click', (ev) => ev.stopPropagation());
     bar.addEventListener('mousedown', (ev) => ev.stopPropagation());
-
-    toggleBtn.addEventListener('click', () => {
-        hideOthers = !hideOthers;
-        if (!hideOthers && filterGroupId === SPECIAL_GROUPS.DEFAULT) {
-            filterGroupId = SPECIAL_GROUPS.ALL;
-            groupSelect.value = SPECIAL_GROUPS.ALL;
-        } else if (hideOthers && filterGroupId === SPECIAL_GROUPS.ALL) {
-            filterGroupId = SPECIAL_GROUPS.DEFAULT;
-            groupSelect.value = SPECIAL_GROUPS.DEFAULT;
-        }
-        applyPopupFilter();
-    });
 
     groupSelect.addEventListener('change', () => {
         filterGroupId = groupSelect.value;
@@ -1115,7 +1128,7 @@ function enhanceCharBindPopup(charWorldEl) {
     });
 
     populateGroupOptions();
-    bar.append(brand, groupSelect, toggleBtn);
+    bar.append(brand, groupSelect);
     charWorldEl.prepend(bar);
 
     // Let upstream Select2 finish initializing in `Popup.onOpen`, then filter & patch in place
@@ -1154,7 +1167,7 @@ function enhanceStandardWorldSelectPopup(hostContainer, selectEl, { settingKey }
     selectEl.dataset.wboEnhanced = '1';
 
     let showCharBooks = Boolean(_latestSettings.showCharBooks);
-    let filterGroupId = SPECIAL_GROUPS.DEFAULT;
+    let filterGroupId = showCharBooks ? SPECIAL_GROUPS.ALL : SPECIAL_GROUPS.DEFAULT;
     /** @type {Map<string, HTMLOptionElement>} */
     const detached = new Map();
 
@@ -1170,15 +1183,12 @@ function enhanceStandardWorldSelectPopup(hostContainer, selectEl, { settingKey }
     groupSelect.className = 'text_pole wbo-charpopup-select';
     groupSelect.title = '按分组筛选世界书';
 
-    const toggleBtn = document.createElement('button');
-    toggleBtn.type = 'button';
-    toggleBtn.className = 'menu_button wbo-btn-compact';
-
     const populateGroupOptions = () => {
         groupSelect.innerHTML = '';
         const items = [
-            { id: SPECIAL_GROUPS.DEFAULT, label: showCharBooks ? '全部世界书' : '非角色世界书' },
-            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: g.name })),
+            { id: SPECIAL_GROUPS.DEFAULT, label: '隐藏角色书' },
+            { id: SPECIAL_GROUPS.ALL, label: '全部世界书' },
+            ..._latestClassification.customGroups.map((g) => ({ id: g.id, label: `分组：${g.name}` })),
             ...(_latestClassification.customGroups.length > 0 ? [{ id: SPECIAL_GROUPS.UNGROUPED, label: '未分组' }] : []),
             ...(_latestClassification.charCount > 0 ? [{ id: SPECIAL_GROUPS.CHARACTER, label: '角色世界书' }] : []),
         ];
@@ -1234,7 +1244,7 @@ function enhanceStandardWorldSelectPopup(hostContainer, selectEl, { settingKey }
         const orderedSections = (_latestClassification.orderedSections || []).filter(
             (sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0,
         );
-        const useOptgroups = filterGroupId === SPECIAL_GROUPS.DEFAULT && orderedSections.length >= 2;
+        const useOptgroups = (filterGroupId === SPECIAL_GROUPS.DEFAULT || filterGroupId === SPECIAL_GROUPS.ALL) && orderedSections.length >= 2;
 
         for (const sec of orderedSections) {
             const opts = visibleByGroup.get(sec.id) || [];
@@ -1250,34 +1260,19 @@ function enhanceStandardWorldSelectPopup(hostContainer, selectEl, { settingKey }
         }
 
         if (prevValue !== '') selectEl.value = prevValue;
-
-        toggleBtn.innerHTML = showCharBooks
-            ? '<i class="fa-solid fa-user"></i> 含角色书'
-            : '<i class="fa-solid fa-user-slash"></i> 隐藏角色书';
-        toggleBtn.title = showCharBooks ? '点击隐藏角色世界书' : '点击显示角色世界书';
-        toggleBtn.classList.toggle('wbo-btn-active', !showCharBooks);
     };
 
     bar.addEventListener('click', (ev) => ev.stopPropagation());
     bar.addEventListener('mousedown', (ev) => ev.stopPropagation());
 
-    toggleBtn.addEventListener('click', () => {
-        showCharBooks = !showCharBooks;
-        if (!showCharBooks && filterGroupId === SPECIAL_GROUPS.CHARACTER) {
-            filterGroupId = SPECIAL_GROUPS.DEFAULT;
-        }
-        populateGroupOptions();
-        applyFilter();
-    });
-
     groupSelect.addEventListener('change', () => {
         filterGroupId = groupSelect.value;
-        if (filterGroupId === SPECIAL_GROUPS.CHARACTER) showCharBooks = true;
+        showCharBooks = filterGroupId === SPECIAL_GROUPS.ALL || filterGroupId === SPECIAL_GROUPS.CHARACTER;
         applyFilter();
     });
 
     populateGroupOptions();
-    bar.append(brand, groupSelect, toggleBtn);
+    bar.append(brand, groupSelect);
     selectEl.parentElement?.insertBefore(bar, selectEl);
     applyFilter();
 }
