@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     SPECIAL_GROUPS,
+    addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
     buildCharacterBindingIndex,
@@ -15,6 +16,7 @@ import {
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
     matchesSearch,
+    moveSectionOrder,
     normalizeSettings,
     parseAiOrganizeResponse,
     undoLastAiOrganize,
@@ -274,6 +276,19 @@ test('findUnscannedShallowCharacters and findCardsWithUnimportedBooks detect pen
     assert.equal(unimported[0].avatar, 'NewCard.png');
     assert.equal(unimported[0].importName, '新角色设定集');
     assert.equal(unimported[0].entryCount, 1);
+});
+
+test('addCustomGroup places new groups first and moveSectionOrder reorders custom/char/ungrouped sections', () => {
+    const settings = normalizeSettings(null);
+    assert.deepEqual(settings.sectionOrder, [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
+
+    const g1 = addCustomGroup(settings, { name: '文风设定' });
+    const g2 = addCustomGroup(settings, { name: '世界观' });
+    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
+
+    assert.equal(moveSectionOrder(settings, SPECIAL_GROUPS.UNGROUPED, -1), true);
+    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
+    assert.equal(moveSectionOrder(settings, g2.id, -1), false);
 });
 
 test('entry module and all submodules resolve and import without missing paths', async () => {

@@ -1,13 +1,97 @@
 /* Worldbook Organizer — Theme-adaptive styles for SillyTavern & TauriTavern */
 
 .wbo-panel {
-    margin: 8px 0 10px;
-    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
-    border-radius: 10px;
-    background: var(--SmartThemeBlurTintColor, rgba(20, 22, 28, 0.55));
-    padding: 8px 10px;
-    font-size: 0.92em;
+    margin: 6px 0 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.2));
+    border-radius: 8px;
+    background: transparent;
+    padding: 6px 8px;
+    font-size: 0.9em;
     color: var(--SmartThemeBodyColor, inherit);
+}
+
+/* Unambiguous toggle switch for showing/hiding character-bound worldbooks */
+.wbo-switch-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.25));
+    background: rgba(128, 128, 128, 0.08);
+    cursor: pointer;
+    user-select: none;
+    margin: 0 !important;
+    font-size: 0.83em;
+    white-space: nowrap;
+}
+
+.wbo-switch-toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    pointer-events: none;
+}
+
+.wbo-switch-track {
+    position: relative;
+    display: inline-block;
+    width: 28px;
+    height: 16px;
+    border-radius: 999px;
+    background: rgba(128, 128, 128, 0.45);
+    transition: background-color 0.16s ease;
+    flex-shrink: 0;
+}
+
+.wbo-switch-track::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    transition: transform 0.16s ease;
+}
+
+.wbo-switch-toggle input:checked + .wbo-switch-track {
+    background: var(--SmartThemeQuoteColor, #5b8def);
+}
+
+.wbo-switch-toggle input:checked + .wbo-switch-track::after {
+    transform: translateX(12px);
+}
+
+.wbo-switch-label {
+    font-weight: 500;
+}
+
+/* Single-select #world_editor_select dropdown: hide SillyTavern's multiselect checkboxes */
+.wbo-editor-s2-dropdown .select2-results__option::before {
+    display: none !important;
+}
+
+.wbo-editor-s2-dropdown .select2-results__option:not(.select2-results__option--group) {
+    padding-left: 10px !important;
+}
+
+.wbo-editor-s2-dropdown .select2-results__option--group .select2-results__options--nested .select2-results__option {
+    padding-left: 18px !important;
+}
+
+.wbo-editor-s2-dropdown .select2-results__option--selected {
+    font-weight: 600;
+    box-shadow: inset 3px 0 0 var(--SmartThemeQuoteColor, #5b8def);
+}
+
+.wbo-icon-btn:disabled {
+    opacity: 0.28;
+    cursor: default;
+    pointer-events: none;
 }
 
 .wbo-toolbar {

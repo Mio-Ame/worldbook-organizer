@@ -6,14 +6,15 @@
 import {
     GROUP_COLOR_PALETTE,
     SPECIAL_GROUPS,
+    addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
-    createGroupId,
     exportConfigData,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
     importConfigData,
     matchesSearch,
+    moveSectionOrder,
     parseAiOrganizeResponse,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -167,12 +168,22 @@ function renderGroupSectionHtml({
     collapsed,
     isCustom,
     isCharGroup,
+    canMoveUp,
+    canMoveDown,
     books,
     activeGlobals,
     currentEditor,
 }) {
     const activeCount = books.filter((b) => activeGlobals.has(b.realName)).length;
     const countLabel = activeCount > 0 ? `${activeCount}/${books.length}` : `${books.length}`;
+    const orderActions = `
+        <button type="button" class="wbo-icon-btn" data-action="move-section-up" data-group-id="${esc(id)}" ${canMoveUp ? '' : 'disabled'} title="上移分组顺序">
+            <i class="fa-solid fa-arrow-up"></i>
+        </button>
+        <button type="button" class="wbo-icon-btn" data-action="move-section-down" data-group-id="${esc(id)}" ${canMoveDown ? '' : 'disabled'} title="下移分组顺序">
+            <i class="fa-solid fa-arrow-down"></i>
+        </button>
+    `;
     const customActions = isCustom
         ? `
             <button type="button" class="wbo-icon-btn" data-action="rename-group" data-group-id="${esc(id)}" title="重命名分组">
@@ -200,6 +211,7 @@ function renderGroupSectionHtml({
                     <span class="wbo-group-count">${esc(countLabel)}</span>
                 </button>
                 <div class="wbo-group-actions">
+                    ${orderActions}
                     ${customActions}
                 </div>
             </div>
@@ -221,30 +233,28 @@ export function renderEmbeddedPanel() {
     const currentEditor = getCurrentEditorWorldName();
     const q = _searchQuery.trim();
 
-    // Filter pills
+    const hasCustomGroups = classification.customGroups.length > 0;
+    const orderedSections = classification.orderedSections || [];
+
+    // Filter pills follow user's custom section order; hide redundant "未分组" when no custom groups exist!
     const pills = [
         {
             id: SPECIAL_GROUPS.DEFAULT,
-            label: settings.showCharBooks ? '全部' : '非角色',
+            label: settings.showCharBooks ? '全部世界书' : '通用世界书',
             count: settings.showCharBooks ? classification.totalCount : classification.nonCharCount,
         },
-        ...classification.customGroups.map((g) => ({
-            id: g.id,
-            label: g.name,
-            color: g.color,
-            count: g.books.length,
-        })),
-        {
-            id: SPECIAL_GROUPS.UNGROUPED,
-            label: '未分组',
-            count: classification.ungroupedBooks.length,
-        },
-        {
-            id: SPECIAL_GROUPS.CHARACTER,
-            label: '角色世界书',
-            count: classification.charCount,
-            isChar: true,
-        },
+        ...orderedSections
+            .filter((sec) => {
+                if (sec.kind === 'ungrouped' && !hasCustomGroups) return false;
+                return true;
+            })
+            .map((sec) => ({
+                id: sec.id,
+                label: sec.name,
+                color: sec.kind === 'custom' ? sec.color : undefined,
+                count: sec.books.length,
+                isChar: sec.kind === 'character',
+            })),
     ];
 
     const pillsHtml = pills
@@ -262,72 +272,76 @@ export function renderEmbeddedPanel() {
         })
         .join('');
 
-    // Build visible sections when panel is expanded
+    // Build visible sections in unified user `sectionOrder` when panel is expanded
     let bodyHtml = '';
     if (settings.groupPanelExpanded) {
         const sections = [];
         const filterId = settings.activeFilterGroupId;
-
-        const includeCustom = filterId === SPECIAL_GROUPS.DEFAULT || filterId === SPECIAL_GROUPS.ALL;
-        const includeUngrouped =
-            filterId === SPECIAL_GROUPS.DEFAULT ||
-            filterId === SPECIAL_GROUPS.ALL ||
-            filterId === SPECIAL_GROUPS.UNGROUPED;
         const includeCharExplicitly =
             filterId === SPECIAL_GROUPS.CHARACTER ||
             filterId === SPECIAL_GROUPS.ALL ||
             (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
 
-        // Custom groups
-        for (const g of classification.customGroups) {
-            if (!includeCustom && filterId !== g.id) continue;
-            const books = q ? g.books.filter((b) => matchesSearch(b, q)) : g.books;
-            if (q && books.length === 0) continue;
-            sections.push(
-                renderGroupSectionHtml({
-                    id: g.id,
-                    name: g.name,
-                    color: g.color,
-                    collapsed: q ? false : Boolean(g.collapsed),
-                    isCustom: true,
-                    isCharGroup: false,
-                    books,
-                    activeGlobals,
-                    currentEditor,
-                }),
-            );
-        }
+        orderedSections.forEach((sec, idx) => {
+            const canMoveUp = idx > 0;
+            const canMoveDown = idx < orderedSections.length - 1;
 
-        // Ungrouped
-        if (includeUngrouped) {
-            const books = q
-                ? classification.ungroupedBooks.filter((b) => matchesSearch(b, q))
-                : classification.ungroupedBooks;
-            if (!q || books.length > 0) {
+            if (sec.kind === 'custom') {
+                if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== SPECIAL_GROUPS.ALL && filterId !== sec.id) {
+                    return;
+                }
+                const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+                if (q && books.length === 0) return;
                 sections.push(
                     renderGroupSectionHtml({
-                        id: SPECIAL_GROUPS.UNGROUPED,
-                        name: '未分组',
-                        color: '#8c99a6',
-                        collapsed: q ? false : Boolean(settings.ungroupedCollapsed),
-                        isCustom: false,
+                        id: sec.id,
+                        name: sec.name,
+                        color: sec.color,
+                        collapsed: q ? false : Boolean(sec.collapsed),
+                        isCustom: true,
                         isCharGroup: false,
+                        canMoveUp,
+                        canMoveDown,
                         books,
                         activeGlobals,
                         currentEditor,
                     }),
                 );
+                return;
             }
-        }
 
-        // Character-bound worldbooks
-        if (classification.charCount > 0) {
-            const matchedCharBooks = q
-                ? classification.characterBooks.filter((b) => matchesSearch(b, q))
-                : classification.characterBooks;
+            if (sec.kind === 'ungrouped') {
+                if (
+                    filterId !== SPECIAL_GROUPS.DEFAULT &&
+                    filterId !== SPECIAL_GROUPS.ALL &&
+                    filterId !== SPECIAL_GROUPS.UNGROUPED
+                ) {
+                    return;
+                }
+                const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+                if (q && books.length === 0) return;
+                sections.push(
+                    renderGroupSectionHtml({
+                        id: SPECIAL_GROUPS.UNGROUPED,
+                        name: hasCustomGroups ? '未分组' : '通用世界书',
+                        color: '#8c99a6',
+                        collapsed: q ? false : Boolean(settings.ungroupedCollapsed),
+                        isCustom: false,
+                        isCharGroup: false,
+                        canMoveUp,
+                        canMoveDown,
+                        books,
+                        activeGlobals,
+                        currentEditor,
+                    }),
+                );
+                return;
+            }
 
-            if (includeCharExplicitly) {
-                if (!q || matchedCharBooks.length > 0) {
+            if (sec.kind === 'character' && classification.charCount > 0) {
+                const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+                if (includeCharExplicitly) {
+                    if (q && matchedCharBooks.length === 0) return;
                     sections.push(
                         renderGroupSectionHtml({
                             id: SPECIAL_GROUPS.CHARACTER,
@@ -336,32 +350,33 @@ export function renderEmbeddedPanel() {
                             collapsed: q ? false : Boolean(settings.charGroupCollapsed),
                             isCustom: false,
                             isCharGroup: true,
+                            canMoveUp,
+                            canMoveDown,
                             books: matchedCharBooks,
                             activeGlobals,
                             currentEditor,
                         }),
                     );
+                } else if (filterId === SPECIAL_GROUPS.DEFAULT) {
+                    const noticeText = q
+                        ? (matchedCharBooks.length > 0
+                            ? `已隐藏的角色世界书中匹配到 ${matchedCharBooks.length} 本`
+                            : `已自动隐藏 ${classification.charCount} 本角色卡世界书`)
+                        : `已自动隐藏 ${classification.charCount} 本角色卡世界书`;
+                    sections.push(`
+                        <div class="wbo-char-hidden-bar">
+                            <span class="wbo-char-hidden-text">
+                                <i class="fa-solid fa-eye-slash"></i>
+                                ${esc(noticeText)}
+                            </span>
+                            <button type="button" class="menu_button wbo-btn-compact" data-action="reveal-char-books">
+                                展开查看
+                            </button>
+                        </div>
+                    `);
                 }
-            } else if (filterId === SPECIAL_GROUPS.DEFAULT) {
-                // Hidden state: show a sleek single-line bar so user knows how many are hidden & can open in 1 tap
-                const noticeText = q
-                    ? (matchedCharBooks.length > 0
-                        ? `已隐藏的角色世界书中匹配到 ${matchedCharBooks.length} 本`
-                        : `已自动隐藏 ${classification.charCount} 本角色卡世界书`)
-                    : `已自动归组并隐藏 ${classification.charCount} 本角色卡世界书`;
-                sections.push(`
-                    <div class="wbo-char-hidden-bar">
-                        <span class="wbo-char-hidden-text">
-                            <i class="fa-solid fa-eye-slash"></i>
-                            ${esc(noticeText)}
-                        </span>
-                        <button type="button" class="menu_button wbo-btn-compact" data-action="reveal-char-books">
-                            展开查看
-                        </button>
-                    </div>
-                `);
             }
-        }
+        });
 
         bodyHtml = `
             <div class="wbo-groups-list">
@@ -401,25 +416,22 @@ export function renderEmbeddedPanel() {
 
     root.innerHTML = `
         <div class="wbo-toolbar">
-            <button type="button" class="wbo-toolbar-title" data-action="toggle-panel-expand" title="展开/收起世界书分组列表">
+            <button type="button" class="wbo-toolbar-title" data-action="toggle-panel-expand" title="展开/收起世界书分组管理列表">
                 <i class="fa-solid ${settings.groupPanelExpanded ? 'fa-chevron-down' : 'fa-chevron-right'}"></i>
-                <i class="fa-solid fa-layer-group"></i>
-                <span>世界书分组</span>
-                <span class="wbo-stat-badge">${classification.nonCharCount} 通用 / ${classification.charCount} 角色</span>
+                <span>分组列表</span>
+                <span class="wbo-stat-badge">${classification.nonCharCount} 通用 · ${classification.charCount} 角色</span>
             </button>
             <div class="wbo-toolbar-actions">
-                <button type="button"
-                    class="menu_button wbo-btn-compact${settings.showCharBooks ? ' wbo-btn-active' : ''}"
-                    data-action="toggle-show-char"
-                    title="切换是否显示角色卡绑定的世界书（同步影响原生下拉框）">
-                    <i class="fa-solid ${settings.showCharBooks ? 'fa-eye' : 'fa-eye-slash'}"></i>
-                    <span>${esc(hideBtnLabel)}</span>
-                </button>
+                <label class="wbo-switch-toggle" title="关闭 = 默认隐藏角色卡世界书；开启 = 在下拉框和列表中显示角色卡世界书">
+                    <input type="checkbox" class="wbo-show-char-checkbox" ${settings.showCharBooks ? 'checked' : ''}>
+                    <span class="wbo-switch-track"></span>
+                    <span class="wbo-switch-label">显示角色书 (${classification.charCount})</span>
+                </label>
                 <button type="button" class="menu_button wbo-btn-compact wbo-btn-ai" data-action="open-ai-organize" title="由 AI 整理显示名与分组（不改底层真实文件名）">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>AI整理</span>
                 </button>
-                <button type="button" class="menu_button wbo-btn-compact" data-action="create-group" title="新建自定义分组">
+                <button type="button" class="menu_button wbo-btn-compact" data-action="create-group" title="新建自定义分组（新分组自动排在最前面）">
                     <i class="fa-solid fa-folder-plus"></i>
                 </button>
                 ${undoVisible ? `
@@ -460,8 +472,21 @@ function bindPanelDelegatedEvents(root) {
         }
     });
 
-    root.addEventListener('change', (ev) => {
+    root.addEventListener('change', async (ev) => {
         const target = ev.target;
+        if (target instanceof HTMLInputElement && target.classList.contains('wbo-show-char-checkbox')) {
+            if (!_callbacks) return;
+            const { settings } = _callbacks.getState();
+            settings.showCharBooks = target.checked;
+            if (!settings.showCharBooks && settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
+                settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
+            }
+            if (settings.showCharBooks) {
+                settings.charGroupCollapsed = false;
+            }
+            await _callbacks.onMutation({ save: true });
+            return;
+        }
         if (target instanceof HTMLInputElement && target.classList.contains('wbo-global-check')) {
             const row = target.closest('.wbo-book-row');
             const bookName = row?.getAttribute('data-book');
@@ -523,6 +548,20 @@ function bindPanelDelegatedEvents(root) {
                 }
                 renderEmbeddedPanel();
                 await _callbacks.onMutation({ save: true, uiOnly: true });
+                break;
+            }
+            case 'move-section-up': {
+                const gid = target.getAttribute('data-group-id');
+                if (gid && moveSectionOrder(settings, gid, -1)) {
+                    await _callbacks.onMutation({ save: true });
+                }
+                break;
+            }
+            case 'move-section-down': {
+                const gid = target.getAttribute('data-group-id');
+                if (gid && moveSectionOrder(settings, gid, 1)) {
+                    await _callbacks.onMutation({ save: true });
+                }
                 break;
             }
             case 'create-group': {
@@ -638,10 +677,22 @@ function createModal(title, bodyHtml, { wide = false } = {}) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
+    // CRITICAL: stop mouse/touch/click propagation from modal overlay so SillyTavern's
+    // global document click handler NEVER interprets modal interactions as "click outside #WorldInfo"
+    // and accidentally closes the World Info drawer!
+    const stopAll = (ev) => ev.stopPropagation();
+    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']) {
+        overlay.addEventListener(evtName, stopAll);
+    }
+
     overlay.addEventListener('click', (ev) => {
+        ev.stopPropagation();
         if (ev.target === overlay) closeModal();
     });
-    modal.querySelector('.wbo-modal-close')?.addEventListener('click', closeModal);
+    modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeModal();
+    });
 
     return { overlay, modal };
 }
@@ -703,12 +754,7 @@ function openCreateOrRenameGroupModal(group) {
             group.name = name;
             group.color = chosenColor;
         } else {
-            settings.groups.push({
-                id: createGroupId(settings.groups),
-                name,
-                color: chosenColor,
-                collapsed: false,
-            });
+            addCustomGroup(settings, { name, color: chosenColor });
         }
         closeModal();
         await _callbacks.onMutation({ save: true });

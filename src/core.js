@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
+    sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
     groups: [],
     assignments: {},
     aliases: {},
@@ -122,7 +123,71 @@ export function normalizeSettings(raw) {
         merged.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
     }
 
+    // Normalize unified sectionOrder containing all custom groups + __char__ + __ungrouped__
+    const allowedSectionIds = new Set([
+        ...merged.groups.map((g) => g.id),
+        SPECIAL_GROUPS.CHARACTER,
+        SPECIAL_GROUPS.UNGROUPED,
+    ]);
+    const rawOrder = Array.isArray(merged.sectionOrder) ? merged.sectionOrder : [];
+    const cleanedOrder = [];
+    const seenOrder = new Set();
+    for (const id of rawOrder) {
+        if (typeof id === 'string' && allowedSectionIds.has(id) && !seenOrder.has(id)) {
+            seenOrder.add(id);
+            cleanedOrder.push(id);
+        }
+    }
+    // Any newly present custom groups not yet in sectionOrder go to the front
+    const missingCustom = merged.groups.map((g) => g.id).filter((id) => !seenOrder.has(id));
+    const finalOrder = [...missingCustom, ...cleanedOrder];
+    for (const builtin of [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]) {
+        if (!seenOrder.has(builtin)) finalOrder.push(builtin);
+    }
+    merged.sectionOrder = finalOrder;
+
     return merged;
+}
+
+/**
+ * Reorder a section ID up (-1) or down (+1) in `settings.sectionOrder`,
+ * keeping `settings.groups` order synchronized for custom groups.
+ * @param {Record<string, any>} settings
+ * @param {string} sectionId
+ * @param {-1 | 1} delta
+ * @returns {boolean}
+ */
+export function moveSectionOrder(settings, sectionId, delta) {
+    const normalized = normalizeSettings(settings);
+    const order = [...normalized.sectionOrder];
+    const idx = order.indexOf(sectionId);
+    const targetIdx = idx + delta;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= order.length) return false;
+    [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
+    settings.sectionOrder = order;
+
+    // Keep custom groups array in the same relative order
+    const groupById = new Map((settings.groups || []).map((g) => [g.id, g]));
+    settings.groups = order.filter((id) => groupById.has(id)).map((id) => groupById.get(id));
+    return true;
+}
+
+/**
+ * Insert a new custom group at the front of both `groups` and `sectionOrder`.
+ * @param {Record<string, any>} settings
+ * @param {{ name: string, color?: string }} input
+ */
+export function addCustomGroup(settings, { name, color }) {
+    const normalized = normalizeSettings(settings);
+    const group = {
+        id: createGroupId(normalized.groups),
+        name: String(name || '').trim() || '未命名分组',
+        color: color || GROUP_COLOR_PALETTE[normalized.groups.length % GROUP_COLOR_PALETTE.length],
+        collapsed: false,
+    };
+    settings.groups = [group, ...normalized.groups];
+    settings.sectionOrder = [group.id, ...normalized.sectionOrder.filter((id) => id !== group.id)];
+    return group;
 }
 
 /**
@@ -631,12 +696,48 @@ export function classifyWorldbooks({
         ...g,
         books: customBuckets.get(g.id) || [],
     }));
+    const customGroupById = new Map(customGroups.map((g) => [g.id, g]));
+
+    const orderedSections = cfg.sectionOrder
+        .map((id) => {
+            if (id === SPECIAL_GROUPS.CHARACTER) {
+                return {
+                    id,
+                    kind: 'character',
+                    name: '角色世界书',
+                    color: '#9b72cf',
+                    books: characterBooks,
+                };
+            }
+            if (id === SPECIAL_GROUPS.UNGROUPED) {
+                return {
+                    id,
+                    kind: 'ungrouped',
+                    name: '未分组',
+                    color: '#8c99a6',
+                    books: ungroupedBooks,
+                };
+            }
+            const g = customGroupById.get(id);
+            if (!g) return null;
+            return {
+                id: g.id,
+                kind: 'custom',
+                name: g.name,
+                color: g.color,
+                collapsed: g.collapsed,
+                books: g.books,
+            };
+        })
+        .filter(Boolean);
 
     return {
         byName,
         customGroups,
         ungroupedBooks,
         characterBooks,
+        orderedSections,
+        sectionOrder: cfg.sectionOrder,
         totalCount: byName.size,
         nonCharCount: byName.size - characterBooks.length,
         charCount: characterBooks.length,
@@ -1024,6 +1125,7 @@ export function exportConfigData(settings) {
             includeEmbeddedNameMatch: cfg.includeEmbeddedNameMatch,
             autoHideInCharBindPopup: cfg.autoHideInCharBindPopup,
             showNativeOptgroups: cfg.showNativeOptgroups,
+            sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,
             assignments: cfg.assignments,
             aliases: cfg.aliases,
