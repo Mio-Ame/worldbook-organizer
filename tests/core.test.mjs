@@ -245,6 +245,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(isPotentiallySensitiveTitle('恶俗文学扩展'), true);
     assert.equal(isPotentiallySensitiveTitle('反性凝视描写规范'), true);
     assert.equal(isPotentiallySensitiveTitle('打飞机与飞机杯玩法'), true);
+    assert.equal(isPotentiallySensitiveTitle('名器倒模评测'), true);
     assert.equal(isPotentiallySensitiveTitle('孕期play指南'), true);
     assert.equal(isPotentiallySensitiveTitle('NTR修罗场'), true);
     assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);

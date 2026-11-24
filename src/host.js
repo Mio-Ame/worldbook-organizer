@@ -435,14 +435,17 @@ export async function fetchWorldbookCluesOnDemand(
 
     const clues = [];
     for (const entry of allEntries) {
-        const title = String(entry.comment || '').trim().slice(0, 32);
-        const keys = Array.isArray(entry.key)
-            ? entry.key.slice(0, 3).map((k) => String(k || '').trim()).filter(Boolean)
+        const fullTitle = String(entry.comment || '').trim();
+        const title = fullTitle.slice(0, 32);
+        const allKeys = Array.isArray(entry.key)
+            ? entry.key.map((k) => String(k || '').trim()).filter(Boolean)
             : [];
+        const keys = allKeys.slice(0, 3);
         const head = title
             ? (keys.length > 0 ? `${title}[${keys.join('/')}]` : title)
             : keys.join('/');
         const snippet = compactEntrySnippet(entry.content, maxSnippet);
+        const inspectSnippet = compactEntrySnippet(entry.content, Math.max(maxSnippet + 24, 100));
 
         let line = '';
         if (head && snippet) line = `${head}：${snippet}`;
@@ -451,8 +454,8 @@ export async function fetchWorldbookCluesOnDemand(
 
         if (!line) continue;
 
-        // Skip individual sensitive entries while still collecting clean clues from the rest of the book
-        if (filterSensitive && isPotentiallySensitiveTitle(`${head} ${snippet}`)) {
+        // Check full title, all trigger keys, and expanded snippet so truncated sensitive words never leak through
+        if (filterSensitive && isPotentiallySensitiveTitle(`${fullTitle} ${allKeys.join(' ')} ${inspectSnippet}`)) {
             if (statsOut) statsOut.skippedEntries = (statsOut.skippedEntries || 0) + 1;
             continue;
         }

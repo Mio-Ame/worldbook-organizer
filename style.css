@@ -1669,6 +1669,103 @@ details[open] > summary .wbo-details-chev {
     background: var(--wbo-surface);
 }
 
+.wbo-ai-step {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.wbo-ai-card {
+    padding: 12px 14px;
+    gap: 10px;
+}
+
+.wbo-rule-textarea {
+    min-height: 62px !important;
+    line-height: 1.5 !important;
+    resize: vertical;
+}
+
+.wbo-ai-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--wbo-border);
+}
+
+.wbo-ai-footer-left,
+.wbo-ai-footer-right {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.wbo-external-ai-drawer {
+    padding: 12px 14px;
+    gap: 8px;
+    background: var(--wbo-bg-elevated);
+}
+
+/* Scan coverage flat 2-column table with category pills */
+.wbo-cov-panel {
+    padding: 11px 13px;
+    gap: 9px;
+}
+
+.wbo-cov-tab-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wbo-cov-panes {
+    max-height: 260px;
+    overflow-y: auto;
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    background: var(--wbo-bg);
+}
+
+.wbo-cov-row {
+    display: grid;
+    grid-template-columns: minmax(140px, 210px) 1fr;
+    align-items: start;
+    gap: 8px 12px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-cov-row:last-child {
+    border-bottom: none;
+}
+
+.wbo-cov-subject {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+}
+
+.wbo-cov-targets {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}
+
+.wbo-cov-chip-cloud {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 10px;
+}
+
 .wbo-ai-book-filter {
     height: 28px !important;
     min-height: 28px !important;
@@ -2434,6 +2531,10 @@ details[open] > summary .wbo-details-chev {
     }
     .wbo-prop-grid {
         grid-template-columns: 1fr;
+    }
+    .wbo-cov-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
     }
     .wbo-icon-btn {
         width: 30px !important;

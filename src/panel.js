@@ -839,14 +839,26 @@ function openManagerModal() {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
-    // Isolate all pointer/mouse/click events so `#WorldInfo` never auto-closes
+    // Isolate all pointer/mouse/click events so `#WorldInfo` never auto-closes,
+    // AND only close on backdrop click when mousedown ALSO started on the backdrop
+    // (dragging text selection out onto the backdrop will NEVER accidentally close the modal!)
+    let mouseDownOnBackdrop = false;
     const stopAll = (ev) => ev.stopPropagation();
-    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']) {
+    for (const evtName of ['mouseup', 'pointerup', 'touchstart', 'touchend']) {
         overlay.addEventListener(evtName, stopAll);
     }
+    overlay.addEventListener('mousedown', (ev) => {
+        ev.stopPropagation();
+        mouseDownOnBackdrop = ev.target === overlay;
+    });
+    overlay.addEventListener('pointerdown', (ev) => {
+        ev.stopPropagation();
+        mouseDownOnBackdrop = ev.target === overlay;
+    });
     overlay.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (ev.target === overlay) closeManagerModal();
+        if (ev.target === overlay && mouseDownOnBackdrop) closeManagerModal();
+        mouseDownOnBackdrop = false;
     });
     modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1522,14 +1534,26 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
 
+    // Only close sub-modal when BOTH mousedown/pointerdown AND click land on the backdrop
+    // so dragging text inside an input/textarea outside the modal box NEVER accidentally closes it!
+    let mouseDownOnBackdrop = false;
     const stopAll = (ev) => ev.stopPropagation();
-    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'touchstart', 'touchend']) {
+    for (const evtName of ['mouseup', 'pointerup', 'touchstart', 'touchend']) {
         overlay.addEventListener(evtName, stopAll);
     }
+    overlay.addEventListener('mousedown', (ev) => {
+        ev.stopPropagation();
+        mouseDownOnBackdrop = ev.target === overlay;
+    });
+    overlay.addEventListener('pointerdown', (ev) => {
+        ev.stopPropagation();
+        mouseDownOnBackdrop = ev.target === overlay;
+    });
 
     overlay.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (ev.target === overlay) closeSubModal();
+        if (ev.target === overlay && mouseDownOnBackdrop) closeSubModal();
+        mouseDownOnBackdrop = false;
     });
     modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -1999,24 +2023,24 @@ function openAiOrganizeModal() {
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-select">
-                <div class="wbo-card">
+                <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>1. 选择要整理的世界书</span>
+                        <span>1. 选择世界书</span>
                         <span class="wbo-ai-quick-picks">
                             <button type="button" class="wbo-link-btn" id="wbo-pick-ungrouped">仅未分组</button>
                             <button type="button" class="wbo-link-btn" id="wbo-pick-nonchar">全部非角色书</button>
-                            ${sensitiveSet.size > 0 ? `<button type="button" class="wbo-link-btn" id="wbo-pick-skip-sens">排除敏感书 (${sensitiveSet.size})</button>` : ''}
+                            ${sensitiveSet.size > 0 ? `<button type="button" class="wbo-link-btn" id="wbo-pick-skip-sens">排除敏感 (${sensitiveSet.size})</button>` : ''}
                             <button type="button" class="wbo-link-btn" id="wbo-pick-none">取消全选</button>
                         </span>
                     </div>
-                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="筛选世界书..." autocomplete="off">
+                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off">
                     <div class="wbo-ai-book-list" id="wbo-ai-book-list">${bookChecksHtml}</div>
-                    ${sensitiveSet.size > 0 ? `<div class="wbo-subtle-tip">检测到 ${sensitiveSet.size} 本疑似含敏感词世界书，部分审查严格的模型可能会拒答，建议取消勾选后手动拖入分组。</div>` : ''}
+                    ${sensitiveSet.size > 0 ? `<div class="wbo-subtle-tip">已标出 ${sensitiveSet.size} 本疑似含敏感词世界书，若模型触发审查拒答可点上方「排除敏感」后手动拖入分组。</div>` : ''}
                 </div>
 
-                <div class="wbo-card">
+                <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>2. 整理参数</span>
+                        <span>2. 整理规则</span>
                     </div>
                     <div class="wbo-ai-options">
                         <div class="wbo-clue-row">
@@ -2032,66 +2056,66 @@ function openAiOrganizeModal() {
                                 <option value="0">仅标题与关键词</option>
                             </select>
                         </div>
-                        <div class="wbo-subtle-tip">本地直接截取条目开头并自动跳过含敏感词条目，不会额外消耗生成额度；外部 AI 复制提示词完全免费。</div>
+                        <div class="wbo-subtle-tip">本地截取并自动跳过含敏感词条目，不额外消耗生成额度。</div>
                         <label class="wbo-check-line">
                             <input type="checkbox" id="wbo-ai-allow-real-rename">
-                            <span>允许规范修改世界书真实文件名，并自动同步角色卡与人设绑定</span>
+                            <span>允许同步修改世界书真实文件名，并自动更新角色卡与人设绑定</span>
                         </label>
                         <div class="wbo-preset-rows">
                             <div class="wbo-preset-group">
-                                <span class="wbo-preset-label">分类预设</span>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="优先按酒馆常用维度分类：「文风」「缝合」「场景与互动」「世界观」「小剧场」「通用素材」。注意「缝合」指用于缝合进预设/指令模板的功能补丁、防抢话与输出控制规则；约会流程、恋爱/日常互动归入「场景与互动」，不要归入世界观。">文风/缝合/场景</button>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="按用途细分为「文风与写法」「缝合与规则」「场景与互动」「世界观设定」「小剧场与扩展」「人设与素材」等清晰分组。">按用途细分</button>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="尽量合并归类，总分组数量控制在 3~5 个高频大类内（如文风、缝合规则、场景互动、世界观、通用素材）。">精简 3~5 大类</button>
+                                <span class="wbo-preset-label">分类方式</span>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="根据每本世界书的实际用途自然归纳为 4~7 个清晰分组，名称简洁直观，不强行套用固定模板。">智能自由分类</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="优先按酒馆常用用途归类（如文风、缝合、场景与互动、世界观、小剧场、通用素材）。注意「缝合」指用于缝合进预设的规则指令与功能补丁；约会流程与日常互动归入「场景与互动」。">按酒馆用途</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="尽量合并归类，总分组数量控制在 3~5 个高频大类内，减少翻找层级。">精简 3~5 大类</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="尽量归入我当前已有的分组中，除非完全无法归类否则少建新分组。">优先复用旧分组</button>
                             </div>
                             <div class="wbo-preset-group">
-                                <span class="wbo-preset-label">命名预设</span>
+                                <span class="wbo-preset-label">命名风格</span>
                                 <button type="button" class="wbo-preset-chip" data-preset-cat="name" data-preset-text="名称统一按 [分类] 核心主题 格式包裹，去掉作者署名与多余符号。">[分类] 名称</button>
                                 <button type="button" class="wbo-preset-chip" data-preset-cat="name" data-preset-text="名称统一按 【分类】核心主题 格式包裹，去掉作者署名与多余符号。">【分类】名称</button>
                                 <button type="button" class="wbo-preset-chip" data-preset-cat="name" data-preset-text="名称不加任何括号前缀，只保留简洁直观的纯中文核心主题名。">极简纯中文</button>
                                 <button type="button" class="wbo-preset-chip" data-preset-cat="ver" data-preset-text="清理冗余装饰词但保留如 v2.0 等关键版本号。">保留版本号</button>
                             </div>
                         </div>
-                        <input type="text" class="wbo-input" id="wbo-ai-custom-rule" placeholder="点击上方预设自动填入，或手动补充命名与分类要求">
+                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-custom-rule" rows="3" placeholder="点击上方预设自动填入，或直接编辑你的分类与命名要求..."></textarea>
                     </div>
                 </div>
 
-                <div class="wbo-card">
+                <div class="wbo-card wbo-external-ai-drawer" id="wbo-external-ai-drawer" hidden>
                     <div class="wbo-ai-section-head">
-                        <span>3. 执行方式</span>
-                        <span class="wbo-api-inline-info">当前：<b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b> <button type="button" class="wbo-link-btn" id="wbo-goto-api-tab">切换</button></span>
+                        <span>外部 AI 整理（免 API 额度）</span>
+                        <button type="button" class="wbo-link-btn" id="wbo-external-ai-hide-btn">收起</button>
                     </div>
+                    <textarea class="wbo-textarea" id="wbo-ai-json-input" rows="4" placeholder='1. 先点下方「复制提示词」发给任意外部 AI&#10;2. 把 AI 返回的 JSON 粘贴到这里，再点「解析并预览」'></textarea>
                     <div class="wbo-ai-actions-row">
-                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-run-btn">
-                            <i class="fa-solid fa-wand-magic-sparkles"></i> 开始 AI 整理
+                        <button type="button" class="wbo-btn" id="wbo-ai-copy-prompt-btn">
+                            <i class="fa-regular fa-copy"></i> 复制提示词
                         </button>
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-parse-paste-btn">解析并预览</button>
                     </div>
-                    <details class="wbo-collapse-box" id="wbo-ai-paste-details">
-                        <summary class="wbo-collapse-summary">
-                            <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>不使用 API？由外部 AI 整理</span></span>
-                            <span class="wbo-collapse-hint">点击展开 · 复制提示词 / 粘贴 JSON</span>
-                        </summary>
-                        <div class="wbo-collapse-body">
-                            <div class="wbo-ai-actions-row">
-                                <button type="button" class="wbo-btn" id="wbo-ai-copy-prompt-btn">
-                                    <i class="fa-regular fa-copy"></i> 复制提示词发给外部 AI
-                                </button>
-                                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-parse-paste-btn">解析下方 JSON 并预览</button>
-                            </div>
-                            <textarea class="wbo-textarea" id="wbo-ai-json-input" rows="4" placeholder='将外部 AI 返回的 JSON 粘贴到此处，例如：{"原世界书名": {"alias": "规范后名称", "group": "分组名", "note": "简介"}}'></textarea>
-                        </div>
-                    </details>
                 </div>
 
                 <div class="wbo-refusal-box" id="wbo-ai-refusal-box" hidden></div>
                 <div class="wbo-ai-status" id="wbo-ai-status"></div>
 
-                <div class="wbo-modal-footer">
-                    <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'disabled'} title="恢复到上一次 AI 整理前的分组与显示名">
-                        <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
-                    </button>
-                    <span class="wbo-spacer"></span>
-                    <button type="button" class="wbo-btn" id="wbo-ai-close-btn">关闭</button>
+                <div class="wbo-modal-footer wbo-ai-footer">
+                    <div class="wbo-ai-footer-left">
+                        <button type="button" class="wbo-btn" id="wbo-toggle-external-ai-btn" title="不使用 API，复制提示词给外部 AI 后粘贴 JSON">
+                            <i class="fa-regular fa-copy"></i> 外部 AI
+                        </button>
+                        <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'hidden'} title="恢复到上一次 AI 整理前的分组与显示名">
+                            <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
+                        </button>
+                    </div>
+                    <div class="wbo-ai-footer-right">
+                        <span class="wbo-api-inline-info">
+                            <b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b>
+                            <button type="button" class="wbo-link-btn" id="wbo-goto-api-tab">切换</button>
+                        </span>
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-run-btn">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> 开始 AI 整理
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -2166,7 +2190,7 @@ function openAiOrganizeModal() {
                         <span id="wbo-redo-summary">对部分分组不满意？点击上方「重排本组」或单条「重排」标记后重发</span>
                         <button type="button" class="wbo-link-btn" id="wbo-redo-clear-btn" hidden>清除标记</button>
                     </div>
-                    <input type="text" class="wbo-input" id="wbo-ai-redo-reason" placeholder="填写不满意的原因或期望（例如：约会指南不要放进世界观，请单独归入「场景与互动」）">
+                    <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-redo-reason" rows="2" placeholder="填写不满意的原因或期望（例如：约会指南不要放进世界观，请单独归入「场景与互动」）"></textarea>
                     <div class="wbo-ai-actions-row">
                         <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-run-btn" disabled>
                             <i class="fa-solid fa-rotate"></i> 重新发送给 AI
@@ -2231,16 +2255,27 @@ function openAiOrganizeModal() {
     });
     modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
     modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
-    modal.querySelector('#wbo-ai-close-btn')?.addEventListener('click', closeSubModal);
 
-    // One-tap prompt preset chips: toggle mutually-exclusive group/name presets & compose rule text
+    const externalAiDrawer = modal.querySelector('#wbo-external-ai-drawer');
+    const toggleExternalAiBtn = modal.querySelector('#wbo-toggle-external-ai-btn');
+    const setExternalAiOpen = (open) => {
+        if (externalAiDrawer instanceof HTMLElement) externalAiDrawer.hidden = !open;
+        if (toggleExternalAiBtn) toggleExternalAiBtn.classList.toggle('is-active', open);
+    };
+    toggleExternalAiBtn?.addEventListener('click', () => {
+        const isCurrentlyHidden = !(externalAiDrawer instanceof HTMLElement) || externalAiDrawer.hidden;
+        setExternalAiOpen(isCurrentlyHidden);
+    });
+    modal.querySelector('#wbo-external-ai-hide-btn')?.addEventListener('click', () => setExternalAiOpen(false));
+
+    // One-tap prompt preset chips: toggle mutually-exclusive group/name presets & compose multi-line rule text
     const customRuleInput = modal.querySelector('#wbo-ai-custom-rule');
     const syncPresetRuleText = () => {
-        if (!(customRuleInput instanceof HTMLInputElement)) return;
+        if (!(customRuleInput instanceof HTMLTextAreaElement || customRuleInput instanceof HTMLInputElement)) return;
         const activeTexts = Array.from(modal.querySelectorAll('.wbo-preset-chip.is-active'))
             .map((btn) => btn.getAttribute('data-preset-text') || '')
             .filter(Boolean);
-        customRuleInput.value = activeTexts.join(' ');
+        customRuleInput.value = activeTexts.join('\n');
     };
     modal.querySelectorAll('.wbo-preset-chip').forEach((chip) => {
         chip.addEventListener('click', () => {
@@ -2410,7 +2445,7 @@ function openAiOrganizeModal() {
         const undoBtn = modal.querySelector('#wbo-ai-undo-btn');
         const undoLbl = modal.querySelector('#wbo-ai-undo-label');
         const stillHas = Array.isArray(settings.undoSnapshots) && settings.undoSnapshots.length > 0;
-        if (undoBtn instanceof HTMLButtonElement) undoBtn.disabled = !stillHas;
+        if (undoBtn instanceof HTMLElement) undoBtn.hidden = !stillHas;
         if (undoLbl) undoLbl.textContent = getUndoButtonLabel();
         setStatus('已撤销上一次 AI 整理，恢复为整理前的分组与显示名。');
         showToast('success', '已撤销上一次 AI 整理');
@@ -2803,7 +2838,9 @@ function openAiOrganizeModal() {
                 .map((p) => (p.group || '').trim())
                 .filter((g) => g && g !== '未分组'),
         )];
-        const reason = redoReasonInput instanceof HTMLInputElement ? redoReasonInput.value.trim() : '';
+        const reason = (redoReasonInput instanceof HTMLTextAreaElement || redoReasonInput instanceof HTMLInputElement)
+            ? redoReasonInput.value.trim()
+            : '';
         return preparePromptPayload({
             targetNames: redoItems.map((p) => p.realName),
             feedback: {
@@ -2927,16 +2964,15 @@ function openAiOrganizeModal() {
         const fullPrompt = `${prompts.systemPrompt}\n\n---\n\n${prompts.userPrompt}`;
         try {
             await navigator.clipboard.writeText(fullPrompt);
-            setStatus('已复制提示词，可将外部 AI 返回的 JSON 粘贴到下方。');
+            setStatus('已复制提示词，可将外部 AI 返回的 JSON 粘贴到上方输入框后点「解析并预览」。');
         } catch {
-            const details = modal.querySelector('#wbo-ai-paste-details');
+            setExternalAiOpen(true);
             const textarea = modal.querySelector('#wbo-ai-json-input');
-            if (details instanceof HTMLDetailsElement) details.open = true;
             if (textarea instanceof HTMLTextAreaElement) {
                 textarea.value = fullPrompt;
                 textarea.select();
             }
-            setStatus('剪贴板受限，已将提示词填入下方文本框。');
+            setStatus('剪贴板受限，已将提示词填入输入框。');
         }
     });
 
@@ -3050,116 +3086,119 @@ function openScanAndImportModal() {
         const worldJumpBtn = (worldName, suffix = '') =>
             `<button type="button" class="wbo-jump-link is-world" data-jump-world="${esc(worldName)}" title="打开世界书「${esc(worldName)}」">${esc(worldName)}${suffix ? `<small>${esc(suffix)}</small>` : ''}</button>`;
 
-        const coverageParts = [];
+        /** @type {Array<{ key: string, label: string, count: number, rowsHtml: string }>} */
+        const covTabs = [];
+
         if (coverage.multiBookChars.length > 0) {
-            coverageParts.push(`
-                <div class="wbo-cov-block">
-                    <div class="wbo-cov-title">按角色核对 · 绑定了多本世界书 (${coverage.multiBookChars.length})</div>
-                    <div class="wbo-cov-cards">
-                        ${coverage.multiBookChars.map((c) => `
-                            <div class="wbo-cov-card">
-                                <div class="wbo-cov-card-head">
-                                    <span class="wbo-cov-kind">角色</span>
-                                    ${charJumpBtn(c.avatar, c.charName)}
-                                    <span class="wbo-cov-meta">共 ${c.books.length} 本</span>
-                                </div>
-                                <div class="wbo-cov-card-items">
-                                    ${c.books.map((b) => worldJumpBtn(b.worldName, sourceLabel(b.source))).join('')}
-                                </div>
-                            </div>
-                        `).join('')}
+            covTabs.push({
+                key: 'multi',
+                label: '多本书角色',
+                count: coverage.multiBookChars.length,
+                rowsHtml: coverage.multiBookChars.map((c) => `
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            <span class="wbo-cov-kind">角色</span>
+                            ${charJumpBtn(c.avatar, c.charName)}
+                        </div>
+                        <div class="wbo-cov-targets">
+                            ${c.books.map((b) => worldJumpBtn(b.worldName, sourceLabel(b.source))).join('')}
+                        </div>
                     </div>
-                </div>
-            `);
-        }
-        if (coverage.missingFileChars.length > 0) {
-            coverageParts.push(`
-                <div class="wbo-cov-block">
-                    <div class="wbo-cov-title">按角色核对 · 绑定的世界书文件不存在 (${coverage.missingFileChars.length})</div>
-                    <div class="wbo-cov-cards">
-                        ${coverage.missingFileChars.map((c) => `
-                            <div class="wbo-cov-card">
-                                <div class="wbo-cov-card-head">
-                                    <span class="wbo-cov-kind">角色</span>
-                                    ${charJumpBtn(c.avatar, c.charName)}
-                                </div>
-                                <div class="wbo-cov-card-items">
-                                    <span class="wbo-cov-missing">缺失文件：${esc(c.missingWorld)}</span>
-                                </div>
-                            </div>
-                        `).join('')}
-                    </div>
-                </div>
-            `);
-        }
-        if (coverage.unboundChars.length > 0) {
-            coverageParts.push(`
-                <div class="wbo-cov-block">
-                    <div class="wbo-cov-title">按角色核对 · 未绑定世界书 (${coverage.unboundChars.length})</div>
-                    <div class="wbo-cov-card-items">
-                        ${coverage.unboundChars.map((c) => `<button type="button" class="wbo-jump-link" data-jump-char="${esc(c.avatar)}" title="跳转到角色卡">${esc(c.charName)}${c.shallow ? ' · 未加载' : ''}</button>`).join('')}
-                    </div>
-                </div>
-            `);
+                `).join(''),
+            });
         }
         if (coverage.sharedBooks.length > 0) {
-            coverageParts.push(`
-                <div class="wbo-cov-block">
-                    <div class="wbo-cov-title">按世界书核对 · 被多张角色卡共用 (${coverage.sharedBooks.length})</div>
-                    <div class="wbo-cov-cards">
-                        ${coverage.sharedBooks.map((s) => `
-                            <div class="wbo-cov-card">
-                                <div class="wbo-cov-card-head">
-                                    <span class="wbo-cov-kind is-world">世界书</span>
-                                    ${worldJumpBtn(s.worldName)}
-                                    <span class="wbo-cov-meta">${(s.owners || []).length} 张卡共用</span>
-                                </div>
-                                <div class="wbo-cov-card-items">
-                                    ${(s.owners || []).map((o) => charJumpBtn(o.avatar, o.charName)).join('')}
-                                </div>
-                            </div>
-                        `).join('')}
+            covTabs.push({
+                key: 'shared',
+                label: '多卡共用书',
+                count: coverage.sharedBooks.length,
+                rowsHtml: coverage.sharedBooks.map((s) => `
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            <span class="wbo-cov-kind is-world">世界书</span>
+                            ${worldJumpBtn(s.worldName)}
+                        </div>
+                        <div class="wbo-cov-targets">
+                            ${(s.owners || []).map((o) => charJumpBtn(o.avatar, o.charName)).join('')}
+                        </div>
                     </div>
-                </div>
-            `);
+                `).join(''),
+            });
+        }
+        if (coverage.missingFileChars.length > 0) {
+            covTabs.push({
+                key: 'missing',
+                label: '文件缺失',
+                count: coverage.missingFileChars.length,
+                rowsHtml: coverage.missingFileChars.map((c) => `
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            <span class="wbo-cov-kind">角色</span>
+                            ${charJumpBtn(c.avatar, c.charName)}
+                        </div>
+                        <div class="wbo-cov-targets">
+                            <span class="wbo-cov-missing">缺失世界书文件：${esc(c.missingWorld)}</span>
+                        </div>
+                    </div>
+                `).join(''),
+            });
         }
         if (coverage.orphanExtraBooks.length > 0) {
-            coverageParts.push(`
-                <div class="wbo-cov-block">
-                    <div class="wbo-cov-title">按世界书核对 · 已删角色残留的附加书 (${coverage.orphanExtraBooks.length})</div>
-                    <div class="wbo-cov-cards">
-                        ${coverage.orphanExtraBooks.map((o) => `
-                            <div class="wbo-cov-card">
-                                <div class="wbo-cov-card-head">
-                                    <span class="wbo-cov-kind is-world">世界书</span>
-                                    ${worldJumpBtn(o.worldName)}
-                                </div>
-                                <div class="wbo-cov-card-items">
-                                    <span class="wbo-cov-missing">原绑定角色：${esc(o.charName)}</span>
-                                </div>
+            covTabs.push({
+                key: 'orphan',
+                label: '残留附加书',
+                count: coverage.orphanExtraBooks.length,
+                rowsHtml: coverage.orphanExtraBooks.map((o) => `
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            <span class="wbo-cov-kind is-world">世界书</span>
+                            ${worldJumpBtn(o.worldName)}
+                        </div>
+                        <div class="wbo-cov-targets">
+                            <span class="wbo-cov-missing">原绑定角色已删除：${esc(o.charName)}</span>
+                        </div>
+                    </div>
+                `).join(''),
+            });
+        }
+        if (coverage.unboundChars.length > 0) {
+            covTabs.push({
+                key: 'unbound',
+                label: '未绑定角色',
+                count: coverage.unboundChars.length,
+                rowsHtml: `
+                    <div class="wbo-cov-chip-cloud">
+                        ${coverage.unboundChars.map((c) => `<button type="button" class="wbo-jump-link" data-jump-char="${esc(c.avatar)}" title="跳转到角色卡">${esc(c.charName)}${c.shallow ? '<small>未加载</small>' : ''}</button>`).join('')}
+                    </div>
+                `,
+            });
+        }
+
+        const totalDiffItems = covTabs.reduce((acc, t) => acc + t.count, 0);
+        const firstTabKey = covTabs[0]?.key || '';
+
+        const coverageHtml = covTabs.length > 0
+            ? `
+                <div class="wbo-card wbo-cov-panel">
+                    <div class="wbo-ai-section-head">
+                        <span>对应明细 · ${totalDiffItems} 项</span>
+                        <span class="wbo-subtle-tip">点击名称直接跳转核对</span>
+                    </div>
+                    <div class="wbo-cov-tab-bar">
+                        ${covTabs.map((t, i) => `
+                            <button type="button" class="wbo-pill${i === 0 ? ' is-active' : ''}" data-cov-tab="${esc(t.key)}">
+                                <span>${esc(t.label)}</span><span class="wbo-pill-count">${t.count}</span>
+                            </button>
+                        `).join('')}
+                    </div>
+                    <div class="wbo-cov-panes">
+                        ${covTabs.map((t) => `
+                            <div class="wbo-cov-pane" data-cov-pane="${esc(t.key)}"${t.key === firstTabKey ? '' : ' hidden'}>
+                                ${t.rowsHtml}
                             </div>
                         `).join('')}
                     </div>
                 </div>
-            `);
-        }
-
-        const totalDiffItems =
-            coverage.multiBookChars.length +
-            coverage.orphanExtraBooks.length +
-            coverage.missingFileChars.length +
-            coverage.unboundChars.length +
-            coverage.sharedBooks.length;
-
-        const coverageHtml = coverageParts.length > 0
-            ? `
-                <details class="wbo-collapse-box" ${totalDiffItems <= 8 ? 'open' : ''}>
-                    <summary class="wbo-collapse-summary">
-                        <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>角色与世界书对应明细</span></span>
-                        <span class="wbo-collapse-hint">点击角色名或世界书可直接跳转核对</span>
-                    </summary>
-                    <div class="wbo-collapse-body">${coverageParts.join('')}</div>
-                </details>
             `
             : '';
 
@@ -3227,6 +3266,21 @@ function openScanAndImportModal() {
         modal.querySelector('#wbo-scan-close-btn')?.addEventListener('click', () => {
             cancelSignal.cancelled = true;
             closeSubModal();
+        });
+
+        modal.querySelectorAll('[data-cov-tab]').forEach((tabBtn) => {
+            tabBtn.addEventListener('click', () => {
+                const key = tabBtn.getAttribute('data-cov-tab');
+                if (!key) return;
+                modal.querySelectorAll('[data-cov-tab]').forEach((b) => {
+                    b.classList.toggle('is-active', b.getAttribute('data-cov-tab') === key);
+                });
+                modal.querySelectorAll('[data-cov-pane]').forEach((pane) => {
+                    if (pane instanceof HTMLElement) {
+                        pane.hidden = pane.getAttribute('data-cov-pane') !== key;
+                    }
+                });
+            });
         });
 
         modal.querySelectorAll('[data-jump-char]').forEach((btn) => {
