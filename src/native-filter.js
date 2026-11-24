@@ -587,7 +587,7 @@ function mirrorNativeSelectAppearance(selectEl, triggerEl) {
                 height: `${finalH}px`,
                 minHeight: `${finalH}px`,
                 maxHeight: `${finalH}px`,
-                lineHeight: '1',
+                lineHeight: '1.35',
                 borderRadius: cs.borderRadius,
                 border: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
                 backgroundColor: cs.backgroundColor,
@@ -2777,8 +2777,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         _editorSelectObserver = new MutationObserver(scheduleResync);
         _editorSelectObserver.observe(editorEl, { childList: true, subtree: false });
 
-        // Native mobile `<select>` fallback: ensure optgroups right before opening
+        // Native mobile `<select>` fallback: skip completely when signature is already clean
+        // so tapping the native iOS `<select>` triggers 0ms of plugin work before the system menu opens!
         _editorNativeOpenHandler = () => {
+            if (_lastEditorSignature !== null) return;
             if (isNativeMobileSelectMode()) {
                 syncEditorBeforeOpen();
             }

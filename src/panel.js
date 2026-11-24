@@ -201,6 +201,37 @@ function ensureWandMenuEntry() {
     return item;
 }
 
+function syncNativeCharBtnWidth(btn) {
+    if (!(btn instanceof HTMLElement)) return false;
+    const importBtn = document.getElementById('world_import_button');
+    if (!(importBtn instanceof HTMLElement)) return false;
+    const w = Math.round(importBtn.getBoundingClientRect().width);
+    if (w >= 18 && w <= 80) {
+        btn.style.setProperty('--wbo-char-btn-w', `${w}px`);
+        btn.dataset.wboWidthSynced = '1';
+        return true;
+    }
+    return false;
+}
+
+function scheduleNativeCharBtnWidthSync(btn) {
+    if (syncNativeCharBtnWidth(btn)) return;
+    const wiDrawer = document.getElementById('WorldInfo');
+    if (!wiDrawer || typeof MutationObserver !== 'function') return;
+    const obs = new MutationObserver(() => {
+        if (!btn.isConnected) {
+            obs.disconnect();
+            return;
+        }
+        if (!wiDrawer.classList.contains('closedDrawer')) {
+            requestAnimationFrame(() => {
+                if (syncNativeCharBtnWidth(btn)) obs.disconnect();
+            });
+        }
+    });
+    obs.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
+}
+
 function ensureHeaderBar() {
     ensureWandMenuEntry();
 
@@ -208,14 +239,17 @@ function ensureHeaderBar() {
     document.getElementById('wbo-header-bar')?.remove();
 
     let btn = document.getElementById(CHAR_TOGGLE_BTN_ID);
-    if (btn) return btn;
+    if (btn) {
+        if (btn.dataset.wboWidthSynced !== '1') syncNativeCharBtnWidth(btn);
+        return btn;
+    }
 
     const importBtn = document.getElementById('world_import_button');
     const editorSelect = document.getElementById('world_editor_select');
     const editorRow = importBtn?.parentElement || editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
     if (!editorRow) return null;
 
-    // Blend seamlessly into SillyTavern's native `#world_popup` toolbar row (0 extra rows, fixed fa-fw width!)
+    // Blend seamlessly into SillyTavern's native `#world_popup` toolbar row (0 extra rows, exact sibling width!)
     btn = document.createElement('div');
     btn.id = CHAR_TOGGLE_BTN_ID;
     btn.className = 'menu_button fa-solid fa-fw fa-user-slash wbo-native-char-btn';
@@ -228,6 +262,7 @@ function ensureHeaderBar() {
     } else {
         editorRow.appendChild(btn);
     }
+    scheduleNativeCharBtnWidthSync(btn);
 
     btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
@@ -242,13 +277,15 @@ function ensureHeaderBar() {
             settings.charGroupCollapsed = false;
             promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
         }
-        // Give instant 0ms tactile icon feedback first, then flush batched select DOM sync on next frame
+        // Paint the flipped icon FIRST (rAF + macrotask guarantees paint commits before iOS unhides native `<select>`)
         btn.classList.toggle('fa-user', nextShown);
         btn.classList.toggle('fa-user-slash', !nextShown);
         btn.classList.toggle('is-active', nextShown);
         btn.setAttribute('aria-pressed', String(nextShown));
         requestAnimationFrame(() => {
-            void _callbacks?.onMutation({ save: true, charToggleOnly: true });
+            setTimeout(() => {
+                void _callbacks?.onMutation({ save: true, charToggleOnly: true });
+            }, 0);
         });
     });
 

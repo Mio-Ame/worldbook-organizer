@@ -253,10 +253,10 @@
 
 /* Native inline char-worldbook visibility icon merged seamlessly into `#world_popup` toolbar */
 .wbo-native-char-btn {
-    width: calc(1.4em + 12px) !important;
-    min-width: calc(1.4em + 12px) !important;
-    max-width: calc(1.4em + 12px) !important;
-    flex: 0 0 calc(1.4em + 12px) !important;
+    width: var(--wbo-char-btn-w, calc(1.25em + 10px)) !important;
+    min-width: var(--wbo-char-btn-w, calc(1.25em + 10px)) !important;
+    max-width: var(--wbo-char-btn-w, calc(1.25em + 10px)) !important;
+    flex: 0 0 var(--wbo-char-btn-w, calc(1.25em + 10px)) !important;
     padding-left: 0 !important;
     padding-right: 0 !important;
     box-sizing: border-box !important;
@@ -292,6 +292,8 @@
 .wbo-mobile-trigger-text {
     flex: 1 1 auto;
     min-width: 0;
+    line-height: 1.35 !important;
+    padding: 1px 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
