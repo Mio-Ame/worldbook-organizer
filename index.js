@@ -53,7 +53,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-const STYLE_ASSET_VERSION = '2.34.3-dev.1';
+const STYLE_ASSET_VERSION = '2.34.3-dev.2';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _debounceTimer = null;

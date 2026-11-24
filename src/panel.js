@@ -2905,7 +2905,10 @@ function openAliasNoteModal(bookMeta) {
         });
     });
 
-    if (aliasInput instanceof HTMLInputElement) aliasInput.focus();
+    // Avoid auto-popping iOS virtual keyboard during fullscreen modal mount (can destabilize WKWebView)
+    if (aliasInput instanceof HTMLInputElement && (globalThis.innerWidth || 999) > 680) {
+        aliasInput.focus();
+    }
 
     const save = async () => {
         const mode = getMode();

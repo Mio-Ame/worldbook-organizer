@@ -1060,27 +1060,26 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
         return { ok: false, error: `已存在同名世界书「${cleanNew}」` };
     }
 
-    // Step 1: Load original worldbook content
-    const data = await loadWorldInfoPayload(cleanOld);
+    // Step 1: Load original worldbook content without bloating host `worldInfoCache`
+    // (critical on memory-constrained mobile WebViews like TauriTavern iOS).
+    let data = await fetchWorldInfoUncached(cleanOld);
+    if (!data || typeof data !== 'object' || !('entries' in data)) {
+        data = await loadWorldInfoPayload(cleanOld);
+    }
     if (!data || typeof data !== 'object' || !('entries' in data)) {
         return { ok: false, error: `无法读取原世界书「${cleanOld}」` };
     }
 
     // Step 2: Save to new filename FIRST (never delete old before new succeeds!)
-    // In batch mode (`deferRefresh: true`), call `/api/worldinfo/edit` directly so ST doesn't
-    // rebuild the entire DOM & re-fetch world_names on every single book!
-    const saveFn = !deferRefresh ? (ctx?.saveWorldInfo || _worldInfoModule?.saveWorldInfo) : null;
+    // Always write via `/api/worldinfo/edit` directly so ST doesn't duplicate the book in
+    // `worldInfoCache` or run `updateWorldInfoList()` twice during a single rename.
     try {
-        if (typeof saveFn === 'function') {
-            await saveFn(cleanNew, data, true);
-        } else {
-            const saveRes = await fetch('/api/worldinfo/edit', {
-                method: 'POST',
-                headers: buildRequestHeaders(),
-                body: JSON.stringify({ name: cleanNew, data }),
-            });
-            if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);
-        }
+        const saveRes = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: cleanNew, data }),
+        });
+        if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);
     } catch (err) {
         return { ok: false, error: `写入新世界书失败：${err?.message || err}` };
     }
