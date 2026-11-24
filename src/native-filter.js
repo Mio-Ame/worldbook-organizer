@@ -292,9 +292,15 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         ? selectEl.querySelectorAll('optgroup[data-wbo-group]').length
         : 0;
 
+    const hiddenList = mode === 'global'
+        ? (Array.isArray(settings.globalHiddenGroupIds) ? settings.globalHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER])
+        : (Array.isArray(settings.editorHiddenGroupIds) ? settings.editorHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER]);
+    const hiddenSig = [...hiddenList].sort().join(',');
+
     return JSON.stringify([
         mode,
         Boolean(settings.showCharBooks),
+        hiddenSig,
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
         settings.aliasTitleMode,
@@ -352,6 +358,12 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     const placeholderOpts = [];
     const visibleOpts = [];
 
+    const globalHiddenSet = new Set(
+        Array.isArray(settings.globalHiddenGroupIds)
+            ? settings.globalHiddenGroupIds
+            : (settings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []),
+    );
+
     for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
         if (opt.value === '') {
             placeholderOpts.push(opt);
@@ -363,6 +375,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
             bookMeta: meta,
             activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
+            hiddenGroupIds: globalHiddenSet,
             isSelected: opt.selected,
             isCurrentlyEditing: false,
         });
@@ -430,6 +443,12 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     const placeholderOpts = [];
     const visibleByGroup = new Map();
 
+    const editorHiddenSet = new Set(
+        Array.isArray(settings.editorHiddenGroupIds)
+            ? settings.editorHiddenGroupIds
+            : (settings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []),
+    );
+
     for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
         if (opt.value === '') {
             placeholderOpts.push(opt);
@@ -443,6 +462,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             bookMeta: meta,
             activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
+            hiddenGroupIds: editorHiddenSet,
             isSelected: opt.selected,
             isCurrentlyEditing: isEditing,
         });
@@ -1206,10 +1226,14 @@ export function setGlobalWorldActive(realName, active) {
         }
     }
 
-    // Only re-hide a detached hidden character book if it was deactivated
+    // Only re-hide a detached hidden book (char group or user-excluded global group) if it was deactivated
     if (!active && _latestClassification && _latestSettings) {
         const meta = _latestClassification.byName?.get(clean);
-        if (meta?.isInCharGroup && !_latestSettings.showCharBooks) {
+        const globalHiddenList = Array.isArray(_latestSettings.globalHiddenGroupIds)
+            ? _latestSettings.globalHiddenGroupIds
+            : (_latestSettings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []);
+        const isGloballyHidden = Boolean(meta && globalHiddenList.includes(meta.groupId));
+        if (isGloballyHidden && !_latestSettings.showCharBooks) {
             setTimeout(() => {
                 if (_latestClassification && _latestSettings) {
                     applyAllNativeWorldFilters(_latestClassification, _latestSettings);

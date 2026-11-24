@@ -316,9 +316,22 @@ export function renderEmbeddedPanel() {
         showCharBtn.classList.toggle('fa-user-slash', !shown);
         showCharBtn.classList.toggle('is-active', shown);
         showCharBtn.setAttribute('aria-pressed', String(shown));
-        showCharBtn.title = shown
-            ? `正在显示角色世界书（${classification.charCount} 本），点击隐藏`
-            : `已隐藏角色世界书（${classification.charCount} 本），点击显示`;
+
+        const gHidden = Array.isArray(settings.globalHiddenGroupIds) ? settings.globalHiddenGroupIds : [];
+        const eHidden = Array.isArray(settings.editorHiddenGroupIds) ? settings.editorHiddenGroupIds : [];
+        const allHiddenIds = [...new Set([...gHidden, ...eHidden])];
+        const hasExtraExcluded = allHiddenIds.some((id) => id !== SPECIAL_GROUPS.CHARACTER);
+        if (hasExtraExcluded) {
+            const nameById = new Map((classification.orderedSections || []).map((s) => [s.id, s.name]));
+            const names = allHiddenIds.map((id) => nameById.get(id)).filter(Boolean);
+            showCharBtn.title = shown
+                ? `正在显示全部已隐藏分组（${names.join('、')}），点击收起`
+                : `已默认隐藏 ${names.join('、')}，点击全部显示`;
+        } else {
+            showCharBtn.title = shown
+                ? `正在显示角色世界书（${classification.charCount} 本），点击隐藏`
+                : `已隐藏角色世界书（${classification.charCount} 本），点击显示`;
+        }
     }
 
     // Only refresh Group Manager when it is actually open (0 background scanning when closed!)
@@ -4952,6 +4965,17 @@ function bindSettingControlListeners(container) {
             settings[key] = el.checked;
             if (key === 'hideCharBooksByDefault') {
                 settings.showCharBooks = !el.checked;
+                for (const listKey of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+                    const curList = Array.isArray(settings[listKey]) ? [...settings[listKey]] : [];
+                    if (el.checked) {
+                        if (!curList.includes(SPECIAL_GROUPS.CHARACTER)) curList.unshift(SPECIAL_GROUPS.CHARACTER);
+                    } else {
+                        const idx = curList.indexOf(SPECIAL_GROUPS.CHARACTER);
+                        if (idx >= 0) curList.splice(idx, 1);
+                    }
+                    settings[listKey] = curList;
+                }
+                container.dispatchEvent(new CustomEvent('wbo:sync-exclude-chips'));
             }
             await _callbacks.onMutation({ save: true });
         });
@@ -4974,7 +4998,30 @@ function bindSettingControlListeners(container) {
  */
 function openSettingsModal() {
     if (!_callbacks) return;
-    const { settings } = _callbacks.getState();
+    const { settings, classification } = _callbacks.getState();
+
+    const sectionOptions = [
+        { id: SPECIAL_GROUPS.CHARACTER, name: '角色世界书', color: '#9b72cf' },
+        ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
+        { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
+    ];
+    const renderExcludeChipsHtml = (targetKey, selectedIds) => {
+        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+        return sectionOptions.map((sec) => {
+            const active = set.has(sec.id);
+            return `
+                <button type="button"
+                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+                    data-exclude-target="${esc(targetKey)}"
+                    data-exclude-gid="${esc(sec.id)}"
+                    aria-pressed="${active ? 'true' : 'false'}">
+                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
+                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
+                    <span>${esc(sec.name)}</span>
+                </button>
+            `;
+        }).join('');
+    };
 
     const paletteButtonsHtml = THEME_PALETTES.map((p) => `
         <button type="button"
@@ -5061,6 +5108,37 @@ function openSettingsModal() {
             </div>
 
             <div class="wbo-card">
+                <div class="wbo-ai-section-head"><span>下拉框默认排除分组</span></div>
+                <div class="wbo-exclude-block">
+                    <div class="wbo-exclude-head">
+                        <span>全局激活框</span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
+                            <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
+                        </span>
+                    </div>
+                    <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
+                        ${renderExcludeChipsHtml('globalHiddenGroupIds', settings.globalHiddenGroupIds)}
+                    </div>
+                </div>
+                <div class="wbo-local-divider"></div>
+                <div class="wbo-exclude-block">
+                    <div class="wbo-exclude-head">
+                        <span>编辑下拉框</span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
+                            <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
+                            <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
+                        </span>
+                    </div>
+                    <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
+                        ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
+                    </div>
+                </div>
+                <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏，点原生栏按钮可随时全部展开。</div>
+            </div>
+
+            <div class="wbo-card">
                 <div class="wbo-ai-section-head"><span>弹窗适配范围</span></div>
                 <label class="wbo-check-line">
                     <input type="checkbox" data-setting="adaptCharBindPopup">
@@ -5100,6 +5178,73 @@ function openSettingsModal() {
 
     syncSettingControlsInPlace(modal, settings);
     bindSettingControlListeners(modal);
+
+    const syncExcludeChips = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        for (const targetKey of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+            const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
+            modal.querySelectorAll(`[data-exclude-target="${targetKey}"]`).forEach((btn) => {
+                const gid = btn.getAttribute('data-exclude-gid') || '';
+                const active = set.has(gid);
+                btn.classList.toggle('is-selected', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                const mark = btn.querySelector('.wbo-local-cat-mark');
+                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+            });
+        }
+        const hideCharCb = modal.querySelector('input[data-setting="hideCharBooksByDefault"]');
+        if (hideCharCb instanceof HTMLInputElement) {
+            const charHiddenAnywhere =
+                (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
+                (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
+            hideCharCb.checked = charHiddenAnywhere;
+            cur.hideCharBooksByDefault = charHiddenAnywhere;
+        }
+    };
+    modal.addEventListener('wbo:sync-exclude-chips', syncExcludeChips);
+
+    modal.querySelectorAll('[data-exclude-target]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const targetKey = btn.getAttribute('data-exclude-target');
+            const gid = btn.getAttribute('data-exclude-gid');
+            if (!targetKey || !gid) return;
+            const cur = _callbacks.getState().settings;
+            const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
+            if (set.has(gid)) set.delete(gid);
+            else set.add(gid);
+            cur[targetKey] = [...set];
+            // If user just excluded a group while reveal toggle was OFF, apply immediately;
+            // if user had toggled reveal ON earlier, keep reveal state untouched or switch to hidden when excluding?
+            // Keeping `showCharBooks = false` when user actively configures default exclusions ensures instant visible effect!
+            if (set.size > 0 && cur.showCharBooks) {
+                cur.showCharBooks = false;
+            }
+            syncExcludeChips();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    modal.querySelectorAll('[data-exclude-preset]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const preset = btn.getAttribute('data-exclude-preset');
+            const scopeKey = btn.getAttribute('data-exclude-scope');
+            if (!preset || !scopeKey) return;
+            const cur = _callbacks.getState().settings;
+            if (preset === 'clear') {
+                cur[scopeKey] = [];
+            } else if (preset === 'char-only') {
+                cur[scopeKey] = [SPECIAL_GROUPS.CHARACTER];
+                cur.showCharBooks = false;
+            } else if (preset === 'copy-global') {
+                cur[scopeKey] = Array.isArray(cur.globalHiddenGroupIds) ? [...cur.globalHiddenGroupIds] : [];
+                if (cur[scopeKey].length > 0) cur.showCharBooks = false;
+            }
+            syncExcludeChips();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
 
     const syncThemeChips = () => {
         const cur = _callbacks?.getState?.()?.settings || settings;

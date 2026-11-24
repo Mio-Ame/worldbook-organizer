@@ -158,6 +158,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     adaptChatBindPopup: true,
     adaptMoveEntryPopup: true,
     showNativeOptgroups: true,
+    globalHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
+    editorHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     localOrganizeCategories: ['user_persona', 'style', 'nsfw'],
     groupPanelExpanded: false,
     charGroupCollapsed: true,
@@ -333,6 +335,15 @@ export function normalizeSettings(raw) {
     }
     merged.sectionOrderVersion = 2;
     merged.sectionOrder = finalOrder;
+
+    // Normalize per-selector custom hidden group lists (defaulting smoothly from legacy `hideCharBooksByDefault`)
+    const defaultHiddenList = merged.hideCharBooksByDefault ? [SPECIAL_GROUPS.CHARACTER] : [];
+    for (const key of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+        const rawList = Object.hasOwn(source, key) ? source[key] : defaultHiddenList;
+        merged[key] = Array.isArray(rawList)
+            ? [...new Set(rawList.filter((id) => typeof id === 'string' && allowedSectionIds.has(id)))]
+            : [...defaultHiddenList];
+    }
 
     return merged;
 }
@@ -1141,6 +1152,7 @@ export function isBookVisibleInSelector({
     bookMeta,
     activeFilterGroupId,
     showCharBooks,
+    hiddenGroupIds = null,
     isSelected = false,
     isCurrentlyEditing = false,
 }) {
@@ -1160,8 +1172,20 @@ export function isBookVisibleInSelector({
         return bookMeta.groupId === activeFilterGroupId;
     }
 
-    // Default mode: hide character-group books unless explicitly shown.
-    if (bookMeta.isInCharGroup && !showCharBooks) {
+    // Reveal toggle ON: show all hidden groups (character books + any user-excluded custom groups)
+    if (showCharBooks) {
+        return true;
+    }
+
+    // Default mode: hide user-configured excluded groups for this selector (defaults to character books)
+    if (hiddenGroupIds !== null && hiddenGroupIds !== undefined) {
+        const isHidden = hiddenGroupIds instanceof Set
+            ? hiddenGroupIds.has(bookMeta.groupId)
+            : Array.isArray(hiddenGroupIds) && hiddenGroupIds.includes(bookMeta.groupId);
+        return !isHidden;
+    }
+
+    if (bookMeta.isInCharGroup) {
         return false;
     }
     return true;
@@ -1871,6 +1895,8 @@ export function exportConfigData(settings) {
             adaptChatBindPopup: cfg.adaptChatBindPopup,
             adaptMoveEntryPopup: cfg.adaptMoveEntryPopup,
             showNativeOptgroups: cfg.showNativeOptgroups,
+            globalHiddenGroupIds: cfg.globalHiddenGroupIds,
+            editorHiddenGroupIds: cfg.editorHiddenGroupIds,
             localOrganizeCategories: cfg.localOrganizeCategories,
             sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,

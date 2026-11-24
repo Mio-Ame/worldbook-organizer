@@ -564,3 +564,63 @@ test('no-AI organize defaults to user_persona, style, and nsfw and honors select
     assert.equal(wideMap.get('赛博世界观设定集'), '世界观');
     assert.equal(wideMap.get('随机小剧场盲盒'), '小剧场');
 });
+
+test('per-selector custom hidden groups work independently with safety invariants and migration', () => {
+    // Legacy migration: hideCharBooksByDefault=true -> both default to [__char__]; false -> []
+    const legacyOn = normalizeSettings({ hideCharBooksByDefault: true });
+    assert.deepEqual(legacyOn.globalHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER]);
+    assert.deepEqual(legacyOn.editorHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER]);
+
+    const legacyOff = normalizeSettings({ hideCharBooksByDefault: false });
+    assert.deepEqual(legacyOff.globalHiddenGroupIds, []);
+    assert.deepEqual(legacyOff.editorHiddenGroupIds, []);
+
+    const settings = normalizeSettings({
+        groups: [
+            { id: 'g_style', name: '文风', color: '#5b8def', collapsed: false },
+            { id: 'g_archive', name: '归档', color: '#8c99a6', collapsed: false },
+        ],
+        assignments: {
+            '古风文风': 'g_style',
+            '旧版设定': 'g_archive',
+        },
+        globalHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER, 'g_style', 'deleted_group_id'],
+        editorHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER, 'g_archive'],
+    });
+    // Deleted group IDs are sanitized out automatically
+    assert.deepEqual(settings.globalHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_style']);
+    assert.deepEqual(settings.editorHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_archive']);
+
+    const bindingMap = new Map([
+        ['角色书A', [{ avatar: 'A.png', charName: '角色A', source: 'primary' }]],
+    ]);
+    const cls = classifyWorldbooks({
+        worldNames: ['角色书A', '古风文风', '旧版设定', '通用书'],
+        bindingMap,
+        settings,
+    });
+
+    // Global selector hides 角色书A + 古风文风, keeps 旧版设定 + 通用书
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('角色书A'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.globalHiddenGroupIds }), false);
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('古风文风'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.globalHiddenGroupIds }), false);
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.globalHiddenGroupIds }), true);
+    // Safety invariant: already globally selected book stays visible even if its group is excluded!
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('古风文风'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.globalHiddenGroupIds, isSelected: true }), true);
+
+    // Editor selector hides 角色书A + 旧版设定, keeps 古风文风 + 通用书
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('古风文风'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds }), true);
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds }), false);
+    // Safety invariant: currently editing book stays visible even if its group is excluded!
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds, isCurrentlyEditing: true }), true);
+
+    // Reveal toggle ON shows ALL hidden groups in both selectors
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('古风文风'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: true, hiddenGroupIds: settings.globalHiddenGroupIds }), true);
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: true, hiddenGroupIds: settings.editorHiddenGroupIds }), true);
+
+    // Export/import round-trip preserves both lists
+    const exported = exportConfigData(settings);
+    const dst = normalizeSettings(null);
+    assert.equal(importConfigData(dst, exported).ok, true);
+    assert.deepEqual(dst.globalHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_style']);
+    assert.deepEqual(dst.editorHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_archive']);
+});

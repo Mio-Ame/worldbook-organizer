@@ -3900,6 +3900,22 @@ details[open] > summary .wbo-details-chev {
     margin-top: 4px;
 }
 
+.wbo-exclude-block {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.wbo-exclude-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--wbo-fg);
+}
+
 @media (max-width: 680px) {
     .wbo-modal-overlay {
         align-items: stretch;

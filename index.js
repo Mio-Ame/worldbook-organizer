@@ -302,8 +302,13 @@ async function init() {
     }
 
     const settings = getSettings();
-    // Honor default hide preference cleanly on fresh boot
-    if (settings.hideCharBooksByDefault) {
+    // Honor default hide preference cleanly on fresh boot (character books or any custom excluded groups)
+    const hasAnyDefaultHidden = Boolean(
+        settings.hideCharBooksByDefault ||
+        (Array.isArray(settings.globalHiddenGroupIds) && settings.globalHiddenGroupIds.length > 0) ||
+        (Array.isArray(settings.editorHiddenGroupIds) && settings.editorHiddenGroupIds.length > 0),
+    );
+    if (hasAnyDefaultHidden) {
         settings.showCharBooks = false;
         if (settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
             settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
