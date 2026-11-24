@@ -5826,6 +5826,10 @@ function openSettingsModal() {
                         <span>识别角色卡内嵌同名世界书</span>
                     </label>
                     <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoScanNewCharacters">
+                        <span>导入新角色卡时自动扫描绑定的世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
                         <input type="checkbox" data-setting="autoImportMissingCharBook">
                         <span>打开角色卡时自动导入缺失的卡内世界书</span>
                     </label>
