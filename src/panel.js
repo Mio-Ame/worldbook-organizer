@@ -333,7 +333,7 @@ export function renderEmbeddedPanel() {
                             id: SPECIAL_GROUPS.CHARACTER,
                             name: '角色世界书（自动归组）',
                             color: '#9b72cf',
-                            collapsed: q || filterId === SPECIAL_GROUPS.CHARACTER ? false : Boolean(settings.charGroupCollapsed),
+                            collapsed: q ? false : Boolean(settings.charGroupCollapsed),
                             isCustom: false,
                             isCharGroup: true,
                             books: matchedCharBooks,
@@ -364,18 +364,22 @@ export function renderEmbeddedPanel() {
         }
 
         bodyHtml = `
-            <div class="wbo-filter-row">
-                <div class="wbo-pills">${pillsHtml}</div>
-                <div class="wbo-search-wrap">
-                    <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="search" class="text_pole wbo-search-input" value="${esc(_searchQuery)}" placeholder="搜世界书 / 别名 / 角色名..." aria-label="搜索世界书">
-                </div>
-            </div>
             <div class="wbo-groups-list">
                 ${sections.length > 0 ? sections.join('') : '<div class="wbo-empty-hint">没有匹配的世界书</div>'}
             </div>
         `;
     }
+
+    const filterBarHtml = `
+        <div class="wbo-filter-row">
+            <div class="wbo-pills">${pillsHtml}</div>
+            ${settings.groupPanelExpanded ? `
+            <div class="wbo-search-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="search" class="text_pole wbo-search-input" value="${esc(_searchQuery)}" placeholder="搜世界书 / 别名 / 角色名..." aria-label="搜索世界书">
+            </div>` : ''}
+        </div>
+    `;
 
     const undoVisible = Array.isArray(settings.undoSnapshots) && settings.undoSnapshots.length > 0;
     const characters = getCharactersInMemory();
@@ -428,6 +432,7 @@ export function renderEmbeddedPanel() {
                 </button>
             </div>
         </div>
+        ${filterBarHtml}
         ${bodyHtml}
     `;
 
@@ -476,7 +481,8 @@ function bindPanelDelegatedEvents(root) {
         switch (action) {
             case 'toggle-panel-expand': {
                 settings.groupPanelExpanded = !settings.groupPanelExpanded;
-                await _callbacks.onMutation({ save: true });
+                renderEmbeddedPanel();
+                await _callbacks.onMutation({ save: true, uiOnly: true });
                 break;
             }
             case 'toggle-show-char': {
@@ -515,7 +521,8 @@ function bindPanelDelegatedEvents(root) {
                     const grp = settings.groups.find((g) => g.id === gid);
                     if (grp) grp.collapsed = !grp.collapsed;
                 }
-                await _callbacks.onMutation({ save: true });
+                renderEmbeddedPanel();
+                await _callbacks.onMutation({ save: true, uiOnly: true });
                 break;
             }
             case 'create-group': {

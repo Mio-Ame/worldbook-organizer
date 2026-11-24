@@ -40,6 +40,8 @@ let _isApplying = false;
 let _latestClassification = null;
 let _latestSettings = null;
 let _currentlyEditingWorld = null;
+let _lastGlobalSignature = null;
+let _lastEditorSignature = null;
 
 /** @type {MutationObserver | null} */
 let _globalSelectObserver = null;
@@ -229,8 +231,59 @@ function bindGlobalSelect2ChipClick($select) {
 }
 
 /**
+ * Compute a stable signature of what `#world_info` or `#world_editor_select`
+ * should contain, so we skip touching Select2 completely when nothing changed.
+ */
+function computeSelectSignature(selectEl, detachedMap, classification, settings, mode) {
+    const allNames = [];
+    const seen = new Set();
+    selectEl.querySelectorAll('option').forEach((opt) => {
+        if (opt.value === '') return;
+        const name = (opt.textContent || '').trim();
+        if (name && !seen.has(name)) {
+            seen.add(name);
+            allNames.push(`${name}:${opt.selected ? 1 : 0}`);
+        }
+    });
+    for (const name of detachedMap.keys()) {
+        if (!seen.has(name)) {
+            seen.add(name);
+            allNames.push(`${name}:0`);
+        }
+    }
+    allNames.sort();
+
+    const groupSig = classification.customGroups.map((g) => `${g.id}=${g.name}`).join('|');
+    const assignmentSig = Object.entries(settings.assignments || {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}>${v}`)
+        .join('|');
+    const aliasSig = Object.entries(settings.aliases || {})
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([k, v]) => `${k}=${v}`)
+        .join('|');
+    const charSig = [...classification.characterBooks.map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)].join('|');
+
+    return JSON.stringify([
+        mode,
+        settings.activeFilterGroupId,
+        Boolean(settings.showCharBooks),
+        Boolean(settings.showNativeOptgroups),
+        settings.charBookTitleMode,
+        settings.aliasTitleMode,
+        mode === 'editor' ? _currentlyEditingWorld : '',
+        groupSig,
+        assignmentSig,
+        aliasSig,
+        charSig,
+        allNames.join(','),
+    ]);
+}
+
+/**
  * Apply filtering and group ordering to `#world_info` (global multi-select).
  * NEVER uses `<optgroup>` and NEVER detaches selected options!
+ * Skips Select2 rebuild completely when signature is unchanged (zero flicker!).
  * @param {any} classification
  * @param {Record<string, any>} settings
  */
@@ -238,6 +291,10 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     const $ = globalThis.jQuery;
     const selectEl = document.getElementById('world_info');
     if (!selectEl) return;
+
+    const sig = computeSelectSignature(selectEl, _globalDetachedMap, classification, settings, 'global');
+    if (sig === _lastGlobalSignature) return;
+    _lastGlobalSignature = sig;
 
     const $select = $ ? $(selectEl) : null;
     const hadSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
@@ -319,6 +376,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 /**
  * Apply filtering and `<optgroup>` grouping to `#world_editor_select`.
  * Safe for both desktop Select2 and mobile native `<select>`.
+ * Skips Select2 rebuild completely when signature is unchanged.
  * @param {any} classification
  * @param {Record<string, any>} settings
  */
@@ -326,6 +384,10 @@ function applyEditorWorldSelectFilter(classification, settings) {
     const $ = globalThis.jQuery;
     const selectEl = document.getElementById('world_editor_select');
     if (!selectEl) return;
+
+    const sig = computeSelectSignature(selectEl, _editorDetachedMap, classification, settings, 'editor');
+    if (sig === _lastEditorSignature) return;
+    _lastEditorSignature = sig;
 
     const $select = $ ? $(selectEl) : null;
     const hadSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
@@ -435,19 +497,30 @@ function applyEditorWorldSelectFilter(classification, settings) {
 
 /**
  * Apply current classification & settings to both `#world_info` and `#world_editor_select`.
- * Protected by a re-entry lock to avoid observer loops.
+ * Protected by a re-entry lock AND `takeRecords()` flush so our own DOM edits
+ * NEVER trigger MutationObserver feedback loops!
  * @param {any} classification
  * @param {Record<string, any>} settings
+ * @param {{ force?: boolean }} [opts]
  */
-export function applyAllNativeWorldFilters(classification, settings) {
+export function applyAllNativeWorldFilters(classification, settings, { force = false } = {}) {
     _latestClassification = classification;
     _latestSettings = settings;
+    if (force) {
+        _lastGlobalSignature = null;
+        _lastEditorSignature = null;
+    }
     if (_isApplying) return;
     _isApplying = true;
     try {
         applyGlobalWorldSelectFilter(classification, settings);
         applyEditorWorldSelectFilter(classification, settings);
     } finally {
+        // CRITICAL: flush mutation records generated by our own DOM updates BEFORE
+        // releasing `_isApplying`, otherwise MutationObserver fires on the next microtask
+        // and creates an infinite Select2 destroy/rebuild oscillation loop!
+        _globalSelectObserver?.takeRecords();
+        _editorSelectObserver?.takeRecords();
         _isApplying = false;
     }
 }
@@ -518,7 +591,9 @@ export function setGlobalWorldActive(realName, active) {
             targetOpt = _globalDetachedMap.get(clean);
             _globalDetachedMap.delete(clean);
             selectEl.appendChild(targetOpt);
+            _lastGlobalSignature = null;
         } finally {
+            _globalSelectObserver?.takeRecords();
             _isApplying = false;
         }
     }
@@ -699,11 +774,13 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
 
     const scheduleResync = () => {
         if (_isApplying) return;
+        _lastGlobalSignature = null;
+        _lastEditorSignature = null;
         clearTimeout(_resyncTimer);
         _resyncTimer = setTimeout(() => {
             if (_isApplying) return;
             onUpstreamWorldListChanged?.();
-        }, 120);
+        }, 180);
     };
 
     const globalEl = document.getElementById('world_info');
@@ -762,6 +839,8 @@ export function stopNativeObservers() {
  */
 export function teardownNativeFilters() {
     stopNativeObservers();
+    _lastGlobalSignature = null;
+    _lastEditorSignature = null;
     _isApplying = true;
     try {
         const $ = globalThis.jQuery;

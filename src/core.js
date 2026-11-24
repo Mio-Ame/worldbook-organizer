@@ -41,7 +41,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     autoImportMissingCharBook: false,
     autoHideInCharBindPopup: true,
     showNativeOptgroups: true,
-    groupPanelExpanded: true,
+    groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,

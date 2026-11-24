@@ -47,16 +47,34 @@
     gap: 4px;
 }
 
-.wbo-btn-compact {
+/* Guard against host themes that constrain .menu_button width to min-content */
+.wbo-panel .menu_button,
+.wbo-modal .menu_button,
+.wbo-ext-settings .menu_button,
+.wbo-charpopup-bar .menu_button {
     display: inline-flex !important;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 8px !important;
-    min-height: 28px;
-    font-size: 0.84em !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
     width: auto !important;
+    min-width: max-content !important;
+    max-width: 100% !important;
+    flex: 0 0 auto !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    writing-mode: horizontal-tb !important;
+    height: auto !important;
+    min-height: 30px !important;
+    padding: 5px 12px !important;
+    line-height: 1.35 !important;
     margin: 0 !important;
-    white-space: nowrap;
+    box-sizing: border-box !important;
+}
+
+.wbo-btn-compact {
+    min-height: 28px !important;
+    padding: 4px 9px !important;
+    font-size: 0.84em !important;
 }
 
 .wbo-btn-active {
@@ -319,13 +337,15 @@
 }
 
 .wbo-tag-char {
-    background: rgba(155, 114, 207, 0.22);
-    color: #d6beff;
+    background: rgba(155, 114, 207, 0.2);
+    color: inherit;
+    border: 1px solid rgba(155, 114, 207, 0.35);
 }
 
 .wbo-tag-persona {
-    background: rgba(61, 165, 184, 0.22);
-    color: #9be3f0;
+    background: rgba(61, 165, 184, 0.2);
+    color: inherit;
+    border: 1px solid rgba(61, 165, 184, 0.35);
 }
 
 .wbo-book-actions {
@@ -494,19 +514,22 @@
 
 .wbo-modal-footer {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    margin-top: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.16));
 }
 
 .wbo-spacer {
-    flex: 1;
+    flex: 1 1 auto;
 }
 
 .wbo-safe-note {
-    font-size: 0.84em;
-    line-height: 1.45;
+    font-size: 0.85em;
+    line-height: 1.55;
     padding: 8px 10px;
     border-radius: 8px;
     border: 1px solid rgba(76, 175, 132, 0.35);
@@ -514,6 +537,15 @@
 }
 
 .wbo-safe-note code {
+    display: inline;
+    padding: 1px 5px;
+    margin: 0 2px;
+    border-radius: 4px;
+    border: none !important;
+    background: rgba(128, 128, 128, 0.16) !important;
+    color: inherit !important;
+    font-family: inherit;
+    font-weight: 600;
     word-break: break-all;
 }
 

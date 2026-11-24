@@ -228,7 +228,11 @@ async function init() {
             settings: getSettings(),
             classification: _classification || classifyWorldbooks({ worldNames: [], bindingMap: new Map(), settings: getSettings() }),
         }),
-        onMutation: ({ save = true } = {}) => {
+        onMutation: ({ save = true, uiOnly = false } = {}) => {
+            if (uiOnly) {
+                if (save) saveSettings();
+                return;
+            }
             recomputeAndRender({ save });
         },
         onRescan: performManualRescan,
