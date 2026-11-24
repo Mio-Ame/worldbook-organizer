@@ -180,11 +180,15 @@ function renderEditorSelect2Selection(state) {
  */
 function restoreSelectOptions(selectEl, detachedMap) {
     const optgroups = Array.from(selectEl.querySelectorAll('optgroup'));
-    for (const grp of optgroups) {
-        while (grp.firstChild) {
-            selectEl.appendChild(grp.firstChild);
+    if (optgroups.length > 0) {
+        const unwrapFrag = document.createDocumentFragment();
+        for (const grp of optgroups) {
+            while (grp.firstChild) {
+                unwrapFrag.appendChild(grp.firstChild);
+            }
+            grp.remove();
         }
-        grp.remove();
+        selectEl.appendChild(unwrapFrag);
     }
 
     // Collect existing option texts to avoid duplicates after upstream `updateWorldInfoList`
@@ -195,13 +199,17 @@ function restoreSelectOptions(selectEl, detachedMap) {
         }
     });
 
-    for (const [name, opt] of detachedMap.entries()) {
-        if (!existingByText.has(name)) {
-            selectEl.appendChild(opt);
-            existingByText.set(name, opt);
+    if (detachedMap.size > 0) {
+        const restoreFrag = document.createDocumentFragment();
+        for (const [name, opt] of detachedMap.entries()) {
+            if (!existingByText.has(name)) {
+                restoreFrag.appendChild(opt);
+                existingByText.set(name, opt);
+            }
         }
+        selectEl.appendChild(restoreFrag);
+        detachedMap.clear();
     }
-    detachedMap.clear();
 }
 
 /**
@@ -357,9 +365,11 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         return ta.localeCompare(tb, 'zh-CN');
     });
 
+    const frag = document.createDocumentFragment();
     for (const opt of [...placeholderOpts, ...visibleOpts]) {
-        selectEl.appendChild(opt);
+        frag.appendChild(opt);
     }
+    selectEl.appendChild(frag);
 
     if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
         const patched = patchExistingSelect2InPlace($select, {
@@ -424,9 +434,10 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         }
     }
 
+    const frag = document.createDocumentFragment();
     // Re-append placeholders first
     for (const opt of placeholderOpts) {
-        selectEl.appendChild(opt);
+        frag.appendChild(opt);
     }
 
     const orderedSections = (classification.orderedSections || []).map((s) => ({
@@ -456,13 +467,14 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             for (const opt of opts) {
                 optgroup.appendChild(opt);
             }
-            selectEl.appendChild(optgroup);
+            frag.appendChild(optgroup);
         } else {
             for (const opt of opts) {
-                selectEl.appendChild(opt);
+                frag.appendChild(opt);
             }
         }
     }
+    selectEl.appendChild(frag);
 
     // Preserve selection cleanly
     if (prevValue !== '') {
@@ -578,10 +590,11 @@ function syncMobileEditorTrigger(selectEl, enabled) {
             ev.stopPropagation();
             openMobileEditorPickerSheet();
         });
+        // Mirror native `<select>` geometry ONCE while `<select>` is still visible (zero forced reflow on subsequent toggles!)
+        mirrorNativeSelectAppearance(selectEl, trigger);
         selectEl.insertAdjacentElement('afterend', trigger);
     }
 
-    mirrorNativeSelectAppearance(selectEl, trigger);
     selectEl.classList.add('wbo-mobile-select-hidden');
     syncMobileEditorTriggerLabel();
 }

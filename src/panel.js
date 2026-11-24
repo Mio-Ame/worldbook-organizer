@@ -101,7 +101,7 @@ function detectHostThemeClass() {
 }
 
 const THEME_PALETTES = Object.freeze([
-    { id: 'classic', label: '经典清透', lightBg: '#f5f6f8', darkBg: '#1c1e24', accent: '#4c6ef5' },
+    { id: 'classic', label: '素雅纸墨', lightBg: '#f6f6f3', darkBg: '#191a1d', accent: '#2b2b2e' },
     { id: 'ink', label: '素纸青岚', lightBg: '#f1f4f6', darkBg: '#20252d', accent: '#2c7a7b' },
     { id: 'warm', label: '暖笺琥珀', lightBg: '#f6f2ea', darkBg: '#221e1b', accent: '#b66634' },
     { id: 'sakura', label: '雾粉紫烟', lightBg: '#f8f4f7', darkBg: '#211d24', accent: '#b85c88' },
@@ -227,19 +227,27 @@ function ensureHeaderBar() {
         editorRow.appendChild(btn);
     }
 
-    btn.addEventListener('click', async (ev) => {
+    btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (!_callbacks) return;
         const { settings } = _callbacks.getState();
-        settings.showCharBooks = !settings.showCharBooks;
-        if (!settings.showCharBooks && settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
+        const nextShown = !settings.showCharBooks;
+        settings.showCharBooks = nextShown;
+        if (!nextShown && settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
             settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
         }
-        if (settings.showCharBooks) {
+        if (nextShown) {
             settings.charGroupCollapsed = false;
             promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
         }
-        await _callbacks.onMutation({ save: true });
+        // Give instant 0ms tactile icon feedback first, then flush batched select DOM sync on next frame
+        btn.classList.toggle('fa-user', nextShown);
+        btn.classList.toggle('fa-user-slash', !nextShown);
+        btn.classList.toggle('is-active', nextShown);
+        btn.setAttribute('aria-pressed', String(nextShown));
+        requestAnimationFrame(() => {
+            void _callbacks?.onMutation({ save: true });
+        });
     });
 
     return btn;

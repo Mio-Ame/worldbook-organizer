@@ -6,52 +6,52 @@
     display: none !important;
 }
 
-/* Standalone modals: Default Palette "经典清透" (clean neutral-light / sleek dark-slate + classic cobalt-indigo) */
+/* Standalone modals: Default Palette "素雅纸墨" (original minimalist warm-paper & graphite-ink monochrome) */
 .wbo-modal {
-    --wbo-bg: #1b1d23;
-    --wbo-bg-elevated: #22252e;
-    --wbo-fg: #e8eaf0;
-    --wbo-fg-muted: #969dad;
-    --wbo-border: #323642;
-    --wbo-border-strong: #494f60;
-    --wbo-surface: #252832;
-    --wbo-surface-hover: #2e323f;
-    --wbo-surface-active: #373c4c;
-    --wbo-accent: #6c8cff;
-    --wbo-accent-hover: #829eff;
-    --wbo-accent-soft: rgba(108, 140, 255, 0.16);
-    --wbo-accent-fg: #ffffff;
-    --wbo-on-bg: #6c8cff;
-    --wbo-on-fg: #ffffff;
-    --wbo-row-active-bg: rgba(108, 140, 255, 0.13);
-    --wbo-row-active-bar: #6c8cff;
-    --wbo-track-off: #4a4f5e;
-    --wbo-track-on: #6c8cff;
+    --wbo-bg: #191a1d;
+    --wbo-bg-elevated: #212226;
+    --wbo-fg: #e7e7e4;
+    --wbo-fg-muted: #9a9b9f;
+    --wbo-border: #313238;
+    --wbo-border-strong: #484a52;
+    --wbo-surface: #232429;
+    --wbo-surface-hover: #2c2e34;
+    --wbo-surface-active: #35373f;
+    --wbo-accent: #dcdcd8;
+    --wbo-accent-hover: #efefe9;
+    --wbo-accent-soft: rgba(220, 220, 216, 0.13);
+    --wbo-accent-fg: #18191c;
+    --wbo-on-bg: #dcdcd8;
+    --wbo-on-fg: #18191c;
+    --wbo-row-active-bg: rgba(220, 220, 216, 0.10);
+    --wbo-row-active-bar: #cfcfc9;
+    --wbo-track-off: #484a52;
+    --wbo-track-on: #dcdcd8;
     box-sizing: border-box;
     color: var(--wbo-fg);
     font-family: inherit;
 }
 
 .wbo-modal.wbo-theme-light {
-    --wbo-bg: #f5f6f8;
-    --wbo-bg-elevated: #eceff3;
-    --wbo-fg: #1f2329;
-    --wbo-fg-muted: #646c79;
-    --wbo-border: #e1e4eb;
-    --wbo-border-strong: #c5cbd6;
-    --wbo-surface: #ffffff;
-    --wbo-surface-hover: #f0f3f8;
-    --wbo-surface-active: #e6ebf5;
-    --wbo-accent: #4c6ef5;
-    --wbo-accent-hover: #3b5bdb;
-    --wbo-accent-soft: rgba(76, 110, 245, 0.10);
-    --wbo-accent-fg: #ffffff;
-    --wbo-on-bg: #4c6ef5;
-    --wbo-on-fg: #ffffff;
-    --wbo-row-active-bg: rgba(76, 110, 245, 0.08);
-    --wbo-row-active-bar: #4c6ef5;
-    --wbo-track-off: #c8ced9;
-    --wbo-track-on: #4c6ef5;
+    --wbo-bg: #f6f6f3;
+    --wbo-bg-elevated: #eeeeea;
+    --wbo-fg: #222224;
+    --wbo-fg-muted: #6c6c70;
+    --wbo-border: #e2e2dc;
+    --wbo-border-strong: #c8c8c0;
+    --wbo-surface: #fcfcfb;
+    --wbo-surface-hover: #f1f1ed;
+    --wbo-surface-active: #e7e7e1;
+    --wbo-accent: #2c2c2e;
+    --wbo-accent-hover: #141416;
+    --wbo-accent-soft: rgba(44, 44, 46, 0.08);
+    --wbo-accent-fg: #fcfcfb;
+    --wbo-on-bg: #2c2c2e;
+    --wbo-on-fg: #fcfcfb;
+    --wbo-row-active-bg: rgba(44, 44, 46, 0.06);
+    --wbo-row-active-bar: #2c2c2e;
+    --wbo-track-off: #ccccc5;
+    --wbo-track-on: #2c2c2e;
 }
 
 /* Palette 2: 素纸青岚 (cool ink-wash silk-paper + celadon-teal) */
