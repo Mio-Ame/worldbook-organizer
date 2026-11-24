@@ -53,11 +53,41 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
+const STYLE_ASSET_VERSION = '2.34.2';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _debounceTimer = null;
 let _deferredSaveTimer = null;
 let _classification = null;
+
+/**
+ * Bust stale browser/WebView disk cache on `style.css` after an extension update
+ * without causing a flash of unstyled content.
+ */
+function ensureFreshStylesheet() {
+    if (typeof document === 'undefined' || !document.head) return;
+    try {
+        const targetHref = new URL(`./style.css?v=${STYLE_ASSET_VERSION}`, import.meta.url).href;
+        const links = [...document.querySelectorAll('link[rel="stylesheet"]')];
+        const existing = links.filter((el) => {
+            const h = el.getAttribute('href') || '';
+            return h.includes('worldbook-organizer/style.css');
+        });
+        if (existing.some((el) => el.href === targetHref)) return;
+        const fresh = document.createElement('link');
+        fresh.rel = 'stylesheet';
+        fresh.href = targetHref;
+        fresh.setAttribute('data-wbo-style-ver', STYLE_ASSET_VERSION);
+        fresh.addEventListener('load', () => {
+            for (const old of existing) {
+                if (old !== fresh) old.remove();
+            }
+        });
+        document.head.appendChild(fresh);
+    } catch {
+        // Ignore in non-browser or restricted environments
+    }
+}
 let _bindingMap = new Map();
 /** @type {Array<{ event: string, handler: Function }>} */
 const _boundEvents = [];
@@ -436,6 +466,7 @@ async function init() {
     }
 
     registerSlashCommands(ctx);
+    ensureFreshStylesheet();
 }
 
 /**

@@ -2629,10 +2629,12 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false } 
     modal.className = `wbo-modal${wide ? ' is-wide' : ''}${pinnedLayout ? ' is-pinned-layout' : ''}`;
     applyThemeClass(modal);
     applyTauriSurface(modal, 'fullscreen-window');
-    if (wide) {
+    if (wide || pinnedLayout) {
         // Lock a steady window height so switching tabs/views NEVER jumps the modal vertically!
         const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
-        const stableH = Math.round(Math.min(baseVh * 0.84, 680));
+        const stableH = wide
+            ? Math.round(Math.min(baseVh * 0.84, 680))
+            : Math.round(Math.min(baseVh * 0.78, 600));
         modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
     }
 
@@ -3137,9 +3139,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const { modal } = createSubModal(
         '整理世界书',
         `
-            <div class="wbo-tabs wbo-pinned-tabs" id="wbo-ai-tabs">
-                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">免 AI 整理</button>
-                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
+            <div class="wbo-pinned-tabs-bar" id="wbo-ai-tabs">
+                <div class="wbo-tabs">
+                    <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">免 AI 整理</button>
+                    <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
+                </div>
             </div>
 
             <div class="wbo-ai-step wbo-local-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
@@ -5648,10 +5652,12 @@ function openSettingsModal() {
     const { modal } = createSubModal(
         '显示与行为设置',
         `
-            <div class="wbo-tabs wbo-pinned-tabs" id="wbo-settings-tabs">
-                <button type="button" class="wbo-tab is-active" data-settings-tab="appearance">外观与入口</button>
-                <button type="button" class="wbo-tab" data-settings-tab="display">标题与排除</button>
-                <button type="button" class="wbo-tab" data-settings-tab="behavior">识别与适配</button>
+            <div class="wbo-pinned-tabs-bar" id="wbo-settings-tabs">
+                <div class="wbo-tabs">
+                    <button type="button" class="wbo-tab is-active" data-settings-tab="appearance">外观与入口</button>
+                    <button type="button" class="wbo-tab" data-settings-tab="display">标题与排除</button>
+                    <button type="button" class="wbo-tab" data-settings-tab="behavior">识别与适配</button>
+                </div>
             </div>
 
             <div class="wbo-step-scroll">
@@ -5827,6 +5833,8 @@ function openSettingsModal() {
                     pane.hidden = pane.getAttribute('data-settings-pane') !== targetTab;
                 }
             });
+            const scrollEl = modal.querySelector('.wbo-step-scroll');
+            if (scrollEl) scrollEl.scrollTop = 0;
         });
     });
 
