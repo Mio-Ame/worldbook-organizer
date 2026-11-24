@@ -510,6 +510,84 @@ export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSe
 }
 
 /**
+ * One-time migration from legacy v1.4.0 localStorage custom API config into
+ * cross-device `extensionSettings` channels (just like ST-BaiBai-Book).
+ * @param {Record<string, any>} settings
+ * @returns {boolean} true if migrated
+ */
+export function migrateLegacyLocalApiConfig(settings) {
+    if (!settings || (Array.isArray(settings.apiChannels) && settings.apiChannels.length > 0)) {
+        return false;
+    }
+    try {
+        const raw = globalThis.localStorage?.getItem(CUSTOM_API_STORAGE_KEY);
+        if (!raw) return false;
+        const parsed = JSON.parse(raw);
+        if (!parsed || (!parsed.baseUrl && !parsed.apiKey && !parsed.model)) return false;
+        const id = `api_${Date.now().toString(36)}`;
+        settings.apiChannels = [{
+            id,
+            name: parsed.model ? `自定义 · ${parsed.model}` : '自定义 API',
+            baseUrl: String(parsed.baseUrl || 'https://api.openai.com/v1').trim(),
+            apiKey: String(parsed.apiKey || '').trim(),
+            model: String(parsed.model || '').trim(),
+        }];
+        settings.activeApiChannelId = id;
+        if (parsed.provider === 'custom') settings.apiProvider = 'custom';
+        globalThis.localStorage?.removeItem(CUSTOM_API_STORAGE_KEY);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Read shared API channels from ST-BaiBai-Book (`extensionSettings.baibai_api_channels`
+ * or `baibai_book.channels`) in read-only mode so users can import them in 1 click.
+ * @returns {Array<{ name: string, baseUrl: string, apiKey: string, model: string }>}
+ */
+export function readBaiBaiSharedChannels() {
+    const es = getHostContext()?.extensionSettings;
+    if (!es || typeof es !== 'object') return [];
+    const list =
+        (Array.isArray(es.baibai_api_channels?.channels) && es.baibai_api_channels.channels) ||
+        (Array.isArray(es.baibai_book?.channels) && es.baibai_book.channels) ||
+        [];
+    return list
+        .filter((ch) => ch && typeof ch === 'object' && (ch.url || ch.baseUrl))
+        .map((ch) => ({
+            name: String(ch.name || ch.model || '柏宝书渠道').trim(),
+            baseUrl: String(ch.url || ch.baseUrl || '').trim(),
+            apiKey: String(ch.key || ch.apiKey || '').trim(),
+            model: String(ch.model || '').trim(),
+        }));
+}
+
+/**
+ * Test a custom OpenAI-compatible API channel cleanly.
+ * @param {{ baseUrl: string, apiKey: string, model: string }} cfg
+ * @returns {Promise<{ ok: boolean, message: string }>}
+ */
+export async function testCustomApiChannel({ baseUrl, apiKey, model }) {
+    try {
+        if (model) {
+            const out = await callCustomApiForOrganize({
+                baseUrl,
+                apiKey,
+                model,
+                systemPrompt: 'Reply with OK only.',
+                userPrompt: 'ping',
+            });
+            return { ok: true, message: `连接成功（返回：${out.slice(0, 24).trim() || 'OK'}）` };
+        }
+        const models = await fetchCustomApiModels({ baseUrl, apiKey });
+        return { ok: true, message: `连接成功，获取到 ${models.length} 个模型` };
+    } catch (err) {
+        return { ok: false, message: String(err?.message || err) };
+    }
+}
+
+/**
  * Read custom OpenAI-compatible API settings from localStorage (device-local,
  * never exported in backup JSON so API keys stay private).
  */

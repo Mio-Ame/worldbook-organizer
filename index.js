@@ -29,6 +29,7 @@ import {
     getSettings,
     getWorldNames,
     importEmbeddedWorldbookForCharacter,
+    migrateLegacyLocalApiConfig,
     saveSettings,
     showToast,
     syncFallbackSettingsData,
@@ -45,12 +46,14 @@ import {
     bindPanelCallbacks,
     renderEmbeddedPanel,
     renderExtensionSettingsPanel,
+    syncEmbeddedPanelIndicators,
     teardownPanels,
 } from './src/panel.js';
 
 let _initialized = false;
 let _debounceTimer = null;
 let _classification = null;
+let _bindingMap = new Map();
 /** @type {Array<{ event: string, handler: Function }>} */
 const _boundEvents = [];
 let _domWorldInfoChangeHandler = null;
@@ -79,7 +82,7 @@ function recomputeAndRender({ save = false } = {}) {
     const charLore = getCharLoreEntries();
     const powerUser = getPowerUserSettings();
 
-    const bindingMap = buildCharacterBindingIndex({
+    _bindingMap = buildCharacterBindingIndex({
         characters,
         charLore,
         cachedCharBindings: settings.cachedCharBindings,
@@ -92,7 +95,7 @@ function recomputeAndRender({ save = false } = {}) {
 
     _classification = classifyWorldbooks({
         worldNames,
-        bindingMap,
+        bindingMap: _bindingMap,
         personaMap,
         settings,
     });
@@ -220,6 +223,11 @@ async function init() {
         }
     }
 
+    // Migrate legacy v1.4.0 localStorage API config into cross-device extensionSettings once
+    if (migrateLegacyLocalApiConfig(settings)) {
+        saveSettings();
+    }
+
     // Load in-memory world-info & power-user modules once (with ST 1.14 fallbacks)
     await ensureWorldInfoModule();
     await ensurePowerUserModule();
@@ -228,6 +236,7 @@ async function init() {
     bindPanelCallbacks({
         getState: () => ({
             settings: getSettings(),
+            bindingMap: _bindingMap,
             classification: _classification || classifyWorldbooks({ worldNames: [], bindingMap: new Map(), settings: getSettings() }),
         }),
         onMutation: ({ save = true, uiOnly = false } = {}) => {
@@ -248,17 +257,18 @@ async function init() {
     });
 
     // Listen to native select changes so checkboxes & active indicators stay in sync
+    // WITHOUT full DOM innerHTML rebuilds (preserves scroll position & IME state!)
     const $ = globalThis.jQuery;
     if ($) {
         _domWorldInfoChangeHandler = () => {
-            renderEmbeddedPanel();
+            syncEmbeddedPanelIndicators();
         };
         _domEditorChangeHandler = () => {
             const sel = document.getElementById('world_editor_select');
             const selectedOpt = sel?.selectedOptions?.[0];
             const name = selectedOpt && selectedOpt.value !== '' ? (selectedOpt.textContent || '').trim() : null;
             setCurrentlyEditingWorld(name);
-            renderEmbeddedPanel();
+            syncEmbeddedPanelIndicators();
         };
         $(document).on('change.wbo', '#world_info', _domWorldInfoChangeHandler);
         $(document).on('change.wbo', '#world_editor_select', _domEditorChangeHandler);

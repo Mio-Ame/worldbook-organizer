@@ -20,6 +20,7 @@ import {
     moveSectionOrder,
     normalizeSettings,
     parseAiOrganizeResponse,
+    summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
     updateCachedCharBindings,
 } from '../src/core.js';
@@ -310,6 +311,33 @@ test('migrateSettingsOnWorldRename updates assignments, aliases, notes, override
     assert.equal(settings.cachedCharBindings['Alice.png'].primary, '新书名');
     assert.equal(settings.cachedCharBindings['Alice.png'].embedded, '新书名');
     assert.equal(settings.aliases['新书名'], '临时别名');
+});
+
+test('summarizeCharacterWorldCoverage pinpoints unbound, missing-file, and shared-book characters', () => {
+    const chars = [
+        { avatar: 'A.png', name: '角色A', shallow: false, data: { extensions: { world: '共用书' } } },
+        { avatar: 'B.png', name: '角色B', shallow: false, data: { extensions: { world: '共用书' } } },
+        { avatar: 'C.png', name: '无书角色', shallow: false, data: { extensions: { world: '' } } },
+        { avatar: 'D.png', name: '缺书角色', shallow: false, data: { extensions: { world: '已删世界书' } } },
+    ];
+    const bindingMap = new Map([
+        ['共用书', [
+            { avatar: 'A.png', charName: '角色A', source: 'primary' },
+            { avatar: 'B.png', charName: '角色B', source: 'primary' },
+        ]],
+    ]);
+    const cov = summarizeCharacterWorldCoverage({
+        characters: chars,
+        bindingMap,
+        worldNamesSet: new Set(['共用书']),
+    });
+    assert.equal(cov.unboundChars.length, 1);
+    assert.equal(cov.unboundChars[0].charName, '无书角色');
+    assert.equal(cov.missingFileChars.length, 1);
+    assert.equal(cov.missingFileChars[0].charName, '缺书角色');
+    assert.equal(cov.missingFileChars[0].missingWorld, '已删世界书');
+    assert.equal(cov.sharedBooks.length, 1);
+    assert.deepEqual(cov.sharedBooks[0].charNames, ['角色A', '角色B']);
 });
 
 test('entry module and all submodules resolve and import without missing paths', async () => {

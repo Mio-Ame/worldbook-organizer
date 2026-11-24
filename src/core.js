@@ -46,6 +46,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     ungroupedCollapsed: false,
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
     sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
+    apiProvider: 'host', // 'host' | 'custom'
+    activeApiChannelId: '',
+    apiChannels: [], // Array<{ id, name, baseUrl, apiKey, model }>
     groups: [],
     assignments: {},
     aliases: {},
@@ -108,6 +111,28 @@ export function normalizeSettings(raw) {
 
     if (!Array.isArray(merged.undoSnapshots)) {
         merged.undoSnapshots = [];
+    }
+
+    if (merged.apiProvider !== 'custom') {
+        merged.apiProvider = 'host';
+    }
+    if (!Array.isArray(merged.apiChannels)) {
+        merged.apiChannels = [];
+    }
+    merged.apiChannels = merged.apiChannels
+        .filter((ch) => ch && typeof ch === 'object' && typeof ch.id === 'string' && ch.id.trim())
+        .map((ch) => ({
+            id: ch.id.trim(),
+            name: String(ch.name ?? '自定义 API').trim() || '自定义 API',
+            baseUrl: String(ch.baseUrl ?? ch.url ?? '').trim(),
+            apiKey: String(ch.apiKey ?? ch.key ?? '').trim(),
+            model: String(ch.model ?? '').trim(),
+        }));
+    if (
+        typeof merged.activeApiChannelId !== 'string' ||
+        (merged.activeApiChannelId && !merged.apiChannels.some((c) => c.id === merged.activeApiChannelId))
+    ) {
+        merged.activeApiChannelId = merged.apiChannels[0]?.id || '';
     }
 
     if (!['char_with_sub', 'char_only', 'original'].includes(merged.charBookTitleMode)) {
@@ -388,6 +413,74 @@ export function findCardsWithUnimportedBooks({
     });
 
     return out;
+}
+
+/**
+ * Summarize character-to-worldbook coverage so users immediately know why
+ * character count and recognized worldbook count differ (e.g. 71 cards vs 70 books).
+ *
+ * @param {object} params
+ * @param {Array<any>} params.characters
+ * @param {Map<string, Array<{ avatar: string, charName: string, source: string }>>} params.bindingMap
+ * @param {Set<string>} params.worldNamesSet
+ * @param {Record<string, any>} [params.cachedCharBindings={}]
+ */
+export function summarizeCharacterWorldCoverage({
+    characters = [],
+    bindingMap = new Map(),
+    worldNamesSet = new Set(),
+    cachedCharBindings = {},
+}) {
+    const boundAvatars = new Set();
+    const sharedBooks = [];
+
+    for (const [worldName, owners] of bindingMap.entries()) {
+        for (const o of owners) boundAvatars.add(o.avatar);
+        const uniqueOwners = [...new Set(owners.map((o) => o.charName))];
+        if (uniqueOwners.length > 1) {
+            sharedBooks.push({ worldName, charNames: uniqueOwners });
+        }
+    }
+
+    const unboundChars = [];
+    const missingFileChars = [];
+
+    for (const ch of characters || []) {
+        const avatar = String(ch?.avatar ?? '').trim();
+        if (!avatar) continue;
+        if (boundAvatars.has(avatar)) continue;
+
+        const charName = String(ch?.name || ch?.data?.name || charaFileName(avatar)).trim() || avatar;
+        const cached = cachedCharBindings?.[avatar];
+        const primary = ch?.shallow
+            ? String(cached?.primary || '').trim()
+            : String(ch?.data?.extensions?.world || '').trim();
+
+        if (primary && !worldNamesSet.has(primary)) {
+            missingFileChars.push({ avatar, charName, missingWorld: primary });
+        } else {
+            unboundChars.push({ avatar, charName, shallow: Boolean(ch?.shallow && cached?.scanned !== true) });
+        }
+    }
+
+    return {
+        unboundChars,
+        missingFileChars,
+        sharedBooks,
+    };
+}
+
+/**
+ * Generate a collision-free API channel ID.
+ * @param {Array<{ id: string }>} existingChannels
+ */
+export function createApiChannelId(existingChannels = []) {
+    const taken = new Set(existingChannels.map((c) => c.id));
+    let id = '';
+    do {
+        id = `api_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    } while (taken.has(id));
+    return id;
 }
 
 /**
