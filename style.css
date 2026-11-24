@@ -240,6 +240,31 @@
     -webkit-backdrop-filter: blur(16px);
 }
 
+/* Keep sticky section headers & pills 100% opaque even when host `--SmartThemeBlurTintColor` is translucent */
+.wbo-mp-popover[data-wbo-palette="host"].wbo-theme-light .wbo-mp-sec-head {
+    background-color: #f4f4f1 !important;
+    background-image: linear-gradient(var(--wbo-bg-elevated), var(--wbo-bg-elevated)) !important;
+}
+
+.wbo-mp-popover[data-wbo-palette="host"].wbo-theme-dark .wbo-mp-sec-head,
+.wbo-mp-popover[data-wbo-palette="host"] .wbo-mp-sec-head {
+    background-color: #23262f !important;
+    background-image: linear-gradient(var(--wbo-bg-elevated), var(--wbo-bg-elevated)) !important;
+}
+
+.wbo-modal[data-wbo-palette="host"].wbo-theme-light .wbo-pill:first-child {
+    background-color: #f5f5f2 !important;
+}
+
+.wbo-modal[data-wbo-palette="host"].wbo-theme-dark .wbo-pill:first-child {
+    background-color: #252831 !important;
+}
+
+.wbo-mp-popover .wbo-pill:first-child {
+    position: static;
+    box-shadow: none !important;
+}
+
 .wbo-mp-popover[data-wbo-palette="host"] .wbo-mp-done-btn {
     background: var(--wbo-on-bg) !important;
     color: var(--wbo-on-fg) !important;
