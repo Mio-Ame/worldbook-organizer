@@ -468,6 +468,20 @@
     transform: rotate(45deg) scale(1) !important;
 }
 
+.wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):indeterminate {
+    background: var(--wbo-accent) !important;
+    border-color: var(--wbo-accent) !important;
+}
+
+.wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):indeterminate::after {
+    width: 9px !important;
+    height: 0 !important;
+    border: none !important;
+    border-top: 2.2px solid var(--wbo-accent-fg) !important;
+    transform: scale(1) !important;
+    margin-top: 0 !important;
+}
+
 .wbo-modal input[type="radio"] {
     -webkit-appearance: none !important;
     appearance: none !important;
@@ -511,13 +525,12 @@
     transform: scale(1) !important;
 }
 
-/* Modals (desktop + mobile + TauriTavern safe-area) */
+/* Modals (desktop + mobile + TauriTavern safe-area — transparent backdrop so host page never dims!) */
 .wbo-modal-overlay {
     position: fixed;
     inset: 0;
     z-index: 9990;
-    background: rgba(0, 0, 0, 0.56);
-    backdrop-filter: blur(3px);
+    background: transparent;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -539,10 +552,10 @@
     display: flex;
     flex-direction: column;
     border-radius: 14px;
-    border: 1px solid var(--wbo-border);
+    border: 1px solid var(--wbo-border-strong);
     background: var(--wbo-bg);
     color: var(--wbo-fg);
-    box-shadow: 0 20px 52px rgba(15, 25, 38, 0.28);
+    box-shadow: 0 16px 48px rgba(15, 23, 42, 0.28), 0 4px 14px rgba(15, 23, 42, 0.14);
     overflow: hidden;
 }
 
@@ -1710,6 +1723,147 @@ details[open] > summary .wbo-details-chev {
     background: var(--wbo-bg-elevated);
 }
 
+.wbo-sens-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(217, 119, 6, 0.32);
+    background: rgba(217, 119, 6, 0.09);
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--wbo-fg);
+}
+
+.wbo-sens-banner > i {
+    color: #d97706;
+    flex-shrink: 0;
+}
+
+.wbo-sens-banner.is-danger {
+    border-color: rgba(197, 48, 48, 0.42);
+    background: rgba(197, 48, 48, 0.10);
+}
+
+.wbo-sens-banner.is-danger > i {
+    color: #c53030;
+}
+
+.wbo-sens-banner > span {
+    flex: 1;
+    min-width: 0;
+}
+
+.wbo-sens-toggle-btn {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    padding: 0 8px !important;
+    font-size: 11.5px !important;
+    flex-shrink: 0;
+}
+
+.wbo-cov-overview {
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
+    padding: 6px 9px;
+    border-radius: 7px;
+    background: var(--wbo-bg-elevated);
+    line-height: 1.45;
+}
+
+.wbo-cov-table-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: grid;
+    grid-template-columns: minmax(135px, 210px) 1fr;
+    gap: 12px;
+    padding: 6px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
+    background: var(--wbo-bg-elevated);
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-preview-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wbo-preview-select-tools {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.wbo-preview-sel-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-preview-group-select-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 !important;
+    cursor: pointer;
+}
+
+.wbo-redo-group-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wbo-redo-chip {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    height: 26px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-bg) !important;
+    color: var(--wbo-fg) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+
+.wbo-redo-chip small {
+    opacity: 0.72;
+    font-size: 11px;
+}
+
+.wbo-redo-chip:hover {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+}
+
+.wbo-redo-chip.is-partial {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+    color: var(--wbo-accent) !important;
+}
+
+.wbo-redo-chip.is-active {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
+    font-weight: 600 !important;
+}
+
 /* Scan coverage flat 2-column table with category pills */
 .wbo-cov-panel {
     padding: 11px 13px;
@@ -2531,6 +2685,9 @@ details[open] > summary .wbo-details-chev {
     }
     .wbo-prop-grid {
         grid-template-columns: 1fr;
+    }
+    .wbo-cov-table-head {
+        display: none;
     }
     .wbo-cov-row {
         grid-template-columns: 1fr;
