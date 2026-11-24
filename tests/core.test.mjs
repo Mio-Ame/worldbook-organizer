@@ -31,6 +31,7 @@ import {
     pushUndoSnapshot,
     reorderSection,
     restoreOrganizeSnapshot,
+    searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -623,4 +624,28 @@ test('per-selector custom hidden groups work independently with safety invariant
     assert.equal(importConfigData(dst, exported).ok, true);
     assert.deepEqual(dst.globalHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_style']);
     assert.deepEqual(dst.editorHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_archive']);
+});
+
+test('searchEntriesInPayload matches multi-keyword AND across title, keys, and content with snippets', () => {
+    const payload = {
+        entries: {
+            0: { uid: 0, comment: '性格补充', key: ['软萌'], content: '日常相处时非常可爱，说话轻声细语。', disable: false },
+            1: { uid: 1, comment: '禁用草稿', key: ['旧词'], content: '这里也有软萌和可爱的描写。', disable: true },
+            2: { uid: 2, comment: '世界观', key: ['魔法'], content: '完全不相关的内容。', disable: false },
+        },
+    };
+
+    const resAll = searchEntriesInPayload(payload, '软萌 可爱', { includeDisabled: true });
+    assert.equal(resAll.totalMatchesInBook, 2);
+    assert.equal(resAll.hits.length, 2);
+    assert.equal(resAll.hits[0].title, '性格补充');
+    assert.ok(resAll.hits[0].matchedIn.includes('触发词'));
+    assert.ok(resAll.hits[0].matchedIn.includes('正文'));
+    assert.ok(resAll.hits[0].snippet.includes('可爱'));
+
+    const resEnabledOnly = searchEntriesInPayload(payload, '软萌 可爱', { includeDisabled: false });
+    assert.equal(resEnabledOnly.hits.length, 1);
+
+    const resTitleKeysOnly = searchEntriesInPayload(payload, '可爱', { searchTitleAndKeys: true, searchContent: false });
+    assert.equal(resTitleKeysOnly.hits.length, 0);
 });

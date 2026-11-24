@@ -899,6 +899,119 @@ async function loadWorldInfoPayload(worldName) {
 }
 
 /**
+ * Fetch a single worldbook payload WITHOUT populating SillyTavern's persistent
+ * in-memory `worldInfoCache`, so scanning 300+ worldbooks on mobile / TauriTavern iOS
+ * lets GC reclaim every book immediately and prevents OOM crashes!
+ * @param {string} worldName
+ * @returns {Promise<any | null>}
+ */
+async function fetchWorldInfoUncached(worldName) {
+    try {
+        const res = await fetch('/api/worldinfo/get', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: worldName }),
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+    } catch {
+        // Fallback below if host overrides `/api/worldinfo/get`
+    }
+    try {
+        return await loadWorldInfoPayload(worldName);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Low-memory, streaming cross-worldbook entry search designed for large libraries
+ * (including mobile WKWebView / TauriTavern iOS):
+ * - Bypasses `worldInfoCache` so peak RAM stays ~2 books regardless of library size.
+ * - Yields between small batches (`concurrency = 2`) so UI & Stop button stay responsive.
+ * - Emits matches incrementally per book as soon as found.
+ *
+ * @param {object} params
+ * @param {string[]} params.worldNames
+ * @param {(payload: any, worldName: string) => { hits: any[], totalMatchesInBook: number }} params.matcher
+ * @param {number} [params.concurrency=2]
+ * @param {number} [params.yieldMs=12]
+ * @param {number} [params.maxTotalHits=150]
+ * @param {{ cancelled: boolean }} [params.signal]
+ * @param {(result: { worldName: string, hits: any[], totalMatchesInBook: number }) => void} [params.onBookResult]
+ * @param {(info: { done: number, total: number, hitCount: number, matchedBooks: number, currentName: string }) => void} [params.onProgress]
+ * @returns {Promise<{ done: number, total: number, hitCount: number, matchedBooks: number, cancelled: boolean, capped: boolean }>}
+ */
+export async function searchWorldbookEntriesStream({
+    worldNames = [],
+    matcher,
+    concurrency = 2,
+    yieldMs = 12,
+    maxTotalHits = 150,
+    signal = { cancelled: false },
+    onBookResult,
+    onProgress,
+}) {
+    const list = Array.isArray(worldNames) ? worldNames : [];
+    const total = list.length;
+    const step = Math.max(1, Math.min(4, Number(concurrency) || 2));
+    let done = 0;
+    let hitCount = 0;
+    let matchedBooks = 0;
+    let capped = false;
+
+    for (let i = 0; i < total; i += step) {
+        if (signal?.cancelled) {
+            return { done, total, hitCount, matchedBooks, cancelled: true, capped };
+        }
+        if (hitCount >= maxTotalHits) {
+            capped = true;
+            break;
+        }
+
+        const batch = list.slice(i, i + step);
+        await Promise.all(
+            batch.map(async (worldName) => {
+                if (signal?.cancelled || hitCount >= maxTotalHits) return;
+                let payload = await fetchWorldInfoUncached(worldName);
+                done += 1;
+                if (signal?.cancelled) {
+                    payload = null;
+                    return;
+                }
+                if (payload) {
+                    const res = matcher(payload, worldName);
+                    // Release reference immediately so GC can reclaim full JSON before next batch
+                    payload = null;
+                    if (res && Array.isArray(res.hits) && res.hits.length > 0) {
+                        const remaining = Math.max(0, maxTotalHits - hitCount);
+                        if (remaining > 0) {
+                            const kept = res.hits.slice(0, remaining);
+                            hitCount += kept.length;
+                            matchedBooks += 1;
+                            onBookResult?.({
+                                worldName,
+                                hits: kept,
+                                totalMatchesInBook: res.totalMatchesInBook || kept.length,
+                            });
+                            if (hitCount >= maxTotalHits) capped = true;
+                        }
+                    }
+                }
+                onProgress?.({ done, total, hitCount, matchedBooks, currentName: worldName });
+            }),
+        );
+
+        if (yieldMs > 0 && i + step < total && !signal?.cancelled && !capped) {
+            await new Promise((resolve) => setTimeout(resolve, yieldMs));
+        }
+    }
+
+    return { done, total, hitCount, matchedBooks, cancelled: Boolean(signal?.cancelled), capped };
+}
+
+/**
  * Flush SillyTavern's worldbook list once after a batch of file renames/deletes.
  */
 export async function flushWorldInfoListRefresh() {

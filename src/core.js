@@ -1871,6 +1871,111 @@ export function compareWorldbookEntries(entriesA = [], entriesB = []) {
 }
 
 /**
+ * Pure, zero-retention full-text matcher for a single worldbook payload.
+ * Supports multi-keyword space-separated AND matching across entry title/comment,
+ * primary/secondary trigger keys, and body content, returning compact highlighted snippets.
+ *
+ * @param {any} payload
+ * @param {string} query
+ * @param {{
+ *   searchTitleAndKeys?: boolean,
+ *   searchContent?: boolean,
+ *   includeDisabled?: boolean,
+ *   maxHitsPerBook?: number,
+ *   snippetRadius?: number,
+ * }} [opts]
+ * @returns {{ hits: Array<{ uid: string, title: string, keys: string[], disabled: boolean, constant: boolean, matchedIn: string[], snippet: string, content: string }>, totalMatchesInBook: number }}
+ */
+export function searchEntriesInPayload(
+    payload,
+    query,
+    {
+        searchTitleAndKeys = true,
+        searchContent = true,
+        includeDisabled = true,
+        maxHitsPerBook = 8,
+        snippetRadius = 46,
+    } = {},
+) {
+    const tokens = String(query ?? '')
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+    if (tokens.length === 0 || (!searchTitleAndKeys && !searchContent)) {
+        return { hits: [], totalMatchesInBook: 0 };
+    }
+    const entriesObj = payload?.entries;
+    if (!entriesObj || typeof entriesObj !== 'object') {
+        return { hits: [], totalMatchesInBook: 0 };
+    }
+
+    const entries = Object.values(entriesObj).filter((e) => e && typeof e === 'object');
+    const hits = [];
+    let totalMatchesInBook = 0;
+
+    for (let idx = 0; idx < entries.length; idx += 1) {
+        const e = entries[idx];
+        const disabled = Boolean(e.disable);
+        if (!includeDisabled && disabled) continue;
+
+        const comment = String(e.comment ?? '').trim();
+        const keysPrimary = Array.isArray(e.key) ? e.key.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
+        const keysSecondary = Array.isArray(e.keysecondary) ? e.keysecondary.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
+        const allKeys = [...keysPrimary, ...keysSecondary];
+        const keysJoined = allKeys.join(', ');
+        const content = String(e.content ?? '').trim();
+
+        const commentLower = searchTitleAndKeys ? comment.toLowerCase() : '';
+        const keysLower = searchTitleAndKeys ? keysJoined.toLowerCase() : '';
+        const contentLower = searchContent ? content.toLowerCase() : '';
+
+        const allMatched = tokens.every(
+            (tok) => commentLower.includes(tok) || keysLower.includes(tok) || contentLower.includes(tok),
+        );
+        if (!allMatched) continue;
+
+        totalMatchesInBook += 1;
+        if (hits.length >= maxHitsPerBook) continue;
+
+        const matchedIn = [];
+        if (searchTitleAndKeys && tokens.some((tok) => commentLower.includes(tok))) matchedIn.push('标题');
+        if (searchTitleAndKeys && tokens.some((tok) => keysLower.includes(tok))) matchedIn.push('触发词');
+        if (searchContent && tokens.some((tok) => contentLower.includes(tok))) matchedIn.push('正文');
+
+        // Build a compact snippet centered around the first matched token in content (or keys)
+        let snippet = '';
+        if (content) {
+            const firstContentPos = tokens
+                .map((tok) => contentLower.indexOf(tok))
+                .filter((pos) => pos >= 0)
+                .sort((a, b) => a - b)[0];
+            if (firstContentPos !== undefined) {
+                const start = Math.max(0, firstContentPos - snippetRadius);
+                const end = Math.min(content.length, firstContentPos + snippetRadius + 24);
+                snippet = `${start > 0 ? '…' : ''}${content.slice(start, end).replace(/\s+/g, ' ').trim()}${end < content.length ? '…' : ''}`;
+            } else {
+                const compact = content.replace(/\s+/g, ' ').trim();
+                snippet = compact.length > 100 ? `${compact.slice(0, 100)}…` : compact;
+            }
+        }
+
+        hits.push({
+            uid: String(e.uid ?? idx),
+            title: comment || keysPrimary.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
+            keys: allKeys.slice(0, 8),
+            disabled,
+            constant: Boolean(e.constant),
+            matchedIn,
+            snippet,
+            content: content.length > 2400 ? `${content.slice(0, 2400)}…` : content,
+        });
+    }
+
+    return { hits, totalMatchesInBook };
+}
+
+/**
  * Export portable backup object (excludes transient runtime state).
  * @param {Record<string, any>} settings
  */
