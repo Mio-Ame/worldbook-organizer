@@ -810,6 +810,7 @@ let _lastWorldSelectMouseDownAt = 0;
 const _dropdownMemory = {
     activePillGroupId: SPECIAL_GROUPS.ALL,
     pillBarScrollLeft: 0,
+    pillsExpanded: false,
     /** @type {Record<string, number>} */
     scrollTopByGroup: {},
 };
@@ -858,7 +859,7 @@ function findScrollableListEl(startEl, boundaryEl) {
  */
 function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '') {
     const barEl = document.createElement('div');
-    barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}`;
+    barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}${_dropdownMemory.pillsExpanded ? ' is-expanded' : ''}`;
 
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
@@ -877,13 +878,31 @@ function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '')
         .join('');
 
     scrollEl.addEventListener('wheel', (ev) => {
-        if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && scrollEl.scrollWidth > scrollEl.clientWidth) {
+        if (!barEl.classList.contains('is-expanded') && Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && scrollEl.scrollWidth > scrollEl.clientWidth) {
             ev.preventDefault();
             scrollEl.scrollLeft += ev.deltaY;
         }
     }, { passive: false });
 
-    barEl.append(allBtn, divider, scrollEl);
+    const expandBtn = document.createElement('button');
+    expandBtn.type = 'button';
+    expandBtn.className = 'wbo-dd-expand-btn';
+    expandBtn.title = _dropdownMemory.pillsExpanded ? '收起为单行' : '展开查看全部分组';
+    expandBtn.innerHTML = `<i class="fa-solid ${_dropdownMemory.pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+    expandBtn.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+    });
+    expandBtn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        _dropdownMemory.pillsExpanded = !_dropdownMemory.pillsExpanded;
+        barEl.classList.toggle('is-expanded', _dropdownMemory.pillsExpanded);
+        expandBtn.title = _dropdownMemory.pillsExpanded ? '收起为单行' : '展开查看全部分组';
+        expandBtn.innerHTML = `<i class="fa-solid ${_dropdownMemory.pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+    });
+
+    barEl.append(allBtn, divider, scrollEl, expandBtn);
     return { barEl, scrollEl };
 }
 

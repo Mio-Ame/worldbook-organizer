@@ -264,7 +264,7 @@
     flex-shrink: 0;
 }
 
-/* Unified controls: exact 28px height, 6px radius, 14px icons, monochrome neutral */
+/* Unified controls: exact uniform height, radius, border, and 14px icons across all toolbars & modals */
 .wbo-tool-btn,
 .wbo-tool-switch,
 .wbo-tool-select,
@@ -278,7 +278,7 @@
     max-height: 28px !important;
     width: auto !important;
     min-width: max-content !important;
-    padding: 0 9px !important;
+    padding: 0 10px !important;
     margin: 0 !important;
     border-radius: 6px !important;
     border: 1px solid var(--wbo-border) !important;
@@ -294,7 +294,16 @@
     user-select: none;
     box-shadow: none !important;
     outline: none;
+    box-sizing: border-box !important;
     transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.wbo-btn {
+    height: 30px !important;
+    min-height: 30px !important;
+    max-height: 30px !important;
+    padding: 0 12px !important;
+    border-radius: 7px !important;
 }
 
 .wbo-tool-btn:hover,
@@ -629,6 +638,24 @@
     flex: 1 1 auto;
 }
 
+.wbo-pills-rail {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.wbo-mgr-subbar.is-pills-expanded {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.wbo-mgr-subbar.is-pills-expanded .wbo-search-wrap {
+    flex: 0 0 auto;
+    width: 100%;
+}
+
 .wbo-pills {
     display: flex;
     flex-wrap: nowrap;
@@ -640,6 +667,45 @@
     overflow-y: hidden;
     scrollbar-width: thin;
     padding-bottom: 2px;
+}
+
+.wbo-pills.is-expanded {
+    flex-wrap: wrap;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 132px;
+    padding-bottom: 0;
+}
+
+.wbo-pills.is-expanded .wbo-pill:first-child {
+    position: static;
+    box-shadow: none !important;
+}
+
+.wbo-pill-expand-btn {
+    flex: 0 0 auto;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 28px !important;
+    height: 28px !important;
+    min-width: 28px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 8px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-surface) !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 11px !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: background-color 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.wbo-pill-expand-btn:hover {
+    background: var(--wbo-surface-hover) !important;
+    border-color: var(--wbo-border-strong) !important;
+    color: var(--wbo-fg) !important;
 }
 
 .wbo-pill {
@@ -895,14 +961,25 @@
 .wbo-book-main {
     flex: 1;
     min-width: 0;
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
     background: transparent !important;
     border: none !important;
     color: var(--wbo-fg) !important;
     text-align: left;
     cursor: pointer;
-    padding: 1px 0 !important;
+    padding: 2px 0 !important;
     margin: 0 !important;
     box-shadow: none !important;
+}
+
+.wbo-book-text-col {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
 }
 
 .wbo-group-toggle.is-static {
@@ -914,6 +991,7 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    line-height: 1.35;
 }
 
 .wbo-book-title {
@@ -930,8 +1008,8 @@
 
 .wbo-book-note {
     font-size: 11.5px;
-    opacity: 0.66;
-    margin-top: 2px;
+    line-height: 1.35;
+    color: var(--wbo-fg-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1123,10 +1201,15 @@
     border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
 }
 
+.wbo-dd-filter-bar.is-expanded {
+    align-items: flex-start;
+}
+
 .wbo-dd-divider {
     flex: 0 0 1px;
     width: 1px;
     height: 15px;
+    margin-top: 4px;
     background: color-mix(in srgb, currentColor 20%, transparent);
 }
 
@@ -1139,6 +1222,37 @@
     gap: 5px;
     overflow-x: auto;
     scrollbar-width: thin;
+}
+
+.wbo-dd-filter-bar.is-expanded .wbo-dd-pill-scroll {
+    flex-wrap: wrap;
+    overflow-x: hidden;
+    overflow-y: auto;
+    max-height: 108px;
+}
+
+.wbo-dd-expand-btn {
+    flex: 0 0 auto;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 23px !important;
+    height: 23px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 5px !important;
+    border: 1px solid color-mix(in srgb, currentColor 20%, transparent) !important;
+    background: color-mix(in srgb, currentColor 5%, transparent) !important;
+    color: inherit !important;
+    font-size: 10px !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    opacity: 0.78;
+}
+
+.wbo-dd-expand-btn:hover {
+    opacity: 1;
+    background: color-mix(in srgb, currentColor 12%, transparent) !important;
 }
 
 .wbo-dd-pill {
@@ -1718,6 +1832,26 @@ details[open] > summary .wbo-details-chev {
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+}
+
+.wbo-ai-footer-right > .wbo-btn {
+    min-width: 122px !important;
+}
+
+.wbo-ai-actions-row > .wbo-btn {
+    min-width: 118px !important;
+}
+
+.wbo-modal-footer > .wbo-btn {
+    min-width: 76px;
+}
+
+.wbo-batch-bar > .wbo-btn {
+    height: 26px !important;
+    min-height: 26px !important;
+    max-height: 26px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
 }
 
 .wbo-external-ai-drawer {

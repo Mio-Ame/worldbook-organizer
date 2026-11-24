@@ -62,6 +62,7 @@ let _isComposing = false;
 let _callbacks = null;
 let _lastModalListSig = null;
 let _batchMode = false;
+let _mgrPillsExpanded = false;
 /** @type {Set<string>} */
 const _batchSelected = new Set();
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
@@ -391,15 +392,17 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                 <span class="wbo-drag-handle" title="${_batchMode ? '拖动移动当前项或全部已勾选项' : '拖动移动到分组'}"><i class="fa-solid fa-grip-vertical"></i></span>
                 ${batchCheckHtml}
                 <button type="button" class="wbo-book-main" data-action="toggle-book-preview" title="点击展开预览条目内容">
-                    <div class="wbo-book-title-line">
-                        <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
-                        <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
-                        ${subHtml}
-                        ${extraTag}
-                        ${ownerHint}
-                        ${personaHint}
-                    </div>
-                    ${noteHtml}
+                    <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
+                    <span class="wbo-book-text-col">
+                        <span class="wbo-book-title-line">
+                            <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
+                            ${subHtml}
+                            ${extraTag}
+                            ${ownerHint}
+                            ${personaHint}
+                        </span>
+                        ${noteHtml}
+                    </span>
                 </button>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
@@ -660,12 +663,20 @@ function syncBatchBarUi() {
     const batchBtn = overlay.querySelector('#wbo-mgr-batch-btn');
     const batchBar = overlay.querySelector('#wbo-batch-bar');
     const countEl = overlay.querySelector('#wbo-batch-count');
+    const toggleAllBtn = overlay.querySelector('#wbo-batch-toggle-all');
     const moveBtn = overlay.querySelector('#wbo-batch-move-btn');
     const delBtn = overlay.querySelector('#wbo-batch-del-btn');
     if (batchBtn) batchBtn.classList.toggle('is-active', _batchMode);
     if (batchBar instanceof HTMLElement) batchBar.hidden = !_batchMode;
     const count = _batchSelected.size;
     if (countEl) countEl.textContent = `已选 ${count} 本`;
+    if (toggleAllBtn) {
+        const visibleRows = Array.from(overlay.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]'));
+        const allVisibleSelected =
+            visibleRows.length > 0 &&
+            visibleRows.every((r) => _batchSelected.has(r.getAttribute('data-book') || ''));
+        toggleAllBtn.textContent = allVisibleSelected ? '取消全选' : '全选当前';
+    }
     if (moveBtn instanceof HTMLButtonElement) moveBtn.disabled = count === 0;
     if (delBtn instanceof HTMLButtonElement) delBtn.disabled = count === 0;
 }
@@ -861,8 +872,13 @@ function openManagerModal() {
                 </button>
             </div>
         </div>
-        <div class="wbo-mgr-subbar">
-            <div class="wbo-pills" id="wbo-mgr-pills"></div>
+        <div class="wbo-mgr-subbar${_mgrPillsExpanded ? ' is-pills-expanded' : ''}">
+            <div class="wbo-pills-rail">
+                <div class="wbo-pills${_mgrPillsExpanded ? ' is-expanded' : ''}" id="wbo-mgr-pills"></div>
+                <button type="button" class="wbo-pill-expand-btn" id="wbo-mgr-pills-expand" data-action="toggle-pills-expand" title="${_mgrPillsExpanded ? '收起为单行' : '展开查看全部分组'}">
+                    <i class="fa-solid ${_mgrPillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>
+                </button>
+            </div>
             <div class="wbo-search-wrap">
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
@@ -870,8 +886,7 @@ function openManagerModal() {
         </div>
         <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
             <span class="wbo-batch-count" id="wbo-batch-count">已选 0 本</span>
-            <button type="button" class="wbo-link-btn" data-action="batch-select-visible">全选当前</button>
-            <button type="button" class="wbo-link-btn" data-action="batch-clear">取消全选</button>
+            <button type="button" class="wbo-link-btn" id="wbo-batch-toggle-all" data-action="batch-toggle-visible">全选当前</button>
             <span class="wbo-spacer"></span>
             <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-batch-move-btn" data-action="batch-move" disabled>移入分组</button>
             <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-batch-del-btn" data-action="batch-delete" disabled>删除选中</button>
@@ -940,11 +955,11 @@ function openManagerModal() {
         await _callbacks.onMutation({ save: true });
     });
 
-    // Smooth horizontal wheel scroll on the single-row group pill strip
+    // Smooth horizontal wheel scroll on the single-row group pill strip (disabled when expanded to multi-row)
     const pillsRow = modal.querySelector('#wbo-mgr-pills');
     if (pillsRow instanceof HTMLElement) {
         pillsRow.addEventListener('wheel', (ev) => {
-            if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && pillsRow.scrollWidth > pillsRow.clientWidth) {
+            if (!_mgrPillsExpanded && Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && pillsRow.scrollWidth > pillsRow.clientWidth) {
                 ev.preventDefault();
                 pillsRow.scrollLeft += ev.deltaY;
             }
@@ -1228,25 +1243,43 @@ function openManagerModal() {
                 syncBatchBarUi();
                 break;
             }
-            case 'batch-select-visible': {
-                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]').forEach((row) => {
-                    const name = row.getAttribute('data-book');
-                    if (!name) return;
-                    _batchSelected.add(name);
-                    row.classList.add('is-batch-selected');
-                    const cb = row.querySelector('.wbo-batch-check');
-                    if (cb instanceof HTMLInputElement) cb.checked = true;
-                });
-                syncBatchBarUi();
+            case 'toggle-pills-expand': {
+                _mgrPillsExpanded = !_mgrPillsExpanded;
+                const subbar = modal.querySelector('.wbo-mgr-subbar');
+                const pills = modal.querySelector('#wbo-mgr-pills');
+                const expBtn = modal.querySelector('#wbo-mgr-pills-expand');
+                subbar?.classList.toggle('is-pills-expanded', _mgrPillsExpanded);
+                pills?.classList.toggle('is-expanded', _mgrPillsExpanded);
+                if (expBtn instanceof HTMLElement) {
+                    expBtn.title = _mgrPillsExpanded ? '收起为单行' : '展开查看全部分组';
+                    expBtn.innerHTML = `<i class="fa-solid ${_mgrPillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+                }
                 break;
             }
-            case 'batch-clear': {
-                _batchSelected.clear();
-                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row').forEach((row) => {
-                    row.classList.remove('is-batch-selected');
-                    const cb = row.querySelector('.wbo-batch-check');
-                    if (cb instanceof HTMLInputElement) cb.checked = false;
-                });
+            case 'batch-toggle-visible': {
+                const visibleRows = Array.from(modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]'));
+                const allSelected =
+                    visibleRows.length > 0 &&
+                    visibleRows.every((row) => _batchSelected.has(row.getAttribute('data-book') || ''));
+                if (allSelected) {
+                    visibleRows.forEach((row) => {
+                        const name = row.getAttribute('data-book');
+                        if (!name) return;
+                        _batchSelected.delete(name);
+                        row.classList.remove('is-batch-selected');
+                        const cb = row.querySelector('.wbo-batch-check');
+                        if (cb instanceof HTMLInputElement) cb.checked = false;
+                    });
+                } else {
+                    visibleRows.forEach((row) => {
+                        const name = row.getAttribute('data-book');
+                        if (!name) return;
+                        _batchSelected.add(name);
+                        row.classList.add('is-batch-selected');
+                        const cb = row.querySelector('.wbo-batch-check');
+                        if (cb instanceof HTMLInputElement) cb.checked = true;
+                    });
+                }
                 syncBatchBarUi();
                 break;
             }
@@ -2245,8 +2278,7 @@ function openAiOrganizeModal() {
                     <div class="wbo-preview-group-pills" id="wbo-preview-group-pills"></div>
                     <div class="wbo-preview-select-tools">
                         <span class="wbo-preview-sel-count" id="wbo-preview-sel-count">已选 0/0</span>
-                        <button type="button" class="wbo-link-btn" id="wbo-preview-select-all">全选全部</button>
-                        <button type="button" class="wbo-link-btn" id="wbo-preview-clear-all">取消全选</button>
+                        <button type="button" class="wbo-link-btn" id="wbo-preview-toggle-all">取消全选</button>
                     </div>
                 </div>
                 <datalist id="wbo-preview-groups-datalist"></datalist>
@@ -2742,6 +2774,11 @@ function openAiOrganizeModal() {
         if (previewSelCountEl) {
             previewSelCountEl.textContent = `已选 ${selectedCount}/${currentProposals.length}`;
         }
+        const toggleBtn = modal.querySelector('#wbo-preview-toggle-all');
+        if (toggleBtn) {
+            const allSelected = currentProposals.length > 0 && selectedCount === currentProposals.length;
+            toggleBtn.textContent = allSelected ? '取消全选' : '全选全部';
+        }
     };
 
     const renderPreviewContent = () => {
@@ -2893,13 +2930,10 @@ function openAiOrganizeModal() {
         else if (target.classList.contains('wbo-prop-note')) item.note = target.value;
     });
 
-    // Preview global select-all / clear-all
-    modal.querySelector('#wbo-preview-select-all')?.addEventListener('click', () => {
-        currentProposals.forEach((p) => { p.selected = true; });
-        renderPreviewContent();
-    });
-    modal.querySelector('#wbo-preview-clear-all')?.addEventListener('click', () => {
-        currentProposals.forEach((p) => { p.selected = false; });
+    // Preview single smart select-all / clear-all toggle
+    modal.querySelector('#wbo-preview-toggle-all')?.addEventListener('click', () => {
+        const allSelected = currentProposals.length > 0 && currentProposals.every((p) => p.selected);
+        currentProposals.forEach((p) => { p.selected = !allSelected; });
         renderPreviewContent();
     });
 
