@@ -4877,6 +4877,10 @@ function openSettingsModal() {
                     <span>明暗模式</span>
                     <div class="wbo-mode-group">${modeButtonsHtml}</div>
                 </div>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="outsideDropdownFollowHostTheme">
+                    <span>插件面板外的下拉筛选框跟随酒馆主题</span>
+                </label>
             </div>
 
             <div class="wbo-card">

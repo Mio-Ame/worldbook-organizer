@@ -587,12 +587,25 @@ function syncMobileEditorTrigger(selectEl, enabled) {
 }
 
 /**
- * Detect host light/dark mode for the mobile picker sheet (matches panel modals cleanly).
+ * Resolve palette for in-host dropdown popovers outside the Group Manager modal:
+ * defaults to `'host'` (follows active SillyTavern theme seamlessly) unless user explicitly opts out.
+ */
+function getOutsideDropdownPalette() {
+    if (_latestSettings?.outsideDropdownFollowHostTheme !== false) {
+        return 'host';
+    }
+    return _latestSettings?.themePalette || 'classic';
+}
+
+/**
+ * Resolve light/dark class for in-host dropdown popovers (always matches host when following host theme).
  */
 function detectMobilePickerThemeClass() {
-    const mode = _latestSettings?.themeMode || 'auto';
-    if (mode === 'light') return 'wbo-theme-light';
-    if (mode === 'dark') return 'wbo-theme-dark';
+    if (_latestSettings?.outsideDropdownFollowHostTheme === false) {
+        const mode = _latestSettings?.themeMode || 'auto';
+        if (mode === 'light') return 'wbo-theme-light';
+        if (mode === 'dark') return 'wbo-theme-dark';
+    }
     try {
         const probe = document.getElementById('WorldInfo') || document.body;
         const m = (probe ? globalThis.getComputedStyle(probe).color : '').match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
@@ -661,7 +674,7 @@ function openMobileEditorPickerSheet() {
 
     const popover = document.createElement('div');
     popover.className = `wbo-modal wbo-mp-popover ${detectMobilePickerThemeClass()}`;
-    popover.setAttribute('data-wbo-palette', _latestSettings.themePalette || 'classic');
+    popover.setAttribute('data-wbo-palette', getOutsideDropdownPalette());
 
     popover.innerHTML = `
         <div class="wbo-mp-top">
@@ -861,7 +874,25 @@ function openMobileEditorPickerSheet() {
         if (listEl) listEl.scrollTop = _dropdownMemory.scrollTopByGroup[activePillId] ?? 0;
     });
 
+    // Track touch/pointer scroll distance so swiping through a long list NEVER accidentally selects an item
+    let listPointerStart = null;
+    let listMovedDuringGesture = false;
+    listEl?.addEventListener('pointerdown', (ev) => {
+        listPointerStart = { x: ev.clientX, y: ev.clientY };
+        listMovedDuringGesture = false;
+    }, { passive: true });
+    listEl?.addEventListener('pointermove', (ev) => {
+        if (!listPointerStart) return;
+        if (Math.hypot(ev.clientX - listPointerStart.x, ev.clientY - listPointerStart.y) > 8) {
+            listMovedDuringGesture = true;
+        }
+    }, { passive: true });
+
     listEl?.addEventListener('click', (ev) => {
+        if (listMovedDuringGesture) {
+            listMovedDuringGesture = false;
+            return;
+        }
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
         const toggleBtn = target.closest('[data-mp-toggle]');
@@ -1291,9 +1322,17 @@ function attachGroupedSelectControl(
 
         const popover = document.createElement('div');
         popover.className = `wbo-modal wbo-mp-popover ${detectMobilePickerThemeClass()}`;
-        popover.setAttribute('data-wbo-palette', _latestSettings.themePalette || 'classic');
+        popover.setAttribute('data-wbo-palette', getOutsideDropdownPalette());
 
-        const hasAnySelected = () => Array.from(selectEl.selectedOptions || []).some((o) => o.value !== '');
+        // For multi-select (e.g. character extra worldbooks), stage selection into a draft Set and commit ONLY on `确认`
+        // so accidental taps or outside dismissal NEVER bind unwanted worldbooks!
+        const draftSelectedSet = new Set(
+            Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''),
+        );
+        const hasAnySelected = () =>
+            multiple
+                ? draftSelectedSet.size > 0
+                : Array.from(selectEl.selectedOptions || []).some((o) => o.value !== '');
 
         popover.innerHTML = `
             <div class="wbo-mp-top">
@@ -1302,7 +1341,7 @@ function attachGroupedSelectControl(
                     <input type="search" class="wbo-search-input" id="wbo-pop-search" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
                 </div>
                 <button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${hasAnySelected() ? '' : ' hidden'}>清除</button>
-                ${multiple ? '<button type="button" class="wbo-mp-done-btn" id="wbo-pop-done">完成</button>' : ''}
+                ${multiple ? '<button type="button" class="wbo-mp-clear-btn" id="wbo-pop-cancel">取消</button><button type="button" class="wbo-mp-done-btn" id="wbo-pop-done">确认</button>' : ''}
             </div>
             <div class="wbo-mp-pills-row"${sections.length < 2 ? ' hidden' : ''}>
                 <div class="wbo-pills-rail">
@@ -1353,11 +1392,14 @@ function attachGroupedSelectControl(
         const pillsEl = popover.querySelector('#wbo-pop-pills');
         const expandBtn = popover.querySelector('#wbo-pop-expand');
         const clearBtn = popover.querySelector('#wbo-pop-clear');
+        const doneBtn = popover.querySelector('#wbo-pop-done');
         const searchInput = popover.querySelector('#wbo-pop-search');
         const listEl = popover.querySelector('#wbo-pop-list');
 
         const getSelectedValSet = () =>
-            new Set(Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''));
+            multiple
+                ? draftSelectedSet
+                : new Set(Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''));
 
         const renderPills = () => {
             if (!pillsEl) return;
@@ -1379,6 +1421,7 @@ function attachGroupedSelectControl(
             if (!listEl) return;
             const selectedSet = getSelectedValSet();
             if (clearBtn instanceof HTMLElement) clearBtn.hidden = selectedSet.size === 0;
+            if (doneBtn) doneBtn.textContent = selectedSet.size > 0 ? `确认 (${selectedSet.size})` : '确认';
             const q = searchQuery.trim().toLowerCase();
             const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
             const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
@@ -1434,8 +1477,7 @@ function attachGroupedSelectControl(
 
         clearBtn?.addEventListener('click', () => {
             if (multiple) {
-                for (const opt of Array.from(selectEl.options)) opt.selected = false;
-                fireSelectChange();
+                draftSelectedSet.clear();
                 renderList();
             } else {
                 selectEl.value = '';
@@ -1443,7 +1485,16 @@ function attachGroupedSelectControl(
                 closePopover();
             }
         });
-        popover.querySelector('#wbo-pop-done')?.addEventListener('click', closePopover);
+        popover.querySelector('#wbo-pop-cancel')?.addEventListener('click', closePopover);
+        doneBtn?.addEventListener('click', () => {
+            if (multiple) {
+                for (const opt of Array.from(selectEl.options)) {
+                    opt.selected = opt.value !== '' && draftSelectedSet.has(opt.value);
+                }
+                fireSelectChange();
+            }
+            closePopover();
+        });
 
         expandBtn?.addEventListener('click', () => {
             pillsExpanded = !pillsExpanded;
@@ -1461,7 +1512,25 @@ function attachGroupedSelectControl(
             if (listEl) listEl.scrollTop = 0;
         });
 
+        // Prevent scroll-swipes from accidentally toggling or selecting a worldbook row
+        let popStart = null;
+        let popMoved = false;
+        listEl?.addEventListener('pointerdown', (ev) => {
+            popStart = { x: ev.clientX, y: ev.clientY };
+            popMoved = false;
+        }, { passive: true });
+        listEl?.addEventListener('pointermove', (ev) => {
+            if (!popStart) return;
+            if (Math.hypot(ev.clientX - popStart.x, ev.clientY - popStart.y) > 8) {
+                popMoved = true;
+            }
+        }, { passive: true });
+
         listEl?.addEventListener('click', (ev) => {
+            if (popMoved) {
+                popMoved = false;
+                return;
+            }
             const target = ev.target instanceof Element ? ev.target : null;
             if (!target) return;
             const toggleBtn = target.closest('[data-pop-toggle]');
@@ -1485,14 +1554,11 @@ function attachGroupedSelectControl(
             if (rowBtn) {
                 const val = rowBtn.getAttribute('data-pop-val') ?? '';
                 if (multiple) {
-                    const opt = Array.from(selectEl.options).find((o) => o.value === val);
-                    if (opt) {
-                        opt.selected = !opt.selected;
-                        fireSelectChange();
-                        const prevTop = listEl.scrollTop;
-                        renderList();
-                        listEl.scrollTop = prevTop;
-                    }
+                    if (draftSelectedSet.has(val)) draftSelectedSet.delete(val);
+                    else draftSelectedSet.add(val);
+                    const prevTop = listEl.scrollTop;
+                    renderList();
+                    listEl.scrollTop = prevTop;
                 } else {
                     selectEl.value = val;
                     fireSelectChange();
@@ -1644,6 +1710,18 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
                 if (!gid) return;
                 localCollapsed[gid] = !localCollapsed[gid];
                 syncGroups();
+            }, true);
+            resultsList.addEventListener('mouseup', (ev) => {
+                if (ev.target instanceof Element && ev.target.closest('.wbo-dd-group-head')) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
+            }, true);
+            resultsList.addEventListener('click', (ev) => {
+                if (ev.target instanceof Element && ev.target.closest('.wbo-dd-group-head')) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                }
             }, true);
 
             const resultsContainer = dropdownEl.querySelector('.select2-results');

@@ -189,27 +189,61 @@
     --wbo-track-on: #dc88b0;
 }
 
-/* Palette 5: 跟随酒馆 (inherits active SillyTavern SmartTheme tokens with legible fallback) */
+/* Palette 5: 跟随酒馆 (clean native light/dark match to active SillyTavern SmartTheme tokens) */
+.wbo-modal[data-wbo-palette="host"].wbo-theme-light {
+    --wbo-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #ffffff) 92%, #ffffff);
+    --wbo-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #222222) 5%, var(--wbo-bg));
+    --wbo-fg: var(--SmartThemeBodyColor, #1f2329);
+    --wbo-fg-muted: color-mix(in srgb, var(--wbo-fg) 64%, transparent);
+    --wbo-border: var(--SmartThemeBorderColor, color-mix(in srgb, var(--wbo-fg) 18%, transparent));
+    --wbo-border-strong: color-mix(in srgb, var(--wbo-fg) 32%, transparent);
+    --wbo-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, #ffffff) 96%, #ffffff);
+    --wbo-surface-hover: color-mix(in srgb, var(--wbo-fg) 7%, var(--wbo-bg));
+    --wbo-surface-active: color-mix(in srgb, var(--wbo-fg) 12%, var(--wbo-bg));
+    --wbo-accent: var(--SmartThemeQuoteColor, var(--wbo-fg));
+    --wbo-accent-hover: color-mix(in srgb, var(--wbo-accent) 85%, #000000);
+    --wbo-accent-soft: color-mix(in srgb, var(--wbo-fg) 9%, transparent);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: color-mix(in srgb, var(--wbo-fg) 14%, var(--wbo-bg));
+    --wbo-on-fg: var(--wbo-fg);
+    --wbo-row-active-bg: color-mix(in srgb, var(--wbo-fg) 8%, transparent);
+    --wbo-row-active-bar: var(--wbo-accent);
+    --wbo-track-off: color-mix(in srgb, var(--wbo-fg) 22%, transparent);
+    --wbo-track-on: var(--wbo-accent);
+}
+
+.wbo-modal[data-wbo-palette="host"].wbo-theme-dark,
 .wbo-modal[data-wbo-palette="host"] {
-    --wbo-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e2128) 96%, #181a20);
-    --wbo-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 6%, var(--wbo-bg));
+    --wbo-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e2128) 94%, #16181e);
+    --wbo-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 7%, var(--wbo-bg));
     --wbo-fg: var(--SmartThemeBodyColor, #e2e8f0);
     --wbo-fg-muted: color-mix(in srgb, var(--wbo-fg) 68%, transparent);
     --wbo-border: var(--SmartThemeBorderColor, color-mix(in srgb, var(--wbo-fg) 20%, transparent));
-    --wbo-border-strong: color-mix(in srgb, var(--wbo-fg) 38%, transparent);
-    --wbo-surface: color-mix(in srgb, var(--wbo-fg) 6%, var(--wbo-bg));
-    --wbo-surface-hover: color-mix(in srgb, var(--wbo-fg) 12%, var(--wbo-bg));
-    --wbo-surface-active: color-mix(in srgb, var(--wbo-fg) 18%, var(--wbo-bg));
-    --wbo-accent: var(--SmartThemeQuoteColor, #4c6ef5);
+    --wbo-border-strong: color-mix(in srgb, var(--wbo-fg) 36%, transparent);
+    --wbo-surface: color-mix(in srgb, var(--wbo-fg) 4%, var(--wbo-bg));
+    --wbo-surface-hover: color-mix(in srgb, var(--wbo-fg) 10%, var(--wbo-bg));
+    --wbo-surface-active: color-mix(in srgb, var(--wbo-fg) 16%, var(--wbo-bg));
+    --wbo-accent: var(--SmartThemeQuoteColor, var(--wbo-fg));
     --wbo-accent-hover: color-mix(in srgb, var(--wbo-accent) 85%, #ffffff);
-    --wbo-accent-soft: color-mix(in srgb, var(--wbo-accent) 16%, transparent);
+    --wbo-accent-soft: color-mix(in srgb, var(--wbo-fg) 13%, transparent);
     --wbo-accent-fg: #ffffff;
-    --wbo-on-bg: var(--wbo-accent);
-    --wbo-on-fg: #ffffff;
-    --wbo-row-active-bg: color-mix(in srgb, var(--wbo-accent) 12%, transparent);
+    --wbo-on-bg: color-mix(in srgb, var(--wbo-fg) 20%, var(--wbo-bg));
+    --wbo-on-fg: var(--wbo-fg);
+    --wbo-row-active-bg: color-mix(in srgb, var(--wbo-fg) 10%, transparent);
     --wbo-row-active-bar: var(--wbo-accent);
     --wbo-track-off: color-mix(in srgb, var(--wbo-fg) 26%, transparent);
     --wbo-track-on: var(--wbo-accent);
+}
+
+.wbo-mp-popover[data-wbo-palette="host"] {
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+}
+
+.wbo-mp-popover[data-wbo-palette="host"] .wbo-mp-done-btn {
+    background: var(--wbo-on-bg) !important;
+    color: var(--wbo-on-fg) !important;
+    border-color: var(--wbo-border-strong) !important;
 }
 
 .wbo-header-bar *,

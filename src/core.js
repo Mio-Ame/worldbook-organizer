@@ -40,6 +40,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     aliasTitleMode: 'alias_with_sub',   // 'alias_with_sub' | 'alias_only'
     themePalette: 'classic',            // 'classic' | 'ink' | 'warm' | 'sakura' | 'host'
     themeMode: 'auto',                  // 'auto' | 'light' | 'dark'
+    outsideDropdownFollowHostTheme: true,
     includeExtraCharBooks: true,
     includeEmbeddedNameMatch: true,
     autoImportMissingCharBook: false,
@@ -1743,6 +1744,7 @@ export function exportConfigData(settings) {
             aliasTitleMode: cfg.aliasTitleMode,
             themePalette: cfg.themePalette,
             themeMode: cfg.themeMode,
+            outsideDropdownFollowHostTheme: cfg.outsideDropdownFollowHostTheme,
             includeExtraCharBooks: cfg.includeExtraCharBooks,
             includeEmbeddedNameMatch: cfg.includeEmbeddedNameMatch,
             autoHideInCharBindPopup: cfg.autoHideInCharBindPopup,
