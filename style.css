@@ -1204,6 +1204,8 @@
     min-height: 0;
     padding: 14px 16px;
     overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -2406,15 +2408,25 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-ai-step {
+    flex: 0 0 auto;
     display: flex;
     flex-direction: column;
     gap: 12px;
 }
 
+.wbo-ai-step[hidden] {
+    display: none !important;
+}
+
 .wbo-local-step {
-    flex: 1 1 auto;
-    min-height: 0;
+    flex: 1 0 auto;
     gap: 14px;
+}
+
+.wbo-ai-step > .wbo-card,
+.wbo-ai-step > .wbo-collapse-box,
+.wbo-settings-tab-pane > .wbo-card {
+    flex-shrink: 0;
 }
 
 .wbo-local-card {
