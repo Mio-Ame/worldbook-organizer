@@ -923,7 +923,7 @@ function openManageGroupsModal() {
             </div>
             <div class="wbo-gm-list" id="wbo-gm-list"></div>
             <div class="wbo-subtle-tip">删除或解除分组仅取消归类，世界书本体不会被删除，相关世界书将回到「未分组」。</div>
-            <div class="wbo-modal-footer wbo-ai-footer">
+            <div class="wbo-modal-footer wbo-ai-footer wbo-ai-footer-single">
                 <div class="wbo-ai-footer-left">
                     <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-gm-del-selected" disabled>
                         <i class="fa-regular fa-trash-can"></i> 解除所选分组
@@ -2618,7 +2618,7 @@ function closeSubModal() {
 /**
  * Create a sub-modal stacked above the Group Manager modal without closing `#WorldInfo`.
  */
-function createSubModal(title, bodyHtml, { wide = false } = {}) {
+function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false } = {}) {
     closeSubModal();
     const overlay = document.createElement('div');
     overlay.id = SUBMODAL_OVERLAY_ID;
@@ -2626,7 +2626,7 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
     applyTauriSurface(overlay, 'backdrop');
 
     const modal = document.createElement('div');
-    modal.className = `wbo-modal${wide ? ' is-wide' : ''}`;
+    modal.className = `wbo-modal${wide ? ' is-wide' : ''}${pinnedLayout ? ' is-pinned-layout' : ''}`;
     applyThemeClass(modal);
     applyTauriSurface(modal, 'fullscreen-window');
     if (wide) {
@@ -2645,7 +2645,7 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
                 </button>
             </div>
         </div>
-        <div class="wbo-modal-body">${bodyHtml}</div>
+        <div class="wbo-modal-body${pinnedLayout ? ' wbo-pinned-body' : ''}">${bodyHtml}</div>
     `;
 
     overlay.appendChild(modal);
@@ -3137,12 +3137,13 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const { modal } = createSubModal(
         '整理世界书',
         `
-            <div class="wbo-tabs" id="wbo-ai-tabs">
+            <div class="wbo-tabs wbo-pinned-tabs" id="wbo-ai-tabs">
                 <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">免 AI 整理</button>
                 <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
             </div>
 
             <div class="wbo-ai-step wbo-local-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
+                <div class="wbo-step-scroll">
                 <div class="wbo-card wbo-local-card">
                     <div class="wbo-ai-section-head">
                         <span>1. 选择整理范围</span>
@@ -3213,8 +3214,8 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 </details>
 
                 <div class="wbo-ai-status" id="wbo-local-status"></div>
-                <div class="wbo-spacer"></div>
-                <div class="wbo-modal-footer wbo-ai-footer">
+                </div>
+                <div class="wbo-modal-footer wbo-ai-footer wbo-ai-footer-single wbo-pinned-footer">
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-local-undo-btn" ${hasUndo ? '' : 'hidden'}>
                             <i class="fa-solid fa-rotate-left"></i> <span id="wbo-local-undo-label">${esc(getUndoButtonLabel())}</span>
@@ -3229,6 +3230,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-select"${startTab === 'organize' ? '' : ' hidden'}>
+                <div class="wbo-step-scroll">
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
                         <span>1. 选择世界书</span>
@@ -3316,8 +3318,9 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
                 <div class="wbo-refusal-box" id="wbo-ai-refusal-box" hidden></div>
                 <div class="wbo-ai-status" id="wbo-ai-status"></div>
+                </div>
 
-                <div class="wbo-modal-footer wbo-ai-footer">
+                <div class="wbo-modal-footer wbo-ai-footer wbo-pinned-footer">
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'hidden'} title="恢复到上一次整理前的分组与显示名">
                             <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
@@ -3339,6 +3342,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-api" hidden>
+                <div class="wbo-step-scroll">
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head">
                         <span>选择调用渠道</span>
@@ -3377,12 +3381,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <div class="wbo-ai-status" id="wbo-api-channel-status"></div>
                     </div>
                 </div>
-                <div class="wbo-modal-footer">
+                </div>
+                <div class="wbo-modal-footer wbo-pinned-footer">
                     <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-back-to-organize-btn">返回整理</button>
                 </div>
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-preview" hidden>
+                <div class="wbo-step-scroll">
                 <div class="wbo-ai-section-head">
                     <span>预览分组结果</span>
                     <button type="button" class="wbo-link-btn" id="wbo-ai-back-btn">返回重选</button>
@@ -3437,13 +3443,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
                 <div class="wbo-apply-progress-box" id="wbo-apply-progress-box" hidden></div>
                 <div class="wbo-ai-status" id="wbo-ai-preview-status"></div>
-                <div class="wbo-modal-footer">
-                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-apply-btn">确认应用</button>
+                </div>
+                <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
                     <button type="button" class="wbo-btn" id="wbo-ai-cancel-btn">取消</button>
+                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-apply-btn">确认应用</button>
                 </div>
             </div>
         `,
-        { wide: true },
+        { wide: true, pinnedLayout: true },
     );
 
     const statusEl = modal.querySelector('#wbo-ai-status');
@@ -3492,6 +3499,18 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     });
     modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
     modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
+    modal.querySelectorAll('details.wbo-collapse-box').forEach((detailsEl) => {
+        detailsEl.addEventListener('toggle', () => {
+            if (!detailsEl.open) return;
+            requestAnimationFrame(() => {
+                try {
+                    detailsEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                } catch {
+                    detailsEl.scrollIntoView(false);
+                }
+            });
+        });
+    });
 
     // Interactive built-in category chips for 免 AI 整理 (persisted in settings.localOrganizeCategories)
     const localCatsEl = modal.querySelector('#wbo-local-cats');
@@ -5118,6 +5137,7 @@ function openScanAndImportModal() {
             : '';
 
         return `
+            <div class="wbo-step-scroll">
             <div class="wbo-scan-summary">
                 <span>角色卡：<b>${characters.length}</b> 张</span>
                 <span>已识别角色世界书：<b>${classification.charCount}</b> 本</span>
@@ -5134,14 +5154,15 @@ function openScanAndImportModal() {
             ${unimportedSection}
 
             <div class="wbo-ai-status" id="wbo-scan-status"></div>
+            </div>
 
-            <div class="wbo-modal-footer">
+            <div class="wbo-modal-footer wbo-pinned-footer">
                 <button type="button" class="wbo-btn" id="wbo-scan-close-btn">关闭</button>
             </div>
         `;
     };
 
-    const { modal } = createSubModal('扫描角色世界书', renderModalBody(), { wide: true });
+    const { modal } = createSubModal('扫描角色世界书', renderModalBody(), { wide: true, pinnedLayout: true });
     const cancelSignal = { cancelled: false };
 
     const bindHandlers = () => {
@@ -5627,12 +5648,13 @@ function openSettingsModal() {
     const { modal } = createSubModal(
         '显示与行为设置',
         `
-            <div class="wbo-tabs" id="wbo-settings-tabs">
+            <div class="wbo-tabs wbo-pinned-tabs" id="wbo-settings-tabs">
                 <button type="button" class="wbo-tab is-active" data-settings-tab="appearance">外观与入口</button>
                 <button type="button" class="wbo-tab" data-settings-tab="display">标题与排除</button>
                 <button type="button" class="wbo-tab" data-settings-tab="behavior">识别与适配</button>
             </div>
 
+            <div class="wbo-step-scroll">
             <div class="wbo-settings-tab-pane" data-settings-pane="appearance">
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>面板配色</span></div>
@@ -5777,8 +5799,9 @@ function openSettingsModal() {
                     </label>
                 </div>
             </div>
+            </div>
 
-            <div class="wbo-modal-footer">
+            <div class="wbo-modal-footer wbo-pinned-footer">
                 <button type="button" class="wbo-btn" id="wbo-modal-export-btn">
                     <i class="fa-solid fa-download"></i> 导出配置
                 </button>
@@ -5790,6 +5813,7 @@ function openSettingsModal() {
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
             </div>
         `,
+        { pinnedLayout: true },
     );
 
     modal.querySelectorAll('[data-settings-tab]').forEach((tabBtn) => {
