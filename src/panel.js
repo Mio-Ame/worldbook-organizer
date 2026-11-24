@@ -1253,7 +1253,7 @@ async function confirmAndDeleteWorldbooks(bookNames) {
             }
         }
         closeSubModal();
-        await _callbacks.onRescan();
+        await _callbacks.onMutation({ save: true });
         showToast(
             res.failed.length > 0 ? 'warning' : 'success',
             `已删除 ${res.deleted.length} 本世界书${res.failed.length > 0 ? `，失败 ${res.failed.length} 本` : ''}`,
@@ -5762,7 +5762,7 @@ function openSettingsModal() {
                     <div class="wbo-setting-inline-row">
                         <span id="wbo-alias-count-label">当前已自定义 ${Object.keys(settings.aliases || {}).length} 个显示名</span>
                         <button type="button" class="wbo-btn" id="wbo-reset-all-aliases-btn"${Object.keys(settings.aliases || {}).length === 0 ? ' disabled' : ''}>
-                            <i class="fa-solid fa-rotate-left"></i> 恢复全部为原文件名
+                            <i class="fa-solid fa-rotate-left"></i> 全部恢复为文件名
                         </button>
                     </div>
                     <div class="wbo-setting-inline-row">

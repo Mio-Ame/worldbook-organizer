@@ -598,30 +598,56 @@ export async function fetchFullCharacterOnDemand(avatar) {
  * @param {{ onProgress?: (done: number, total: number, currentName: string) => void, signal?: { cancelled: boolean } }} [opts]
  * @returns {Promise<{ scanned: Array<any>, done: number, cancelled: boolean }>}
  */
-export async function scanShallowCharactersInBatches(targets, { onProgress, signal } = {}) {
+export async function scanShallowCharactersInBatches(targets, { onProgress, signal, batchSize = 2 } = {}) {
     const scanned = [];
     const total = targets.length;
-    const batchSize = 3;
+    const step = Math.max(1, Math.min(3, Number(batchSize) || 2));
     let done = 0;
 
-    for (let i = 0; i < total; i += batchSize) {
+    for (let i = 0; i < total; i += step) {
         if (signal?.cancelled) {
             return { scanned, done, cancelled: true };
         }
-        const batch = targets.slice(i, i + batchSize);
+        const batch = targets.slice(i, i + step);
         const results = await Promise.all(
             batch.map(async (item) => {
                 const full = await fetchFullCharacterOnDemand(item.avatar);
                 done += 1;
                 onProgress?.(done, total, item.name);
-                return full;
+                if (!full || !full.avatar) return null;
+                // Extract ONLY tiny binding fields (~150B) and drop the multi-MB full character JSON
+                // immediately so bulk-importing 20+ cards never spikes memory on mobile WebViews!
+                const charName = String(full?.name || full?.data?.name || item.name || '').trim() || full.avatar;
+                const rawPrimary = full?.data?.extensions?.world;
+                const primary = typeof rawPrimary === 'string' && rawPrimary.trim() ? rawPrimary.trim() : null;
+                let embedded = null;
+                let embeddedEntryCount = 0;
+                if (full?.data?.character_book && typeof full.data.character_book === 'object') {
+                    const entries = full.data.character_book.entries;
+                    embeddedEntryCount = Array.isArray(entries)
+                        ? entries.length
+                        : (entries && typeof entries === 'object' ? Object.keys(entries).length : 0);
+                    const rawEmb = full.data.character_book.name || `${charName}'s Lorebook`;
+                    if (typeof rawEmb === 'string' && rawEmb.trim()) {
+                        embedded = rawEmb.trim();
+                    }
+                }
+                return {
+                    avatar: full.avatar,
+                    name: charName,
+                    shallow: false,
+                    wboCompactSummary: true,
+                    primary,
+                    embedded,
+                    embeddedEntryCount,
+                };
             }),
         );
-        for (const ch of results) {
-            if (ch && ch.avatar) scanned.push(ch);
+        for (const summary of results) {
+            if (summary && summary.avatar) scanned.push(summary);
         }
-        // Yield a frame to keep UI responsive on mobile
-        await new Promise((r) => setTimeout(r, 20));
+        // Yield briefly between batches so mobile UI stays smooth and GC can reclaim full card payloads
+        await new Promise((r) => setTimeout(r, 30));
     }
 
     return { scanned, done, cancelled: false };

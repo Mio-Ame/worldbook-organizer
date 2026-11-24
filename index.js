@@ -18,6 +18,7 @@ import {
     classifyWorldbooks,
     findUnscannedShallowCharacters,
     promoteSectionToTop,
+    pruneStaleWorldbookSettings,
     updateCachedCharBindings,
 } from './src/core.js';
 import {
@@ -53,7 +54,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-const STYLE_ASSET_VERSION = '2.34.3-dev.5';
+const STYLE_ASSET_VERSION = '2.34.3-dev.6';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;
@@ -117,6 +118,9 @@ function recomputeAndRender({ save = false } = {}) {
 
     const worldNames = getWorldNames(getDetachedWorldNames());
     const worldNamesSet = new Set(worldNames);
+    if (pruneStaleWorldbookSettings(settings, worldNamesSet)) {
+        save = true;
+    }
     const charLore = getCharLoreEntries();
     const powerUser = getPowerUserSettings();
 
@@ -158,10 +162,10 @@ function recomputeAndRender({ save = false } = {}) {
         if (unscanned.length > 0) {
             setTimeout(async () => {
                 try {
-                    const scanned = await scanShallowCharactersInBatches(unscanned, { batchSize: 4 });
+                    const scanned = await scanShallowCharactersInBatches(unscanned, { batchSize: 2 });
                     if (!_initialized) return;
                     const curSettings = getSettings();
-                    const { cached, changed } = updateCachedCharBindings(curSettings.cachedCharBindings, scanned);
+                    const { cached, changed } = updateCachedCharBindings(curSettings.cachedCharBindings, scanned, { pruneDeleted: false });
                     if (changed) {
                         curSettings.cachedCharBindings = cached;
                     }
@@ -208,10 +212,10 @@ function recomputeAndRender({ save = false } = {}) {
                     _autoScanAttemptedAvatars.add(item.avatar);
                 }
                 try {
-                    const scanned = await scanShallowCharactersInBatches(freshTargets, { batchSize: 4 });
+                    const scanned = await scanShallowCharactersInBatches(freshTargets, { batchSize: 2 });
                     if (!_initialized) return;
                     const latestSettings = getSettings();
-                    const { cached, changed } = updateCachedCharBindings(latestSettings.cachedCharBindings, scanned);
+                    const { cached, changed } = updateCachedCharBindings(latestSettings.cachedCharBindings, scanned, { pruneDeleted: false });
                     if (changed) {
                         latestSettings.cachedCharBindings = cached;
                     }

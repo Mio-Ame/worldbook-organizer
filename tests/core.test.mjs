@@ -28,6 +28,7 @@ import {
     normalizeSettings,
     parseAiOrganizeResponse,
     promoteSectionToTop,
+    pruneStaleWorldbookSettings,
     pushUndoSnapshot,
     reorderSection,
     restoreOrganizeSnapshot,
@@ -676,4 +677,83 @@ test('searchEntriesInPayload performs exact phrase matching across title, keys, 
 
     const resTitleKeysOnly = searchEntriesInPayload(payload, '流畅', { searchTitleAndKeys: true, searchContent: false });
     assert.equal(resTitleKeysOnly.hits.length, 0);
+});
+
+test('deleting characters and worldbooks syncs cleanly without stale group or metadata residue', () => {
+    // 1. Deleted character's orphan `charLore` does NOT trap book in 角色世界书, yet coverage still flags it
+    const liveChars = [
+        { avatar: 'Alive.png', name: '现存角色', shallow: false, data: { extensions: { world: '现存书' } } },
+    ];
+    const charLore = [
+        { name: 'DeletedChar', extraBooks: ['残留附加书'] },
+    ];
+    const worldNames = ['现存书', '残留附加书', '通用书'];
+    const bindingMap = buildCharacterBindingIndex({
+        characters: liveChars,
+        charLore,
+        worldNamesSet: new Set(worldNames),
+    });
+    const settings = normalizeSettings({
+        groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+        assignments: { '通用书': 'g1', '已删世界书': 'g1' },
+        aliases: { '通用书': '通用别名', '已删世界书': '旧别名' },
+        notes: { '已删世界书': '旧说明' },
+        charBookOverrides: { '已删世界书': 'exclude_from_char' },
+        cachedCharBindings: {
+            'DeletedChar.png': { name: '已删角色', primary: '残留附加书', embedded: null, scanned: true },
+        },
+    });
+
+    // Deleted character is pruned from cachedCharBindings
+    const cacheSync = updateCachedCharBindings(settings.cachedCharBindings, liveChars);
+    assert.equal(cacheSync.changed, true);
+    assert.equal(cacheSync.cached['DeletedChar.png'], undefined);
+    assert.equal(cacheSync.cached['Alive.png']?.primary, '现存书');
+
+    // Compact summary from low-memory partial-batch scan merges WITHOUT wiping previously cached cards!
+    const compactSync = updateCachedCharBindings(
+        cacheSync.cached,
+        [
+            {
+                avatar: 'BulkCard.png',
+                name: '批量新卡',
+                shallow: false,
+                wboCompactSummary: true,
+                primary: '批量新书',
+                embedded: '批量内嵌书',
+                embeddedEntryCount: 12,
+            },
+        ],
+        { pruneDeleted: false },
+    );
+    assert.equal(compactSync.cached['Alive.png']?.primary, '现存书');
+    assert.equal(compactSync.cached['BulkCard.png']?.primary, '批量新书');
+    assert.equal(compactSync.cached['BulkCard.png']?.embeddedEntryCount, 12);
+
+    // Orphan charLore book goes back to 未分组 (not trapped in 角色世界书)
+    const cls = classifyWorldbooks({ worldNames, bindingMap, settings });
+    assert.equal(cls.byName.get('现存书')?.groupId, SPECIAL_GROUPS.CHARACTER);
+    assert.equal(cls.byName.get('残留附加书')?.groupId, SPECIAL_GROUPS.UNGROUPED);
+
+    // Coverage audit STILL surfaces the orphan charLore entry so user can clean host charLore
+    const cov = summarizeCharacterWorldCoverage({
+        characters: liveChars,
+        bindingMap,
+        worldNamesSet: new Set(worldNames),
+        cachedCharBindings: cacheSync.cached,
+    });
+    assert.equal(cov.orphanExtraBooks.length, 1);
+    assert.equal(cov.orphanExtraBooks[0].worldName, '残留附加书');
+
+    // 2. Deleted worldbook metadata is pruned when live set is non-empty, and preserved when empty (early boot guard)
+    assert.equal(pruneStaleWorldbookSettings(settings, new Set()), false);
+    assert.equal(settings.aliases['已删世界书'], '旧别名');
+
+    assert.equal(pruneStaleWorldbookSettings(settings, new Set(worldNames)), true);
+    assert.equal(settings.assignments['已删世界书'], undefined);
+    assert.equal(settings.aliases['已删世界书'], undefined);
+    assert.equal(settings.notes['已删世界书'], undefined);
+    assert.equal(settings.charBookOverrides['已删世界书'], undefined);
+    assert.equal(settings.assignments['通用书'], 'g1');
+    assert.equal(settings.aliases['通用书'], '通用别名');
 });

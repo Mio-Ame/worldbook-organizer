@@ -4236,10 +4236,12 @@ details[open] > summary .wbo-details-chev {
     flex-shrink: 0;
 }
 
-.wbo-setting-inline-row > .wbo-select {
-    width: auto !important;
-    min-width: 175px;
-    max-width: 60%;
+.wbo-setting-inline-row > .wbo-select,
+.wbo-setting-inline-row > .wbo-btn {
+    width: 184px !important;
+    min-width: 184px !important;
+    max-width: 100%;
+    flex-shrink: 0;
 }
 
 .wbo-char-mode-pill {

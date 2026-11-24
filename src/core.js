@@ -485,7 +485,7 @@ export function createGroupId(existingGroups = []) {
  * @param {Array<any>} characters
  * @returns {{ cached: Record<string, { name: string, primary: string | null, embedded: string | null }>, changed: boolean }}
  */
-export function updateCachedCharBindings(cachedBindings, characters) {
+export function updateCachedCharBindings(cachedBindings, characters, { pruneDeleted = true } = {}) {
     const next = { ...(cachedBindings || {}) };
     let changed = false;
 
@@ -513,12 +513,18 @@ export function updateCachedCharBindings(cachedBindings, characters) {
             continue;
         }
 
-        const rawPrimary = ch?.data?.extensions?.world;
+        const isCompactSummary = Boolean(ch && ch.wboCompactSummary === true);
+        const rawPrimary = isCompactSummary ? ch.primary : ch?.data?.extensions?.world;
         const primary = typeof rawPrimary === 'string' && rawPrimary.trim() ? rawPrimary.trim() : null;
 
         let embedded = null;
         let embeddedEntryCount = 0;
-        if (ch?.data?.character_book && typeof ch.data.character_book === 'object') {
+        if (isCompactSummary) {
+            if (typeof ch.embedded === 'string' && ch.embedded.trim()) {
+                embedded = ch.embedded.trim();
+            }
+            embeddedEntryCount = Number.isFinite(ch.embeddedEntryCount) ? Math.max(0, ch.embeddedEntryCount) : 0;
+        } else if (ch?.data?.character_book && typeof ch.data.character_book === 'object') {
             const entries = ch.data.character_book.entries;
             embeddedEntryCount = Array.isArray(entries)
                 ? entries.length
@@ -560,11 +566,13 @@ export function updateCachedCharBindings(cachedBindings, characters) {
         }
     }
 
-    // Remove deleted characters from cache (only when character list is loaded).
-    for (const avatar of Object.keys(next)) {
-        if (!liveAvatars.has(avatar)) {
-            delete next[avatar];
-            changed = true;
+    // Remove deleted characters from cache (only when full live character list is passed).
+    if (pruneDeleted) {
+        for (const avatar of Object.keys(next)) {
+            if (!liveAvatars.has(avatar)) {
+                delete next[avatar];
+                changed = true;
+            }
         }
     }
 
@@ -822,7 +830,7 @@ export function buildCharacterBindingIndex({
     const bindingMap = new Map();
     const charByFileName = new Map();
 
-    const addBinding = (worldName, avatar, charName, source) => {
+    const addBinding = (worldName, avatar, charName, source, orphan = false) => {
         const cleanWorld = String(worldName ?? '').trim();
         if (!cleanWorld) return;
         if (worldNamesSet && worldNamesSet.size > 0 && !worldNamesSet.has(cleanWorld)) return;
@@ -839,9 +847,10 @@ export function buildCharacterBindingIndex({
             if (rank[source] > rank[existing.source]) {
                 existing.source = source;
             }
+            if (!orphan) existing.orphan = false;
             return;
         }
-        list.push({ avatar, charName, source });
+        list.push(orphan ? { avatar, charName, source, orphan: true } : { avatar, charName, source });
     };
 
     const charList = Array.isArray(characters) ? characters : [];
@@ -875,14 +884,16 @@ export function buildCharacterBindingIndex({
     }
 
     if (includeExtraCharBooks && Array.isArray(charLore)) {
+        const hasLoadedChars = charList.length > 0;
         for (const entry of charLore) {
             const keyName = String(entry?.name ?? '').trim();
             if (!keyName || !Array.isArray(entry?.extraBooks)) continue;
             const matchedChar = charByFileName.get(keyName);
             const avatar = matchedChar?.avatar || `${keyName}.png`;
             const charName = matchedChar?.charName || keyName;
+            const isOrphan = Boolean(hasLoadedChars && !matchedChar);
             for (const book of entry.extraBooks) {
-                addBinding(book, avatar, charName, 'extra');
+                addBinding(book, avatar, charName, 'extra', isOrphan);
             }
         }
     }
@@ -1009,7 +1020,10 @@ export function classifyWorldbooks({
         if (!realName || seen.has(realName)) continue;
         seen.add(realName);
 
-        const charOwners = bindingMap.get(realName) || [];
+        const rawOwners = bindingMap.get(realName) || [];
+        // Ignore stale `charLore` entries whose character card was already deleted so books
+        // never stay trapped in「角色世界书」after a character is removed.
+        const charOwners = rawOwners.filter((o) => !o.orphan);
         const personaOwners = personaMap.get(realName) || [];
         const isCharBound = charOwners.length > 0;
         const isExcludedFromChar = cfg.charBookOverrides[realName] === 'exclude_from_char';
@@ -1343,6 +1357,32 @@ export function cleanupDeletedWorldSettings(settings, deletedNames = []) {
             delete dict[name];
         }
     }
+}
+
+/**
+ * Synchronously prune metadata entries referencing worldbooks that no longer exist
+ * (covers deletions performed from SillyTavern's native UI as well as our plugin).
+ * Safe no-op if `liveWorldNamesSet` is empty (e.g. during early boot before host loads).
+ * @param {Record<string, any>} settings
+ * @param {Set<string>} liveWorldNamesSet
+ * @returns {boolean} true if any stale keys were removed
+ */
+export function pruneStaleWorldbookSettings(settings, liveWorldNamesSet) {
+    if (!settings || !(liveWorldNamesSet instanceof Set) || liveWorldNamesSet.size === 0) {
+        return false;
+    }
+    let changed = false;
+    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides']) {
+        const dict = settings[dictKey];
+        if (!dict || typeof dict !== 'object') continue;
+        for (const name of Object.keys(dict)) {
+            if (!liveWorldNamesSet.has(name)) {
+                delete dict[name];
+                changed = true;
+            }
+        }
+    }
+    return changed;
 }
 
 /**
