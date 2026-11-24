@@ -5,7 +5,9 @@
  */
 
 import {
+    DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
     GROUP_COLOR_PALETTE,
+    LOCAL_ORGANIZE_CATEGORIES,
     SPECIAL_GROUPS,
     addCustomGroup,
     applyAiOrganizeProposals,
@@ -2473,14 +2475,28 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         .join('');
 
     const activeCh = getActiveChannel();
-    const startTab = initialTab || 'organize';
+    const startTab = initialTab || 'local';
+    const selectedLocalCatSet = new Set(
+        Array.isArray(settings.localOrganizeCategories)
+            ? settings.localOrganizeCategories
+            : DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
+    );
+    const localCatChipsHtml = LOCAL_ORGANIZE_CATEGORIES.map((cat) => {
+        const active = selectedLocalCatSet.has(cat.id);
+        return `
+            <button type="button" class="wbo-local-cat-btn${active ? ' is-selected' : ''}" data-local-cat="${esc(cat.id)}" aria-pressed="${active ? 'true' : 'false'}">
+                <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
+                <span>${esc(cat.group)}</span>
+            </button>
+        `;
+    }).join('');
 
     const { modal } = createSubModal(
         '整理世界书',
         `
             <div class="wbo-tabs" id="wbo-ai-tabs">
+                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">免 AI 整理</button>
                 <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
-                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地规则整理</button>
             </div>
 
             <div class="wbo-ai-step wbo-local-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
@@ -2500,7 +2516,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                             <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
                             <span class="wbo-scope-body">
                                 <span class="wbo-scope-title">全部非角色书 <span class="wbo-tag">${classification.nonCharCount} 本</span></span>
-                                <span class="wbo-scope-desc">按规则重新归类</span>
+                                <span class="wbo-scope-desc">按所选规则重新归类</span>
                             </span>
                         </label>
                     </div>
@@ -2508,20 +2524,20 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
                 <div class="wbo-card wbo-local-card">
                     <div class="wbo-ai-section-head">
-                        <span>2. 自动归类规则</span>
+                        <span>2. 选择自动归类分组</span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" id="wbo-local-cats-default">默认</button>
+                            <button type="button" class="wbo-link-btn" id="wbo-local-cats-all">全选</button>
+                            <button type="button" class="wbo-link-btn" id="wbo-local-cats-none">清空</button>
+                        </span>
                     </div>
-                    <div class="wbo-local-cats">
-                        <span class="wbo-local-cat">人设</span>
-                        <span class="wbo-local-cat">文风</span>
-                        <span class="wbo-local-cat">缝合</span>
-                        <span class="wbo-local-cat">世界观</span>
-                        <span class="wbo-local-cat">场景与互动</span>
-                        <span class="wbo-local-cat">小剧场</span>
-                        <span class="wbo-local-cat">补充素材</span>
-                        <span class="wbo-local-cat">NSFW</span>
-                    </div>
-                    <div class="wbo-subtle-tip">优先识别书名前缀（如 [人设]、【文风】），其次按关键词匹配，不修改原文件。</div>
+                    <div class="wbo-local-cats" id="wbo-local-cats">${localCatChipsHtml}</div>
+                    <div class="wbo-subtle-tip">点击选中要自动归纳的分组，按书名前缀与关键词匹配，不修改原文件。</div>
                     <div class="wbo-local-divider"></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" id="wbo-local-any-prefix">
+                        <span>同时按书名开头的 [分类] / 【分类】 前缀自动建组</span>
+                    </label>
                     <label class="wbo-check-line">
                         <input type="checkbox" id="wbo-local-clean-titles">
                         <span>顺手清理显示名末尾的 (1)、副本、作者署名</span>
@@ -2535,11 +2551,17 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </summary>
                     <div class="wbo-collapse-body">
                         <div class="wbo-rule-builder-row">
-                            <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="书名包含词，如：穿搭">
-                            <span class="wbo-rule-arrow">归入</span>
-                            <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设">
-                            <button type="button" class="wbo-btn" id="wbo-local-rule-add-btn">添加</button>
+                            <div class="wbo-rule-field">
+                                <span class="wbo-rule-field-label">书名关键词</span>
+                                <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="如：穿搭、现代">
+                            </div>
+                            <div class="wbo-rule-field">
+                                <span class="wbo-rule-field-label">归入分组</span>
+                                <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="如：User 人设">
+                            </div>
+                            <button type="button" class="wbo-btn wbo-rule-add-btn" id="wbo-local-rule-add-btn">添加</button>
                         </div>
+                        <div class="wbo-subtle-tip">支持一次填多个关键词，用逗号或空格隔开。</div>
                         <datalist id="wbo-existing-groups-datalist">
                             ${settings.groups.map((g) => `<option value="${esc(g.name)}"></option>`).join('')}
                         </datalist>
@@ -2828,7 +2850,47 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
     modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
 
-    // Visual 2-box custom rule builder for Local Organize (zero special symbols needed!)
+    // Interactive built-in category chips for 免 AI 整理 (persisted in settings.localOrganizeCategories)
+    const localCatsEl = modal.querySelector('#wbo-local-cats');
+    const syncLocalCatChips = () => {
+        settings.localOrganizeCategories = LOCAL_ORGANIZE_CATEGORIES
+            .filter((c) => selectedLocalCatSet.has(c.id))
+            .map((c) => c.id);
+        localCatsEl?.querySelectorAll('[data-local-cat]').forEach((btn) => {
+            const id = btn.getAttribute('data-local-cat') || '';
+            const active = selectedLocalCatSet.has(id);
+            btn.classList.toggle('is-selected', active);
+            btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+            const mark = btn.querySelector('.wbo-local-cat-mark');
+            if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+        });
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
+    };
+    localCatsEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-local-cat]') : null;
+        if (!btn) return;
+        const id = btn.getAttribute('data-local-cat') || '';
+        if (!id) return;
+        if (selectedLocalCatSet.has(id)) selectedLocalCatSet.delete(id);
+        else selectedLocalCatSet.add(id);
+        syncLocalCatChips();
+    });
+    modal.querySelector('#wbo-local-cats-default')?.addEventListener('click', () => {
+        selectedLocalCatSet.clear();
+        for (const id of DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS) selectedLocalCatSet.add(id);
+        syncLocalCatChips();
+    });
+    modal.querySelector('#wbo-local-cats-all')?.addEventListener('click', () => {
+        selectedLocalCatSet.clear();
+        for (const c of LOCAL_ORGANIZE_CATEGORIES) selectedLocalCatSet.add(c.id);
+        syncLocalCatChips();
+    });
+    modal.querySelector('#wbo-local-cats-none')?.addEventListener('click', () => {
+        selectedLocalCatSet.clear();
+        syncLocalCatChips();
+    });
+
+    // Visual 2-box custom rule builder for 免 AI 整理 (zero special symbols needed!)
     /** @type {Array<{ kw: string, group: string }>} */
     const localCustomRules = [];
     const ruleKwInput = modal.querySelector('#wbo-local-rule-kw');
@@ -2842,7 +2904,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         }
         if (!ruleChipsEl) return;
         if (localCustomRules.length === 0) {
-            ruleChipsEl.innerHTML = '<span class="wbo-subtle-tip">暂未添加自定义规则（默认规则已覆盖常见前缀与用途）</span>';
+            ruleChipsEl.innerHTML = '<span class="wbo-subtle-tip">暂未添加自定义规则</span>';
             return;
         }
         ruleChipsEl.innerHTML = localCustomRules.map((r, idx) => `
@@ -2910,7 +2972,15 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             return;
         }
         const cleanTitles = Boolean(modal.querySelector('#wbo-local-clean-titles')?.checked);
+        const useAnyBracketPrefix = Boolean(modal.querySelector('#wbo-local-any-prefix')?.checked);
         const customRulesText = localCustomRules.map((r) => `${r.kw} => ${r.group}`).join('\n');
+        if (selectedLocalCatSet.size === 0 && !useAnyBracketPrefix && localCustomRules.length === 0 && !cleanTitles) {
+            if (localStatusEl) {
+                localStatusEl.textContent = '请至少选中一个自动归类分组，或添加自定义归类关键词。';
+                localStatusEl.className = 'wbo-ai-status is-error';
+            }
+            return;
+        }
         const proposals = buildLocalOrganizeProposals({
             books: targetBooks.map((b) => ({
                 realName: b.realName,
@@ -2918,8 +2988,10 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 currentGroup: b.groupName || '',
             })),
             usePrefix: true,
+            useAnyBracketPrefix,
             useKeywords: true,
             cleanTitles,
+            enabledCategoryIds: [...selectedLocalCatSet],
             customRulesText,
         });
         if (localStatusEl) localStatusEl.textContent = '';
@@ -4095,7 +4167,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             }
 
             // Commit groups/notes & flush host world list ONCE for the whole batch!
-            applyAiOrganizeProposals(settings, adjustedProposals, { label: previewFromLocal ? '本地整理' : 'AI 整理' });
+            applyAiOrganizeProposals(settings, adjustedProposals, { label: previewFromLocal ? '免 AI 整理' : 'AI 整理' });
             await flushWorldInfoListRefresh();
             await _callbacks.onRescan();
 
@@ -4146,7 +4218,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         }
 
         const { appliedCount, createdGroups } = applyAiOrganizeProposals(settings, chosen, {
-            label: previewFromLocal ? '本地整理' : 'AI 整理',
+            label: previewFromLocal ? '免 AI 整理' : 'AI 整理',
         });
         closeSubModal();
         await _callbacks.onMutation({ save: true });

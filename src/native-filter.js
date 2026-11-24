@@ -1220,12 +1220,16 @@ export function setGlobalWorldActive(realName, active) {
 
 /**
  * Build grouped section metadata for any `<select>` popup based on its live `<option>`s.
- * Optionally pins the current character's own books into a dedicated top `当前角色` section!
+ * Optionally pins currently selected options (e.g. `已选附加书`) and/or the current character's
+ * own books (`当前角色`) into dedicated top sections!
  *
  * @param {HTMLSelectElement} selectEl
- * @param {{ currentAvatar?: string | null, prioritizeCharGroup?: boolean }} [opts]
+ * @param {{ currentAvatar?: string | null, prioritizeCharGroup?: boolean, pinSelectedSection?: boolean }} [opts]
  */
-function buildPopupGroupedSections(selectEl, { currentAvatar = null, prioritizeCharGroup = false } = {}) {
+function buildPopupGroupedSections(
+    selectEl,
+    { currentAvatar = null, prioritizeCharGroup = false, pinSelectedSection = false } = {},
+) {
     const optByRealName = new Map();
     selectEl.querySelectorAll('option').forEach((opt) => {
         if (opt.value === '') return;
@@ -1238,17 +1242,45 @@ function buildPopupGroupedSections(selectEl, { currentAvatar = null, prioritizeC
 
     /** @type {Array<{ id: string, name: string, color: string, books: Array<{ realName: string, primaryTitle: string, subtitle: string, searchableText: string, value: string, selected: boolean }> }>} */
     const sections = [];
-    const currentCharBookSet = new Set();
+    const placed = new Set();
+
+    // For multi-select (e.g. Extra Worldbooks), pin already-selected books right at the very top!
+    if (pinSelectedSection) {
+        const selectedBooks = [];
+        for (const [realName, opt] of optByRealName.entries()) {
+            if (!opt.selected) continue;
+            const meta = _latestClassification?.byName?.get(realName);
+            placed.add(realName);
+            selectedBooks.push({
+                realName,
+                primaryTitle: meta?.primaryTitle || realName,
+                subtitle: meta?.subtitle || '',
+                searchableText: meta?.searchableText || realName.toLowerCase(),
+                value: opt.value,
+                selected: true,
+            });
+        }
+        if (selectedBooks.length > 0) {
+            selectedBooks.sort((a, b) => compareZhCn(a.primaryTitle, b.primaryTitle));
+            sections.push({
+                id: '__selected_extras__',
+                name: '已选附加书',
+                color: '#4c6ef5',
+                books: selectedBooks,
+            });
+        }
+    }
 
     if (currentAvatar) {
         const currentCharBooks = [];
         for (const [realName, opt] of optByRealName.entries()) {
+            if (placed.has(realName)) continue;
             const meta = _latestClassification?.byName?.get(realName);
             const belongsToCurrent = Boolean(
                 meta?.charOwners?.some((o) => o.avatar === currentAvatar),
             );
             if (belongsToCurrent) {
-                currentCharBookSet.add(realName);
+                placed.add(realName);
                 currentCharBooks.push({
                     realName,
                     primaryTitle: meta?.primaryTitle || realName,
@@ -1263,7 +1295,7 @@ function buildPopupGroupedSections(selectEl, { currentAvatar = null, prioritizeC
             sections.push({
                 id: '__current_char__',
                 name: '当前角色',
-                color: '#4c6ef5',
+                color: '#7c5cdb',
                 books: currentCharBooks,
             });
         }
@@ -1271,7 +1303,7 @@ function buildPopupGroupedSections(selectEl, { currentAvatar = null, prioritizeC
 
     const baseOrdered = [...(_latestClassification?.orderedSections || [])];
     if (prioritizeCharGroup) {
-        // For Primary worldbook binding: place `角色世界书` right after `当前角色` (or custom groups) cleanly
+        // For Primary worldbook binding: place `角色世界书` right after `当前角色` cleanly
         baseOrdered.sort((a, b) => {
             if (a.id === SPECIAL_GROUPS.CHARACTER && b.id !== SPECIAL_GROUPS.CHARACTER) return -1;
             if (b.id === SPECIAL_GROUPS.CHARACTER && a.id !== SPECIAL_GROUPS.CHARACTER) return 1;
@@ -1279,7 +1311,6 @@ function buildPopupGroupedSections(selectEl, { currentAvatar = null, prioritizeC
         });
     }
 
-    const placed = new Set(currentCharBookSet);
     for (const sec of baseOrdered) {
         const books = [];
         for (const b of sec.books || []) {
@@ -1408,9 +1439,10 @@ function attachGroupedSelectControl(
             return;
         }
 
-        const { sections, optByRealName } = buildPopupGroupedSections(selectEl, {
+        const { sections } = buildPopupGroupedSections(selectEl, {
             currentAvatar,
             prioritizeCharGroup,
+            pinSelectedSection: multiple,
         });
         let activePillId = SPECIAL_GROUPS.ALL;
         let searchQuery = '';
@@ -1427,15 +1459,8 @@ function attachGroupedSelectControl(
         popover.className = `wbo-modal wbo-mp-popover ${detectMobilePickerThemeClass()}`;
         popover.setAttribute('data-wbo-palette', getOutsideDropdownPalette());
 
-        // For multi-select (e.g. character extra worldbooks), stage selection into a draft Set and commit ONLY on `确认`
-        // so accidental taps or outside dismissal NEVER bind unwanted worldbooks!
-        const draftSelectedSet = new Set(
-            Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''),
-        );
-        const hasAnySelected = () =>
-            multiple
-                ? draftSelectedSet.size > 0
-                : Array.from(selectEl.selectedOptions || []).some((o) => o.value !== '');
+        const getSelectedValSet = () =>
+            new Set(Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''));
 
         popover.innerHTML = `
             <div class="wbo-mp-top">
@@ -1443,8 +1468,7 @@ function attachGroupedSelectControl(
                     <i class="fa-solid fa-magnifying-glass"></i>
                     <input type="search" class="wbo-search-input" id="wbo-pop-search" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
                 </div>
-                <button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${hasAnySelected() ? '' : ' hidden'}>清除</button>
-                ${multiple ? '<button type="button" class="wbo-mp-clear-btn" id="wbo-pop-cancel">取消</button><button type="button" class="wbo-mp-done-btn" id="wbo-pop-done">确认</button>' : ''}
+                <button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${getSelectedValSet().size > 0 ? '' : ' hidden'}>清除</button>
             </div>
             <div class="wbo-mp-pills-row"${sections.length < 2 ? ' hidden' : ''}>
                 <div class="wbo-pills-rail">
@@ -1495,14 +1519,8 @@ function attachGroupedSelectControl(
         const pillsEl = popover.querySelector('#wbo-pop-pills');
         const expandBtn = popover.querySelector('#wbo-pop-expand');
         const clearBtn = popover.querySelector('#wbo-pop-clear');
-        const doneBtn = popover.querySelector('#wbo-pop-done');
         const searchInput = popover.querySelector('#wbo-pop-search');
         const listEl = popover.querySelector('#wbo-pop-list');
-
-        const getSelectedValSet = () =>
-            multiple
-                ? draftSelectedSet
-                : new Set(Array.from(selectEl.selectedOptions || []).map((o) => o.value).filter((v) => v !== ''));
 
         const renderPills = () => {
             if (!pillsEl) return;
@@ -1524,7 +1542,6 @@ function attachGroupedSelectControl(
             if (!listEl) return;
             const selectedSet = getSelectedValSet();
             if (clearBtn instanceof HTMLElement) clearBtn.hidden = selectedSet.size === 0;
-            if (doneBtn) doneBtn.textContent = selectedSet.size > 0 ? `确认 (${selectedSet.size})` : '确认';
             const q = searchQuery.trim().toLowerCase();
             const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
             const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
@@ -1540,14 +1557,29 @@ function attachGroupedSelectControl(
                     ? ''
                     : books.map((b) => {
                         const isSel = selectedSet.has(b.value);
+                        if (multiple) {
+                            // Anti-misclick multi-select row: body text is passive (safe to scroll!),
+                            // ONLY the explicit right-side `添加 / ✓ 已选` pill toggles selection!
+                            // Unselected items render NO checkmark icon at all (immune to theme icon color overrides!).
+                            return `
+                                <div class="wbo-mp-row is-multi-row${isSel ? ' is-selected' : ''}" data-pop-row-val="${escHtml(b.value)}">
+                                    <span class="wbo-mp-row-text">
+                                        <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
+                                        ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
+                                    </span>
+                                    <button type="button" class="wbo-mp-toggle-pill${isSel ? ' is-on' : ''}" data-pop-toggle-val="${escHtml(b.value)}">
+                                        ${isSel ? '<i class="fa-solid fa-check"></i><span>已选</span>' : '<span>添加</span>'}
+                                    </button>
+                                </div>
+                            `;
+                        }
                         return `
                             <button type="button" class="wbo-mp-row${isSel ? ' is-selected' : ''}" data-pop-val="${escHtml(b.value)}">
-                                ${multiple ? `<span class="wbo-mp-multi-box${isSel ? ' is-checked' : ''}"><i class="fa-solid fa-check"></i></span>` : ''}
                                 <span class="wbo-mp-row-text">
                                     <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
                                     ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
                                 </span>
-                                ${!multiple && isSel ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
+                                ${isSel ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                             </button>
                         `;
                     }).join('');
@@ -1580,23 +1612,16 @@ function attachGroupedSelectControl(
 
         clearBtn?.addEventListener('click', () => {
             if (multiple) {
-                draftSelectedSet.clear();
+                for (const opt of Array.from(selectEl.options)) {
+                    opt.selected = false;
+                }
+                fireSelectChange();
                 renderList();
             } else {
                 selectEl.value = '';
                 fireSelectChange();
                 closePopover();
             }
-        });
-        popover.querySelector('#wbo-pop-cancel')?.addEventListener('click', closePopover);
-        doneBtn?.addEventListener('click', () => {
-            if (multiple) {
-                for (const opt of Array.from(selectEl.options)) {
-                    opt.selected = opt.value !== '' && draftSelectedSet.has(opt.value);
-                }
-                fireSelectChange();
-            }
-            closePopover();
         });
 
         expandBtn?.addEventListener('click', () => {
@@ -1653,20 +1678,32 @@ function attachGroupedSelectControl(
                 }
                 return;
             }
+            if (multiple) {
+                const pillBtn = target.closest('[data-pop-toggle-val]');
+                if (!pillBtn) return;
+                const val = pillBtn.getAttribute('data-pop-toggle-val') ?? '';
+                const opt = Array.from(selectEl.options).find((o) => o.value === val);
+                if (!opt) return;
+                const nextSel = !opt.selected;
+                opt.selected = nextSel;
+                fireSelectChange();
+                const rowEl = pillBtn.closest('.wbo-mp-row');
+                rowEl?.classList.toggle('is-selected', nextSel);
+                pillBtn.classList.toggle('is-on', nextSel);
+                pillBtn.innerHTML = nextSel
+                    ? '<i class="fa-solid fa-check"></i><span>已选</span>'
+                    : '<span>添加</span>';
+                if (clearBtn instanceof HTMLElement) {
+                    clearBtn.hidden = getSelectedValSet().size === 0;
+                }
+                return;
+            }
             const rowBtn = target.closest('[data-pop-val]');
             if (rowBtn) {
                 const val = rowBtn.getAttribute('data-pop-val') ?? '';
-                if (multiple) {
-                    if (draftSelectedSet.has(val)) draftSelectedSet.delete(val);
-                    else draftSelectedSet.add(val);
-                    const prevTop = listEl.scrollTop;
-                    renderList();
-                    listEl.scrollTop = prevTop;
-                } else {
-                    selectEl.value = val;
-                    fireSelectChange();
-                    closePopover();
-                }
+                selectEl.value = val;
+                fireSelectChange();
+                closePopover();
             }
         });
 
@@ -1715,26 +1752,45 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
     const $sel = $(extrasSelect);
     if (!$sel.data('select2')) return;
 
-    const { sections } = buildPopupGroupedSections(extrasSelect, { currentAvatar, prioritizeCharGroup: false });
-    const optMap = new Map();
-    for (const opt of Array.from(extrasSelect.querySelectorAll('option'))) {
-        if (opt.value !== '') optMap.set(opt.value, opt);
-    }
-
-    // Wrap live `<option>`s into `<optgroup>`s preserving exact `option.value` and `option.selected`!
-    if (sections.length >= 2) {
-        extrasSelect.querySelectorAll('optgroup').forEach((g) => g.remove());
-        for (const sec of sections) {
-            const grp = document.createElement('optgroup');
-            grp.label = `${sec.name} (${sec.books.length})`;
-            grp.setAttribute('data-wbo-group', sec.id);
-            for (const b of sec.books) {
-                const opt = optMap.get(b.value);
-                if (opt) grp.appendChild(opt);
+    const rebuildExtrasOptgroups = () => {
+        // First unwrap any existing optgroups without losing option.selected
+        const existingGroups = Array.from(extrasSelect.querySelectorAll('optgroup'));
+        if (existingGroups.length > 0) {
+            const unwrapFrag = document.createDocumentFragment();
+            for (const g of existingGroups) {
+                while (g.firstChild) unwrapFrag.appendChild(g.firstChild);
+                g.remove();
             }
-            if (grp.childElementCount > 0) extrasSelect.appendChild(grp);
+            extrasSelect.appendChild(unwrapFrag);
         }
-    }
+
+        const { sections } = buildPopupGroupedSections(extrasSelect, {
+            currentAvatar,
+            prioritizeCharGroup: false,
+            pinSelectedSection: true,
+        });
+        const optMap = new Map();
+        for (const opt of Array.from(extrasSelect.querySelectorAll('option'))) {
+            if (opt.value !== '') optMap.set(opt.value, opt);
+        }
+
+        if (sections.length >= 2) {
+            const frag = document.createDocumentFragment();
+            for (const sec of sections) {
+                const grp = document.createElement('optgroup');
+                grp.label = `${sec.name} (${sec.books.length})`;
+                grp.setAttribute('data-wbo-group', sec.id);
+                for (const b of sec.books) {
+                    const opt = optMap.get(b.value);
+                    if (opt) grp.appendChild(opt);
+                }
+                if (grp.childElementCount > 0) frag.appendChild(grp);
+            }
+            extrasSelect.appendChild(frag);
+        }
+    };
+
+    rebuildExtrasOptgroups();
 
     patchExistingSelect2InPlace($sel, {
         matcher: customSelect2Matcher,
@@ -1747,7 +1803,11 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
     }
     let activePillId = SPECIAL_GROUPS.ALL;
 
-    $sel.off('select2:open.wboExtras').on('select2:open.wboExtras', () => {
+    $sel.off('select2:opening.wboExtras select2:open.wboExtras')
+        .on('select2:opening.wboExtras', () => {
+            rebuildExtrasOptgroups();
+        })
+        .on('select2:open.wboExtras', () => {
         requestAnimationFrame(() => {
             const inst = $sel.data('select2');
             const dropdownEl = inst?.$dropdown?.[0];

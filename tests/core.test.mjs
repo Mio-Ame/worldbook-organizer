@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+    DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
+    LOCAL_ORGANIZE_CATEGORIES,
     SPECIAL_GROUPS,
     addCustomGroup,
     applyAiOrganizeProposals,
@@ -293,7 +295,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(localProps[0].group, '缝合');
     assert.equal(localProps[0].alias, '[缝]不因爱失去自我v1.7');
     assert.equal(localProps[0].note, '');
-    assert.equal(localProps[1].group, '人设');
+    assert.equal(localProps[1].group, 'User 人设');
     assert.equal(localProps[1].note, '');
     assert.equal(localProps[2].group, '场景与互动');
     assert.equal(localProps[3].group, 'NSFW');
@@ -527,4 +529,38 @@ test('config export and import round-trip cleanly', () => {
     assert.equal(dst.charBookTitleMode, 'char_only');
     assert.equal(dst.aliases['书A'], '干净的书A');
     assert.equal(dst.groups.length, 1);
+});
+
+test('no-AI organize defaults to user_persona, style, and nsfw and honors selective categories', () => {
+    assert.deepEqual([...DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS], ['user_persona', 'style', 'nsfw']);
+    assert.ok(LOCAL_ORGANIZE_CATEGORIES.length >= 10);
+
+    const books = [
+        { realName: '[补充]user穿搭v2.2' },
+        { realName: '古风文风润色指南' },
+        { realName: 'dirty talk 词库' },
+        { realName: '赛博世界观设定集' },
+        { realName: '随机小剧场盲盒' },
+    ];
+
+    // Default 3 categories: only matches User 人设 / 文风 / NSFW; ignores unchecked 世界观 / 小剧场
+    const defProposals = buildLocalOrganizeProposals({
+        books,
+        enabledCategoryIds: DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
+    });
+    const byName = new Map(defProposals.map((p) => [p.realName, p.group]));
+    assert.equal(byName.get('[补充]user穿搭v2.2'), 'User 人设');
+    assert.equal(byName.get('古风文风润色指南'), '文风');
+    assert.equal(byName.get('dirty talk 词库'), 'NSFW');
+    assert.equal(byName.get('赛博世界观设定集'), '未分组');
+    assert.equal(byName.get('随机小剧场盲盒'), '未分组');
+
+    // Enabling worldview + theater picks them up cleanly
+    const wideProposals = buildLocalOrganizeProposals({
+        books,
+        enabledCategoryIds: [...DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS, 'worldview', 'theater'],
+    });
+    const wideMap = new Map(wideProposals.map((p) => [p.realName, p.group]));
+    assert.equal(wideMap.get('赛博世界观设定集'), '世界观');
+    assert.equal(wideMap.get('随机小剧场盲盒'), '小剧场');
 });
