@@ -165,6 +165,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     editorHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     localOrganizeCategories: ['user_persona', 'style', 'nsfw'],
     entrySearchHistory: [],
+    mgrSearchInBookName: true,
+    mgrSearchInCharName: true,
+    mgrSearchInEntries: false,
+    mgrSearchSplitSpaces: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
@@ -1244,17 +1248,51 @@ export function isBookVisibleInCharBindPopup({
 }
 
 /**
- * Multi-keyword space-separated fuzzy match across name, alias, note, group, and bound characters.
+ * Search match across selected book metadata fields (book name/alias/note/group and/or character/persona names),
+ * supporting either exact phrase matching or optional space-separated multi-word AND matching.
  * @param {any} bookMeta
  * @param {string} query
+ * @param {{ searchBookName?: boolean, searchCharName?: boolean, splitSpaces?: boolean }} [opts]
  * @returns {boolean}
  */
-export function matchesSearch(bookMeta, query) {
+export function matchesSearch(bookMeta, query, opts = null) {
     const clean = String(query ?? '').trim().toLowerCase();
     if (!clean) return true;
-    const tokens = clean.split(/\s+/).filter(Boolean);
-    const haystack = bookMeta?.searchableText || String(bookMeta?.realName || '').toLowerCase();
-    return tokens.every((tok) => haystack.includes(tok));
+
+    if (!opts) {
+        const tokens = clean.split(/\s+/).filter(Boolean);
+        const haystack = bookMeta?.searchableText || String(bookMeta?.realName || '').toLowerCase();
+        return tokens.every((tok) => haystack.includes(tok));
+    }
+
+    const searchBookName = opts.searchBookName !== false;
+    const searchCharName = opts.searchCharName !== false;
+    if (!searchBookName && !searchCharName) return false;
+
+    const parts = [];
+    if (searchBookName) {
+        if (bookMeta?.realName) parts.push(bookMeta.realName);
+        if (bookMeta?.alias) parts.push(bookMeta.alias);
+        if (bookMeta?.primaryTitle) parts.push(bookMeta.primaryTitle);
+        if (bookMeta?.note) parts.push(bookMeta.note);
+        if (bookMeta?.groupName) parts.push(bookMeta.groupName);
+    }
+    if (searchCharName) {
+        for (const o of bookMeta?.charOwners || []) {
+            if (o?.charName) parts.push(o.charName);
+        }
+        for (const p of bookMeta?.personaOwners || []) {
+            if (p) parts.push(p);
+        }
+    }
+    const haystack = parts.join('\n').toLowerCase();
+    if (!haystack) return false;
+
+    if (opts.splitSpaces) {
+        const tokens = clean.split(/\s+/).filter(Boolean);
+        return tokens.every((tok) => haystack.includes(tok));
+    }
+    return haystack.includes(clean);
 }
 
 /**
@@ -1905,12 +1943,14 @@ export function searchEntriesInPayload(
         searchTitleAndKeys = true,
         searchContent = true,
         includeDisabled = true,
+        splitSpaces = false,
         maxHitsPerBook = 8,
         snippetRadius = 46,
     } = {},
 ) {
     const needle = String(query ?? '').trim().toLowerCase();
-    if (!needle || (!searchTitleAndKeys && !searchContent)) {
+    const tokens = splitSpaces ? needle.split(/\s+/).filter(Boolean) : (needle ? [needle] : []);
+    if (tokens.length === 0 || (!searchTitleAndKeys && !searchContent)) {
         return { hits: [], totalMatchesInBook: 0 };
     }
     const entriesObj = payload?.entries;
@@ -1934,28 +1974,33 @@ export function searchEntriesInPayload(
         const keysJoined = allKeys.join(', ');
         const content = String(e.content ?? '').trim();
 
-        const hitComment = searchTitleAndKeys && comment.toLowerCase().includes(needle);
-        const hitKeys = searchTitleAndKeys && keysJoined.toLowerCase().includes(needle);
+        const commentLower = searchTitleAndKeys ? comment.toLowerCase() : '';
+        const keysLower = searchTitleAndKeys ? keysJoined.toLowerCase() : '';
         const contentLower = searchContent ? content.toLowerCase() : '';
-        const contentPos = searchContent ? contentLower.indexOf(needle) : -1;
-        const hitContent = contentPos >= 0;
 
-        if (!hitComment && !hitKeys && !hitContent) continue;
+        const allMatched = tokens.every(
+            (tok) => commentLower.includes(tok) || keysLower.includes(tok) || contentLower.includes(tok),
+        );
+        if (!allMatched) continue;
 
         totalMatchesInBook += 1;
         if (hits.length >= maxHitsPerBook) continue;
 
         const matchedIn = [];
-        if (hitComment) matchedIn.push('标题');
-        if (hitKeys) matchedIn.push('触发词');
-        if (hitContent) matchedIn.push('正文');
+        if (searchTitleAndKeys && tokens.some((tok) => commentLower.includes(tok))) matchedIn.push('标题');
+        if (searchTitleAndKeys && tokens.some((tok) => keysLower.includes(tok))) matchedIn.push('触发词');
+        if (searchContent && tokens.some((tok) => contentLower.includes(tok))) matchedIn.push('正文');
 
-        // Build a compact snippet centered around the match in content
+        // Build a compact snippet centered around the first matched token in content
         let snippet = '';
         if (content) {
-            if (contentPos >= 0) {
-                const start = Math.max(0, contentPos - snippetRadius);
-                const end = Math.min(content.length, contentPos + needle.length + snippetRadius);
+            const firstMatch = tokens
+                .map((tok) => ({ pos: contentLower.indexOf(tok), len: tok.length }))
+                .filter((m) => m.pos >= 0)
+                .sort((a, b) => a.pos - b.pos)[0];
+            if (firstMatch) {
+                const start = Math.max(0, firstMatch.pos - snippetRadius);
+                const end = Math.min(content.length, firstMatch.pos + firstMatch.len + snippetRadius);
                 snippet = `${start > 0 ? '…' : ''}${content.slice(start, end).replace(/\s+/g, ' ').trim()}${end < content.length ? '…' : ''}`;
             } else {
                 const compact = content.replace(/\s+/g, ' ').trim();

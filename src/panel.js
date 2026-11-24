@@ -76,6 +76,8 @@ let _lastModalListSig = null;
 let _batchMode = false;
 let _mgrPillsExpanded = false;
 let _mgrSearchTimer = null;
+/** @type {{ cancelled: boolean } | null} */
+let _mgrInlineEntrySignal = null;
 /** @type {MutationObserver | null} */
 let _charBtnWidthObserver = null;
 /** @type {Set<string>} */
@@ -822,9 +824,18 @@ function renderGroupSectionHtml({
 function closeGroupVisibilityPopover() {
     document.getElementById('wbo-vis-popover-backdrop')?.remove();
     document.getElementById('wbo-quick-exclude-backdrop')?.remove();
+    document.getElementById('wbo-search-opts-backdrop')?.remove();
+}
+
+function cancelManagerInlineEntrySearch() {
+    if (_mgrInlineEntrySignal) {
+        _mgrInlineEntrySignal.cancelled = true;
+        _mgrInlineEntrySignal = null;
+    }
 }
 
 function closeManagerModal() {
+    cancelManagerInlineEntrySearch();
     closeGroupVisibilityPopover();
     _lastModalListSig = null;
     _batchMode = false;
@@ -1386,9 +1397,12 @@ function openManagerModal() {
                         <i class="fa-solid fa-magnifying-glass"></i>
                         <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
                     </div>
-                    <button type="button" class="wbo-tool-btn" id="wbo-mgr-entry-search-btn" data-action="open-entry-search" title="跨世界书按需搜索条目内容">
-                        <i class="fa-solid fa-file-lines"></i>
-                        <span>搜条目</span>
+                    <button type="button" class="wbo-tool-btn" id="wbo-mgr-entry-go-btn" data-action="run-inline-entry-search" title="按当前关键词搜索条目内容" hidden>
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <span id="wbo-mgr-entry-go-label">搜索</span>
+                    </button>
+                    <button type="button" class="wbo-tool-btn wbo-search-opts-btn" id="wbo-mgr-search-opts-btn" data-action="open-mgr-search-opts" title="设置搜索范围（世界书名 / 角色名 / 条目内容 / 空格多词）">
+                        <i class="fa-solid fa-sliders"></i>
                     </button>
                 </div>
                 <div class="wbo-mgr-list-tools">
@@ -1407,7 +1421,9 @@ function openManagerModal() {
                     </button>
                 </div>
             </div>
+            <div class="wbo-es-history-row wbo-mgr-hist-row" id="wbo-mgr-hist-row" hidden></div>
         </div>
+        <div class="wbo-mgr-es-box" id="wbo-mgr-es-box" hidden></div>
         <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
             <span class="wbo-batch-count" id="wbo-batch-count">已选 0 本</span>
             <button type="button" class="wbo-link-btn" id="wbo-batch-toggle-all" data-action="batch-toggle-visible">全选当前</button>
@@ -1442,15 +1458,76 @@ function openManagerModal() {
             _isComposing = false;
             clearTimeout(_mgrSearchTimer);
             _searchQuery = searchInput.value;
+            if (!_searchQuery.trim()) clearManagerInlineEntryResults();
             renderManagerGroupsListOnly();
         });
         searchInput.addEventListener('input', () => {
             if (_isComposing) return;
             _searchQuery = searchInput.value;
+            if (!_searchQuery.trim()) clearManagerInlineEntryResults();
             clearTimeout(_mgrSearchTimer);
             _mgrSearchTimer = setTimeout(() => { renderManagerGroupsListOnly(); }, 80);
         });
+        searchInput.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' && !_isComposing) {
+                const curSettings = _callbacks?.getState?.()?.settings;
+                if (curSettings?.mgrSearchInEntries) {
+                    ev.preventDefault();
+                    void runManagerInlineEntrySearch();
+                }
+            }
+        });
     }
+
+    modal.querySelector('#wbo-mgr-hist-row')?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target || !_callbacks) return;
+        const { settings } = _callbacks.getState();
+        if (target.closest('#wbo-mgr-hist-clear')) {
+            settings.entrySearchHistory = [];
+            syncManagerSearchBarUi();
+            void _callbacks.onMutation({ save: true, uiOnly: true });
+            return;
+        }
+        const delBtn = target.closest('[data-mgr-hist-del]');
+        if (delBtn) {
+            const term = delBtn.getAttribute('data-mgr-hist-del') || '';
+            settings.entrySearchHistory = (settings.entrySearchHistory || []).filter((x) => x !== term);
+            syncManagerSearchBarUi();
+            void _callbacks.onMutation({ save: true, uiOnly: true });
+            return;
+        }
+        const pickBtn = target.closest('[data-mgr-hist-pick]');
+        if (pickBtn) {
+            const term = pickBtn.getAttribute('data-mgr-hist-pick') || '';
+            _searchQuery = term;
+            if (searchInput instanceof HTMLInputElement) searchInput.value = term;
+            renderManagerGroupsListOnly();
+            if (settings.mgrSearchInEntries) {
+                void runManagerInlineEntrySearch();
+            }
+        }
+    });
+
+    modal.querySelector('#wbo-mgr-es-box')?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target) return;
+        if (target.closest('[data-mgr-es-clear]')) {
+            clearManagerInlineEntryResults();
+            return;
+        }
+        const openBtn = target.closest('[data-es-open]');
+        if (openBtn) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const worldName = openBtn.getAttribute('data-es-open');
+            const uid = openBtn.getAttribute('data-es-uid');
+            if (!worldName) return;
+            cancelManagerInlineEntrySearch();
+            openWorldInNativeEditor(worldName, { focusUid: uid || null });
+            closeManagerModal();
+        }
+    });
 
     modal.querySelector('#wbo-mgr-show-char')?.addEventListener('change', async (ev) => {
         const cb = ev.currentTarget;
@@ -1715,6 +1792,28 @@ function openManagerModal() {
                 if (gid && target instanceof HTMLElement) {
                     openGroupVisibilityPopover(target, gid, gname);
                 }
+                break;
+            }
+            case 'open-mgr-search-opts': {
+                if (target instanceof HTMLElement) {
+                    openManagerSearchOptionsPopover(target);
+                }
+                break;
+            }
+            case 'run-inline-entry-search': {
+                if (_mgrInlineEntrySignal) {
+                    cancelManagerInlineEntrySearch();
+                    syncManagerSearchBarUi();
+                } else {
+                    void runManagerInlineEntrySearch();
+                }
+                break;
+            }
+            case 'enable-and-run-entry-search': {
+                settings.mgrSearchInEntries = true;
+                syncManagerSearchBarUi();
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                void runManagerInlineEntrySearch();
                 break;
             }
             case 'open-entry-search': {
@@ -2023,7 +2122,295 @@ function refreshManagerModalContent() {
             : '';
     }
 
+    syncManagerSearchBarUi();
     renderManagerGroupsListOnly();
+}
+
+/**
+ * Sync the Group Manager unified search bar placeholder, inline `搜索/停止` button,
+ * search-options indicator, and compact recent-search history chips.
+ */
+function syncManagerSearchBarUi() {
+    const overlay = document.getElementById(MANAGER_OVERLAY_ID);
+    if (!overlay || !_callbacks) return;
+    const { settings } = _callbacks.getState();
+
+    const inBook = settings.mgrSearchInBookName !== false;
+    const inChar = settings.mgrSearchInCharName !== false;
+    const inEntries = Boolean(settings.mgrSearchInEntries);
+    const splitSpaces = Boolean(settings.mgrSearchSplitSpaces);
+
+    const searchInput = overlay.querySelector('#wbo-mgr-search-input');
+    if (searchInput instanceof HTMLInputElement) {
+        const parts = [];
+        if (inBook) parts.push('世界书名');
+        if (inChar) parts.push('角色名');
+        if (inEntries) parts.push('条目内容');
+        searchInput.placeholder = parts.length > 0
+            ? (inEntries ? `搜 ${parts.join(' / ')}（回车搜正文）` : `搜索 ${parts.join(' / ')}...`)
+            : '请先点右侧设置勾选搜索范围';
+    }
+
+    const goBtn = overlay.querySelector('#wbo-mgr-entry-go-btn');
+    const goLabel = overlay.querySelector('#wbo-mgr-entry-go-label');
+    if (goBtn instanceof HTMLElement) {
+        goBtn.hidden = !inEntries;
+        const running = Boolean(_mgrInlineEntrySignal);
+        goBtn.classList.toggle('is-active', running);
+        const icon = goBtn.querySelector('i');
+        if (icon) icon.className = running ? 'fa-solid fa-stop' : 'fa-solid fa-magnifying-glass';
+        if (goLabel) goLabel.textContent = running ? '停止' : '搜索';
+    }
+
+    const optsBtn = overlay.querySelector('#wbo-mgr-search-opts-btn');
+    if (optsBtn instanceof HTMLElement) {
+        const hasCustom = inEntries || splitSpaces || !inBook || !inChar;
+        optsBtn.classList.toggle('is-active', hasCustom);
+    }
+
+    const histRow = overlay.querySelector('#wbo-mgr-hist-row');
+    if (histRow instanceof HTMLElement) {
+        const list = Array.isArray(settings.entrySearchHistory) ? settings.entrySearchHistory : [];
+        if (!inEntries || list.length === 0) {
+            histRow.hidden = true;
+            histRow.innerHTML = '';
+        } else {
+            histRow.hidden = false;
+            histRow.innerHTML = `
+                <span class="wbo-es-history-label">最近</span>
+                ${list.map((term) => `
+                    <span class="wbo-es-hist-chip">
+                        <button type="button" class="wbo-es-hist-term" data-mgr-hist-pick="${esc(term)}">${esc(term)}</button>
+                        <button type="button" class="wbo-es-hist-del" data-mgr-hist-del="${esc(term)}" aria-label="删除">×</button>
+                    </span>
+                `).join('')}
+                <button type="button" class="wbo-link-btn wbo-es-hist-clear" id="wbo-mgr-hist-clear">清空</button>
+            `;
+        }
+    }
+}
+
+function clearManagerInlineEntryResults() {
+    cancelManagerInlineEntrySearch();
+    const box = document.getElementById('wbo-mgr-es-box');
+    if (box instanceof HTMLElement) {
+        box.hidden = true;
+        box.innerHTML = '';
+    }
+    syncManagerSearchBarUi();
+}
+
+function openManagerSearchOptionsPopover(anchorBtn) {
+    const existing = document.getElementById('wbo-search-opts-backdrop');
+    if (existing) {
+        existing.remove();
+        return;
+    }
+    closeGroupVisibilityPopover();
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'wbo-search-opts-backdrop';
+    backdrop.className = 'wbo-vis-backdrop';
+
+    const pop = document.createElement('div');
+    pop.className = 'wbo-modal wbo-vis-popover wbo-search-opts-popover';
+    applyThemeClass(pop);
+    pop.innerHTML = `
+        <div class="wbo-vis-title">搜索范围与方式</div>
+        <label class="wbo-check-line">
+            <input type="checkbox" data-so-key="mgrSearchInBookName"${settings.mgrSearchInBookName !== false ? ' checked' : ''}>
+            <span>世界书名</span>
+        </label>
+        <label class="wbo-check-line">
+            <input type="checkbox" data-so-key="mgrSearchInCharName"${settings.mgrSearchInCharName !== false ? ' checked' : ''}>
+            <span>角色名</span>
+        </label>
+        <label class="wbo-check-line">
+            <input type="checkbox" data-so-key="mgrSearchInEntries"${settings.mgrSearchInEntries ? ' checked' : ''}>
+            <span>条目内容</span>
+        </label>
+        <div class="wbo-local-divider"></div>
+        <label class="wbo-check-line">
+            <input type="checkbox" data-so-key="mgrSearchSplitSpaces"${settings.mgrSearchSplitSpaces ? ' checked' : ''}>
+            <span>空格分隔多词（同时包含）</span>
+        </label>
+    `;
+
+    backdrop.appendChild(pop);
+    document.body.appendChild(backdrop);
+
+    const rect = anchorBtn.getBoundingClientRect();
+    const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+    const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+    const popW = 228;
+    const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
+    const openAbove = vh - rect.bottom < 190 && rect.top > 190;
+    pop.style.width = `${popW}px`;
+    pop.style.left = `${Math.round(left)}px`;
+    if (openAbove) {
+        pop.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
+        pop.style.top = 'auto';
+    } else {
+        pop.style.top = `${Math.round(rect.bottom + 4)}px`;
+        pop.style.bottom = 'auto';
+    }
+
+    pop.addEventListener('click', (ev) => ev.stopPropagation());
+    backdrop.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ev.target === backdrop) closeGroupVisibilityPopover();
+    });
+
+    pop.querySelectorAll('input[data-so-key]').forEach((cb) => {
+        cb.addEventListener('change', async () => {
+            if (!(cb instanceof HTMLInputElement) || !_callbacks) return;
+            const key = cb.getAttribute('data-so-key');
+            if (!key) return;
+            const cur = _callbacks.getState().settings;
+            cur[key] = cb.checked;
+            if (key === 'mgrSearchInEntries' && !cb.checked) {
+                clearManagerInlineEntryResults();
+            }
+            syncManagerSearchBarUi();
+            renderManagerGroupsListOnly();
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+        });
+    });
+}
+
+async function runManagerInlineEntrySearch() {
+    if (!_callbacks) return;
+    const box = document.getElementById('wbo-mgr-es-box');
+    if (!(box instanceof HTMLElement)) return;
+    const q = _searchQuery.trim();
+    if (!q) {
+        showToast('info', '请先在搜索框输入关键词');
+        const input = document.getElementById('wbo-mgr-search-input');
+        if (input instanceof HTMLInputElement) input.focus();
+        return;
+    }
+
+    const { settings, classification } = _callbacks.getState();
+    const filterId = settings.activeFilterGroupId;
+    let targetBooks = [];
+    if (filterId === SPECIAL_GROUPS.ALL) {
+        targetBooks = [...classification.byName.values()];
+    } else if (filterId === SPECIAL_GROUPS.CHARACTER) {
+        targetBooks = [...classification.characterBooks];
+    } else if (filterId === SPECIAL_GROUPS.UNGROUPED) {
+        targetBooks = [...classification.ungroupedBooks];
+    } else if (filterId === SPECIAL_GROUPS.DEFAULT) {
+        targetBooks = settings.showCharBooks
+            ? [...classification.byName.values()]
+            : [...classification.byName.values()].filter((b) => !b.isInCharGroup);
+    } else {
+        const sec = (classification.orderedSections || []).find((s) => s.id === filterId);
+        targetBooks = sec?.books ? [...sec.books] : [];
+    }
+
+    // Save to recent search history
+    const prevHist = Array.isArray(settings.entrySearchHistory) ? settings.entrySearchHistory : [];
+    settings.entrySearchHistory = [q, ...prevHist.filter((x) => x !== q)].slice(0, 10);
+    void _callbacks.onMutation({ save: true, uiOnly: true });
+
+    cancelManagerInlineEntrySearch();
+    const signal = { cancelled: false };
+    _mgrInlineEntrySignal = signal;
+    syncManagerSearchBarUi();
+
+    const splitSpaces = Boolean(settings.mgrSearchSplitSpaces);
+    const tokens = splitSpaces ? q.split(/\s+/).filter(Boolean) : [q];
+    const bookMetaByName = new Map(targetBooks.map((b) => [b.realName, b]));
+
+    box.hidden = false;
+    box.innerHTML = `
+        <div class="wbo-mgr-es-head">
+            <span class="wbo-es-progress-text" id="wbo-mgr-es-prog-text">准备扫描 0 / ${targetBooks.length} 本…</span>
+            <button type="button" class="wbo-link-btn" data-mgr-es-clear="1">收起结果</button>
+        </div>
+        <div class="wbo-es-progress-bar"><div class="wbo-es-progress-fill" id="wbo-mgr-es-prog-fill"></div></div>
+        <div class="wbo-mgr-es-list" id="wbo-mgr-es-list"></div>
+    `;
+
+    const progText = box.querySelector('#wbo-mgr-es-prog-text');
+    const progFill = box.querySelector('#wbo-mgr-es-prog-fill');
+    const listEl = box.querySelector('#wbo-mgr-es-list');
+
+    const res = await searchWorldbookEntriesStream({
+        worldNames: targetBooks.map((b) => b.realName),
+        concurrency: 2,
+        yieldMs: 12,
+        maxTotalHits: 120,
+        signal,
+        matcher: (payload) => searchEntriesInPayload(payload, q, {
+            searchTitleAndKeys: true,
+            searchContent: true,
+            includeDisabled: true,
+            splitSpaces,
+            maxHitsPerBook: 6,
+        }),
+        onBookResult: ({ worldName, hits, totalMatchesInBook }) => {
+            if (!listEl || signal.cancelled) return;
+            const meta = bookMetaByName.get(worldName);
+            const card = document.createElement('div');
+            card.className = 'wbo-es-book-card';
+            const moreTag = totalMatchesInBook > hits.length
+                ? `<span class="wbo-tag">共 ${totalMatchesInBook} 条，显示前 ${hits.length} 条</span>`
+                : `<span class="wbo-tag">${hits.length} 条命中</span>`;
+            const itemsHtml = hits.map((h) => `
+                <details class="wbo-es-entry">
+                    <summary class="wbo-es-entry-sum">
+                        <span class="wbo-es-entry-head">
+                            <span class="wbo-es-entry-title">${highlightTokensHtml(h.title, tokens)}</span>
+                            ${h.disabled ? '<span class="wbo-tag">已禁用</span>' : ''}
+                            ${h.matchedIn.map((m) => `<span class="wbo-tag">${esc(m)}</span>`).join('')}
+                            <button type="button" class="wbo-link-btn wbo-es-jump-uid" data-es-open="${esc(worldName)}" data-es-uid="${esc(h.uid)}">定位条目</button>
+                        </span>
+                        ${h.keys.length > 0 ? `<div class="wbo-es-entry-keys">触发词：${highlightTokensHtml(h.keys.join('、'), tokens)}</div>` : ''}
+                        ${h.snippet ? `<div class="wbo-es-entry-snip">${highlightTokensHtml(h.snippet, tokens)}</div>` : ''}
+                    </summary>
+                    <div class="wbo-es-entry-body">${highlightTokensHtml(h.content || '(无正文)', tokens)}</div>
+                </details>
+            `).join('');
+            card.innerHTML = `
+                <div class="wbo-es-book-head">
+                    <div class="wbo-es-book-info">
+                        <span class="wbo-es-book-title">${esc(meta?.primaryTitle || worldName)}</span>
+                        ${meta?.groupName ? `<span class="wbo-tag">${esc(meta.groupName)}</span>` : ''}
+                        ${moreTag}
+                    </div>
+                    <button type="button" class="wbo-btn wbo-es-open-btn" data-es-open="${esc(worldName)}">
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i> 编辑
+                    </button>
+                </div>
+                <div class="wbo-es-entries">${itemsHtml}</div>
+            `;
+            listEl.appendChild(card);
+        },
+        onProgress: ({ done, total, hitCount, matchedBooks }) => {
+            if (signal.cancelled) return;
+            const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 100;
+            if (progFill instanceof HTMLElement) progFill.style.width = `${pct}%`;
+            if (progText) {
+                progText.textContent = `条目搜索 ${done}/${total} 本 · 命中 ${matchedBooks} 本共 ${hitCount} 条`;
+            }
+        },
+    });
+
+    if (_mgrInlineEntrySignal === signal) {
+        _mgrInlineEntrySignal = null;
+        syncManagerSearchBarUi();
+        if (progFill instanceof HTMLElement && !res.cancelled) progFill.style.width = '100%';
+        if (progText) {
+            const suffix = res.cancelled ? '（已停止）' : res.capped ? '（已达上限 120 条）' : '（完成）';
+            progText.textContent = `条目搜索 ${res.done}/${res.total} 本 · 命中 ${res.matchedBooks} 本共 ${res.hitCount} 条 ${suffix}`;
+        }
+        if (listEl && res.hitCount === 0) {
+            listEl.innerHTML = '<div class="wbo-empty-hint">当前范围内未找到包含该关键词的条目（可打开角色书开关或切换全部分组后重试）</div>';
+        }
+    }
 }
 
 /**
@@ -2041,6 +2428,11 @@ function renderManagerGroupsListOnly() {
 
     const globalHiddenSet = new Set(Array.isArray(settings.globalHiddenGroupIds) ? settings.globalHiddenGroupIds : []);
     const editorHiddenSet = new Set(Array.isArray(settings.editorHiddenGroupIds) ? settings.editorHiddenGroupIds : []);
+    const searchOpts = {
+        searchBookName: settings.mgrSearchInBookName !== false,
+        searchCharName: settings.mgrSearchInCharName !== false,
+        splitSpaces: Boolean(settings.mgrSearchSplitSpaces),
+    };
 
     // Read LIVE collapse & hidden-group state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
@@ -2052,6 +2444,10 @@ function renderManagerGroupsListOnly() {
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
         Boolean(settings.ungroupedCollapsed),
+        searchOpts.searchBookName,
+        searchOpts.searchCharName,
+        Boolean(settings.mgrSearchInEntries),
+        searchOpts.splitSpaces,
         [...globalHiddenSet].sort().join(','),
         [...editorHiddenSet].sort().join(','),
         orderedSections.map((sec) => [
@@ -2086,7 +2482,7 @@ function renderManagerGroupsListOnly() {
 
         if (sec.kind === 'custom') {
             if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== SPECIAL_GROUPS.ALL && filterId !== sec.id) return;
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
             if (q && books.length === 0) return;
             const liveCollapsed = Boolean(liveGroupById.get(sec.id)?.collapsed);
             const isSingleView = filterId === sec.id;
@@ -2117,7 +2513,7 @@ function renderManagerGroupsListOnly() {
                 filterId !== SPECIAL_GROUPS.ALL &&
                 filterId !== SPECIAL_GROUPS.UNGROUPED
             ) return;
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
             if (q && books.length === 0) return;
             const isSingleView = filterId === SPECIAL_GROUPS.UNGROUPED;
             const forceOpen = Boolean(q) || isSingleView;
@@ -2142,7 +2538,7 @@ function renderManagerGroupsListOnly() {
         }
 
         if (sec.kind === 'character' && classification.charCount > 0) {
-            const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q)) : sec.books;
+            const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
             if (includeCharExplicitly) {
                 if (q && matchedCharBooks.length === 0) return;
                 const isSingleView = filterId === SPECIAL_GROUPS.CHARACTER;
@@ -2176,11 +2572,11 @@ function renderManagerGroupsListOnly() {
         }
     });
 
-    if (q) {
+    if (q && !settings.mgrSearchInEntries) {
         sections.push(`
             <div class="wbo-entry-search-hint-bar">
-                <span>想在世界书条目正文中找「${esc(q)}」？</span>
-                <button type="button" class="wbo-btn wbo-entry-search-hint-btn" data-action="open-entry-search" data-auto-run="1">
+                <span>想在条目正文中找「${esc(q)}」？</span>
+                <button type="button" class="wbo-btn wbo-entry-search-hint-btn" data-action="enable-and-run-entry-search">
                     <i class="fa-solid fa-magnifying-glass"></i> 搜条目内容
                 </button>
             </div>
@@ -2189,7 +2585,9 @@ function renderManagerGroupsListOnly() {
 
     listEl.innerHTML = sections.length > 0
         ? sections.join('')
-        : '<div class="wbo-empty-hint">无匹配世界书</div>';
+        : (q && settings.mgrSearchInEntries
+            ? '<div class="wbo-empty-hint">按回车或点上方「搜索」开始检索条目内容</div>'
+            : '<div class="wbo-empty-hint">无匹配世界书</div>');
 
     listEl.scrollTop = prevScroll;
     syncBatchBarUi();
@@ -5877,6 +6275,10 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
                         <input type="checkbox" id="wbo-es-inc-disabled" checked>
                         <span>含已禁用</span>
                     </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" id="wbo-es-split-spaces"${settings.mgrSearchSplitSpaces ? ' checked' : ''}>
+                        <span>空格分隔多词</span>
+                    </label>
                 </div>
             </div>
 
@@ -5898,6 +6300,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     const inTitleCb = modal.querySelector('#wbo-es-in-title');
     const inContentCb = modal.querySelector('#wbo-es-in-content');
     const incDisabledCb = modal.querySelector('#wbo-es-inc-disabled');
+    const splitSpacesCb = modal.querySelector('#wbo-es-split-spaces');
     const runBtn = modal.querySelector('#wbo-es-run-btn');
     const stopBtn = modal.querySelector('#wbo-es-stop-btn');
     const progWrap = modal.querySelector('#wbo-es-progress-wrap');
@@ -5990,6 +6393,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
         const searchTitleAndKeys = Boolean(inTitleCb instanceof HTMLInputElement ? inTitleCb.checked : true);
         const searchContent = Boolean(inContentCb instanceof HTMLInputElement ? inContentCb.checked : true);
         const includeDisabled = Boolean(incDisabledCb instanceof HTMLInputElement ? incDisabledCb.checked : true);
+        const splitSpaces = Boolean(splitSpacesCb instanceof HTMLInputElement ? splitSpacesCb.checked : false);
         if (!searchTitleAndKeys && !searchContent) {
             showToast('info', '请至少勾选「标题与触发词」或「正文内容」');
             return;
@@ -6002,7 +6406,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
 
         const targetBooks = resolveTargetBooks();
         const bookMetaByName = new Map(targetBooks.map((b) => [b.realName, b]));
-        const tokens = [q];
+        const tokens = splitSpaces ? q.split(/\s+/).filter(Boolean) : [q];
 
         if (resultsEl) resultsEl.innerHTML = '';
         if (progWrap instanceof HTMLElement) progWrap.hidden = false;
@@ -6021,6 +6425,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
                 searchTitleAndKeys,
                 searchContent,
                 includeDisabled,
+                splitSpaces,
                 maxHitsPerBook: 8,
             }),
             onBookResult: ({ worldName, hits, totalMatchesInBook }) => {
@@ -6125,6 +6530,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
  * Remove all DOM nodes mounted by this panel module cleanly.
  */
 export function teardownPanels() {
+    cancelManagerInlineEntrySearch();
     closeGroupVisibilityPopover();
     clearTimeout(_mgrSearchTimer);
     _mgrSearchTimer = null;

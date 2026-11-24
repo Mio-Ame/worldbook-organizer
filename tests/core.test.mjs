@@ -648,9 +648,29 @@ test('searchEntriesInPayload performs exact phrase matching across title, keys, 
     assert.equal(resEnabledOnly.hits.length, 1);
 
     // Exact phrase with space matches contiguous phrase ONLY, never scattered words!
-    const resPhrase = searchEntriesInPayload(payload, 'small talk');
+    const resPhrase = searchEntriesInPayload(payload, 'small talk', { splitSpaces: false });
     assert.equal(resPhrase.hits.length, 1);
     assert.equal(resPhrase.hits[0].title, '英文短语');
+
+    // Optional space-separated multi-word AND matches BOTH contiguous and scattered entries
+    const resMulti = searchEntriesInPayload(payload, 'small talk', { splitSpaces: true });
+    assert.equal(resMulti.hits.length, 2);
+
+    // matchesSearch supports selective bookName / charName scopes and splitSpaces
+    const bookMeta = {
+        realName: '清冷叙事文风',
+        alias: '',
+        primaryTitle: '清冷叙事文风',
+        note: '',
+        groupName: '文风',
+        charOwners: [{ charName: '沈清晏' }],
+        personaOwners: [],
+        searchableText: '清冷叙事文风\n文风\n沈清晏',
+    };
+    assert.equal(matchesSearch(bookMeta, '沈清晏', { searchBookName: true, searchCharName: false }), false);
+    assert.equal(matchesSearch(bookMeta, '沈清晏', { searchBookName: false, searchCharName: true }), true);
+    assert.equal(matchesSearch(bookMeta, '清冷 文风', { searchBookName: true, searchCharName: false, splitSpaces: false }), false);
+    assert.equal(matchesSearch(bookMeta, '清冷 文风', { searchBookName: true, searchCharName: false, splitSpaces: true }), true);
 
     const resTitleKeysOnly = searchEntriesInPayload(payload, '流畅', { searchTitleAndKeys: true, searchContent: false });
     assert.equal(resTitleKeysOnly.hits.length, 0);
