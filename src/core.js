@@ -1056,18 +1056,20 @@ export function matchesSearch(bookMeta, query) {
 
 /**
  * Heuristically detect whether a worldbook title contains common NSFW / sensitive
- * keywords (including titles where `nsfw` or `18+` is adjacent to CJK chars like
- * `18+温柔向Nsfw`) that may trigger strict safety refusals on commercial AI models.
+ * keywords that may trigger strict safety refusals on commercial AI models,
+ * while avoiding common false positives (e.g. 成人礼 / 领土扩张 / small / entry).
  * @param {string} text
  * @returns {boolean}
  */
 export function isPotentiallySensitiveTitle(text) {
     const s = String(text ?? '');
-    if (/(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|porn|色情|黄文|肉文|纯肉|调教|性爱|涩涩|涩图|成人向|成人|涩情|情色|高h|h文|擦边|开车|做爱|啪啪|榨精|触手|媚药|催眠|凌辱|拘束|母狗|肉便器)/i.test(s)) {
+    if (
+        /(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|erotic|fetish|色情|情色|涩情|黄文|小黄文|肉文|纯肉|肉戏|床戏|车文|肉欲|情欲|淫荡|淫靡|淫秽|淫乱|淫词|调教|性爱|性癖|性奴|性交|性侵|性虐|性骚扰|性描写|性行为|性技巧|性器官|性高潮|性凝视|恶俗|恶堕|雌堕|涩涩|涩图|成人向|成人内容|成人描写|高h|h文|擦边|做爱|啪啪|榨精|触手|媚药|催情|春药|发情|情趣|色诱|凌辱|羞辱|拘束|母狗|肉便器|口交|足交|乳交|肛交|内射|颜射|中出|潮吹|自慰|手淫|双性|扶她|兽交|轮奸|强奸|迷奸|乱伦|绿帽|产卵|身体开发|工口|里番|重口|猎奇|血腥|虐杀|自残)/i.test(s)
+    ) {
         return true;
     }
-    // Short ASCII tokens require non-letter boundaries so words like "small" or "smart" never false-positive
-    return /(?<![a-z])(?:sm|sex)(?![a-z])/i.test(s);
+    // Short ASCII tokens require non-letter boundaries so words like "small", "smart", "entry", "ignore" never false-positive
+    return /(?<![a-z])(?:sm|sex|ntr|porn|smut|lewd|gore)(?![a-z])/i.test(s);
 }
 
 /**

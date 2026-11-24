@@ -794,6 +794,18 @@ let _openDropdownResultsObserver = null;
 let _openDropdownCleanup = null;
 
 /**
+ * Persistent in-session memory for `#world_editor_select` dropdown (both native Select2
+ * and custom dropdown popovers) so reopening restores the exact group tab, horizontal
+ * pill scroll offset, and vertical option scroll position instead of jumping!
+ */
+const _dropdownMemory = {
+    activePillGroupId: SPECIAL_GROUPS.ALL,
+    pillBarScrollLeft: 0,
+    resultsScrollTop: 0,
+    hasSavedScroll: false,
+};
+
+/**
  * Clean up any temporary interactive controls attached to an open `#world_editor_select`
  * Select2 dropdown (zero DOM left behind once closed!).
  */
@@ -841,11 +853,19 @@ function enhanceOpenEditorDropdown() {
     if (groups.length === 0) return;
 
     const groupByLabel = new Map(groups.map((g) => [g.fullLabel, g]));
+    const validGroupIds = new Set(groups.map((g) => g.id));
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
         _latestSettings.dropdownCollapsed = {};
     }
 
-    let activePillGroupId = SPECIAL_GROUPS.ALL;
+    // Restore previously selected group pill if it still exists in this dropdown
+    let activePillGroupId =
+        _dropdownMemory.activePillGroupId !== SPECIAL_GROUPS.ALL && validGroupIds.has(_dropdownMemory.activePillGroupId)
+            ? _dropdownMemory.activePillGroupId
+            : SPECIAL_GROUPS.ALL;
+    _dropdownMemory.activePillGroupId = activePillGroupId;
+
+    let isRestoringScroll = true;
     const searchInput = dropdownEl.querySelector('.select2-search__field');
 
     const isSearching = () =>
@@ -944,16 +964,33 @@ function enhanceOpenEditorDropdown() {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
+            _dropdownMemory.activePillGroupId = activePillGroupId;
+            _dropdownMemory.resultsScrollTop = 0;
+            _dropdownMemory.hasSavedScroll = true;
             syncPillButtons();
             decorateGroupItems();
             resultsList.scrollTop = 0;
         });
+
+        filterBar.addEventListener('scroll', () => {
+            if (!isRestoringScroll) {
+                _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+            }
+        }, { passive: true });
 
         const resultsWrap = dropdownEl.querySelector('.select2-results');
         if (resultsWrap && resultsWrap.parentElement) {
             resultsWrap.parentElement.insertBefore(filterBar, resultsWrap);
         }
     }
+
+    const onResultsScroll = () => {
+        if (!isRestoringScroll && !isSearching()) {
+            _dropdownMemory.resultsScrollTop = resultsList.scrollTop;
+            _dropdownMemory.hasSavedScroll = true;
+        }
+    };
+    resultsList.addEventListener('scroll', onResultsScroll, { passive: true });
 
     const onSearchInput = () => {
         requestAnimationFrame(decorateGroupItems);
@@ -968,7 +1005,32 @@ function enhanceOpenEditorDropdown() {
     });
     _openDropdownResultsObserver.observe(resultsList, { childList: true });
 
+    // Restore both horizontal pill scroll & vertical list scroll AFTER Select2's
+    // internal `ensureHighlightVisible()` runs so reopening stays at the exact spot!
+    const applySavedScrollPositions = () => {
+        if (filterBar) {
+            filterBar.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+        }
+        if (_dropdownMemory.hasSavedScroll) {
+            resultsList.scrollTop = _dropdownMemory.resultsScrollTop;
+        }
+    };
+
+    const restoreTimer1 = setTimeout(applySavedScrollPositions, 20);
+    const restoreTimer2 = setTimeout(() => {
+        applySavedScrollPositions();
+        isRestoringScroll = false;
+    }, 80);
+
     _openDropdownCleanup = () => {
+        clearTimeout(restoreTimer1);
+        clearTimeout(restoreTimer2);
+        if (!isRestoringScroll && !isSearching()) {
+            _dropdownMemory.resultsScrollTop = resultsList.scrollTop;
+            _dropdownMemory.hasSavedScroll = true;
+            if (filterBar) _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+        }
+        resultsList.removeEventListener('scroll', onResultsScroll);
         resultsList.removeEventListener('mousedown', onResultsMouseDown, true);
         resultsList.removeEventListener('click', onResultsClick, true);
         if (searchInput instanceof HTMLInputElement) {
@@ -978,6 +1040,7 @@ function enhanceOpenEditorDropdown() {
     };
 
     decorateGroupItems();
+    applySavedScrollPositions();
 }
 
 /**
@@ -1079,7 +1142,14 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.appendChild(ph);
     }
 
-    let activePillGroupId = SPECIAL_GROUPS.ALL;
+    const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
+    let activePillGroupId =
+        _dropdownMemory.activePillGroupId !== SPECIAL_GROUPS.ALL && validGroupIds.has(_dropdownMemory.activePillGroupId)
+            ? _dropdownMemory.activePillGroupId
+            : SPECIAL_GROUPS.ALL;
+    _dropdownMemory.activePillGroupId = activePillGroupId;
+
+    let isRestoringScroll = true;
     const searchInput = containerEl.querySelector('input[type="text"], input[type="search"], .gr-search-input');
     const isSearching = () =>
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
@@ -1199,13 +1269,38 @@ function enhanceCustomDropdownPopover(containerEl) {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
+            _dropdownMemory.activePillGroupId = activePillGroupId;
+            _dropdownMemory.resultsScrollTop = 0;
+            _dropdownMemory.hasSavedScroll = true;
             syncPillButtons();
             syncSections();
             optionsHost.scrollTop = 0;
         });
 
+        filterBar.addEventListener('scroll', () => {
+            if (!isRestoringScroll) {
+                _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+            }
+        }, { passive: true });
+
         optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
     }
+
+    optionsHost.addEventListener('scroll', () => {
+        if (!isRestoringScroll && !isSearching()) {
+            _dropdownMemory.resultsScrollTop = optionsHost.scrollTop;
+            _dropdownMemory.hasSavedScroll = true;
+        }
+    }, { passive: true });
+
+    // Capture exact scroll position right before clicking an option closes the popover
+    optionsHost.addEventListener('mousedown', (ev) => {
+        if (ev.target instanceof Element && ev.target.closest('.gr-option') && !isSearching()) {
+            _dropdownMemory.resultsScrollTop = optionsHost.scrollTop;
+            _dropdownMemory.hasSavedScroll = true;
+            if (filterBar) _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+        }
+    }, true);
 
     if (searchInput instanceof HTMLInputElement) {
         searchInput.addEventListener('input', () => {
@@ -1214,6 +1309,16 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     syncSections();
+    const applyPopoverScroll = () => {
+        if (filterBar) filterBar.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+        if (_dropdownMemory.hasSavedScroll) optionsHost.scrollTop = _dropdownMemory.resultsScrollTop;
+    };
+    applyPopoverScroll();
+    setTimeout(applyPopoverScroll, 20);
+    setTimeout(() => {
+        applyPopoverScroll();
+        isRestoringScroll = false;
+    }, 80);
 }
 
 /**

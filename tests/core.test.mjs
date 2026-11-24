@@ -242,8 +242,13 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(isPotentiallySensitiveTitle('温柔向NSFW'), true);
     assert.equal(isPotentiallySensitiveTitle('18+纯爱文风'), true);
     assert.equal(isPotentiallySensitiveTitle('【R18】描写增强'), true);
+    assert.equal(isPotentiallySensitiveTitle('恶俗文学扩展'), true);
+    assert.equal(isPotentiallySensitiveTitle('反性凝视描写规范'), true);
+    assert.equal(isPotentiallySensitiveTitle('NTR修罗场'), true);
     assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);
     assert.equal(isPotentiallySensitiveTitle('smart_prompt_small'), false);
+    assert.equal(isPotentiallySensitiveTitle('成人礼仪与古代风俗'), false);
+    assert.equal(isPotentiallySensitiveTitle('category_entry_ignore'), false);
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({
