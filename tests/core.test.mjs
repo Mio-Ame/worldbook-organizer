@@ -626,26 +626,32 @@ test('per-selector custom hidden groups work independently with safety invariant
     assert.deepEqual(dst.editorHiddenGroupIds, [SPECIAL_GROUPS.CHARACTER, 'g_archive']);
 });
 
-test('searchEntriesInPayload matches multi-keyword AND across title, keys, and content with snippets', () => {
+test('searchEntriesInPayload performs exact phrase matching across title, keys, and content with snippets', () => {
     const payload = {
         entries: {
-            0: { uid: 0, comment: '性格补充', key: ['软萌'], content: '日常相处时非常可爱，说话轻声细语。', disable: false },
-            1: { uid: 1, comment: '禁用草稿', key: ['旧词'], content: '这里也有软萌和可爱的描写。', disable: true },
-            2: { uid: 2, comment: '世界观', key: ['魔法'], content: '完全不相关的内容。', disable: false },
+            0: { uid: 0, comment: '叙事规范', key: ['第二人称'], content: '采用第二人称视角描写，保持自然流畅。', disable: false },
+            1: { uid: 1, comment: '禁用草稿', key: ['旧词'], content: '这里保留第二人称旧版说明。', disable: true },
+            2: { uid: 2, comment: '英文短语', key: ['tone'], content: 'Use natural small talk between scenes.', disable: false },
+            3: { uid: 3, comment: '分散词不误命中', key: ['misc'], content: 'A small house. We will talk tomorrow.', disable: false },
         },
     };
 
-    const resAll = searchEntriesInPayload(payload, '软萌 可爱', { includeDisabled: true });
+    const resAll = searchEntriesInPayload(payload, '第二人称', { includeDisabled: true });
     assert.equal(resAll.totalMatchesInBook, 2);
     assert.equal(resAll.hits.length, 2);
-    assert.equal(resAll.hits[0].title, '性格补充');
+    assert.equal(resAll.hits[0].title, '叙事规范');
     assert.ok(resAll.hits[0].matchedIn.includes('触发词'));
     assert.ok(resAll.hits[0].matchedIn.includes('正文'));
-    assert.ok(resAll.hits[0].snippet.includes('可爱'));
+    assert.ok(resAll.hits[0].snippet.includes('第二人称'));
 
-    const resEnabledOnly = searchEntriesInPayload(payload, '软萌 可爱', { includeDisabled: false });
+    const resEnabledOnly = searchEntriesInPayload(payload, '第二人称', { includeDisabled: false });
     assert.equal(resEnabledOnly.hits.length, 1);
 
-    const resTitleKeysOnly = searchEntriesInPayload(payload, '可爱', { searchTitleAndKeys: true, searchContent: false });
+    // Exact phrase with space matches contiguous phrase ONLY, never scattered words!
+    const resPhrase = searchEntriesInPayload(payload, 'small talk');
+    assert.equal(resPhrase.hits.length, 1);
+    assert.equal(resPhrase.hits[0].title, '英文短语');
+
+    const resTitleKeysOnly = searchEntriesInPayload(payload, '流畅', { searchTitleAndKeys: true, searchContent: false });
     assert.equal(resTitleKeysOnly.hits.length, 0);
 });

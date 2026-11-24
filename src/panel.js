@@ -5848,7 +5848,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
             <div class="wbo-es-top">
                 <div class="wbo-search-wrap wbo-es-input-wrap">
                     <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(initialQuery)}" placeholder="输入关键词，空格可搜多词" autocomplete="off" spellcheck="false">
+                    <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(initialQuery)}" placeholder="输入关键词，如：第二人称、防抢话" autocomplete="off" spellcheck="false">
                 </div>
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-es-run-btn">
                     <i class="fa-solid fa-magnifying-glass"></i> 搜索
@@ -6002,7 +6002,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
 
         const targetBooks = resolveTargetBooks();
         const bookMetaByName = new Map(targetBooks.map((b) => [b.realName, b]));
-        const tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
+        const tokens = [q];
 
         if (resultsEl) resultsEl.innerHTML = '';
         if (progWrap instanceof HTMLElement) progWrap.hidden = false;

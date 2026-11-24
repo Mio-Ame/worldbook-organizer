@@ -1884,8 +1884,8 @@ export function compareWorldbookEntries(entriesA = [], entriesB = []) {
 
 /**
  * Pure, zero-retention full-text matcher for a single worldbook payload.
- * Supports multi-keyword space-separated AND matching across entry title/comment,
- * primary/secondary trigger keys, and body content, returning compact highlighted snippets.
+ * Performs direct case-insensitive exact substring matching (Ctrl+F style, without splitting spaces)
+ * across entry title/comment, primary/secondary trigger keys, and body content.
  *
  * @param {any} payload
  * @param {string} query
@@ -1909,12 +1909,8 @@ export function searchEntriesInPayload(
         snippetRadius = 46,
     } = {},
 ) {
-    const tokens = String(query ?? '')
-        .trim()
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean);
-    if (tokens.length === 0 || (!searchTitleAndKeys && !searchContent)) {
+    const needle = String(query ?? '').trim().toLowerCase();
+    if (!needle || (!searchTitleAndKeys && !searchContent)) {
         return { hits: [], totalMatchesInBook: 0 };
     }
     const entriesObj = payload?.entries;
@@ -1938,33 +1934,28 @@ export function searchEntriesInPayload(
         const keysJoined = allKeys.join(', ');
         const content = String(e.content ?? '').trim();
 
-        const commentLower = searchTitleAndKeys ? comment.toLowerCase() : '';
-        const keysLower = searchTitleAndKeys ? keysJoined.toLowerCase() : '';
+        const hitComment = searchTitleAndKeys && comment.toLowerCase().includes(needle);
+        const hitKeys = searchTitleAndKeys && keysJoined.toLowerCase().includes(needle);
         const contentLower = searchContent ? content.toLowerCase() : '';
+        const contentPos = searchContent ? contentLower.indexOf(needle) : -1;
+        const hitContent = contentPos >= 0;
 
-        const allMatched = tokens.every(
-            (tok) => commentLower.includes(tok) || keysLower.includes(tok) || contentLower.includes(tok),
-        );
-        if (!allMatched) continue;
+        if (!hitComment && !hitKeys && !hitContent) continue;
 
         totalMatchesInBook += 1;
         if (hits.length >= maxHitsPerBook) continue;
 
         const matchedIn = [];
-        if (searchTitleAndKeys && tokens.some((tok) => commentLower.includes(tok))) matchedIn.push('标题');
-        if (searchTitleAndKeys && tokens.some((tok) => keysLower.includes(tok))) matchedIn.push('触发词');
-        if (searchContent && tokens.some((tok) => contentLower.includes(tok))) matchedIn.push('正文');
+        if (hitComment) matchedIn.push('标题');
+        if (hitKeys) matchedIn.push('触发词');
+        if (hitContent) matchedIn.push('正文');
 
-        // Build a compact snippet centered around the first matched token in content (or keys)
+        // Build a compact snippet centered around the match in content
         let snippet = '';
         if (content) {
-            const firstContentPos = tokens
-                .map((tok) => contentLower.indexOf(tok))
-                .filter((pos) => pos >= 0)
-                .sort((a, b) => a - b)[0];
-            if (firstContentPos !== undefined) {
-                const start = Math.max(0, firstContentPos - snippetRadius);
-                const end = Math.min(content.length, firstContentPos + snippetRadius + 24);
+            if (contentPos >= 0) {
+                const start = Math.max(0, contentPos - snippetRadius);
+                const end = Math.min(content.length, contentPos + needle.length + snippetRadius);
                 snippet = `${start > 0 ? '…' : ''}${content.slice(start, end).replace(/\s+/g, ' ').trim()}${end < content.length ? '…' : ''}`;
             } else {
                 const compact = content.replace(/\s+/g, ' ').trim();
