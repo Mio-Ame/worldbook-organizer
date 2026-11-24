@@ -10,11 +10,13 @@ import {
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
+    cleanupDeletedWorldSettings,
     createApiChannelId,
     exportConfigData,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
     importConfigData,
+    isPotentiallySensitiveTitle,
     matchesSearch,
     moveSectionOrder,
     parseAiOrganizeResponse,
@@ -27,6 +29,7 @@ import {
     applyTauriSurface,
     callCustomApiForOrganize,
     callHostAiForOrganize,
+    deleteWorldbooksFromHost,
     fetchCustomApiModels,
     fetchWorldbookCluesOnDemand,
     fetchWorldbookPreviewEntries,
@@ -54,6 +57,9 @@ let _searchQuery = '';
 let _isComposing = false;
 let _callbacks = null;
 let _lastModalListSig = null;
+let _batchMode = false;
+/** @type {Set<string>} */
+const _batchSelected = new Set();
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
 const _previewCache = new Map();
 
@@ -303,13 +309,18 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
             </button>
         `;
 
+    const batchChecked = _batchSelected.has(book.realName);
+    const leadingControl = _batchMode
+        ? `<input type="checkbox" class="wbo-batch-check" data-action="toggle-batch-item" value="${esc(book.realName)}"${batchChecked ? ' checked' : ''}>`
+        : `<span class="wbo-drag-handle" title="拖动移动到分组"><i class="fa-solid fa-grip-vertical"></i></span>`;
+
     return `
         <div class="wbo-book-item" data-book="${esc(book.realName)}">
-            <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}" data-book="${esc(book.realName)}" draggable="true">
-                <span class="wbo-drag-handle" title="拖动移动到分组"><i class="fa-solid fa-grip-vertical"></i></span>
-                <button type="button" class="wbo-book-main" data-action="toggle-book-preview" title="点击展开预览条目内容">
+            <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}${_batchMode && batchChecked ? ' is-batch-selected' : ''}" data-book="${esc(book.realName)}" draggable="${_batchMode ? 'false' : 'true'}">
+                ${leadingControl}
+                <button type="button" class="wbo-book-main" data-action="${_batchMode ? 'toggle-batch-row' : 'toggle-book-preview'}" title="${_batchMode ? '点击勾选或取消' : '点击展开预览条目内容'}">
                     <div class="wbo-book-title-line">
-                        <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
+                        ${_batchMode ? '' : '<i class="fa-solid fa-chevron-right wbo-book-chev"></i>'}
                         <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
                         ${subHtml}
                         ${extraTag}
@@ -357,16 +368,22 @@ async function toggleInlineBookPreview(itemEl, bookName) {
     rowEl?.classList.add('is-preview-open');
 
     const renderData = (data) => {
+        const footerLinks = `
+            <span class="wbo-preview-head-actions">
+                <button type="button" class="wbo-link-btn" data-action="edit-book">在酒馆编辑器打开</button>
+                <button type="button" class="wbo-link-btn is-danger" data-action="delete-single-book">删除此书</button>
+            </span>
+        `;
         if (!data || data.total === 0) {
             previewEl.innerHTML = `
                 <div class="wbo-preview-head">
                     <span>暂无条目内容</span>
-                    <button type="button" class="wbo-link-btn" data-action="edit-book">在酒馆编辑器打开</button>
+                    ${footerLinks}
                 </div>
             `;
             return;
         }
-        const maxShown = 25;
+        const maxShown = 30;
         const shown = data.entries.slice(0, maxShown);
         const moreCount = data.total - shown.length;
 
@@ -394,7 +411,7 @@ async function toggleInlineBookPreview(itemEl, bookName) {
         previewEl.innerHTML = `
             <div class="wbo-preview-head">
                 <span>共 ${data.total} 条（启用 ${data.enabledCount} 条）</span>
-                <button type="button" class="wbo-link-btn" data-action="edit-book">在酒馆编辑器打开</button>
+                ${footerLinks}
             </div>
             <div class="wbo-preview-list">${entriesHtml}</div>
             ${moreCount > 0 ? `<div class="wbo-preview-more">还有 ${moreCount} 条未展开，可点击右上角在酒馆编辑器查看全部</div>` : ''}
@@ -517,8 +534,160 @@ function renderGroupSectionHtml({
 
 function closeManagerModal() {
     _lastModalListSig = null;
+    _batchMode = false;
+    _batchSelected.clear();
     _previewCache.clear();
     document.getElementById(MANAGER_OVERLAY_ID)?.remove();
+}
+
+/**
+ * Sync batch selection toolbar state inside the Group Manager modal without rebuilding the list.
+ */
+function syncBatchBarUi() {
+    const overlay = document.getElementById(MANAGER_OVERLAY_ID);
+    if (!overlay) return;
+    const batchBtn = overlay.querySelector('#wbo-mgr-batch-btn');
+    const batchBar = overlay.querySelector('#wbo-batch-bar');
+    const countEl = overlay.querySelector('#wbo-batch-count');
+    const moveBtn = overlay.querySelector('#wbo-batch-move-btn');
+    const delBtn = overlay.querySelector('#wbo-batch-del-btn');
+    if (batchBtn) batchBtn.classList.toggle('is-active', _batchMode);
+    if (batchBar instanceof HTMLElement) batchBar.hidden = !_batchMode;
+    const count = _batchSelected.size;
+    if (countEl) countEl.textContent = `已选 ${count} 本`;
+    if (moveBtn instanceof HTMLButtonElement) moveBtn.disabled = count === 0;
+    if (delBtn instanceof HTMLButtonElement) delBtn.disabled = count === 0;
+}
+
+/**
+ * Open a modal to move multiple selected worldbooks into a target group at once.
+ * @param {string[]} bookNames
+ */
+function openBatchMoveModal(bookNames) {
+    if (!_callbacks || !Array.isArray(bookNames) || bookNames.length === 0) return;
+    const { settings, classification } = _callbacks.getState();
+
+    const options = [
+        ...settings.groups.map((g) => ({ id: g.id, label: g.name, color: g.color })),
+        { id: SPECIAL_GROUPS.UNGROUPED, label: '未分组', color: '#8c99a6' },
+    ];
+
+    const listHtml = options.map((opt) => `
+        <button type="button" class="wbo-move-option" data-target-group="${esc(opt.id)}">
+            <span class="wbo-group-dot" style="background:${esc(opt.color)}"></span>
+            <span class="wbo-move-label">${esc(opt.label)}</span>
+        </button>
+    `).join('');
+
+    const { modal } = createSubModal(
+        `批量移动 ${bookNames.length} 本世界书`,
+        `
+            <div class="wbo-move-list">${listHtml}</div>
+            <div class="wbo-modal-footer">
+                <button type="button" class="wbo-btn" id="wbo-batch-new-group">新建分组并移入</button>
+                <span class="wbo-spacer"></span>
+                <button type="button" class="wbo-btn" id="wbo-cancel-btn">取消</button>
+            </div>
+        `,
+    );
+
+    modal.querySelectorAll('.wbo-move-option').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const targetId = btn.getAttribute('data-target-group');
+            if (!targetId) return;
+            let moved = 0;
+            for (const name of bookNames) {
+                const meta = classification.byName.get(name);
+                if (meta && assignBookToGroup(settings, meta, targetId)) {
+                    moved += 1;
+                }
+            }
+            _batchSelected.clear();
+            closeSubModal();
+            await _callbacks.onMutation({ save: true });
+            showToast('success', `已将 ${moved} 本世界书移入目标分组`);
+        });
+    });
+
+    modal.querySelector('#wbo-batch-new-group')?.addEventListener('click', () => {
+        const name = globalThis.prompt('输入新分组名称：')?.trim();
+        if (!name) return;
+        const created = addCustomGroup(settings, { name });
+        for (const bookName of bookNames) {
+            const meta = classification.byName.get(bookName);
+            if (meta) assignBookToGroup(settings, meta, created.id);
+        }
+        _batchSelected.clear();
+        closeSubModal();
+        void _callbacks.onMutation({ save: true });
+        showToast('success', `已新建「${name}」并移入 ${bookNames.length} 本世界书`);
+    });
+
+    modal.querySelector('#wbo-cancel-btn')?.addEventListener('click', closeSubModal);
+}
+
+/**
+ * Confirm with binding safety warnings and permanently delete selected worldbooks from disk.
+ * @param {string[]} bookNames
+ */
+async function confirmAndDeleteWorldbooks(bookNames) {
+    if (!_callbacks || !Array.isArray(bookNames) || bookNames.length === 0) return;
+    const { settings, classification } = _callbacks.getState();
+
+    const boundWarnings = [];
+    for (const name of bookNames) {
+        const meta = classification.byName.get(name);
+        if (!meta) continue;
+        const refs = [];
+        if (meta.charOwners?.length) refs.push(`角色：${meta.charOwners.map((o) => o.charName).join('、')}`);
+        if (meta.personaOwners?.length) refs.push(`人设：${meta.personaOwners.join('、')}`);
+        if (refs.length > 0) {
+            boundWarnings.push(`${meta.primaryTitle}（${refs.join('；')}）`);
+        }
+    }
+
+    const previewNames = bookNames.slice(0, 8).map((n) => `<li>${esc(n)}</li>`).join('');
+    const moreNames = bookNames.length > 8 ? `<li>…等共 ${bookNames.length} 本</li>` : '';
+    const warnHtml = boundWarnings.length > 0
+        ? `<div class="wbo-refusal-box"><b>注意：其中 ${boundWarnings.length} 本正绑定在角色卡或人设上</b><br>${esc(boundWarnings.slice(0, 5).join('；'))}${boundWarnings.length > 5 ? ' 等' : ''}</div>`
+        : '';
+
+    const { modal } = createSubModal(
+        `确认清理 ${bookNames.length} 本世界书`,
+        `
+            <div class="wbo-label">以下世界书将从酒馆硬盘中永久删除（无法撤销）：</div>
+            ${warnHtml}
+            <ul class="wbo-cov-list">${previewNames}${moreNames}</ul>
+            <div class="wbo-ai-status" id="wbo-del-status"></div>
+            <div class="wbo-modal-footer">
+                <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-confirm-del-btn">确认永久删除</button>
+                <button type="button" class="wbo-btn" id="wbo-cancel-btn">取消</button>
+            </div>
+        `,
+    );
+
+    modal.querySelector('#wbo-cancel-btn')?.addEventListener('click', closeSubModal);
+    modal.querySelector('#wbo-confirm-del-btn')?.addEventListener('click', async (ev) => {
+        const btn = ev.currentTarget;
+        if (btn instanceof HTMLButtonElement) btn.disabled = true;
+        const statusEl = modal.querySelector('#wbo-del-status');
+        if (statusEl) statusEl.textContent = '正在删除世界书...';
+
+        const res = await deleteWorldbooksFromHost(bookNames);
+        if (res.deleted.length > 0) {
+            cleanupDeletedWorldSettings(settings, res.deleted);
+            for (const name of res.deleted) {
+                _batchSelected.delete(name);
+                _previewCache.delete(name);
+            }
+        }
+        closeSubModal();
+        await _callbacks.onRescan();
+        showToast(
+            res.failed.length > 0 ? 'warning' : 'success',
+            `已删除 ${res.deleted.length} 本世界书${res.failed.length > 0 ? `，失败 ${res.failed.length} 本` : ''}`,
+        );
+    });
 }
 
 /**
@@ -560,6 +729,10 @@ function openManagerModal() {
                     <i class="fa-solid fa-folder-plus"></i>
                     <span>新建</span>
                 </button>
+                <button type="button" class="wbo-tool-btn" id="wbo-mgr-batch-btn" data-action="toggle-batch-mode" title="批量勾选移入分组或清理删除">
+                    <i class="fa-solid fa-list-check"></i>
+                    <span>批量</span>
+                </button>
                 <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="AI 整理与撤销">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>AI整理</span>
@@ -579,6 +752,15 @@ function openManagerModal() {
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
             </div>
+        </div>
+        <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
+            <span class="wbo-batch-count" id="wbo-batch-count">已选 0 本</span>
+            <button type="button" class="wbo-link-btn" data-action="batch-select-visible">全选当前</button>
+            <button type="button" class="wbo-link-btn" data-action="batch-clear">清空</button>
+            <span class="wbo-spacer"></span>
+            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-batch-move-btn" data-action="batch-move" disabled>移入分组</button>
+            <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-batch-del-btn" data-action="batch-delete" disabled>删除选中</button>
+            <button type="button" class="wbo-btn" data-action="toggle-batch-mode">完成</button>
         </div>
         <div class="wbo-groups-list wbo-mgr-list" id="wbo-mgr-groups-list"></div>
     `;
@@ -867,6 +1049,75 @@ function openManagerModal() {
                 syncEmbeddedPanelIndicators();
                 break;
             }
+            case 'toggle-batch-mode': {
+                _batchMode = !_batchMode;
+                if (!_batchMode) _batchSelected.clear();
+                _lastModalListSig = null;
+                syncBatchBarUi();
+                renderManagerGroupsListOnly();
+                break;
+            }
+            case 'toggle-batch-item':
+            case 'toggle-batch-row': {
+                const row = target.closest('.wbo-book-row');
+                const bookName = row?.getAttribute('data-book');
+                if (!bookName) return;
+                const cb = row.querySelector('.wbo-batch-check');
+                let nextChecked;
+                if (action === 'toggle-batch-item' && cb instanceof HTMLInputElement) {
+                    nextChecked = cb.checked;
+                } else {
+                    nextChecked = !_batchSelected.has(bookName);
+                    if (cb instanceof HTMLInputElement) cb.checked = nextChecked;
+                }
+                if (nextChecked) _batchSelected.add(bookName);
+                else _batchSelected.delete(bookName);
+                row.classList.toggle('is-batch-selected', nextChecked);
+                syncBatchBarUi();
+                break;
+            }
+            case 'batch-select-visible': {
+                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]').forEach((row) => {
+                    const name = row.getAttribute('data-book');
+                    if (!name) return;
+                    _batchSelected.add(name);
+                    row.classList.add('is-batch-selected');
+                    const cb = row.querySelector('.wbo-batch-check');
+                    if (cb instanceof HTMLInputElement) cb.checked = true;
+                });
+                syncBatchBarUi();
+                break;
+            }
+            case 'batch-clear': {
+                _batchSelected.clear();
+                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row').forEach((row) => {
+                    row.classList.remove('is-batch-selected');
+                    const cb = row.querySelector('.wbo-batch-check');
+                    if (cb instanceof HTMLInputElement) cb.checked = false;
+                });
+                syncBatchBarUi();
+                break;
+            }
+            case 'batch-move': {
+                if (_batchSelected.size > 0) {
+                    openBatchMoveModal([..._batchSelected]);
+                }
+                break;
+            }
+            case 'batch-delete': {
+                if (_batchSelected.size > 0) {
+                    await confirmAndDeleteWorldbooks([..._batchSelected]);
+                }
+                break;
+            }
+            case 'delete-single-book': {
+                const holder = target.closest('.wbo-book-item, .wbo-book-row');
+                const bookName = holder?.getAttribute('data-book');
+                if (bookName) {
+                    await confirmAndDeleteWorldbooks([bookName]);
+                }
+                break;
+            }
             case 'toggle-book-preview': {
                 const itemEl = target.closest('.wbo-book-item');
                 const bookName = itemEl?.getAttribute('data-book');
@@ -997,6 +1248,7 @@ function renderManagerGroupsListOnly() {
     // Read LIVE collapse state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
         q,
+        _batchMode,
         settings.activeFilterGroupId,
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
@@ -1115,6 +1367,7 @@ function renderManagerGroupsListOnly() {
         : '<div class="wbo-empty-hint">无匹配世界书</div>';
 
     listEl.scrollTop = prevScroll;
+    syncBatchBarUi();
 }
 
 // ==================== Sub-Modals (stack above Manager Modal) ====================
@@ -1596,14 +1849,21 @@ function openAiOrganizeModal() {
         return ch.model ? `${ch.name} · ${ch.model}` : ch.name;
     };
 
+    const sensitiveSet = new Set(
+        allBooks.filter((b) => isPotentiallySensitiveTitle(b.realName)).map((b) => b.realName),
+    );
+
     const bookChecksHtml = allBooks
         .map((b) => {
             const checked = defaultChecked.has(b.realName) ? 'checked' : '';
+            const isSens = sensitiveSet.has(b.realName);
+            const sensTag = isSens ? '<span class="wbo-tag is-warn" title="含疑似敏感词，部分模型可能拒答">敏感</span>' : '';
             const tag = b.isInCharGroup ? '<span class="wbo-tag">角色书</span>' : `<span class="wbo-tag">${esc(b.groupName)}</span>`;
             return `
-                <label class="wbo-ai-pick-row">
+                <label class="wbo-ai-pick-row" data-ai-search="${esc(b.searchableText || b.realName.toLowerCase())}">
                     <input type="checkbox" class="wbo-ai-book-check" value="${esc(b.realName)}" ${checked}>
                     <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
+                    ${sensTag}
                     ${tag}
                 </label>
             `;
@@ -1615,98 +1875,134 @@ function openAiOrganizeModal() {
     const { modal } = createSubModal(
         'AI 整理世界书',
         `
+            <div class="wbo-tabs" id="wbo-ai-tabs">
+                <button type="button" class="wbo-tab is-active" data-ai-tab="organize">整理世界书</button>
+                <button type="button" class="wbo-tab" data-ai-tab="api">API 配置 · <span id="wbo-api-tab-badge">${esc(getApiSummaryText())}</span></button>
+            </div>
+
             <div class="wbo-ai-step" id="wbo-ai-step-select">
-                <details class="wbo-collapse-box" id="wbo-api-collapse">
-                    <summary class="wbo-collapse-summary">
-                        <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>API 方案：<b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b></span></span>
-                        <span class="wbo-collapse-hint">展开配置</span>
-                    </summary>
-                    <div class="wbo-collapse-body">
-                        <div class="wbo-radio-row">
-                            <label class="wbo-radio-opt">
-                                <input type="radio" name="wbo-api-provider" value="host" ${settings.apiProvider === 'host' ? 'checked' : ''}>
-                                <span>酒馆当前 API</span>
-                            </label>
-                            <label class="wbo-radio-opt">
-                                <input type="radio" name="wbo-api-provider" value="custom" ${settings.apiProvider === 'custom' ? 'checked' : ''}>
-                                <span>自定义 OpenAI 兼容 API</span>
-                            </label>
-                        </div>
-
-                        <div class="wbo-custom-api-box" id="wbo-custom-api-box" ${settings.apiProvider === 'custom' ? '' : 'hidden'}>
-                            <div class="wbo-channel-bar">
-                                <select class="wbo-select" id="wbo-channel-select"></select>
-                                <button type="button" class="wbo-btn" id="wbo-ch-new-btn">新建</button>
-                                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ch-save-btn">保存</button>
-                                <button type="button" class="wbo-btn" id="wbo-ch-del-btn">删除</button>
-                            </div>
-                            <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：中转 Flash">
-                            <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1">
-                            <div class="wbo-api-model-row">
-                                <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off">
-                                <button type="button" class="wbo-btn" id="wbo-toggle-key-btn" title="显示或隐藏密钥">
-                                    <i class="fa-regular fa-eye"></i>
-                                </button>
-                            </div>
-                            <div class="wbo-api-model-row">
-                                <input type="text" class="wbo-input" id="wbo-api-model" value="${esc(activeCh?.model || '')}" list="wbo-api-models-datalist" placeholder="模型名称">
-                                <datalist id="wbo-api-models-datalist"></datalist>
-                                <button type="button" class="wbo-btn" id="wbo-fetch-models-btn">拉取模型</button>
-                            </div>
-                            <div class="wbo-ai-status" id="wbo-api-channel-status"></div>
-                        </div>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head">
+                        <span>1. 选择要整理的世界书</span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" id="wbo-pick-ungrouped">仅未分组</button>
+                            <button type="button" class="wbo-link-btn" id="wbo-pick-nonchar">全部非角色书</button>
+                            ${sensitiveSet.size > 0 ? `<button type="button" class="wbo-link-btn" id="wbo-pick-skip-sens">排除敏感书 (${sensitiveSet.size})</button>` : ''}
+                            <button type="button" class="wbo-link-btn" id="wbo-pick-none">清空</button>
+                        </span>
                     </div>
-                </details>
-
-                <div class="wbo-ai-section-head">
-                    <span>选择要整理的世界书</span>
-                    <span class="wbo-ai-quick-picks">
-                        <button type="button" class="wbo-link-btn" id="wbo-pick-ungrouped">仅未分组</button>
-                        <button type="button" class="wbo-link-btn" id="wbo-pick-nonchar">全部非角色书</button>
-                        <button type="button" class="wbo-link-btn" id="wbo-pick-none">清空</button>
-                    </span>
-                </div>
-                <div class="wbo-ai-book-list">${bookChecksHtml}</div>
-
-                <div class="wbo-ai-options">
-                    <label class="wbo-check-line">
-                        <input type="checkbox" id="wbo-ai-include-clues">
-                        <span>附带每本书前 5 条条目关键词摘要</span>
-                    </label>
-                    <label class="wbo-check-line">
-                        <input type="checkbox" id="wbo-ai-allow-real-rename">
-                        <span>允许规范修改世界书真实文件名，并自动同步角色卡与人设绑定</span>
-                    </label>
-                    <input type="text" class="wbo-input" id="wbo-ai-custom-rule" placeholder="命名与分类规范：例如统一按 [分类] 名称 格式，去掉作者名和版本号">
+                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="筛选世界书..." autocomplete="off">
+                    <div class="wbo-ai-book-list" id="wbo-ai-book-list">${bookChecksHtml}</div>
+                    ${sensitiveSet.size > 0 ? `<div class="wbo-subtle-tip">检测到 ${sensitiveSet.size} 本疑似含敏感词世界书，部分审查严格的模型可能会拒答，建议取消勾选后手动拖入分组。</div>` : ''}
                 </div>
 
-                <div class="wbo-ai-actions-row">
-                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-run-btn">
-                        <i class="fa-solid fa-wand-magic-sparkles"></i> 开始 AI 整理
-                    </button>
-                    <span class="wbo-spacer"></span>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head">
+                        <span>2. 整理参数</span>
+                    </div>
+                    <div class="wbo-ai-options">
+                        <div class="wbo-clue-row">
+                            <label class="wbo-check-line">
+                                <input type="checkbox" id="wbo-ai-include-clues">
+                                <span>附带每本书前</span>
+                            </label>
+                            <input type="number" class="wbo-input wbo-inline-num" id="wbo-ai-clue-count" value="5" min="1" max="15">
+                            <span>条条目，携带</span>
+                            <select class="wbo-select wbo-inline-select" id="wbo-ai-snippet-len">
+                                <option value="50" selected>标题 + 50字摘要</option>
+                                <option value="120">标题 + 120字摘要</option>
+                                <option value="0">仅标题与关键词</option>
+                            </select>
+                        </div>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" id="wbo-ai-allow-real-rename">
+                            <span>允许规范修改世界书真实文件名，并自动同步角色卡与人设绑定</span>
+                        </label>
+                        <input type="text" class="wbo-input" id="wbo-ai-custom-rule" placeholder="命名与分类规范：例如统一按 [分类] 名称 格式，去掉作者名和版本号">
+                    </div>
+                </div>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head">
+                        <span>3. 执行方式</span>
+                        <span class="wbo-api-inline-info">当前：<b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b> <button type="button" class="wbo-link-btn" id="wbo-goto-api-tab">切换</button></span>
+                    </div>
+                    <div class="wbo-ai-actions-row">
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-run-btn">
+                            <i class="fa-solid fa-wand-magic-sparkles"></i> 开始 AI 整理
+                        </button>
+                    </div>
+                    <details class="wbo-collapse-box" id="wbo-ai-paste-details">
+                        <summary class="wbo-collapse-summary">
+                            <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>不使用 API？由外部 AI 整理</span></span>
+                            <span class="wbo-collapse-hint">点击展开 · 复制提示词 / 粘贴 JSON</span>
+                        </summary>
+                        <div class="wbo-collapse-body">
+                            <div class="wbo-ai-actions-row">
+                                <button type="button" class="wbo-btn" id="wbo-ai-copy-prompt-btn">
+                                    <i class="fa-regular fa-copy"></i> 复制提示词发给外部 AI
+                                </button>
+                                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-parse-paste-btn">解析下方 JSON 并预览</button>
+                            </div>
+                            <textarea class="wbo-textarea" id="wbo-ai-json-input" rows="4" placeholder='将外部 AI 返回的 JSON 粘贴到此处，例如：{"原世界书名": {"alias": "规范后名称", "group": "分组名", "note": "简介"}}'></textarea>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="wbo-refusal-box" id="wbo-ai-refusal-box" hidden></div>
+                <div class="wbo-ai-status" id="wbo-ai-status"></div>
+
+                <div class="wbo-modal-footer">
                     <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'disabled'} title="恢复到上一次 AI 整理前的分组与显示名">
                         <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
                     </button>
+                    <span class="wbo-spacer"></span>
+                    <button type="button" class="wbo-btn" id="wbo-ai-close-btn">关闭</button>
                 </div>
+            </div>
 
-                <details class="wbo-collapse-box" id="wbo-ai-paste-details">
-                    <summary class="wbo-collapse-summary">
-                        <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>不使用 API？由外部 AI 整理</span></span>
-                        <span class="wbo-collapse-hint">点击展开 · 复制提示词 / 粘贴 JSON</span>
-                    </summary>
-                    <div class="wbo-collapse-body">
-                        <div class="wbo-ai-actions-row">
-                            <button type="button" class="wbo-btn" id="wbo-ai-copy-prompt-btn">
-                                <i class="fa-regular fa-copy"></i> 复制提示词发给外部 AI
-                            </button>
-                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-parse-paste-btn">解析下方 JSON 并预览</button>
-                        </div>
-                        <textarea class="wbo-textarea" id="wbo-ai-json-input" rows="4" placeholder='将外部 AI 返回的 JSON 粘贴到此处，例如：{"原世界书名": {"alias": "规范后名称", "group": "分组名", "note": "简介"}}'></textarea>
+            <div class="wbo-ai-step" id="wbo-ai-step-api" hidden>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head">
+                        <span>选择调用渠道</span>
                     </div>
-                </details>
+                    <div class="wbo-radio-row">
+                        <label class="wbo-radio-opt">
+                            <input type="radio" name="wbo-api-provider" value="host" ${settings.apiProvider === 'host' ? 'checked' : ''}>
+                            <span>酒馆当前 API</span>
+                        </label>
+                        <label class="wbo-radio-opt">
+                            <input type="radio" name="wbo-api-provider" value="custom" ${settings.apiProvider === 'custom' ? 'checked' : ''}>
+                            <span>自定义 OpenAI 兼容 API</span>
+                        </label>
+                    </div>
 
-                <div class="wbo-ai-status" id="wbo-ai-status"></div>
+                    <div class="wbo-custom-api-box" id="wbo-custom-api-box" ${settings.apiProvider === 'custom' ? '' : 'hidden'}>
+                        <div class="wbo-channel-bar">
+                            <select class="wbo-select" id="wbo-channel-select"></select>
+                            <button type="button" class="wbo-btn" id="wbo-ch-new-btn">新建</button>
+                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ch-save-btn">保存</button>
+                            <button type="button" class="wbo-btn" id="wbo-ch-del-btn">删除</button>
+                        </div>
+                        <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：中转 Flash">
+                        <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1">
+                        <div class="wbo-api-model-row">
+                            <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off">
+                            <button type="button" class="wbo-btn" id="wbo-toggle-key-btn" title="显示或隐藏密钥">
+                                <i class="fa-regular fa-eye"></i>
+                            </button>
+                        </div>
+                        <div class="wbo-api-model-row">
+                            <input type="text" class="wbo-input" id="wbo-api-model" value="${esc(activeCh?.model || '')}" list="wbo-api-models-datalist" placeholder="模型名称">
+                            <datalist id="wbo-api-models-datalist"></datalist>
+                            <button type="button" class="wbo-btn" id="wbo-fetch-models-btn">拉取模型</button>
+                        </div>
+                        <div class="wbo-ai-status" id="wbo-api-channel-status"></div>
+                    </div>
+                </div>
+                <div class="wbo-modal-footer">
+                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-back-to-organize-btn">返回整理</button>
+                </div>
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-preview" hidden>
@@ -1739,13 +2035,17 @@ function openAiOrganizeModal() {
     );
 
     const statusEl = modal.querySelector('#wbo-ai-status');
+    const refusalBox = modal.querySelector('#wbo-ai-refusal-box');
     const previewStatusEl = modal.querySelector('#wbo-ai-preview-status');
     const channelStatusEl = modal.querySelector('#wbo-api-channel-status');
     const stepSelect = modal.querySelector('#wbo-ai-step-select');
+    const stepApi = modal.querySelector('#wbo-ai-step-api');
     const stepPreview = modal.querySelector('#wbo-ai-step-preview');
+    const tabsBar = modal.querySelector('#wbo-ai-tabs');
     const previewList = modal.querySelector('#wbo-ai-preview-list');
     const customApiBox = modal.querySelector('#wbo-custom-api-box');
     const summaryTextEl = modal.querySelector('#wbo-api-summary-text');
+    const tabBadgeEl = modal.querySelector('#wbo-api-tab-badge');
     const channelSelect = modal.querySelector('#wbo-channel-select');
     const nameInput = modal.querySelector('#wbo-api-name');
     const urlInput = modal.querySelector('#wbo-api-base-url');
@@ -1754,6 +2054,43 @@ function openAiOrganizeModal() {
 
     let editingChannelId = activeCh?.id || null;
 
+    const switchAiTab = (tabName) => {
+        if (stepSelect instanceof HTMLElement) stepSelect.hidden = tabName !== 'organize';
+        if (stepApi instanceof HTMLElement) stepApi.hidden = tabName !== 'api';
+        if (stepPreview instanceof HTMLElement) stepPreview.hidden = true;
+        if (tabsBar instanceof HTMLElement) tabsBar.hidden = false;
+        modal.querySelectorAll('.wbo-tab').forEach((t) => {
+            t.classList.toggle('is-active', t.getAttribute('data-ai-tab') === tabName);
+        });
+    };
+
+    modal.querySelectorAll('.wbo-tab').forEach((btn) => {
+        btn.addEventListener('click', () => {
+            const tab = btn.getAttribute('data-ai-tab') || 'organize';
+            switchAiTab(tab);
+        });
+    });
+    modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
+    modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
+    modal.querySelector('#wbo-ai-close-btn')?.addEventListener('click', closeSubModal);
+
+    // IME-safe filter inside AI book list
+    const aiBookFilter = modal.querySelector('#wbo-ai-book-filter');
+    if (aiBookFilter instanceof HTMLInputElement) {
+        let composing = false;
+        const applyAiFilter = () => {
+            const q = aiBookFilter.value.trim().toLowerCase();
+            modal.querySelectorAll('#wbo-ai-book-list .wbo-ai-pick-row').forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const hay = row.getAttribute('data-ai-search') || '';
+                row.hidden = Boolean(q && !hay.includes(q));
+            });
+        };
+        aiBookFilter.addEventListener('compositionstart', () => { composing = true; });
+        aiBookFilter.addEventListener('compositionend', () => { composing = false; applyAiFilter(); });
+        aiBookFilter.addEventListener('input', () => { if (!composing) applyAiFilter(); });
+    }
+
     const setStatus = (msg, isError = false, target = 'main') => {
         const el = target === 'preview' ? previewStatusEl : (target === 'channel' ? channelStatusEl : statusEl);
         if (!el) return;
@@ -1761,8 +2098,34 @@ function openAiOrganizeModal() {
         el.className = `wbo-ai-status${isError ? ' is-error' : ''}`;
     };
 
+    const showRefusalAlert = (parsed) => {
+        if (!(refusalBox instanceof HTMLElement)) return;
+        const snippet = parsed.refusalSnippet ? `<div class="wbo-refusal-quote">AI 回复原文：${esc(parsed.refusalSnippet)}</div>` : '';
+        const uncheckBtn = sensitiveSet.size > 0
+            ? `<div style="margin-top:6px;"><button type="button" class="wbo-btn" id="wbo-refusal-uncheck-sens">一键取消勾选疑似敏感书</button></div>`
+            : '';
+        refusalBox.innerHTML = `
+            <div><b>AI 拒绝了本次整理请求</b></div>
+            <div style="margin-top:4px;">${esc(parsed.error)}</div>
+            ${snippet}
+            ${uncheckBtn}
+        `;
+        refusalBox.hidden = false;
+        refusalBox.querySelector('#wbo-refusal-uncheck-sens')?.addEventListener('click', () => {
+            modal.querySelectorAll('.wbo-ai-book-check').forEach((el) => {
+                if (el instanceof HTMLInputElement && sensitiveSet.has(el.value)) {
+                    el.checked = false;
+                }
+            });
+            refusalBox.hidden = true;
+            setStatus('已取消勾选疑似敏感世界书，可重新点击「开始 AI 整理」，敏感书请手动拖拽分组。');
+        });
+    };
+
     const refreshSummary = () => {
-        if (summaryTextEl) summaryTextEl.textContent = getApiSummaryText();
+        const text = getApiSummaryText();
+        if (summaryTextEl) summaryTextEl.textContent = text;
+        if (tabBadgeEl) tabBadgeEl.textContent = text;
     };
 
     const populateChannelSelect = () => {
@@ -1929,17 +2292,31 @@ function openAiOrganizeModal() {
     modal.querySelector('#wbo-pick-nonchar')?.addEventListener('click', () =>
         setCheckedByPredicate((m) => !m.isInCharGroup),
     );
+    modal.querySelector('#wbo-pick-skip-sens')?.addEventListener('click', () => {
+        modal.querySelectorAll('.wbo-ai-book-check').forEach((el) => {
+            if (el instanceof HTMLInputElement && sensitiveSet.has(el.value)) {
+                el.checked = false;
+            }
+        });
+        setStatus('已取消勾选疑似含敏感词的世界书，敏感书建议手动拖拽分组。');
+    });
     modal.querySelector('#wbo-pick-none')?.addEventListener('click', () =>
         setCheckedByPredicate(() => false),
     );
 
     const preparePromptPayload = async () => {
+        if (refusalBox instanceof HTMLElement) refusalBox.hidden = true;
         const selectedNames = getSelectedBookNames();
         if (selectedNames.length === 0) {
             setStatus('请至少勾选一本世界书', true);
             return null;
         }
         const includeClues = Boolean(modal.querySelector('#wbo-ai-include-clues')?.checked);
+        const clueCountRaw = Number(modal.querySelector('#wbo-ai-clue-count')?.value || 5);
+        const clueCount = Math.max(1, Math.min(15, Number.isFinite(clueCountRaw) ? Math.round(clueCountRaw) : 5));
+        const snippetLenRaw = Number(modal.querySelector('#wbo-ai-snippet-len')?.value ?? 50);
+        const snippetChars = Number.isFinite(snippetLenRaw) ? Math.max(0, Math.min(200, snippetLenRaw)) : 50;
+
         const allowRealRename = Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
         const customRule = modal.querySelector('#wbo-ai-custom-rule')?.value?.trim() || '';
         const filenameRule = allowRealRename
@@ -1954,7 +2331,7 @@ function openAiOrganizeModal() {
             let sampleEntries = [];
             if (includeClues) {
                 setStatus(`读取条目摘要 (${i + 1}/${selectedNames.length})...`);
-                sampleEntries = await fetchWorldbookCluesOnDemand(name, 5);
+                sampleEntries = await fetchWorldbookCluesOnDemand(name, clueCount, { snippetChars });
             }
             booksPayload.push({
                 realName: name,
@@ -2004,6 +2381,8 @@ function openAiOrganizeModal() {
             .join('');
 
         stepSelect.hidden = true;
+        if (stepApi instanceof HTMLElement) stepApi.hidden = true;
+        if (tabsBar instanceof HTMLElement) tabsBar.hidden = true;
         stepPreview.hidden = false;
         if (ignoredCount > 0) {
             showToast('info', `已解析 ${proposals.length} 条建议，忽略 ${ignoredCount} 条无效项`);
@@ -2014,9 +2393,16 @@ function openAiOrganizeModal() {
         const validSet = new Set(classification.byName.keys());
         const parsed = parseAiOrganizeResponse(rawText, validSet);
         if (!parsed.ok) {
-            setStatus(parsed.error || '解析失败', true);
+            if (parsed.isRefusal) {
+                showRefusalAlert(parsed);
+                setStatus('');
+            } else {
+                if (refusalBox instanceof HTMLElement) refusalBox.hidden = true;
+                setStatus(parsed.error || '解析失败', true);
+            }
             return;
         }
+        if (refusalBox instanceof HTMLElement) refusalBox.hidden = true;
         setStatus('');
         showPreview(parsed.proposals, parsed.ignoredCount);
     };
@@ -2075,8 +2461,7 @@ function openAiOrganizeModal() {
     });
 
     modal.querySelector('#wbo-ai-back-btn')?.addEventListener('click', () => {
-        if (stepSelect instanceof HTMLElement) stepSelect.hidden = false;
-        if (stepPreview instanceof HTMLElement) stepPreview.hidden = true;
+        switchAiTab('organize');
     });
 
     modal.querySelector('#wbo-ai-cancel-btn')?.addEventListener('click', closeSubModal);

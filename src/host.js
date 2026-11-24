@@ -380,36 +380,120 @@ export async function openCharacterByAvatar(avatar) {
 }
 
 /**
- * On-demand read of a single worldbook's entry titles/keys for AI Organize clues.
+ * Strip template/markup noise and compact an entry body into a concise clue snippet.
+ * @param {string} content
+ * @param {number} maxChars
+ * @returns {string}
+ */
+function compactEntrySnippet(content, maxChars) {
+    if (!content || maxChars <= 0) return '';
+    const cleaned = String(content)
+        .replace(/<%[\s\S]*?%>/g, ' ')
+        .replace(/<!--[\s\S]*?-->/g, ' ')
+        .replace(/<[^>]{1,120}>/g, ' ')
+        .replace(/\{\{[^}]{1,80}\}\}/g, ' ')
+        .replace(/[`#*_>~|]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!cleaned) return '';
+    return cleaned.length > maxChars ? `${cleaned.slice(0, maxChars)}…` : cleaned;
+}
+
+/**
+ * On-demand read of a single worldbook's top entries (enabled entries prioritized)
+ * with optional compact content snippets for AI Organize clues.
  * NEVER called automatically in the background!
  *
  * @param {string} worldName
- * @param {number} [maxClues=6]
+ * @param {number} [maxClues=5]
+ * @param {{ snippetChars?: number }} [opts]
  * @returns {Promise<string[]>}
  */
-export async function fetchWorldbookCluesOnDemand(worldName, maxClues = 6) {
-    const ctx = getHostContext();
-    const loader = ctx?.loadWorldInfo || _worldInfoModule?.loadWorldInfo;
-    if (typeof loader !== 'function') return [];
-    try {
-        const data = await loader(worldName);
-        const entriesObj = data?.entries;
-        if (!entriesObj || typeof entriesObj !== 'object') return [];
-        const clues = [];
-        for (const entry of Object.values(entriesObj)) {
-            if (!entry || typeof entry !== 'object') continue;
-            const title = String(entry.comment || '').trim();
-            const keys = Array.isArray(entry.key) ? entry.key.slice(0, 3).map((k) => String(k || '').trim()).filter(Boolean) : [];
-            const label = title || keys.join('/');
-            if (label && !clues.includes(label)) {
-                clues.push(label.slice(0, 40));
-            }
-            if (clues.length >= maxClues) break;
+export async function fetchWorldbookCluesOnDemand(worldName, maxClues = 5, { snippetChars = 50 } = {}) {
+    const limit = Math.max(1, Math.min(20, Number(maxClues) || 5));
+    const maxSnippet = Math.max(0, Math.min(200, Number(snippetChars) || 0));
+    const data = await loadWorldInfoPayload(worldName);
+    const entriesObj = data?.entries;
+    if (!entriesObj || typeof entriesObj !== 'object') return [];
+
+    // Prioritize enabled entries with meaningful content/titles first
+    const allEntries = Object.values(entriesObj)
+        .filter((e) => e && typeof e === 'object')
+        .sort((a, b) => {
+            const da = a.disable ? 1 : 0;
+            const db = b.disable ? 1 : 0;
+            if (da !== db) return da - db;
+            return Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0);
+        });
+
+    const clues = [];
+    for (const entry of allEntries) {
+        const title = String(entry.comment || '').trim().slice(0, 32);
+        const keys = Array.isArray(entry.key)
+            ? entry.key.slice(0, 3).map((k) => String(k || '').trim()).filter(Boolean)
+            : [];
+        const head = title
+            ? (keys.length > 0 ? `${title}[${keys.join('/')}]` : title)
+            : keys.join('/');
+        const snippet = compactEntrySnippet(entry.content, maxSnippet);
+
+        let line = '';
+        if (head && snippet) line = `${head}：${snippet}`;
+        else if (head) line = head;
+        else if (snippet) line = snippet;
+
+        if (line && !clues.includes(line)) {
+            clues.push(line);
         }
-        return clues;
-    } catch {
-        return [];
+        if (clues.length >= limit) break;
     }
+    return clues;
+}
+
+/**
+ * Permanently delete one or more worldbooks from disk via SillyTavern's standard
+ * `/api/worldinfo/delete` endpoint, deactivating global selection first if needed,
+ * and refreshing the host world list afterward.
+ *
+ * @param {string[]} worldNames
+ * @returns {Promise<{ deleted: string[], failed: Array<{ name: string, error: string }> }>}
+ */
+export async function deleteWorldbooksFromHost(worldNames) {
+    const targets = [...new Set((worldNames || []).map((n) => String(n ?? '').trim()).filter(Boolean))];
+    const deleted = [];
+    const failed = [];
+    if (targets.length === 0) return { deleted, failed };
+
+    const ctx = getHostContext();
+    await ensureWorldInfoModule();
+
+    // Remove from active global selection first so ST won't hold dangling references
+    if (Array.isArray(_worldInfoModule?.selected_world_info)) {
+        const nextSelected = _worldInfoModule.selected_world_info.filter((n) => !targets.includes(n));
+        if (nextSelected.length !== _worldInfoModule.selected_world_info.length) {
+            _worldInfoModule.selected_world_info.splice(0, _worldInfoModule.selected_world_info.length, ...nextSelected);
+        }
+    }
+
+    for (const name of targets) {
+        try {
+            const res = await fetch('/api/worldinfo/delete', {
+                method: 'POST',
+                headers: buildRequestHeaders(),
+                body: JSON.stringify({ name }),
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            deleted.push(name);
+        } catch (err) {
+            failed.push({ name, error: String(err?.message || err) });
+        }
+    }
+
+    const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
+    if (typeof updateListFn === 'function') {
+        try { await updateListFn(); } catch { /* ignore */ }
+    }
+    return { deleted, failed };
 }
 
 /**

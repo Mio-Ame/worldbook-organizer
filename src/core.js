@@ -1041,8 +1041,49 @@ export function matchesSearch(bookMeta, query) {
 }
 
 /**
+ * Heuristically detect whether a worldbook title contains common NSFW / sensitive
+ * keywords that may trigger strict safety refusals on commercial AI models.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isPotentiallySensitiveTitle(text) {
+    const s = String(text ?? '');
+    return /(?:^|[\s_\-[【(（])(?:18\+|r18|r-18|nsfw|bdsm|sm)(?:$|[\s_\-\]】)）])|(?:色情|黄文|肉文|调教|性爱|涩涩|涩图|成人向|涩情|高h|纯肉|擦边)/i.test(s);
+}
+
+/**
+ * Detect whether raw AI output is a safety/policy refusal apology instead of JSON,
+ * so the UI can explain clearly why it failed and guide the user.
+ * @param {string} rawText
+ * @returns {boolean}
+ */
+export function detectAiRefusal(rawText) {
+    const s = String(rawText ?? '').trim();
+    if (!s) return false;
+    return /(?:i['’]?m sorry|i am sorry|i cannot|i can['’]?t (?:assist|help|fulfill|process|comply|organize)|unable to (?:assist|help|process|fulfill)|against my (?:guidelines|policy|safety)|explicit|nsfw|sexual content|safety polic|抱歉|对不起|很抱歉|我无法(?:处理|完成|协助|提供|整理|满足)|不能(?:处理|提供|协助|生成)|涉及(?:敏感|成人|色情|不当|违规)|安全政策|内容政策)/i.test(s);
+}
+
+/**
+ * Remove plugin metadata entries for worldbooks deleted from disk.
+ * @param {Record<string, any>} settings
+ * @param {string[]} deletedNames
+ */
+export function cleanupDeletedWorldSettings(settings, deletedNames = []) {
+    if (!settings || !Array.isArray(deletedNames) || deletedNames.length === 0) return;
+    const removed = new Set(deletedNames.map((n) => String(n ?? '').trim()).filter(Boolean));
+    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides']) {
+        const dict = settings[dictKey];
+        if (!dict || typeof dict !== 'object') continue;
+        for (const name of removed) {
+            delete dict[name];
+        }
+    }
+}
+
+/**
  * Build a compact, strict JSON-only prompt for AI worldbook naming & grouping.
- * Emphasizes virtual display aliases so underlying filenames are never altered.
+ * Uses neutral file-cataloging framing and concise entry clues to maximize
+ * classification accuracy while minimizing token usage.
  *
  * @param {object} params
  * @param {Array<{ realName: string, currentAlias?: string, currentGroup?: string, sampleEntries?: string[] }>} params.books
@@ -1052,16 +1093,17 @@ export function matchesSearch(bookMeta, query) {
  */
 export function buildAiOrganizePrompt({ books, existingGroups = [], customInstruction = '' }) {
     const systemPrompt = [
-        '你是 SillyTavern 世界书整理助手。',
-        '请根据用户提供的世界书原名（以及可选的条目关键词摘要），为每本世界书建议：',
-        '1. alias：更干净、简洁、统一风格的中文显示名（虚拟别名，不会修改原文件名，去掉冗余版本号/装饰符号/广告词，保留核心主题与必要版本区分）。',
+        '你是本地文档资料库的文件目录归类助手（用于整理小说写作设定集的文件名与文件夹分类）。',
+        '请仅做客观的文件名规范化与目录归类，不要展开或评价任何文件内容。',
+        '根据输入的 realName 以及可选的条目摘要（clues），为每本资料建议：',
+        '1. alias：更干净、简洁、统一风格的中文显示名（虚拟别名，不会修改原文件名，去掉冗余版本号/装饰符号/广告词，保留核心主题与必要区分）。',
         '2. group：简短清晰的分类分组名（优先复用已有分组名，总分组数尽量精简在 3~8 个内，如「文风与写法」「世界观设定」「系统与规则」「小剧场与扩展」「通用素材」等）。',
         '3. note：一句话极简用途说明（不超过 25 字）。',
         '',
         '严格要求：',
-        '- 必须只输出一个合法 JSON 对象，不要包含任何解释文字或额外注释。',
+        '- 必须只输出一个合法 JSON 对象，不要包含任何解释文字、道歉或额外注释。',
         '- JSON 的 key 必须与输入的 realName 完全逐字一致，不可篡改、不可遗漏、不可杜撰新 key。',
-        '- 输出格式：{"原始世界书名": {"alias": "整理后显示名", "group": "分组名", "note": "一句话说明"}}',
+        '- 输出格式：{"原始名称": {"alias": "整理后显示名", "group": "分组名", "note": "一句话说明"}}',
     ].join('\n');
 
     const lines = [];
@@ -1071,13 +1113,15 @@ export function buildAiOrganizePrompt({ books, existingGroups = [], customInstru
     if (customInstruction && customInstruction.trim()) {
         lines.push(`用户额外偏好：${customInstruction.trim()}`);
     }
-    lines.push('待整理世界书清单（JSON 数组）：');
+    lines.push('待归类资料清单（JSON 数组）：');
     const payload = books.map((b) => {
         const row = { realName: b.realName };
         if (b.currentAlias) row.currentAlias = b.currentAlias;
-        if (b.currentGroup && b.currentGroup !== '未分组') row.currentGroup = b.currentGroup;
+        if (b.currentGroup && b.currentGroup !== '未分组' && b.currentGroup !== '非角色世界书') {
+            row.currentGroup = b.currentGroup;
+        }
         if (Array.isArray(b.sampleEntries) && b.sampleEntries.length > 0) {
-            row.clues = b.sampleEntries.slice(0, 8);
+            row.clues = b.sampleEntries;
         }
         return row;
     });
@@ -1138,7 +1182,17 @@ export function parseAiOrganizeResponse(rawText, validWorldNames) {
     }
 
     if (!parsed) {
-        return { ok: false, proposals: [], ignoredCount: 0, error: '未能从返回文本中解析出合法 JSON' };
+        const isRefusal = detectAiRefusal(text);
+        return {
+            ok: false,
+            proposals: [],
+            ignoredCount: 0,
+            isRefusal,
+            refusalSnippet: text.slice(0, 140),
+            error: isRefusal
+                ? 'AI 触发了内容安全策略并拒绝回复（常见于包含敏感/18+词的世界书或条目摘要）。建议取消勾选敏感世界书后重试（敏感书可直接手动拖拽分组），或切换无审查模型 / 仅按书名整理。'
+                : '未能从返回文本中解析出合法 JSON',
+        };
     }
 
     /** @type {Array<{ realName: string, alias: string, group: string, note: string }>} */

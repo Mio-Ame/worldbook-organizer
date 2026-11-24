@@ -9,12 +9,15 @@ import {
     buildCharacterBindingIndex,
     buildPersonaBindingIndex,
     classifyWorldbooks,
+    cleanupDeletedWorldSettings,
+    detectAiRefusal,
     exportConfigData,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
     importConfigData,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
+    isPotentiallySensitiveTitle,
     matchesSearch,
     migrateSettingsOnWorldRename,
     moveSectionOrder,
@@ -228,6 +231,26 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(undone, true);
     assert.equal(settings.groups.length, 0);
     assert.equal(settings.aliases['【2026精修】古风去八股文风_v3'], undefined);
+
+    // Refusal apology detection & sensitive title check
+    const refusal = parseAiOrganizeResponse("I'm sorry, I cannot assist with explicit content.", new Set(['18+ 温柔向Nsfw']));
+    assert.equal(refusal.ok, false);
+    assert.equal(refusal.isRefusal, true);
+    assert.equal(detectAiRefusal('抱歉，我无法处理包含敏感内容的请求。'), true);
+    assert.equal(isPotentiallySensitiveTitle('18+ 温柔向Nsfw'), true);
+    assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);
+
+    // Cleanup deleted worldbook settings
+    const sDel = normalizeSettings({
+        assignments: { '待删书': 'g1', '保留书': 'g1' },
+        aliases: { '待删书': '别名' },
+        notes: { '待删书': '备注' },
+    });
+    cleanupDeletedWorldSettings(sDel, ['待删书']);
+    assert.equal(sDel.assignments['待删书'], undefined);
+    assert.equal(sDel.aliases['待删书'], undefined);
+    assert.equal(sDel.notes['待删书'], undefined);
+    assert.equal(sDel.assignments['保留书'], 'g1');
 });
 
 test('findUnscannedShallowCharacters and findCardsWithUnimportedBooks detect pending scans and safe imports', () => {
