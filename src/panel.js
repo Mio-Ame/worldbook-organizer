@@ -3408,7 +3408,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                             <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ch-save-btn">保存</button>
                             <button type="button" class="wbo-btn" id="wbo-ch-del-btn">删除</button>
                         </div>
-                        <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：中转 Flash">
+                        <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：常用通道 1">
                         <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1">
                         <div class="wbo-api-model-row">
                             <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off">
@@ -3453,6 +3453,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     <div class="wbo-preview-group-pills" id="wbo-preview-group-pills"></div>
                     <div class="wbo-preview-select-tools">
                         <span class="wbo-preview-sel-count" id="wbo-preview-sel-count">已选 0/0</span>
+                        <button type="button" class="wbo-link-btn" id="wbo-preview-clear-notes" hidden>清空说明</button>
                         <button type="button" class="wbo-link-btn" id="wbo-preview-toggle-all">取消全选</button>
                     </div>
                 </div>
@@ -4213,6 +4214,10 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             const allSelected = currentProposals.length > 0 && selectedCount === currentProposals.length;
             toggleBtn.textContent = allSelected ? '取消全选' : '全选全部';
         }
+        const clearNotesBtn = modal.querySelector('#wbo-preview-clear-notes');
+        if (clearNotesBtn instanceof HTMLElement) {
+            clearNotesBtn.hidden = !currentProposals.some((p) => (p.note || '').trim().length > 0);
+        }
     };
 
     const renderPreviewContent = () => {
@@ -4403,6 +4408,10 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     modal.querySelector('#wbo-preview-toggle-all')?.addEventListener('click', () => {
         const allSelected = currentProposals.length > 0 && currentProposals.every((p) => p.selected);
         currentProposals.forEach((p) => { p.selected = !allSelected; });
+        renderPreviewContent();
+    });
+    modal.querySelector('#wbo-preview-clear-notes')?.addEventListener('click', () => {
+        currentProposals.forEach((p) => { p.note = ''; });
         renderPreviewContent();
     });
 
@@ -5756,6 +5765,12 @@ function openSettingsModal() {
                             <i class="fa-solid fa-rotate-left"></i> 恢复全部为原文件名
                         </button>
                     </div>
+                    <div class="wbo-setting-inline-row">
+                        <span id="wbo-note-count-label">当前共有 ${Object.keys(settings.notes || {}).length} 条备注说明</span>
+                        <button type="button" class="wbo-btn" id="wbo-clear-all-notes-btn"${Object.keys(settings.notes || {}).length === 0 ? ' disabled' : ''}>
+                            <i class="fa-regular fa-trash-can"></i> 清空全部说明
+                        </button>
+                    </div>
                 </div>
 
                 <div class="wbo-card">
@@ -5995,6 +6010,22 @@ function openSettingsModal() {
         if (lbl) lbl.textContent = '当前已自定义 0 个显示名';
         if (btn instanceof HTMLButtonElement) btn.disabled = true;
         showToast('success', `已将 ${count} 本世界书恢复为原文件名`);
+    });
+
+    modal.querySelector('#wbo-clear-all-notes-btn')?.addEventListener('click', async () => {
+        if (!_callbacks) return;
+        const cur = _callbacks.getState().settings;
+        const count = Object.keys(cur.notes || {}).length;
+        if (count === 0) return;
+        if (!globalThis.confirm(`确认清空全部 ${count} 条世界书备注说明？\n（不会影响已有分组与名称，且可在历史版本中回退）`)) return;
+        pushUndoSnapshot(cur, { count, label: '清空全部说明' });
+        cur.notes = {};
+        await _callbacks.onMutation({ save: true });
+        const lbl = modal.querySelector('#wbo-note-count-label');
+        const btn = modal.querySelector('#wbo-clear-all-notes-btn');
+        if (lbl) lbl.textContent = '当前共有 0 条备注说明';
+        if (btn instanceof HTMLButtonElement) btn.disabled = true;
+        showToast('success', `已清空 ${count} 条备注说明`);
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);

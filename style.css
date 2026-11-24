@@ -4333,12 +4333,15 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-vis-popover {
     position: fixed !important;
-    width: 196px !important;
+    width: 196px;
+    max-width: calc(100vw - 20px) !important;
     height: auto !important;
     min-height: 0 !important;
+    max-height: calc(100dvh - 24px) !important;
     padding: 10px 12px !important;
     gap: 6px !important;
     border-radius: 10px !important;
+    border: 1px solid var(--wbo-border-strong) !important;
     box-shadow: 0 10px 28px rgba(15, 23, 42, 0.24), 0 2px 6px rgba(15, 23, 42, 0.12) !important;
 }
 
@@ -4619,7 +4622,7 @@ details[open] > summary .wbo-details-chev {
         padding: 0;
         pointer-events: auto;
     }
-    .wbo-modal:not(.wbo-mp-popover),
+    .wbo-modal:not(.wbo-mp-popover):not(.wbo-vis-popover),
     .wbo-modal.is-pinned-layout,
     .wbo-modal.is-wide,
     .wbo-modal.wbo-manager-modal {

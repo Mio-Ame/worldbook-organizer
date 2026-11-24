@@ -1482,7 +1482,7 @@ export function buildAiOrganizePrompt({ books, existingGroups = [], customInstru
         '根据输入的 realName 以及可选的条目摘要（clues），为每本资料建议：',
         '1. alias：更干净、简洁、统一风格的中文显示名（虚拟别名，不会修改原文件名，去掉冗余版本号/装饰符号/广告词，保留核心主题与必要区分）。',
         '2. group：简短清晰的分类分组名（优先复用已有分组名，总分组数尽量精简在 3~8 个内）。',
-        '3. note：一句话极简用途说明（不超过 25 字）。',
+        '3. note：可选，极简用途说明（不超过 20 字）；只写实际用途，禁止写“分组分析来自…”“根据书名归类”“归入某分组”等元分析废话；若标题本身已足够明确可直接留空 ""。',
         '',
         '酒馆世界书常见分类维度参考（注意区分，勿混为一谈）：',
         '- 「文风」：控制行文语气、叙事风格、描写质感、去 AI 味、对话风格、节奏等写作规范。',
@@ -1631,7 +1631,10 @@ export function parseAiOrganizeResponse(rawText, validWorldNames) {
         }
         const alias = String(item.alias ?? item.displayName ?? item.name ?? '').trim();
         const group = String(item.group ?? item.category ?? item.folder ?? '').trim();
-        const note = String(item.note ?? item.description ?? item.summary ?? '').trim();
+        const rawNote = String(item.note ?? item.description ?? item.summary ?? '').trim();
+        const note = /^(?:(?:分组|归类|分类)(?:分析|依据|说明|原因)(?:来自|源于|基于)?[:：]?|根据.{0,14}(?:归入|归类|分类|判定))/i.test(rawNote)
+            ? ''
+            : rawNote;
         if (!alias && !group && !note) {
             ignoredCount += 1;
             return;
