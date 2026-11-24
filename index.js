@@ -50,6 +50,7 @@ import {
 } from './src/native-filter.js';
 import {
     bindPanelCallbacks,
+    openManagerModal,
     renderEmbeddedPanel,
     syncEmbeddedPanelIndicators,
     teardownPanels,
@@ -543,14 +544,27 @@ async function init() {
         setTimeout(waitCharsOnce, 700);
     }
 
+    if (!_openPanelBridgeHandler) {
+        _openPanelBridgeHandler = () => {
+            openManagerModal();
+        };
+        window.addEventListener('wbo:open-panel', _openPanelBridgeHandler);
+    }
+
     registerSlashCommands(ctx);
     ensureFreshStylesheet();
 }
+
+let _openPanelBridgeHandler = null;
 
 /**
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
  */
 export function onDisable() {
+    if (_openPanelBridgeHandler) {
+        window.removeEventListener('wbo:open-panel', _openPanelBridgeHandler);
+        _openPanelBridgeHandler = null;
+    }
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
     clearTimeout(_deferredSaveTimer);

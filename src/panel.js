@@ -1341,7 +1341,7 @@ function attachDesktopModalDrag(modal, handleEl) {
 /**
  * Open the standalone Group Manager modal (zero space occupied in `#WorldInfo` when closed!).
  */
-function openManagerModal() {
+export function openManagerModal() {
     if (!_callbacks) return;
     if (document.getElementById(MANAGER_OVERLAY_ID)) {
         refreshManagerModalContent();

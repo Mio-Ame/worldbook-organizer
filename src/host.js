@@ -122,6 +122,22 @@ export function getSettings() {
 }
 
 /**
+ * Emit a decoupled browser CustomEvent so companion extensions can react
+ * without creating any module import coupling.
+ * @param {string} type
+ * @param {Record<string, any>} detail
+ */
+function emitBridgeEvent(type, detail) {
+    try {
+        if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent(type, { detail }));
+        }
+    } catch {
+        // Ignore in non-browser test runtimes
+    }
+}
+
+/**
  * Persist extension settings via host debounced saver.
  */
 export function saveSettings() {
@@ -129,6 +145,7 @@ export function saveSettings() {
     if (typeof ctx?.saveSettingsDebounced === 'function') {
         ctx.saveSettingsDebounced();
     }
+    emitBridgeEvent('wbo:settings-updated', { reason: 'save' });
 }
 
 /**
@@ -524,6 +541,9 @@ export async function deleteWorldbooksFromHost(worldNames) {
     const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
     if (typeof updateListFn === 'function') {
         try { await updateListFn(); } catch { /* ignore */ }
+    }
+    if (deleted.length > 0) {
+        emitBridgeEvent('wbo:worldbook-deleted', { names: [...deleted] });
     }
     return { deleted, failed };
 }
@@ -1248,6 +1268,8 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
         existingNamesSet.delete(cleanOld);
         existingNamesSet.add(cleanNew);
     }
+
+    emitBridgeEvent('wbo:worldbook-renamed', { oldName: cleanOld, newName: cleanNew });
 
     if (!deferRefresh) {
         const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
