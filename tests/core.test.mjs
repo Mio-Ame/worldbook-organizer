@@ -613,6 +613,8 @@ test('per-selector custom hidden groups work independently with safety invariant
     assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds }), false);
     // Safety invariant: currently editing book stays visible even if its group is excluded!
     assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('旧版设定'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds, isCurrentlyEditing: true }), true);
+    // Current chat character's own worldbook stays visible & pinned in editor even when character books are hidden!
+    assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('角色书A'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: false, hiddenGroupIds: settings.editorHiddenGroupIds, isCurrentChatCharBook: true }), true);
 
     // Reveal toggle ON shows ALL hidden groups in both selectors
     assert.equal(isBookVisibleInSelector({ bookMeta: cls.byName.get('古风文风'), activeFilterGroupId: SPECIAL_GROUPS.DEFAULT, showCharBooks: true, hiddenGroupIds: settings.globalHiddenGroupIds }), true);

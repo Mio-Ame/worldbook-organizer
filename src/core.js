@@ -158,6 +158,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     adaptChatBindPopup: true,
     adaptMoveEntryPopup: true,
     showNativeOptgroups: true,
+    pinCurrentChatCharBookInEditor: true,
     showNativeCharToggleBtn: true,
     showNativeExcludeBtn: true,
     showNativeEntrySearchBtn: true,
@@ -1171,8 +1172,9 @@ export function isBookVisibleInSelector({
     hiddenGroupIds = null,
     isSelected = false,
     isCurrentlyEditing = false,
+    isCurrentChatCharBook = false,
 }) {
-    if (isSelected || isCurrentlyEditing) return true;
+    if (isSelected || isCurrentlyEditing || isCurrentChatCharBook) return true;
     if (!bookMeta) return true;
 
     if (activeFilterGroupId === SPECIAL_GROUPS.ALL) {
@@ -2048,6 +2050,7 @@ export function exportConfigData(settings) {
             adaptChatBindPopup: cfg.adaptChatBindPopup,
             adaptMoveEntryPopup: cfg.adaptMoveEntryPopup,
             showNativeOptgroups: cfg.showNativeOptgroups,
+            pinCurrentChatCharBookInEditor: cfg.pinCurrentChatCharBookInEditor,
             showNativeCharToggleBtn: cfg.showNativeCharToggleBtn,
             showNativeExcludeBtn: cfg.showNativeExcludeBtn,
             showNativeEntrySearchBtn: cfg.showNativeEntrySearchBtn,

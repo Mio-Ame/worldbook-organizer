@@ -403,7 +403,7 @@ async function init() {
     // refresh in-memory cache once gently (no disk scan), and optionally auto-import
     // its missing embedded lorebook if user enabled that setting.
     trackHostEvent(eventSource, et.CHAT_CHANGED, () => {
-        scheduleRefresh(600);
+        scheduleRefresh(220);
         const curSettings = getSettings();
         if (curSettings.autoImportMissingCharBook) {
             setTimeout(async () => {

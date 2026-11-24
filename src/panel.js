@@ -5720,6 +5720,11 @@ function openSettingsModal() {
                         </div>
                     </div>
                     <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏。</div>
+                    <div class="wbo-local-divider"></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="pinCurrentChatCharBookInEditor">
+                        <span>聊天中在编辑下拉框置顶当前角色的世界书</span>
+                    </label>
                 </div>
             </div>
 

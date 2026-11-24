@@ -296,11 +296,15 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         ? (Array.isArray(settings.globalHiddenGroupIds) ? settings.globalHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER])
         : (Array.isArray(settings.editorHiddenGroupIds) ? settings.editorHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER]);
     const hiddenSig = [...hiddenList].sort().join(',');
+    const currentChatAvatarSig = mode === 'editor' && settings.pinCurrentChatCharBookInEditor !== false
+        ? (getCurrentCharacterAvatar() || '')
+        : '';
 
     return JSON.stringify([
         mode,
         Boolean(settings.showCharBooks),
         hiddenSig,
+        currentChatAvatarSig,
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
         settings.aliasTitleMode,
@@ -448,6 +452,9 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             ? settings.editorHiddenGroupIds
             : (settings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []),
     );
+    const currentChatAvatar = settings.pinCurrentChatCharBookInEditor !== false
+        ? getCurrentCharacterAvatar()
+        : null;
 
     for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
         if (opt.value === '') {
@@ -457,6 +464,10 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         const realName = (opt.textContent || '').trim();
         const meta = classification.byName.get(realName);
         const isEditing = opt.selected || (prevValue !== '' && opt.value === prevValue) || realName === _currentlyEditingWorld;
+        const isCurrentChatCharBook = Boolean(
+            currentChatAvatar &&
+            meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
+        );
 
         const visible = isBookVisibleInSelector({
             bookMeta: meta,
@@ -465,10 +476,13 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             hiddenGroupIds: editorHiddenSet,
             isSelected: opt.selected,
             isCurrentlyEditing: isEditing,
+            isCurrentChatCharBook,
         });
 
         if (visible) {
-            const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+            const gid = isCurrentChatCharBook
+                ? '__current_char__'
+                : (meta?.groupId || SPECIAL_GROUPS.UNGROUPED);
             if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
             visibleByGroup.get(gid).push(opt);
         } else {
@@ -483,10 +497,13 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         frag.appendChild(opt);
     }
 
-    const orderedSections = (classification.orderedSections || []).map((s) => ({
-        id: s.id,
-        label: s.name,
-    }));
+    const orderedSections = [
+        ...(visibleByGroup.has('__current_char__') ? [{ id: '__current_char__', label: '当前角色' }] : []),
+        ...(classification.orderedSections || []).map((s) => ({
+            id: s.id,
+            label: s.name,
+        })),
+    ];
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
     // Keep `#world_editor_select` 100% flat & native when only 1 section exists
@@ -743,12 +760,32 @@ function openMobileEditorPickerSheet() {
     const currentSelectedOpt = selectEl.selectedOptions?.[0];
     const currentSelectedVal = currentSelectedOpt && currentSelectedOpt.value !== '' ? currentSelectedOpt.value : '';
 
-    const sections = (_latestClassification.orderedSections || [])
-        .map((sec) => {
-            const books = (sec.books || []).filter((b) => optValueByRealName.has(b.realName));
-            return { id: sec.id, name: sec.name, color: sec.color, books };
-        })
-        .filter((sec) => sec.books.length > 0);
+    const currentChatAvatar = _latestSettings.pinCurrentChatCharBookInEditor !== false
+        ? getCurrentCharacterAvatar()
+        : null;
+    const pinnedNames = new Set();
+    const pinnedBooks = [];
+    if (currentChatAvatar) {
+        for (const [realName] of optValueByRealName.entries()) {
+            const meta = _latestClassification.byName?.get(realName);
+            if (meta?.charOwners?.some((o) => o.avatar === currentChatAvatar)) {
+                pinnedNames.add(realName);
+                pinnedBooks.push(meta);
+            }
+        }
+    }
+
+    const sections = [
+        ...(pinnedBooks.length > 0
+            ? [{ id: '__current_char__', name: '当前角色', color: '#4c6ef5', books: pinnedBooks }]
+            : []),
+        ...(_latestClassification.orderedSections || [])
+            .map((sec) => {
+                const books = (sec.books || []).filter((b) => optValueByRealName.has(b.realName) && !pinnedNames.has(b.realName));
+                return { id: sec.id, name: sec.name, color: sec.color, books };
+            })
+            .filter((sec) => sec.books.length > 0),
+    ];
 
     const validIds = new Set(sections.map((s) => s.id));
     let activePillId =
