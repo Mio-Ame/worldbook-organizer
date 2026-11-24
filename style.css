@@ -217,13 +217,14 @@
     box-sizing: border-box;
 }
 
-/* Minimal theme-native controls docked cleanly on the right of `#WorldInfo`'s title row */
+/* Minimal theme-native controls docked directly above `#world_editor_select` inside `#world_popup` */
 .wbo-header-bar {
-    margin-left: auto;
-    display: inline-flex;
-    flex-wrap: nowrap;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 6px;
+    margin: 2px 0 6px;
 }
 
 /* Inherit active SillyTavern theme's `.menu_button` surface/blur/radius while keeping tidy uniform height */
@@ -560,7 +561,9 @@
 }
 
 .wbo-modal.is-wide {
-    width: min(660px, 100%);
+    width: min(680px, 100%);
+    height: var(--wbo-stable-h, min(82vh, 680px));
+    max-height: calc(100svh - 24px);
 }
 
 .wbo-modal.wbo-manager-modal {
@@ -1721,6 +1724,71 @@ details[open] > summary .wbo-details-chev {
     padding: 12px 14px;
     gap: 8px;
     background: var(--wbo-bg-elevated);
+}
+
+.wbo-apply-progress-box {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-progress-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--wbo-fg);
+}
+
+.wbo-progress-head > span {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-progress-cancel-btn {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    padding: 0 9px !important;
+    font-size: 11.5px !important;
+    flex-shrink: 0;
+}
+
+.wbo-progress-track {
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--wbo-bg-elevated);
+    overflow: hidden;
+}
+
+.wbo-progress-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: var(--wbo-accent);
+    transition: width 0.16s ease;
+}
+
+.wbo-progress-done {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-accent-soft);
+    font-size: 12px;
+    color: var(--wbo-fg);
+}
+
+.wbo-fail-list {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    max-height: 120px;
+    overflow-y: auto;
+    font-size: 12px;
+    line-height: 1.5;
 }
 
 .wbo-sens-banner {

@@ -899,6 +899,19 @@ async function loadWorldInfoPayload(worldName) {
 }
 
 /**
+ * Flush SillyTavern's worldbook list once after a batch of file renames/deletes.
+ */
+export async function flushWorldInfoListRefresh() {
+    const ctx = getHostContext();
+    await ensureWorldInfoModule();
+    saveSettings();
+    const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
+    if (typeof updateListFn === 'function') {
+        try { await updateListFn(); } catch { /* ignore */ }
+    }
+}
+
+/**
  * Truly rename a worldbook on disk AND migrate all live bindings safely:
  * 1. Save new file first (abort before deleting old if anything fails or collides)
  * 2. Update all User Persona bindings (`power_user.persona_descriptions` + active persona)
@@ -906,14 +919,15 @@ async function loadWorldInfoPayload(worldName) {
  * 4. Update all character extra bindings (`world_info.charLore[].extraBooks`)
  * 5. Update current chat binding (`chat_metadata.world_info`)
  * 6. Update active global selection (`selected_world_info`) & plugin metadata
- * 7. Delete old file and refresh world list
+ * 7. Delete old file (and refresh host list unless `deferRefresh: true` for fast batch mode)
  *
  * @param {string} oldName
  * @param {string} newName
  * @param {Record<string, any>} pluginSettings
+ * @param {{ deferRefresh?: boolean, existingNamesSet?: Set<string> | null }} [opts]
  * @returns {Promise<{ ok: boolean, error?: string, migrated?: { chars: number, extras: number, personas: number, currentChat: boolean, globalActive: boolean } }>}
  */
-export async function realRenameWorldbook(oldName, newName, pluginSettings) {
+export async function realRenameWorldbook(oldName, newName, pluginSettings, { deferRefresh = false, existingNamesSet = null } = {}) {
     const cleanOld = String(oldName ?? '').trim();
     const cleanNew = String(newName ?? '').trim();
     if (!cleanOld || !cleanNew) return { ok: false, error: '名称不能为空' };
@@ -921,14 +935,14 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings) {
 
     // Sanitize illegal filename chars conservatively
     if (/[\\/:*?"<>|]/.test(cleanNew)) {
-        return { ok: false, error: '真实文件名不能包含 \\ / : * ? " < > |' };
+        return { ok: false, error: '文件名不能包含 \\ / : * ? " < > |' };
     }
 
     const ctx = getHostContext();
     await ensureWorldInfoModule();
     await ensurePowerUserModule();
 
-    const existingNames = new Set(getWorldNames());
+    const existingNames = existingNamesSet || new Set(getWorldNames());
     if (existingNames.has(cleanNew)) {
         return { ok: false, error: `已存在同名世界书「${cleanNew}」` };
     }
@@ -940,7 +954,9 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings) {
     }
 
     // Step 2: Save to new filename FIRST (never delete old before new succeeds!)
-    const saveFn = ctx?.saveWorldInfo || _worldInfoModule?.saveWorldInfo;
+    // In batch mode (`deferRefresh: true`), call `/api/worldinfo/edit` directly so ST doesn't
+    // rebuild the entire DOM & re-fetch world_names on every single book!
+    const saveFn = !deferRefresh ? (ctx?.saveWorldInfo || _worldInfoModule?.saveWorldInfo) : null;
     try {
         if (typeof saveFn === 'function') {
             await saveFn(cleanNew, data, true);
@@ -1051,9 +1067,11 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings) {
     if (pluginSettings) {
         migrateSettingsOnWorldRename(pluginSettings, cleanOld, cleanNew);
     }
-    saveSettings();
+    if (!deferRefresh) {
+        saveSettings();
+    }
 
-    // Step 9: Delete old file & refresh upstream list
+    // Step 9: Delete old file & refresh upstream list (deferred in batch mode!)
     try {
         const delRes = await fetch('/api/worldinfo/delete', {
             method: 'POST',
@@ -1071,9 +1089,16 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings) {
         };
     }
 
-    const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
-    if (typeof updateListFn === 'function') {
-        try { await updateListFn(); } catch { /* ignore */ }
+    if (existingNamesSet) {
+        existingNamesSet.delete(cleanOld);
+        existingNamesSet.add(cleanNew);
+    }
+
+    if (!deferRefresh) {
+        const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
+        if (typeof updateListFn === 'function') {
+            try { await updateListFn(); } catch { /* ignore */ }
+        }
     }
 
     return { ok: true, migrated };

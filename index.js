@@ -16,6 +16,7 @@ import {
     buildCharacterBindingIndex,
     buildPersonaBindingIndex,
     classifyWorldbooks,
+    findUnscannedShallowCharacters,
     promoteSectionToTop,
     updateCachedCharBindings,
 } from './src/core.js';
@@ -32,6 +33,7 @@ import {
     importEmbeddedWorldbookForCharacter,
     migrateLegacyLocalApiConfig,
     saveSettings,
+    scanShallowCharactersInBatches,
     showToast,
     syncFallbackSettingsData,
     waitForTauriReadyIfPresent,
@@ -51,6 +53,7 @@ import {
 } from './src/panel.js';
 
 let _initialized = false;
+let _initialAutoScanRunning = false;
 let _debounceTimer = null;
 let _classification = null;
 let _bindingMap = new Map();
@@ -106,6 +109,42 @@ function recomputeAndRender({ save = false } = {}) {
 
     applyAllNativeWorldFilters(_classification, settings);
     renderEmbeddedPanel();
+
+    // One-time gentle initial auto-scan on first install (handles lazyLoadCharacters seamlessly
+    // and notifies newcomers clearly where their character worldbooks are tucked away).
+    if (!settings.hasDoneInitialAutoScan && !_initialAutoScanRunning && characters.length > 0) {
+        _initialAutoScanRunning = true;
+        const unscanned = findUnscannedShallowCharacters(characters, settings.cachedCharBindings);
+        settings.hasDoneInitialAutoScan = true;
+        saveSettings();
+
+        if (unscanned.length > 0) {
+            setTimeout(async () => {
+                try {
+                    const scanned = await scanShallowCharactersInBatches(unscanned, { batchSize: 4 });
+                    if (!_initialized) return;
+                    const curSettings = getSettings();
+                    const { cached, changed } = updateCachedCharBindings(curSettings.cachedCharBindings, scanned);
+                    if (changed) {
+                        curSettings.cachedCharBindings = cached;
+                    }
+                    recomputeAndRender({ save: true });
+                    if ((_classification?.charCount || 0) > 0 && curSettings.hideCharBooksByDefault) {
+                        showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
+                    }
+                } catch {
+                    // Non-fatal: user can always trigger manual scan later
+                } finally {
+                    _initialAutoScanRunning = false;
+                }
+            }, 900);
+        } else {
+            _initialAutoScanRunning = false;
+            if ((_classification?.charCount || 0) > 0 && settings.hideCharBooksByDefault) {
+                showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
+            }
+        }
+    }
 }
 
 /**

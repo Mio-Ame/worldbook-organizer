@@ -12,6 +12,7 @@ import {
     buildAiOrganizePrompt,
     cleanupDeletedWorldSettings,
     createApiChannelId,
+    deepClone,
     exportConfigData,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
@@ -34,6 +35,7 @@ import {
     fetchCustomApiModels,
     fetchWorldbookCluesOnDemand,
     fetchWorldbookPreviewEntries,
+    flushWorldInfoListRefresh,
     getActiveGlobalWorldSet,
     getCharactersInMemory,
     getCurrentEditorWorldName,
@@ -50,6 +52,7 @@ import {
 } from './native-filter.js';
 
 const HEADER_BAR_ID = 'wbo-header-bar';
+const WAND_ENTRY_ID = 'wbo-wand-entry';
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const MANAGER_OVERLAY_ID = 'wbo-manager-overlay';
 const SUBMODAL_OVERLAY_ID = 'wbo-submodal-overlay';
@@ -152,22 +155,53 @@ export function bindPanelCallbacks(callbacks) {
 }
 
 /**
- * Mount minimal theme-native controls cleanly on the right of `#WorldInfo`'s
- * title row (`margin-left: auto`), inheriting the user's active SillyTavern theme
- * and adding 0px vertical bloat!
+ * Mount minimal theme-native controls right above `#world_editor_select` inside `#world_popup`
+ * (right next to the dropdown at natural eye level!) AND add a Magic Wand (`#extensionsMenu`)
+ * shortcut so users can open Group Manager from either the World Info panel or the chat bar.
  * @returns {HTMLElement | null}
  */
+function ensureWandMenuEntry() {
+    const existing = document.getElementById(WAND_ENTRY_ID);
+    if (existing) return existing;
+
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) return null;
+
+    const item = document.createElement('div');
+    item.id = WAND_ENTRY_ID;
+    item.className = 'list-group-item flex-container flexGap5 interactable';
+    item.tabIndex = 0;
+    item.title = '打开世界书分组管理';
+    item.innerHTML = `
+        <i class="fa-solid fa-layer-group fa-fw extensionsMenuExtensionButton"></i>
+        <span>世界书分组管理</span>
+    `;
+    item.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (menu instanceof HTMLElement) menu.style.display = 'none';
+        openManagerModal();
+    });
+
+    menu.appendChild(item);
+
+    const wandBtn = document.getElementById('extensionsMenuButton');
+    if (wandBtn instanceof HTMLElement && globalThis.getComputedStyle(wandBtn).display === 'none') {
+        wandBtn.style.display = 'flex';
+    }
+    return item;
+}
+
 function ensureHeaderBar() {
+    ensureWandMenuEntry();
+
     let bar = document.getElementById(HEADER_BAR_ID);
     if (bar) return bar;
 
+    const editorSelect = document.getElementById('world_editor_select');
+    const editorRow = editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
+    const worldPopup = document.getElementById('world_popup');
     const wiDrawer = document.getElementById('WorldInfo');
     if (!wiDrawer) return null;
-
-    // Locate the native `🔒 世界书` header row
-    const pinDiv = document.getElementById('WI_panel_pin_div');
-    const titleRow = pinDiv?.parentElement || wiDrawer.querySelector('.flex-container');
-    if (!titleRow) return null;
 
     bar = document.createElement('div');
     bar.id = HEADER_BAR_ID;
@@ -183,7 +217,17 @@ function ensureHeaderBar() {
         </button>
     `;
 
-    titleRow.appendChild(bar);
+    // Place cleanly right above the `#world_editor_select` row inside `#world_popup`
+    if (worldPopup && editorRow && editorRow.parentElement === worldPopup) {
+        worldPopup.insertBefore(bar, editorRow);
+    } else if (worldPopup) {
+        worldPopup.prepend(bar);
+    } else {
+        const pinDiv = document.getElementById('WI_panel_pin_div');
+        const titleRow = pinDiv?.parentElement || wiDrawer.querySelector('.flex-container');
+        if (!titleRow) return null;
+        titleRow.appendChild(bar);
+    }
 
     bar.querySelector('#wbo-hdr-show-char')?.addEventListener('click', async (ev) => {
         ev.stopPropagation();
@@ -1520,6 +1564,12 @@ function createSubModal(title, bodyHtml, { wide = false } = {}) {
     modal.className = `wbo-modal${wide ? ' is-wide' : ''}`;
     applyThemeClass(modal);
     applyTauriSurface(modal, 'fullscreen-window');
+    if (wide) {
+        // Lock a steady window height so switching tabs/views NEVER jumps the modal vertically!
+        const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
+        const stableH = Math.round(Math.min(baseVh * 0.84, 680));
+        modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
+    }
 
     modal.innerHTML = `
         <div class="wbo-modal-header">
@@ -2225,6 +2275,7 @@ function openAiOrganizeModal() {
                     </div>
                 </div>
 
+                <div class="wbo-apply-progress-box" id="wbo-apply-progress-box" hidden></div>
                 <div class="wbo-ai-status" id="wbo-ai-preview-status"></div>
                 <div class="wbo-modal-footer">
                     <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-apply-btn">确认应用</button>
@@ -2559,7 +2610,7 @@ function openAiOrganizeModal() {
             }
         });
         syncSensBannerUi();
-        setStatus(nextChecked ? '已勾选疑似敏感世界书，请确认所用模型支持无审查处理。' : '已排除疑似敏感世界书，建议手动拖入分组。');
+        setStatus(nextChecked ? '已勾选疑似敏感世界书，请确认当前使用的是甲薄模型，避免触发拒答浪费额度。' : '已排除疑似敏感世界书，建议手动拖入分组。');
     });
     modal.querySelector('#wbo-pick-none')?.addEventListener('click', () => {
         setCheckedByPredicate(() => false);
@@ -3103,6 +3154,42 @@ function openAiOrganizeModal() {
 
     modal.querySelector('#wbo-ai-cancel-btn')?.addEventListener('click', closeSubModal);
 
+    const applyProgressBox = modal.querySelector('#wbo-apply-progress-box');
+    const applyCancelBtn = modal.querySelector('#wbo-ai-cancel-btn');
+
+    const rollbackRealRenames = async (completedRenames, preSnapshot) => {
+        if (applyProgressBox instanceof HTMLElement) {
+            applyProgressBox.hidden = false;
+            applyProgressBox.innerHTML = `<div class="wbo-progress-head"><span>正在撤回已修改的 ${completedRenames.length} 本世界书，请稍候...</span></div>`;
+        }
+        const liveNames = new Set(getWorldNames());
+        let rolledBack = 0;
+        const rollbackErrors = [];
+        for (let i = completedRenames.length - 1; i >= 0; i -= 1) {
+            const pair = completedRenames[i];
+            const res = await realRenameWorldbook(pair.newName, pair.oldName, settings, {
+                deferRefresh: true,
+                existingNamesSet: liveNames,
+            });
+            if (res.ok) rolledBack += 1;
+            else rollbackErrors.push(`${pair.newName} → ${pair.oldName}：${res.error || '未知错误'}`);
+        }
+        // Restore pre-apply settings metadata cleanly
+        if (preSnapshot) {
+            settings.groups = deepClone(preSnapshot.groups);
+            settings.assignments = deepClone(preSnapshot.assignments);
+            settings.aliases = deepClone(preSnapshot.aliases);
+            settings.notes = deepClone(preSnapshot.notes);
+            settings.charBookOverrides = deepClone(preSnapshot.charBookOverrides);
+            settings.cachedCharBindings = deepClone(preSnapshot.cachedCharBindings);
+            settings.sectionOrder = deepClone(preSnapshot.sectionOrder);
+            settings.undoSnapshots = deepClone(preSnapshot.undoSnapshots);
+        }
+        await flushWorldInfoListRefresh();
+        await _callbacks.onRescan();
+        return { rolledBack, rollbackErrors };
+    };
+
     modal.querySelector('#wbo-ai-apply-btn')?.addEventListener('click', async (ev) => {
         const applyBtn = ev.currentTarget;
         const applyMode = modal.querySelector('input[name="wbo-ai-apply-mode"]:checked')?.value || 'alias';
@@ -3122,25 +3209,73 @@ function openAiOrganizeModal() {
         }
 
         if (applyMode === 'real') {
-            if (!globalThis.confirm(`确定对选中的 ${chosen.length} 本世界书执行真实规范改名并同步绑定吗？`)) {
+            if (!globalThis.confirm(`确定对选中的 ${chosen.length} 本世界书执行真实规范改名并同步绑定吗？\n执行过程中随时可点「取消并撤回」。`)) {
                 return;
             }
             if (applyBtn instanceof HTMLButtonElement) applyBtn.disabled = true;
-            let renamedCount = 0;
-            let failedCount = 0;
+            if (applyCancelBtn instanceof HTMLButtonElement) applyCancelBtn.disabled = true;
+
+            const preSnapshot = {
+                groups: deepClone(settings.groups || []),
+                assignments: deepClone(settings.assignments || {}),
+                aliases: deepClone(settings.aliases || {}),
+                notes: deepClone(settings.notes || {}),
+                charBookOverrides: deepClone(settings.charBookOverrides || {}),
+                cachedCharBindings: deepClone(settings.cachedCharBindings || {}),
+                sectionOrder: deepClone(settings.sectionOrder || []),
+                undoSnapshots: deepClone(settings.undoSnapshots || []),
+            };
+
+            let cancelled = false;
+            const liveNamesSet = new Set(getWorldNames());
+            /** @type {Array<{ oldName: string, newName: string }>} */
+            const completedRenames = [];
+            /** @type {Array<{ oldName: string, newName: string, error: string }>} */
+            const failedItems = [];
             const adjustedProposals = [];
 
+            const renderRunningProgress = (idx, label) => {
+                if (!(applyProgressBox instanceof HTMLElement)) return;
+                const pct = Math.round(((idx) / Math.max(1, chosen.length)) * 100);
+                applyProgressBox.hidden = false;
+                applyProgressBox.innerHTML = `
+                    <div class="wbo-progress-head">
+                        <span>正在规范改名 (${idx}/${chosen.length})：${esc(label)}</span>
+                        <button type="button" class="wbo-btn wbo-btn-danger wbo-progress-cancel-btn" id="wbo-apply-abort-btn">取消并撤回</button>
+                    </div>
+                    <div class="wbo-progress-track"><div class="wbo-progress-fill" style="width:${pct}%"></div></div>
+                `;
+                applyProgressBox.querySelector('#wbo-apply-abort-btn')?.addEventListener('click', (e) => {
+                    cancelled = true;
+                    const b = e.currentTarget;
+                    if (b instanceof HTMLButtonElement) {
+                        b.disabled = true;
+                        b.textContent = '正在取消并撤回...';
+                    }
+                });
+            };
+
+            setStatus('', false, 'preview');
+
             for (let i = 0; i < chosen.length; i += 1) {
+                if (cancelled) break;
                 const item = chosen[i];
                 let finalRealName = item.realName;
                 if (item.alias && item.alias !== item.realName) {
-                    setStatus(`正在真实改名 (${i + 1}/${chosen.length})：${item.realName} → ${item.alias}`, false, 'preview');
-                    const res = await realRenameWorldbook(item.realName, item.alias, settings);
+                    renderRunningProgress(i + 1, `${item.realName} → ${item.alias}`);
+                    const res = await realRenameWorldbook(item.realName, item.alias, settings, {
+                        deferRefresh: true,
+                        existingNamesSet: liveNamesSet,
+                    });
                     if (res.ok) {
                         finalRealName = item.alias;
-                        renamedCount += 1;
+                        completedRenames.push({ oldName: item.realName, newName: item.alias });
                     } else {
-                        failedCount += 1;
+                        failedItems.push({
+                            oldName: item.realName,
+                            newName: item.alias,
+                            error: res.error || '未知错误',
+                        });
                     }
                 }
                 adjustedProposals.push({
@@ -3152,10 +3287,67 @@ function openAiOrganizeModal() {
                 });
             }
 
+            if (cancelled) {
+                const { rolledBack, rollbackErrors } = await rollbackRealRenames(completedRenames, preSnapshot);
+                if (applyBtn instanceof HTMLButtonElement) applyBtn.disabled = false;
+                if (applyCancelBtn instanceof HTMLButtonElement) applyCancelBtn.disabled = false;
+                if (applyProgressBox instanceof HTMLElement) {
+                    applyProgressBox.innerHTML = rollbackErrors.length > 0
+                        ? `<div class="wbo-refusal-box"><b>已取消，但有 ${rollbackErrors.length} 项撤回失败：</b><br>${rollbackErrors.map((e) => esc(e)).join('<br>')}</div>`
+                        : `<div class="wbo-progress-done">已取消并撤回全部 ${rolledBack} 本已修改的世界书，文件与绑定已恢复原状。</div>`;
+                }
+                showToast('info', `已取消并撤回 ${rolledBack} 本世界书`);
+                return;
+            }
+
+            // Commit groups/notes & flush host world list ONCE for the whole batch!
             applyAiOrganizeProposals(settings, adjustedProposals);
-            closeSubModal();
+            await flushWorldInfoListRefresh();
             await _callbacks.onRescan();
-            showToast('success', `真实改名完成：成功 ${renamedCount} 本${failedCount > 0 ? `，跳过/失败 ${failedCount} 本` : ''}`);
+
+            if (failedItems.length === 0) {
+                closeSubModal();
+                showToast('success', `真实改名完成：成功 ${completedRenames.length} 本`);
+                return;
+            }
+
+            // Keep modal open on partial/full failure so user sees EVERY exact error and can fix or roll back!
+            if (applyBtn instanceof HTMLButtonElement) applyBtn.disabled = false;
+            if (applyCancelBtn instanceof HTMLButtonElement) applyCancelBtn.disabled = false;
+
+            const failedNameSet = new Set(failedItems.map((f) => f.oldName));
+            currentProposals.forEach((p) => {
+                p.selected = failedNameSet.has(p.realName);
+            });
+            renderPreviewContent();
+
+            if (applyProgressBox instanceof HTMLElement) {
+                applyProgressBox.hidden = false;
+                applyProgressBox.innerHTML = `
+                    <div class="wbo-refusal-box">
+                        <div><b>改名完成：成功 ${completedRenames.length} 本，失败 ${failedItems.length} 本</b>（已自动勾选失败项，可直接修改新名称后重试）</div>
+                        <ul class="wbo-fail-list">
+                            ${failedItems.map((f) => `<li><b>${esc(f.oldName)}</b> → ${esc(f.newName)}：${esc(f.error)}</li>`).join('')}
+                        </ul>
+                        <div class="wbo-ai-actions-row" style="margin-top:8px;">
+                            ${completedRenames.length > 0 ? `<button type="button" class="wbo-btn wbo-btn-danger" id="wbo-apply-rollback-btn">撤回已改的 ${completedRenames.length} 本</button>` : ''}
+                            <button type="button" class="wbo-btn" id="wbo-apply-keep-close-btn">保留成功项并关闭</button>
+                        </div>
+                    </div>
+                `;
+                applyProgressBox.querySelector('#wbo-apply-rollback-btn')?.addEventListener('click', async (e) => {
+                    const rbBtn = e.currentTarget;
+                    if (rbBtn instanceof HTMLButtonElement) rbBtn.disabled = true;
+                    const { rolledBack, rollbackErrors } = await rollbackRealRenames(completedRenames, preSnapshot);
+                    if (applyProgressBox instanceof HTMLElement) {
+                        applyProgressBox.innerHTML = rollbackErrors.length > 0
+                            ? `<div class="wbo-refusal-box"><b>撤回部分失败：</b><br>${rollbackErrors.map((err) => esc(err)).join('<br>')}</div>`
+                            : `<div class="wbo-progress-done">已撤回本次成功修改的 ${rolledBack} 本世界书，已全部恢复原状。</div>`;
+                    }
+                    showToast('info', `已撤回 ${rolledBack} 本世界书`);
+                });
+                applyProgressBox.querySelector('#wbo-apply-keep-close-btn')?.addEventListener('click', closeSubModal);
+            }
             return;
         }
 
@@ -3767,5 +3959,6 @@ export function teardownPanels() {
     closeSubModal();
     closeManagerModal();
     document.getElementById(HEADER_BAR_ID)?.remove();
+    document.getElementById(WAND_ENTRY_ID)?.remove();
     document.getElementById(SETTINGS_ROOT_ID)?.remove();
 }

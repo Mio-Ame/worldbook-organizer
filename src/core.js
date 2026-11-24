@@ -33,6 +33,7 @@ export const GROUP_COLOR_PALETTE = Object.freeze([
 export const DEFAULT_SETTINGS = Object.freeze({
     version: 1,
     sectionOrderVersion: 2,
+    hasDoneInitialAutoScan: false,
     hideCharBooksByDefault: true,
     showCharBooks: false,
     charBookTitleMode: 'char_with_sub', // 'char_with_sub' | 'char_only' | 'original'
@@ -1258,7 +1259,7 @@ export function parseAiOrganizeResponse(rawText, validWorldNames) {
             isRefusal,
             refusalSnippet: text.slice(0, 140),
             error: isRefusal
-                ? 'AI 触发了内容安全策略并拒绝回复（常见于包含敏感/18+词的世界书或条目摘要）。建议取消勾选敏感世界书后重试（敏感书可直接手动拖拽分组），或切换无审查模型 / 仅按书名整理。'
+                ? 'AI 触发了内容安全策略并拒绝回复（常见于包含敏感/18+词的世界书或条目摘要）。建议排除敏感书后重试（敏感书可直接手动拖拽分组），或切换甲薄模型 / 仅按书名整理。'
                 : '未能从返回文本中解析出合法 JSON',
         };
     }
