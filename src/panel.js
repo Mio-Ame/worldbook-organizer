@@ -63,6 +63,7 @@ import {
 } from './native-filter.js';
 
 const CHAR_TOGGLE_BTN_ID = 'wbo-hdr-show-char';
+const WI_QUICK_ACTIONS_ID = 'wbo-wi-quick-actions';
 const WAND_ENTRY_ID = 'wbo-wand-entry';
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const MANAGER_OVERLAY_ID = 'wbo-manager-overlay';
@@ -243,8 +244,53 @@ function scheduleNativeCharBtnWidthSync(btn) {
     obs.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
 }
 
+/**
+ * Mount two ultra-clean, theme-native shortcut buttons (`排除` + `搜条目`) on the empty
+ * right side of `#WorldInfo`'s top title row (`世界/知识书`), zero extra rows & zero crowding!
+ */
+function ensureWorldInfoQuickActions() {
+    let box = document.getElementById(WI_QUICK_ACTIONS_ID);
+    if (box) return box;
+
+    const wiDrawer = document.getElementById('WorldInfo');
+    const pinDiv = document.getElementById('WI_panel_pin_div');
+    const headerRow = pinDiv?.parentElement || wiDrawer?.querySelector(':scope > .flex-container');
+    if (!headerRow) return null;
+
+    box = document.createElement('div');
+    box.id = WI_QUICK_ACTIONS_ID;
+    box.className = 'wbo-wi-quick-actions';
+    box.innerHTML = `
+        <div id="wbo-wi-exclude-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="快速设置全局框与编辑框默认排除的分组">
+            <i class="fa-solid fa-filter"></i>
+            <span>排除</span>
+        </div>
+        <div id="wbo-wi-entry-search-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="跨世界书按需搜索条目内容">
+            <i class="fa-solid fa-magnifying-glass"></i>
+            <span>搜条目</span>
+        </div>
+    `;
+    headerRow.appendChild(box);
+
+    const excludeBtn = box.querySelector('#wbo-wi-exclude-btn');
+    excludeBtn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (excludeBtn instanceof HTMLElement) {
+            openQuickExcludePopover(excludeBtn);
+        }
+    });
+
+    box.querySelector('#wbo-wi-entry-search-btn')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        openEntrySearchModal('');
+    });
+
+    return box;
+}
+
 function ensureHeaderBar() {
     ensureWandMenuEntry();
+    ensureWorldInfoQuickActions();
 
     // Remove any legacy standalone row from earlier versions
     document.getElementById('wbo-header-bar')?.remove();
@@ -266,7 +312,7 @@ function ensureHeaderBar() {
     btn.className = 'menu_button fa-solid fa-fw fa-user-slash wbo-native-char-btn';
     btn.tabIndex = 0;
     btn.setAttribute('role', 'button');
-    btn.title = '角色世界书已隐藏，点击显示';
+    btn.title = '角色世界书已隐藏，点击显示（右键或长按可自定义排除分组）';
 
     if (importBtn && importBtn.parentElement === editorRow) {
         editorRow.insertBefore(btn, importBtn);
@@ -275,8 +321,38 @@ function ensureHeaderBar() {
     }
     scheduleNativeCharBtnWidthSync(btn);
 
+    // Right-click (desktop) or 420ms long-press (mobile) opens quick-exclude popover right next to native box!
+    let longPressTimer = null;
+    let suppressNextClick = false;
+    btn.addEventListener('contextmenu', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openQuickExcludePopover(btn);
+    });
+    btn.addEventListener('pointerdown', (ev) => {
+        if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+        suppressNextClick = false;
+        clearTimeout(longPressTimer);
+        longPressTimer = setTimeout(() => {
+            longPressTimer = null;
+            suppressNextClick = true;
+            openQuickExcludePopover(btn);
+        }, 420);
+    }, { passive: true });
+    const cancelLongPress = () => {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+    };
+    btn.addEventListener('pointerup', cancelLongPress, { passive: true });
+    btn.addEventListener('pointercancel', cancelLongPress, { passive: true });
+    btn.addEventListener('pointerleave', cancelLongPress, { passive: true });
+
     btn.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        if (suppressNextClick) {
+            suppressNextClick = false;
+            return;
+        }
         if (!_callbacks) return;
         const { settings } = _callbacks.getState();
         const nextShown = !settings.showCharBooks;
@@ -732,6 +808,7 @@ function renderGroupSectionHtml({
 
 function closeGroupVisibilityPopover() {
     document.getElementById('wbo-vis-popover-backdrop')?.remove();
+    document.getElementById('wbo-quick-exclude-backdrop')?.remove();
 }
 
 function closeManagerModal() {
@@ -5382,6 +5459,198 @@ function openSettingsModal() {
 }
 
 /**
+ * Compact, theme-following quick-exclude popover anchored right inside `#WorldInfo`
+ * (opened via the `排除` button on the `#WorldInfo` title bar OR right-click/long-press
+ * on `#wbo-hdr-show-char`). Lets users toggle Global & Editor excluded groups on the fly
+ * without ever opening Group Manager or Settings!
+ * @param {HTMLElement} anchorEl
+ */
+function openQuickExcludePopover(anchorEl) {
+    const existing = document.getElementById('wbo-quick-exclude-backdrop');
+    if (existing) {
+        existing.remove();
+        return;
+    }
+    closeGroupVisibilityPopover();
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+
+    const sectionOptions = [
+        { id: SPECIAL_GROUPS.CHARACTER, name: '角色世界书', color: '#9b72cf' },
+        ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
+        { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
+    ];
+    const renderChips = (targetKey, selectedIds) => {
+        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+        return sectionOptions.map((sec) => {
+            const active = set.has(sec.id);
+            return `
+                <button type="button"
+                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+                    data-qe-target="${esc(targetKey)}"
+                    data-qe-gid="${esc(sec.id)}"
+                    aria-pressed="${active ? 'true' : 'false'}">
+                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
+                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
+                    <span>${esc(sec.name)}</span>
+                </button>
+            `;
+        }).join('');
+    };
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'wbo-quick-exclude-backdrop';
+    backdrop.className = 'wbo-vis-backdrop';
+
+    const pop = document.createElement('div');
+    pop.className = 'wbo-modal wbo-mp-popover wbo-qe-popover';
+    if (settings.outsideDropdownFollowHostTheme !== false) {
+        pop.classList.add(detectHostThemeClass());
+        pop.setAttribute('data-wbo-palette', 'host');
+    } else {
+        applyThemeClass(pop);
+    }
+
+    pop.innerHTML = `
+        <div class="wbo-qe-head">
+            <span>下拉框默认排除分组</span>
+            <button type="button" class="wbo-icon-btn wbo-qe-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="wbo-qe-body">
+            <div class="wbo-exclude-block">
+                <div class="wbo-exclude-head">
+                    <span>全局激活框</span>
+                    <span class="wbo-ai-quick-picks">
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds">仅角色书</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
+                    </span>
+                </div>
+                <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
+            </div>
+            <div class="wbo-local-divider"></div>
+            <div class="wbo-exclude-block">
+                <div class="wbo-exclude-head">
+                    <span>编辑下拉框</span>
+                    <span class="wbo-ai-quick-picks">
+                        <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
+                    </span>
+                </div>
+                <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
+            </div>
+        </div>
+        <div class="wbo-qe-foot">
+            <button type="button" class="wbo-btn wbo-qe-foot-btn" id="wbo-qe-open-mgr">
+                <i class="fa-solid fa-layer-group"></i> 分组管理
+            </button>
+            <button type="button" class="wbo-btn wbo-qe-foot-btn" id="wbo-qe-open-search">
+                <i class="fa-solid fa-magnifying-glass"></i> 搜条目
+            </button>
+        </div>
+    `;
+
+    backdrop.appendChild(pop);
+    document.body.appendChild(backdrop);
+
+    const rect = anchorEl.getBoundingClientRect();
+    const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+    const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+    const popW = Math.min(340, vw - 20);
+    const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
+    const spaceBelow = vh - rect.bottom - 14;
+    const spaceAbove = rect.top - 14;
+    const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+    pop.style.width = `${Math.round(popW)}px`;
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.maxHeight = `${Math.max(200, Math.min(420, Math.floor((openAbove ? spaceAbove : spaceBelow) - 6)))}px`;
+    if (openAbove) {
+        pop.style.bottom = `${Math.round(vh - rect.top + 6)}px`;
+        pop.style.top = 'auto';
+    } else {
+        pop.style.top = `${Math.round(rect.bottom + 6)}px`;
+        pop.style.bottom = 'auto';
+    }
+
+    const syncUi = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        for (const key of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+            const set = new Set(Array.isArray(cur[key]) ? cur[key] : []);
+            pop.querySelectorAll(`[data-qe-target="${key}"]`).forEach((btn) => {
+                const gid = btn.getAttribute('data-qe-gid') || '';
+                const active = set.has(gid);
+                btn.classList.toggle('is-selected', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                const mark = btn.querySelector('.wbo-local-cat-mark');
+                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+            });
+        }
+    };
+
+    pop.addEventListener('click', (ev) => ev.stopPropagation());
+    pop.querySelector('.wbo-qe-close')?.addEventListener('click', closeGroupVisibilityPopover);
+    backdrop.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ev.target === backdrop) closeGroupVisibilityPopover();
+    });
+
+    pop.querySelectorAll('[data-qe-target]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const key = btn.getAttribute('data-qe-target');
+            const gid = btn.getAttribute('data-qe-gid');
+            if (!key || !gid) return;
+            const cur = _callbacks.getState().settings;
+            const set = new Set(Array.isArray(cur[key]) ? cur[key] : []);
+            if (set.has(gid)) set.delete(gid);
+            else set.add(gid);
+            cur[key] = [...set];
+            if (set.size > 0 && cur.showCharBooks) cur.showCharBooks = false;
+            if (gid === SPECIAL_GROUPS.CHARACTER) {
+                cur.hideCharBooksByDefault =
+                    (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
+                    (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
+            }
+            syncUi();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    pop.querySelectorAll('[data-qe-preset]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const preset = btn.getAttribute('data-qe-preset');
+            const scopeKey = btn.getAttribute('data-qe-scope');
+            if (!preset || !scopeKey) return;
+            const cur = _callbacks.getState().settings;
+            if (preset === 'clear') {
+                cur[scopeKey] = [];
+            } else if (preset === 'char-only') {
+                cur[scopeKey] = [SPECIAL_GROUPS.CHARACTER];
+                cur.showCharBooks = false;
+            } else if (preset === 'copy-global') {
+                cur[scopeKey] = Array.isArray(cur.globalHiddenGroupIds) ? [...cur.globalHiddenGroupIds] : [];
+                if (cur[scopeKey].length > 0) cur.showCharBooks = false;
+            }
+            cur.hideCharBooksByDefault =
+                (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
+                (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
+            syncUi();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    pop.querySelector('#wbo-qe-open-mgr')?.addEventListener('click', () => {
+        closeGroupVisibilityPopover();
+        openManagerModal();
+    });
+    pop.querySelector('#wbo-qe-open-search')?.addEventListener('click', () => {
+        closeGroupVisibilityPopover();
+        openEntrySearchModal('');
+    });
+}
+
+/**
  * Quick 2-checkbox anchored popover right beneath a group header's eye icon so users
  * can toggle global/editor dropdown exclusion for any group in 1 tap without opening Settings.
  * @param {HTMLElement} anchorBtn
@@ -5640,6 +5909,7 @@ function openEntrySearchModal(initialQuery = '') {
                                 <span class="wbo-es-entry-title">${highlightTokensHtml(h.title, tokens)}</span>
                                 ${h.disabled ? '<span class="wbo-tag">已禁用</span>' : ''}
                                 ${h.matchedIn.map((m) => `<span class="wbo-tag">${esc(m)}</span>`).join('')}
+                                <button type="button" class="wbo-link-btn wbo-es-jump-uid" data-es-open="${esc(worldName)}" data-es-uid="${esc(h.uid)}">定位条目</button>
                             </span>
                             ${h.keys.length > 0 ? `<div class="wbo-es-entry-keys">触发词：${highlightTokensHtml(h.keys.join('、'), tokens)}</div>` : ''}
                             ${h.snippet ? `<div class="wbo-es-entry-snip">${highlightTokensHtml(h.snippet, tokens)}</div>` : ''}
@@ -5704,10 +5974,13 @@ function openEntrySearchModal(initialQuery = '') {
     resultsEl?.addEventListener('click', (ev) => {
         const btn = ev.target instanceof Element ? ev.target.closest('[data-es-open]') : null;
         if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
         const worldName = btn.getAttribute('data-es-open');
+        const uid = btn.getAttribute('data-es-uid');
         if (!worldName) return;
         if (activeSignal) activeSignal.cancelled = true;
-        openWorldInNativeEditor(worldName);
+        openWorldInNativeEditor(worldName, { focusUid: uid || null });
         closeSubModal();
         closeManagerModal();
     });
@@ -5729,6 +6002,7 @@ export function teardownPanels() {
     closeSubModal();
     closeManagerModal();
     document.getElementById(CHAR_TOGGLE_BTN_ID)?.remove();
+    document.getElementById(WI_QUICK_ACTIONS_ID)?.remove();
     document.getElementById('wbo-header-bar')?.remove();
     document.getElementById(WAND_ENTRY_ID)?.remove();
     document.getElementById(SETTINGS_ROOT_ID)?.remove();

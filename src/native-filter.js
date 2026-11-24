@@ -1136,7 +1136,7 @@ export function ensureEditorOptionAttached(worldName) {
  * @param {string} realName
  * @returns {boolean}
  */
-export function openWorldInNativeEditor(realName) {
+export function openWorldInNativeEditor(realName, { focusUid = null } = {}) {
     const clean = String(realName ?? '').trim();
     if (!clean) return false;
     ensureEditorOptionAttached(clean);
@@ -1167,6 +1167,31 @@ export function openWorldInNativeEditor(realName) {
     if (drawer && drawer.classList.contains('closedDrawer')) {
         const icon = document.querySelector('#WI-SP-button .drawer-icon');
         if (icon instanceof HTMLElement) icon.click();
+    }
+
+    // Optionally scroll & softly highlight a specific entry UID once SillyTavern renders `#world_popup_entries_list`
+    if (focusUid !== null && focusUid !== undefined && String(focusUid).trim() !== '') {
+        const uidStr = String(focusUid).trim();
+        let tries = 0;
+        const locateEntry = () => {
+            const list = document.getElementById('world_popup_entries_list');
+            const entryEl = list?.querySelector(`.world_entry[uid="${CSS.escape(uidStr)}"]`);
+            if (entryEl instanceof HTMLElement) {
+                try {
+                    entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                } catch {
+                    entryEl.scrollIntoView();
+                }
+                entryEl.classList.add('wbo-entry-locate-flash');
+                setTimeout(() => entryEl.classList.remove('wbo-entry-locate-flash'), 1800);
+                return;
+            }
+            if (tries < 15) {
+                tries += 1;
+                setTimeout(locateEntry, 120);
+            }
+        };
+        setTimeout(locateEntry, 180);
     }
     return true;
 }

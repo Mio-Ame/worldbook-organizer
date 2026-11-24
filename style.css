@@ -251,6 +251,94 @@
     box-sizing: border-box;
 }
 
+/* Native inline quick actions on `#WorldInfo` title bar (zero extra rows, matches host `.menu_button` style!) */
+.wbo-wi-quick-actions {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.wbo-wi-quick-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 4px !important;
+    height: 26px !important;
+    min-height: 26px !important;
+    padding: 0 8px !important;
+    margin: 0 !important;
+    width: auto !important;
+    font-size: 12px !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    flex-shrink: 0 !important;
+    box-sizing: border-box !important;
+}
+
+.wbo-wi-quick-btn > i {
+    font-size: 11px;
+}
+
+.wbo-qe-popover {
+    width: 340px;
+    padding: 0 !important;
+}
+
+.wbo-qe-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 12px;
+    background: var(--wbo-bg-elevated);
+    border-bottom: 1px solid var(--wbo-border);
+    font-size: 13px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.wbo-qe-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.wbo-qe-foot {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+    flex-shrink: 0;
+}
+
+.wbo-qe-foot-btn {
+    height: 26px !important;
+    min-height: 26px !important;
+    max-height: 26px !important;
+    padding: 0 10px !important;
+    font-size: 12px !important;
+}
+
+.wbo-es-jump-uid {
+    margin-left: auto;
+    font-size: 11.5px !important;
+}
+
+.wbo-entry-locate-flash {
+    outline: 2px solid var(--SmartThemeQuoteColor, #4c6ef5) !important;
+    outline-offset: 2px;
+    transition: outline-color 0.3s ease;
+}
+
 /* Native inline char-worldbook visibility icon merged seamlessly into `#world_popup` toolbar */
 .wbo-native-char-btn {
     width: var(--wbo-char-btn-w, calc(1.25em + 10px)) !important;
