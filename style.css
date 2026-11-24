@@ -255,7 +255,10 @@
 .wbo-wi-quick-actions[hidden],
 .wbo-wi-quick-btn[hidden],
 .wbo-native-char-btn[hidden],
-.wbo-settings-tab-pane[hidden] {
+.wbo-settings-tab-pane[hidden],
+.wbo-pill-expand-btn[hidden],
+.wbo-tool-btn[hidden],
+.wbo-mgr-groupbar[hidden] {
     display: none !important;
 }
 
@@ -4488,9 +4491,14 @@ details[open] > summary .wbo-details-chev {
         gap: 6px;
     }
     .wbo-mgr-group-actions {
-        display: flex;
-        justify-content: flex-end;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-group-actions > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
     }
     .wbo-mgr-listbar {
         flex-direction: column;

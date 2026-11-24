@@ -2100,7 +2100,6 @@ function refreshManagerModalContent() {
     const expandBtnEl = overlay.querySelector('#wbo-mgr-pills-expand');
     if (groupBarEl instanceof HTMLElement) groupBarEl.hidden = !showGroupBar;
     if (listCreateBtn instanceof HTMLElement) listCreateBtn.hidden = showGroupBar;
-    if (expandBtnEl instanceof HTMLElement) expandBtnEl.hidden = pills.length < 3;
 
     const pillsEl = overlay.querySelector('#wbo-mgr-pills');
     if (pillsEl) {
@@ -2120,6 +2119,23 @@ function refreshManagerModalContent() {
                 })
                 .join('')
             : '';
+    }
+
+    // Show the expand chevron ONLY when the pills actually overflow the current viewport width
+    // (or while already expanded so the user can collapse it back). Zero dead/no-op buttons!
+    if (expandBtnEl instanceof HTMLElement && pillsEl instanceof HTMLElement) {
+        if (!showGroupBar) {
+            expandBtnEl.hidden = true;
+        } else if (_mgrPillsExpanded) {
+            expandBtnEl.hidden = false;
+        } else {
+            expandBtnEl.hidden = true;
+            requestAnimationFrame(() => {
+                if (!pillsEl.isConnected || _mgrPillsExpanded) return;
+                const overflows = pillsEl.scrollWidth > pillsEl.clientWidth + 2;
+                expandBtnEl.hidden = !overflows;
+            });
+        }
     }
 
     syncManagerSearchBarUi();

@@ -881,6 +881,17 @@ function openMobileEditorPickerSheet() {
                 <span class="wbo-pill-count">${p.count}</span>
             </button>
         `).join('');
+        if (expandBtn instanceof HTMLElement) {
+            if (pillsExpanded) {
+                expandBtn.hidden = false;
+            } else {
+                expandBtn.hidden = true;
+                requestAnimationFrame(() => {
+                    if (!pillsEl.isConnected || pillsExpanded) return;
+                    expandBtn.hidden = !(pillsEl.scrollWidth > pillsEl.clientWidth + 2);
+                });
+            }
+        }
     };
 
     const renderList = () => {
@@ -1588,6 +1599,17 @@ function attachGroupedSelectControl(
                     <span class="wbo-pill-count">${p.count}</span>
                 </button>
             `).join('');
+            if (expandBtn instanceof HTMLElement) {
+                if (pillsExpanded) {
+                    expandBtn.hidden = false;
+                } else {
+                    expandBtn.hidden = true;
+                    requestAnimationFrame(() => {
+                        if (!pillsEl.isConnected || pillsExpanded) return;
+                        expandBtn.hidden = !(pillsEl.scrollWidth > pillsEl.clientWidth + 2);
+                    });
+                }
+            }
         };
 
         const renderList = () => {
