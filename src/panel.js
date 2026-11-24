@@ -666,6 +666,7 @@ function syncBatchBarUi() {
     const countEl = overlay.querySelector('#wbo-batch-count');
     const toggleAllBtn = overlay.querySelector('#wbo-batch-toggle-all');
     const moveBtn = overlay.querySelector('#wbo-batch-move-btn');
+    const ungroupBtn = overlay.querySelector('#wbo-batch-ungroup-btn');
     const delBtn = overlay.querySelector('#wbo-batch-del-btn');
     if (batchBtn) batchBtn.classList.toggle('is-active', _batchMode);
     if (batchBar instanceof HTMLElement) batchBar.hidden = !_batchMode;
@@ -679,6 +680,7 @@ function syncBatchBarUi() {
         toggleAllBtn.textContent = allVisibleSelected ? '取消全选' : '全选当前';
     }
     if (moveBtn instanceof HTMLButtonElement) moveBtn.disabled = count === 0;
+    if (ungroupBtn instanceof HTMLButtonElement) ungroupBtn.disabled = count === 0;
     if (delBtn instanceof HTMLButtonElement) delBtn.disabled = count === 0;
 }
 
@@ -890,6 +892,7 @@ function openManagerModal() {
             <button type="button" class="wbo-link-btn" id="wbo-batch-toggle-all" data-action="batch-toggle-visible">全选当前</button>
             <span class="wbo-spacer"></span>
             <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-batch-move-btn" data-action="batch-move" disabled>移入分组</button>
+            <button type="button" class="wbo-btn" id="wbo-batch-ungroup-btn" data-action="batch-ungroup" disabled title="解除选中世界书的自定义分组，恢复到未分组">解除分组</button>
             <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-batch-del-btn" data-action="batch-delete" disabled>删除选中</button>
             <button type="button" class="wbo-btn" data-action="toggle-batch-mode">完成</button>
         </div>
@@ -1288,6 +1291,28 @@ function openManagerModal() {
                 if (_batchSelected.size > 0) {
                     openBatchMoveModal([..._batchSelected]);
                 }
+                break;
+            }
+            case 'batch-ungroup': {
+                if (_batchSelected.size === 0) break;
+                let ungroupedCount = 0;
+                for (const name of [..._batchSelected]) {
+                    if (settings.assignments && name in settings.assignments) {
+                        delete settings.assignments[name];
+                        ungroupedCount += 1;
+                    }
+                    // If a character-bound book was manually pulled out into a custom group, let it return cleanly
+                    const meta = classification.byName.get(name);
+                    if (meta?.isCharBound && settings.charBookOverrides?.[name] === 'exclude_from_char') {
+                        delete settings.charBookOverrides[name];
+                    }
+                }
+                _batchSelected.clear();
+                await _callbacks.onMutation({ save: true });
+                showToast(
+                    ungroupedCount > 0 ? 'success' : 'info',
+                    ungroupedCount > 0 ? `已解除 ${ungroupedCount} 本世界书的分组` : '选中的世界书原本就未分组',
+                );
                 break;
             }
             case 'batch-delete': {
@@ -2121,44 +2146,52 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         '整理世界书',
         `
             <div class="wbo-tabs" id="wbo-ai-tabs">
-                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地快速整理</button>
-                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
-                <button type="button" class="wbo-tab${startTab === 'api' ? ' is-active' : ''}" data-ai-tab="api">API 配置 · <span id="wbo-api-tab-badge">${esc(getApiSummaryText())}</span></button>
+                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">一键本地整理（免费）</button>
+                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 智能整理</button>
             </div>
 
             <div class="wbo-ai-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>无需 API，按本地规则 1 秒自动归类</span>
-                        <span class="wbo-subtle-tip">零额度消耗 · 敏感书也能分 · 预览后生效</span>
+                        <span>不消耗 API，1 秒按规则自动归组</span>
                     </div>
                     <div class="wbo-ai-options">
                         <div class="wbo-radio-row">
                             <label class="wbo-radio-opt">
                                 <input type="radio" name="wbo-local-scope" value="ungrouped"${classification.ungroupedBooks.length > 0 ? ' checked' : ''}>
-                                <span>仅未分组（${classification.ungroupedBooks.length} 本）</span>
+                                <span>仅整理未分组（${classification.ungroupedBooks.length} 本）</span>
                             </label>
                             <label class="wbo-radio-opt">
                                 <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
-                                <span>全部非角色书（${classification.nonCharCount} 本）</span>
+                                <span>整理全部非角色书（${classification.nonCharCount} 本）</span>
                             </label>
                         </div>
                         <label class="wbo-check-line">
                             <input type="checkbox" id="wbo-local-use-prefix" checked>
-                            <span>识别书名前缀自动归组（如 [文风]、【缝合】、[世界观]、[小剧场]）</span>
-                        </label>
-                        <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-local-use-keywords" checked>
-                            <span>按酒馆常见用途关键词自动归类（文风 / 缝合 / 场景 / 世界观 / 小剧场 / 敏感向）</span>
+                            <span>自动识别前缀和用途关键词归组（文风 / 缝合 / 场景 / 世界观 / 小剧场等）</span>
                         </label>
                         <label class="wbo-check-line">
                             <input type="checkbox" id="wbo-local-clean-titles">
-                            <span>同时清理显示名多余尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
+                            <span>顺手清理显示名尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
                         </label>
-                        <div class="wbo-field">
-                            <label class="wbo-label">自定义关键词规则（可选，每行一条，格式：关键词 => 分组名）</label>
-                            <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-local-custom-rules" rows="3" placeholder="例如：&#10;穿搭|发型|外貌 => 人设素材&#10;咒回|哈利波特 => 同人世界观"></textarea>
-                        </div>
+                        <details class="wbo-collapse-box" id="wbo-local-rules-details">
+                            <summary class="wbo-collapse-summary">
+                                <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>补充自定义归类规则（可选）</span></span>
+                                <span class="wbo-collapse-hint" id="wbo-local-rules-count">点击展开</span>
+                            </summary>
+                            <div class="wbo-collapse-body">
+                                <div class="wbo-rule-builder-row">
+                                    <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="书名包含词，如：穿搭">
+                                    <span class="wbo-rule-arrow">归入</span>
+                                    <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设素材">
+                                    <button type="button" class="wbo-btn" id="wbo-local-rule-add-btn">添加</button>
+                                </div>
+                                <datalist id="wbo-existing-groups-datalist">
+                                    ${settings.groups.map((g) => `<option value="${esc(g.name)}"></option>`).join('')}
+                                </datalist>
+                                <div class="wbo-rule-chips" id="wbo-local-rule-chips"></div>
+                            </div>
+                        </details>
                     </div>
                 </div>
                 <div class="wbo-ai-status" id="wbo-local-status"></div>
@@ -2169,9 +2202,8 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         </button>
                     </div>
                     <div class="wbo-ai-footer-right">
-                        <button type="button" class="wbo-btn" id="wbo-goto-ai-tab-btn">改用 AI 整理</button>
                         <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-local-run-btn">
-                            <i class="fa-solid fa-bolt"></i> 立即生成预览
+                            <i class="fa-solid fa-bolt"></i> 一键整理并预览
                         </button>
                     </div>
                 </div>
@@ -2200,27 +2232,9 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>2. 整理规则</span>
+                        <span>2. 选择风格</span>
                     </div>
                     <div class="wbo-ai-options">
-                        <div class="wbo-clue-row">
-                            <label class="wbo-check-line">
-                                <input type="checkbox" id="wbo-ai-include-clues">
-                                <span>附带每本书前</span>
-                            </label>
-                            <input type="number" class="wbo-input wbo-inline-num" id="wbo-ai-clue-count" value="5" min="1" max="15">
-                            <span>条条目，携带</span>
-                            <select class="wbo-select wbo-inline-select" id="wbo-ai-snippet-len">
-                                <option value="50" selected>标题 + 50字摘要</option>
-                                <option value="120">标题 + 120字摘要</option>
-                                <option value="0">仅标题与关键词</option>
-                            </select>
-                        </div>
-                        <div class="wbo-subtle-tip">摘要在本地直接截取，不额外消耗 AI 额度。</div>
-                        <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-ai-allow-real-rename">
-                            <span>允许同步修改世界书真实文件名，并自动更新角色卡与人设绑定</span>
-                        </label>
                         <div class="wbo-preset-rows">
                             <div class="wbo-preset-group">
                                 <span class="wbo-preset-label">分类方式</span>
@@ -2237,7 +2251,33 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                                 <button type="button" class="wbo-preset-chip" data-preset-cat="ver" data-preset-text="清理冗余装饰词但保留如 v2.0 等关键版本号。">保留版本号</button>
                             </div>
                         </div>
-                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-custom-rule" rows="3" placeholder="点击上方预设自动填入，或直接编辑你的分类与命名要求..."></textarea>
+                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-custom-rule" rows="2" placeholder="可选：点上方预设自动填入，或直接写下你的分类和命名要求..."></textarea>
+
+                        <details class="wbo-collapse-box">
+                            <summary class="wbo-collapse-summary">
+                                <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>高级选项（读取条目摘要 / 修改真实文件名）</span></span>
+                            </summary>
+                            <div class="wbo-collapse-body">
+                                <div class="wbo-clue-row">
+                                    <label class="wbo-check-line">
+                                        <input type="checkbox" id="wbo-ai-include-clues">
+                                        <span>附带每本书前</span>
+                                    </label>
+                                    <input type="number" class="wbo-input wbo-inline-num" id="wbo-ai-clue-count" value="5" min="1" max="15">
+                                    <span>条条目，携带</span>
+                                    <select class="wbo-select wbo-inline-select" id="wbo-ai-snippet-len">
+                                        <option value="50" selected>标题 + 50字摘要</option>
+                                        <option value="120">标题 + 120字摘要</option>
+                                        <option value="0">仅标题与关键词</option>
+                                    </select>
+                                </div>
+                                <div class="wbo-subtle-tip">摘要在本地直接截取，不额外消耗 AI 额度。</div>
+                                <label class="wbo-check-line">
+                                    <input type="checkbox" id="wbo-ai-allow-real-rename">
+                                    <span>允许同步修改世界书真实文件名，并自动更新角色卡与人设绑定</span>
+                                </label>
+                            </div>
+                        </details>
                     </div>
                 </div>
 
@@ -2260,12 +2300,12 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
                 <div class="wbo-modal-footer wbo-ai-footer">
                     <div class="wbo-ai-footer-left">
-                        <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'hidden'} title="恢复到上一次 AI 整理前的分组与显示名">
+                        <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'hidden'} title="恢复到上一次整理前的分组与显示名">
                             <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
                         </button>
                         <span class="wbo-api-inline-info">
                             <b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b>
-                            <button type="button" class="wbo-link-btn" id="wbo-goto-api-tab">切换</button>
+                            <button type="button" class="wbo-link-btn" id="wbo-goto-api-tab">配置 API</button>
                         </span>
                     </div>
                     <div class="wbo-ai-footer-right">
@@ -2416,7 +2456,8 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (stepSelect instanceof HTMLElement) stepSelect.hidden = tabName !== 'organize';
         if (stepApi instanceof HTMLElement) stepApi.hidden = tabName !== 'api';
         if (stepPreview instanceof HTMLElement) stepPreview.hidden = true;
-        if (tabsBar instanceof HTMLElement) tabsBar.hidden = false;
+        // Hide the 2-way top bar while inside the dedicated API config sub-view so there's zero confusion
+        if (tabsBar instanceof HTMLElement) tabsBar.hidden = tabName === 'api';
         modal.querySelectorAll('.wbo-tab').forEach((t) => {
             t.classList.toggle('is-active', t.getAttribute('data-ai-tab') === tabName);
         });
@@ -2428,34 +2469,101 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             switchAiTab(tab);
         });
     });
-    modal.querySelector('#wbo-goto-ai-tab-btn')?.addEventListener('click', () => switchAiTab('organize'));
     modal.querySelector('#wbo-goto-api-tab')?.addEventListener('click', () => switchAiTab('api'));
     modal.querySelector('#wbo-back-to-organize-btn')?.addEventListener('click', () => switchAiTab('organize'));
 
+    // Visual 2-box custom rule builder for Local Organize (zero special symbols needed!)
+    /** @type {Array<{ kw: string, group: string }>} */
+    const localCustomRules = [];
+    const ruleKwInput = modal.querySelector('#wbo-local-rule-kw');
+    const ruleGrpInput = modal.querySelector('#wbo-local-rule-grp');
+    const ruleChipsEl = modal.querySelector('#wbo-local-rule-chips');
+    const ruleCountEl = modal.querySelector('#wbo-local-rules-count');
+
+    const renderLocalRuleChips = () => {
+        if (ruleCountEl) {
+            ruleCountEl.textContent = localCustomRules.length > 0 ? `已添加 ${localCustomRules.length} 条` : '点击展开';
+        }
+        if (!ruleChipsEl) return;
+        if (localCustomRules.length === 0) {
+            ruleChipsEl.innerHTML = '<span class="wbo-subtle-tip">暂未添加自定义规则（默认规则已覆盖常见前缀与用途）</span>';
+            return;
+        }
+        ruleChipsEl.innerHTML = localCustomRules.map((r, idx) => `
+            <span class="wbo-rule-chip">
+                <span>含「${esc(r.kw)}」→ <b>${esc(r.group)}</b></span>
+                <button type="button" class="wbo-rule-chip-del" data-del-rule-idx="${idx}" aria-label="删除">×</button>
+            </span>
+        `).join('');
+    };
+    renderLocalRuleChips();
+
+    const addLocalRuleFromInputs = () => {
+        const kw = ruleKwInput instanceof HTMLInputElement ? ruleKwInput.value.trim() : '';
+        const group = ruleGrpInput instanceof HTMLInputElement ? ruleGrpInput.value.trim() : '';
+        if (!kw || !group) {
+            if (localStatusEl) {
+                localStatusEl.textContent = '请同时填写「书名包含词」和「分组名」后再点添加';
+                localStatusEl.className = 'wbo-ai-status is-error';
+            }
+            return;
+        }
+        localCustomRules.push({ kw, group });
+        if (ruleKwInput instanceof HTMLInputElement) ruleKwInput.value = '';
+        if (ruleGrpInput instanceof HTMLInputElement) ruleGrpInput.value = '';
+        if (localStatusEl) localStatusEl.textContent = '';
+        renderLocalRuleChips();
+    };
+    modal.querySelector('#wbo-local-rule-add-btn')?.addEventListener('click', addLocalRuleFromInputs);
+    ruleGrpInput?.addEventListener('keydown', (ev) => {
+        if (ev.key === 'Enter') {
+            ev.preventDefault();
+            addLocalRuleFromInputs();
+        }
+    });
+    ruleChipsEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-del-rule-idx]') : null;
+        if (!btn) return;
+        const idx = Number(btn.getAttribute('data-del-rule-idx'));
+        if (Number.isInteger(idx) && idx >= 0 && idx < localCustomRules.length) {
+            localCustomRules.splice(idx, 1);
+            renderLocalRuleChips();
+        }
+    });
+
     modal.querySelector('#wbo-local-run-btn')?.addEventListener('click', () => {
+        // Also pick up any rule typed in the boxes even if user forgot to click "添加"!
+        const pendingKw = ruleKwInput instanceof HTMLInputElement ? ruleKwInput.value.trim() : '';
+        const pendingGrp = ruleGrpInput instanceof HTMLInputElement ? ruleGrpInput.value.trim() : '';
+        if (pendingKw && pendingGrp) {
+            localCustomRules.push({ kw: pendingKw, group: pendingGrp });
+            if (ruleKwInput instanceof HTMLInputElement) ruleKwInput.value = '';
+            if (ruleGrpInput instanceof HTMLInputElement) ruleGrpInput.value = '';
+            renderLocalRuleChips();
+        }
+
         const scope = modal.querySelector('input[name="wbo-local-scope"]:checked')?.value || 'ungrouped';
         const targetBooks = scope === 'ungrouped'
             ? classification.ungroupedBooks
             : allBooks.filter((b) => !b.isInCharGroup);
         if (targetBooks.length === 0) {
             if (localStatusEl) {
-                localStatusEl.textContent = '当前范围内没有需要整理的世界书，可切换为「全部非角色书」。';
+                localStatusEl.textContent = '当前范围内没有需要整理的世界书，可切换为「整理全部非角色书」。';
                 localStatusEl.className = 'wbo-ai-status is-error';
             }
             return;
         }
-        const usePrefix = Boolean(modal.querySelector('#wbo-local-use-prefix')?.checked);
-        const useKeywords = Boolean(modal.querySelector('#wbo-local-use-keywords')?.checked);
+        const useSmartAuto = Boolean(modal.querySelector('#wbo-local-use-prefix')?.checked);
         const cleanTitles = Boolean(modal.querySelector('#wbo-local-clean-titles')?.checked);
-        const customRulesText = modal.querySelector('#wbo-local-custom-rules')?.value || '';
+        const customRulesText = localCustomRules.map((r) => `${r.kw} => ${r.group}`).join('\n');
         const proposals = buildLocalOrganizeProposals({
             books: targetBooks.map((b) => ({
                 realName: b.realName,
                 currentAlias: b.alias || '',
                 currentGroup: b.groupName || '',
             })),
-            usePrefix,
-            useKeywords,
+            usePrefix: useSmartAuto,
+            useKeywords: useSmartAuto,
             cleanTitles,
             customRulesText,
         });

@@ -139,7 +139,8 @@ function renderSelect2OptionResult(state, { showGroupPill }) {
     const $ = globalThis.jQuery;
     if (!$) return state.text;
 
-    const groupBadge = showGroupPill
+    const hasCustomGroups = (_latestClassification?.customGroups?.length || 0) > 0;
+    const groupBadge = showGroupPill && (hasCustomGroups || meta.isInCharGroup)
         ? `<span class="wbo-s2-badge${meta.isInCharGroup ? ' is-char' : ''}">${escHtml(meta.groupName)}</span>`
         : '';
     const subHtml = meta.subtitle
@@ -453,7 +454,9 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     }));
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
-    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length > 0;
+    // Keep `#world_editor_select` 100% flat & native when only 1 section exists
+    // (e.g., user only uses "hide character worldbooks" with 0 custom groups — zero visual intrusion!)
+    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length >= 2;
 
     for (const sec of nonEmptySections) {
         const opts = visibleByGroup.get(sec.id);
@@ -1336,7 +1339,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     const orderedSections = (_latestClassification.orderedSections || []).filter(
         (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0,
     );
-    if (orderedSections.length === 0) return;
+    // Do not inject group headers/bars when only 1 section exists (zero intrusion for hide-only users!)
+    if (orderedSections.length < 2) return;
 
     // Remove flat default labels before inserting our grouped sections
     optionsHost.querySelectorAll(':scope > .gr-group-label').forEach((el) => el.remove());
