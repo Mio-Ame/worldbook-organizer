@@ -213,10 +213,10 @@ function ensureHeaderBar() {
     const editorRow = importBtn?.parentElement || editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
     if (!editorRow) return null;
 
-    // Blend seamlessly into SillyTavern's native `#world_popup` toolbar row (0 extra rows, 100% native icon!)
+    // Blend seamlessly into SillyTavern's native `#world_popup` toolbar row (0 extra rows, fixed fa-fw width!)
     btn = document.createElement('div');
     btn.id = CHAR_TOGGLE_BTN_ID;
-    btn.className = 'menu_button fa-solid fa-user-slash wbo-native-char-btn';
+    btn.className = 'menu_button fa-solid fa-fw fa-user-slash wbo-native-char-btn';
     btn.tabIndex = 0;
     btn.setAttribute('role', 'button');
     btn.title = '角色世界书已隐藏，点击显示';
@@ -1936,17 +1936,8 @@ function renderManagerGroupsListOnly() {
         }
     });
 
-    const starterBanner = !hasCustomGroups && !q && classification.nonCharCount > 0
-        ? `
-            <div class="wbo-starter-banner">
-                <span>还没建分组？可用「本地整理」0 消耗 1 秒按前缀与用途自动归类</span>
-                <button type="button" class="wbo-btn wbo-btn-primary wbo-starter-btn" data-action="open-local-organize">一键自动整理</button>
-            </div>
-        `
-        : '';
-
     listEl.innerHTML = sections.length > 0
-        ? `${starterBanner}${sections.join('')}`
+        ? sections.join('')
         : '<div class="wbo-empty-hint">无匹配世界书</div>';
 
     listEl.scrollTop = prevScroll;
@@ -2462,14 +2453,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         .join('');
 
     const activeCh = getActiveChannel();
-    const startTab = initialTab || 'local';
+    const startTab = initialTab || 'organize';
 
     const { modal } = createSubModal(
         '整理世界书',
         `
             <div class="wbo-tabs" id="wbo-ai-tabs">
-                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地整理</button>
                 <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
+                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地规则整理</button>
             </div>
 
             <div class="wbo-ai-step wbo-local-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>

@@ -43,6 +43,7 @@ import {
     getDetachedWorldNames,
     setCurrentlyEditingWorld,
     startNativeObservers,
+    syncMobileEditorTriggerLabel,
     teardownNativeFilters,
 } from './src/native-filter.js';
 import {
@@ -314,6 +315,7 @@ async function init() {
             const selectedOpt = sel?.selectedOptions?.[0];
             const name = selectedOpt && selectedOpt.value !== '' ? (selectedOpt.textContent || '').trim() : null;
             setCurrentlyEditingWorld(name);
+            syncMobileEditorTriggerLabel();
             syncEmbeddedPanelIndicators();
         };
         $(document).on('change.wbo', '#world_info', _domWorldInfoChangeHandler);

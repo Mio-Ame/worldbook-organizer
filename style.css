@@ -220,12 +220,123 @@
 /* Native inline char-worldbook visibility icon merged seamlessly into `#world_popup` toolbar */
 .wbo-native-char-btn {
     opacity: 0.72;
+    flex-shrink: 0;
+    justify-content: center;
+    min-width: 2.2em;
     transition: opacity 0.14s ease;
 }
 
 .wbo-native-char-btn:hover,
 .wbo-native-char-btn.is-active {
     opacity: 1;
+}
+
+/* iOS / Android native `<select>` grouped picker trigger & sheet */
+.wbo-mobile-select-hidden {
+    display: none !important;
+}
+
+.wbo-mobile-editor-trigger {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 8px !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    overflow: hidden !important;
+    margin: 0 !important;
+    min-height: 32px;
+}
+
+.wbo-mobile-trigger-text {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-mobile-editor-trigger.is-placeholder .wbo-mobile-trigger-text {
+    opacity: 0.65;
+}
+
+.wbo-mobile-trigger-chev {
+    flex-shrink: 0;
+    font-size: 0.78em;
+    opacity: 0.65;
+}
+
+.wbo-mobile-picker-overlay {
+    z-index: 10020;
+}
+
+.wbo-mobile-picker-modal {
+    width: min(520px, 100%);
+    height: min(82vh, 640px);
+}
+
+.wbo-mp-head-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.wbo-mp-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 10px !important;
+    width: 100% !important;
+    min-height: 40px !important;
+    padding: 8px 12px !important;
+    margin: 0 !important;
+    border: none !important;
+    border-bottom: 1px solid var(--wbo-border) !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-mp-row:last-child {
+    border-bottom: none !important;
+}
+
+.wbo-mp-row:active,
+.wbo-mp-row:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-mp-row.is-selected {
+    background: var(--wbo-accent-soft) !important;
+}
+
+.wbo-mp-row-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.wbo-mp-row-title {
+    font-size: 13.5px;
+    font-weight: 500;
+    word-break: break-word;
+}
+
+.wbo-mp-row-sub {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    word-break: break-word;
+}
+
+.wbo-mp-check {
+    color: var(--wbo-accent);
+    flex-shrink: 0;
 }
 
 /* Unified controls: exact uniform height, radius, border, and 14px icons across all toolbars & modals */
@@ -3537,8 +3648,11 @@ details[open] > summary .wbo-details-chev {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 6px;
+    }
+    .wbo-mgr-list-tools > .wbo-tool-switch {
+        margin-right: auto !important;
     }
     .wbo-scope-grid,
     .wbo-diff-grid {

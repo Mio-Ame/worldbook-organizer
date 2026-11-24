@@ -483,6 +483,325 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         // skipped during `select2:opening` so `.select2-selection__rendered` is never rebuilt mid-click)
         try { $select.trigger('change.select2'); } catch { /* ignore */ }
     }
+
+    // On native mobile `<select>` (iOS Safari / iPadOS / TauriTavern iOS / Android where Select2 is skipped),
+    // system menus cannot filter or collapse groups. Mount a sleek grouped picker trigger when >= 2 sections exist!
+    syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && useOptgroups));
+}
+
+const MOBILE_TRIGGER_ID = 'wbo-mobile-editor-trigger';
+const MOBILE_PICKER_OVERLAY_ID = 'wbo-mobile-picker-overlay';
+
+/**
+ * Sync the text shown inside the mobile grouped editor trigger button to match `#world_editor_select`.
+ */
+export function syncMobileEditorTriggerLabel() {
+    const trigger = document.getElementById(MOBILE_TRIGGER_ID);
+    const selectEl = document.getElementById('world_editor_select');
+    if (!(trigger instanceof HTMLElement) || !(selectEl instanceof HTMLSelectElement)) return;
+    const selectedOpt = selectEl.selectedOptions?.[0];
+    const isSelected = Boolean(selectedOpt && selectedOpt.value !== '');
+    const realName = isSelected ? (selectedOpt.textContent || '').trim() : '';
+    const meta = realName ? _latestClassification?.byName?.get(realName) : null;
+    const placeholderText = selectEl.querySelector('option[value=""]')?.textContent?.trim() || '--- 选择以编辑 ---';
+    const label = isSelected ? (meta?.primaryTitle || realName) : placeholderText;
+
+    const textSpan = trigger.querySelector('.wbo-mobile-trigger-text');
+    if (textSpan) textSpan.textContent = label;
+    trigger.classList.toggle('is-placeholder', !isSelected);
+}
+
+/**
+ * Mount or remove the iOS/mobile grouped worldbook trigger button in place of the native `<select>`.
+ * @param {HTMLSelectElement} selectEl
+ * @param {boolean} enabled
+ */
+function syncMobileEditorTrigger(selectEl, enabled) {
+    if (!selectEl) return;
+    const existing = document.getElementById(MOBILE_TRIGGER_ID);
+    if (!enabled) {
+        selectEl.classList.remove('wbo-mobile-select-hidden');
+        existing?.remove();
+        document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
+        return;
+    }
+
+    let trigger = existing;
+    if (!trigger) {
+        trigger = document.createElement('button');
+        trigger.type = 'button';
+        trigger.id = MOBILE_TRIGGER_ID;
+        trigger.className = 'text_pole wbo-mobile-editor-trigger';
+        trigger.innerHTML = `
+            <span class="wbo-mobile-trigger-text">--- 选择以编辑 ---</span>
+            <i class="fa-solid fa-chevron-down wbo-mobile-trigger-chev"></i>
+        `;
+        trigger.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            openMobileEditorPickerSheet();
+        });
+        selectEl.insertAdjacentElement('afterend', trigger);
+    }
+
+    selectEl.classList.add('wbo-mobile-select-hidden');
+    syncMobileEditorTriggerLabel();
+}
+
+/**
+ * Detect host light/dark mode for the mobile picker sheet (matches panel modals cleanly).
+ */
+function detectMobilePickerThemeClass() {
+    const mode = _latestSettings?.themeMode || 'auto';
+    if (mode === 'light') return 'wbo-theme-light';
+    if (mode === 'dark') return 'wbo-theme-dark';
+    try {
+        const probe = document.getElementById('WorldInfo') || document.body;
+        const m = (probe ? globalThis.getComputedStyle(probe).color : '').match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+        if (m) {
+            const lum = 0.299 * Number(m[1]) + 0.587 * Number(m[2]) + 0.114 * Number(m[3]);
+            return lum < 140 ? 'wbo-theme-light' : 'wbo-theme-dark';
+        }
+    } catch { /* ignore */ }
+    return 'wbo-theme-dark';
+}
+
+/**
+ * Open a touch-friendly, searchable, group-filterable worldbook picker sheet on iOS / Android mobile
+ * instead of the unfilterable iOS native `<select>` system menu.
+ */
+function openMobileEditorPickerSheet() {
+    const selectEl = document.getElementById('world_editor_select');
+    if (!(selectEl instanceof HTMLSelectElement) || !_latestClassification || !_latestSettings) return;
+
+    document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
+    syncEditorBeforeOpen();
+
+    if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
+        _latestSettings.dropdownCollapsed = {};
+    }
+
+    // Build live option list from `#world_editor_select` so every option value matches ST's exact index
+    const optValueByRealName = new Map();
+    selectEl.querySelectorAll('option').forEach((opt) => {
+        if (opt.value !== '') {
+            optValueByRealName.set((opt.textContent || '').trim(), opt.value);
+        }
+    });
+    const currentSelectedOpt = selectEl.selectedOptions?.[0];
+    const currentSelectedVal = currentSelectedOpt && currentSelectedOpt.value !== '' ? currentSelectedOpt.value : '';
+
+    const sections = (_latestClassification.orderedSections || [])
+        .map((sec) => {
+            const books = (sec.books || []).filter((b) => optValueByRealName.has(b.realName));
+            return { id: sec.id, name: sec.name, color: sec.color, books };
+        })
+        .filter((sec) => sec.books.length > 0);
+
+    const validIds = new Set(sections.map((s) => s.id));
+    let activePillId =
+        _dropdownMemory.activePillGroupId !== SPECIAL_GROUPS.ALL && validIds.has(_dropdownMemory.activePillGroupId)
+            ? _dropdownMemory.activePillGroupId
+            : SPECIAL_GROUPS.ALL;
+    _dropdownMemory.activePillGroupId = activePillId;
+    let searchQuery = '';
+    let pillsExpanded = false;
+
+    const overlay = document.createElement('div');
+    overlay.id = MOBILE_PICKER_OVERLAY_ID;
+    overlay.className = 'wbo-modal-overlay wbo-mobile-picker-overlay';
+
+    const modal = document.createElement('div');
+    modal.className = `wbo-modal wbo-mobile-picker-modal ${detectMobilePickerThemeClass()}`;
+    modal.setAttribute('data-wbo-palette', _latestSettings.themePalette || 'classic');
+
+    modal.innerHTML = `
+        <div class="wbo-modal-header">
+            <div class="wbo-modal-header-top">
+                <span class="wbo-modal-title">选择世界书</span>
+                <div class="wbo-mp-head-right">
+                    ${currentSelectedVal ? '<button type="button" class="wbo-link-btn" id="wbo-mp-clear">清除选择</button>' : ''}
+                    <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="wbo-mgr-subbar">
+            <div class="wbo-pills-rail">
+                <div class="wbo-pills" id="wbo-mp-pills"></div>
+                <button type="button" class="wbo-pill-expand-btn" id="wbo-mp-expand" title="展开全部分组"${sections.length < 2 ? ' hidden' : ''}>
+                    <i class="fa-solid fa-chevron-down"></i>
+                </button>
+            </div>
+            <div class="wbo-search-wrap">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="search" class="wbo-search-input" id="wbo-mp-search" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
+            </div>
+        </div>
+        <div class="wbo-groups-list wbo-mgr-list" id="wbo-mp-list"></div>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    const closePicker = () => overlay.remove();
+    const stopAll = (ev) => ev.stopPropagation();
+    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
+        overlay.addEventListener(evtName, stopAll);
+    }
+
+    const pillsEl = modal.querySelector('#wbo-mp-pills');
+    const expandBtn = modal.querySelector('#wbo-mp-expand');
+    const searchInput = modal.querySelector('#wbo-mp-search');
+    const listEl = modal.querySelector('#wbo-mp-list');
+
+    const renderPills = () => {
+        if (!pillsEl) return;
+        const totalCount = sections.reduce((sum, s) => sum + s.books.length, 0);
+        const items = [
+            { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
+            ...sections.map((s) => ({ id: s.id, label: s.name, count: s.books.length, color: s.color })),
+        ];
+        pillsEl.innerHTML = items.map((p) => `
+            <button type="button" class="wbo-pill${activePillId === p.id ? ' is-active' : ''}" data-mp-pill="${escHtml(p.id)}">
+                ${p.color ? `<span class="wbo-pill-dot" style="background:${escHtml(p.color)}"></span>` : ''}
+                <span>${escHtml(p.label)}</span>
+                <span class="wbo-pill-count">${p.count}</span>
+            </button>
+        `).join('');
+    };
+
+    const renderList = () => {
+        if (!listEl) return;
+        const q = searchQuery.trim().toLowerCase();
+        const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+        const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
+
+        const html = sections.map((sec) => {
+            if (isIsolated && sec.id !== activePillId) return '';
+            const books = tokens.length > 0
+                ? sec.books.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
+                : sec.books;
+            if (books.length === 0) return '';
+            const collapsed = !q && !isIsolated && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
+            const rowsHtml = collapsed
+                ? ''
+                : books.map((b) => {
+                    const optVal = optValueByRealName.get(b.realName) || '';
+                    const isCurrent = optVal !== '' && optVal === currentSelectedVal;
+                    return `
+                        <button type="button" class="wbo-mp-row${isCurrent ? ' is-selected' : ''}" data-mp-val="${escHtml(optVal)}">
+                            <span class="wbo-mp-row-text">
+                                <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
+                                ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
+                            </span>
+                            ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
+                        </button>
+                    `;
+                }).join('');
+
+            return `
+                <div class="wbo-group${collapsed ? ' is-collapsed' : ''}">
+                    <div class="wbo-group-header">
+                        <button type="button" class="wbo-group-toggle${isIsolated ? ' is-static' : ''}" data-mp-toggle="${escHtml(sec.id)}">
+                            ${isIsolated ? '' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                            <span class="wbo-group-dot" style="background:${escHtml(sec.color || '#8c99a6')}"></span>
+                            <span class="wbo-group-name">${escHtml(sec.name)}</span>
+                            <span class="wbo-group-count">${books.length}</span>
+                        </button>
+                    </div>
+                    ${collapsed ? '' : `<div class="wbo-group-body">${rowsHtml}</div>`}
+                </div>
+            `;
+        }).filter(Boolean).join('');
+
+        listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
+    };
+
+    const selectOptionValue = (val) => {
+        if (listEl && !searchQuery.trim()) {
+            _dropdownMemory.scrollTopByGroup[activePillId] = listEl.scrollTop;
+        }
+        const $ = globalThis.jQuery;
+        if ($) {
+            $(selectEl).val(val).trigger('change');
+        } else {
+            selectEl.value = val;
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        syncMobileEditorTriggerLabel();
+        closePicker();
+    };
+
+    modal.querySelector('.wbo-modal-close')?.addEventListener('click', closePicker);
+    modal.querySelector('#wbo-mp-clear')?.addEventListener('click', () => selectOptionValue(''));
+
+    expandBtn?.addEventListener('click', () => {
+        pillsExpanded = !pillsExpanded;
+        pillsEl?.classList.toggle('is-expanded', pillsExpanded);
+        expandBtn.innerHTML = `<i class="fa-solid ${pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+    });
+
+    pillsEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-mp-pill]') : null;
+        if (!btn) return;
+        if (listEl && !searchQuery.trim()) {
+            _dropdownMemory.scrollTopByGroup[activePillId] = listEl.scrollTop;
+        }
+        const gid = btn.getAttribute('data-mp-pill') || SPECIAL_GROUPS.ALL;
+        activePillId = (gid === activePillId && gid !== SPECIAL_GROUPS.ALL) ? SPECIAL_GROUPS.ALL : gid;
+        _dropdownMemory.activePillGroupId = activePillId;
+        renderPills();
+        renderList();
+        if (listEl) listEl.scrollTop = _dropdownMemory.scrollTopByGroup[activePillId] ?? 0;
+    });
+
+    listEl?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target) return;
+        const toggleBtn = target.closest('[data-mp-toggle]');
+        if (toggleBtn) {
+            if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
+            const gid = toggleBtn.getAttribute('data-mp-toggle');
+            if (!gid) return;
+            _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
+            saveSettings();
+            const prevTop = listEl.scrollTop;
+            renderList();
+            listEl.scrollTop = prevTop;
+            return;
+        }
+        const rowBtn = target.closest('[data-mp-val]');
+        if (rowBtn) {
+            const val = rowBtn.getAttribute('data-mp-val') ?? '';
+            selectOptionValue(val);
+        }
+    });
+
+    if (searchInput instanceof HTMLInputElement) {
+        let composing = false;
+        searchInput.addEventListener('compositionstart', () => { composing = true; });
+        searchInput.addEventListener('compositionend', () => {
+            composing = false;
+            searchQuery = searchInput.value;
+            renderList();
+        });
+        searchInput.addEventListener('input', () => {
+            if (composing) return;
+            searchQuery = searchInput.value;
+            renderList();
+        });
+    }
+
+    renderPills();
+    renderList();
+    if (listEl) {
+        const savedTop = _dropdownMemory.scrollTopByGroup[activePillId];
+        if (typeof savedTop === 'number' && savedTop > 0) {
+            requestAnimationFrame(() => { listEl.scrollTop = savedTop; });
+        }
+    }
 }
 
 /**
@@ -768,9 +1087,9 @@ function enhanceCharBindPopup(charWorldEl) {
         }
 
         toggleBtn.innerHTML = hideOthers
-            ? '<i class="fa-solid fa-user-slash"></i> 仅看非他卡'
-            : '<i class="fa-solid fa-user"></i> 含其他角色书';
-        toggleBtn.title = hideOthers ? '当前已排除其他角色卡的世界书，点击显示全部' : '点击排除其他角色卡的世界书';
+            ? '<i class="fa-solid fa-user-slash"></i> 隐藏其他角色书'
+            : '<i class="fa-solid fa-user"></i> 显示其他角色书';
+        toggleBtn.title = hideOthers ? '当前已隐藏其他角色卡的世界书，点击显示全部' : '点击隐藏其他角色卡的世界书';
         toggleBtn.classList.toggle('wbo-btn-active', hideOthers);
     };
 
@@ -2019,6 +2338,9 @@ export function teardownNativeFilters() {
             }
         }
         document.querySelectorAll('.wbo-charpopup-bar').forEach((el) => el.remove());
+        document.getElementById(MOBILE_TRIGGER_ID)?.remove();
+        document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
+        document.getElementById('world_editor_select')?.classList.remove('wbo-mobile-select-hidden');
     } finally {
         _isApplying = false;
     }
