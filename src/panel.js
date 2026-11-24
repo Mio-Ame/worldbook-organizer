@@ -89,15 +89,40 @@ function detectHostThemeClass() {
     return 'wbo-theme-dark';
 }
 
+const THEME_PALETTES = Object.freeze([
+    { id: 'classic', label: '经典清透', lightBg: '#f5f6f8', darkBg: '#1c1e24', accent: '#4c6ef5' },
+    { id: 'ink', label: '素纸青岚', lightBg: '#f1f4f6', darkBg: '#20252d', accent: '#2c7a7b' },
+    { id: 'warm', label: '暖笺琥珀', lightBg: '#f6f2ea', darkBg: '#221e1b', accent: '#b66634' },
+    { id: 'sakura', label: '雾粉紫烟', lightBg: '#f8f4f7', darkBg: '#211d24', accent: '#b85c88' },
+    { id: 'host', label: '跟随酒馆', lightBg: '#eef1f5', darkBg: '#242730', accent: '#7c8594' },
+]);
+
 /**
- * Sync the detected solid theme class onto a plugin root element.
+ * Sync the active palette & light/dark mode onto a modal element.
  * @param {HTMLElement | null} el
  */
 function applyThemeClass(el) {
     if (!el) return;
-    const cls = detectHostThemeClass();
+    const settings = _callbacks?.getState?.()?.settings;
+    const mode = settings?.themeMode || 'auto';
+    const palette = settings?.themePalette || 'classic';
+    const cls = mode === 'light'
+        ? 'wbo-theme-light'
+        : mode === 'dark'
+            ? 'wbo-theme-dark'
+            : detectHostThemeClass();
     el.classList.remove('wbo-theme-light', 'wbo-theme-dark');
     el.classList.add(cls);
+    el.setAttribute('data-wbo-palette', palette);
+}
+
+/**
+ * Sync theme classes onto all currently open plugin modals immediately.
+ */
+function syncAllOpenModalsTheme() {
+    document.querySelectorAll('.wbo-modal').forEach((el) => {
+        if (el instanceof HTMLElement) applyThemeClass(el);
+    });
 }
 
 /**
@@ -3073,16 +3098,43 @@ function bindSettingControlListeners(container) {
 }
 
 /**
- * Open the Display & Behavior Settings sub-modal directly inside Group Manager
- * so users don't have to hunt in SillyTavern's Extension Settings drawer.
+ * Open the Display & Behavior Settings sub-modal directly inside Group Manager.
  */
 function openSettingsModal() {
     if (!_callbacks) return;
     const { settings } = _callbacks.getState();
 
+    const paletteButtonsHtml = THEME_PALETTES.map((p) => `
+        <button type="button"
+            class="wbo-palette-chip${settings.themePalette === p.id ? ' is-active' : ''}"
+            data-theme-palette="${esc(p.id)}">
+            <span class="wbo-palette-swatch" style="background:linear-gradient(135deg, ${p.lightBg} 48%, ${p.accent} 52%)"></span>
+            <span>${esc(p.label)}</span>
+        </button>
+    `).join('');
+
+    const modeButtonsHtml = [
+        { id: 'auto', label: '跟随酒馆' },
+        { id: 'light', label: '浅色' },
+        { id: 'dark', label: '深色' },
+    ].map((m) => `
+        <button type="button"
+            class="wbo-mode-chip${(settings.themeMode || 'auto') === m.id ? ' is-active' : ''}"
+            data-theme-mode="${esc(m.id)}">${esc(m.label)}</button>
+    `).join('');
+
     const { modal } = createSubModal(
         '显示与行为设置',
         `
+            <div class="wbo-card">
+                <div class="wbo-ai-section-head"><span>面板配色</span></div>
+                <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
+                <div class="wbo-setting-inline-row">
+                    <span>明暗模式</span>
+                    <div class="wbo-mode-group">${modeButtonsHtml}</div>
+                </div>
+            </div>
+
             <div class="wbo-card">
                 <div class="wbo-ai-section-head"><span>标题显示</span></div>
                 <div class="wbo-setting-inline-row">
@@ -3094,12 +3146,13 @@ function openSettingsModal() {
                     </select>
                 </div>
                 <div class="wbo-setting-inline-row">
-                    <span>自定义别名样式</span>
+                    <span>显示名展示方式</span>
                     <select class="wbo-select" data-setting-select="aliasTitleMode">
-                        <option value="alias_with_sub">别名 + 小字原文件名</option>
-                        <option value="alias_only">仅别名</option>
+                        <option value="alias_with_sub">显示名 + 小字原名</option>
+                        <option value="alias_only">仅显示名</option>
                     </select>
                 </div>
+                <div class="wbo-subtle-tip">对世界书点编辑图标或 AI 整理只改显示名时生效，不会改动原文件名。</div>
             </div>
 
             <div class="wbo-card">
@@ -3147,6 +3200,40 @@ function openSettingsModal() {
     syncSettingControlsInPlace(modal, settings);
     bindSettingControlListeners(modal);
 
+    const syncThemeChips = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        modal.querySelectorAll('[data-theme-palette]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-theme-palette') === (cur.themePalette || 'classic'));
+        });
+        modal.querySelectorAll('[data-theme-mode]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-theme-mode') === (cur.themeMode || 'auto'));
+        });
+    };
+
+    modal.querySelectorAll('[data-theme-palette]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-theme-palette');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.themePalette = val;
+            syncThemeChips();
+            syncAllOpenModalsTheme();
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+        });
+    });
+
+    modal.querySelectorAll('[data-theme-mode]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-theme-mode');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.themeMode = val;
+            syncThemeChips();
+            syncAllOpenModalsTheme();
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+        });
+    });
+
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
     const importInput = modal.querySelector('#wbo-modal-import-file');
     modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
@@ -3158,138 +3245,13 @@ function openSettingsModal() {
     importInput?.addEventListener('change', async () => {
         if (!(importInput instanceof HTMLInputElement) || !importInput.files?.[0]) return;
         await handleConfigImportFile(importInput.files[0]);
-        if (_callbacks) syncSettingControlsInPlace(modal, _callbacks.getState().settings);
+        if (_callbacks) {
+            syncSettingControlsInPlace(modal, _callbacks.getState().settings);
+            syncThemeChips();
+            syncAllOpenModalsTheme();
+        }
     });
     modal.querySelector('#wbo-settings-close-btn')?.addEventListener('click', closeSubModal);
-}
-
-/**
- * Mount the extension settings accordion inside `#extensions_settings2` (or `#extensions_settings`).
- * Mounts DOM ONCE and updates values in place on subsequent calls so `.inline-drawer` open state
- * and active `<select>` controls are NEVER destroyed mid-interaction!
- */
-export function renderExtensionSettingsPanel() {
-    if (!_callbacks) return;
-    const container = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
-    if (!container) return;
-
-    let root = document.getElementById(SETTINGS_ROOT_ID);
-    if (!root) {
-        root = document.createElement('div');
-        root.id = SETTINGS_ROOT_ID;
-        root.className = 'wbo-ext-settings';
-        container.appendChild(root);
-    }
-
-    const { settings, classification } = _callbacks.getState();
-
-    if (root.dataset.wboMounted !== '1') {
-        root.dataset.wboMounted = '1';
-        root.innerHTML = `
-            <div class="inline-drawer">
-                <div class="inline-drawer-toggle inline-drawer-header">
-                    <b>世界书分组管理</b>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                </div>
-                <div class="inline-drawer-content">
-                    <div class="wbo-settings-body">
-                        <div class="wbo-settings-summary" id="wbo-ext-settings-summary"></div>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="hideCharBooksByDefault">
-                            <span>默认隐藏角色卡绑定的世界书</span>
-                        </label>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="includeExtraCharBooks">
-                            <span>将角色附加世界书归入角色世界书</span>
-                        </label>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="includeEmbeddedNameMatch">
-                            <span>识别角色卡内嵌同名世界书</span>
-                        </label>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="autoImportMissingCharBook">
-                            <span>打开角色卡时自动导入缺失的卡内世界书</span>
-                        </label>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="autoHideInCharBindPopup">
-                            <span>角色绑定弹窗默认隐藏其他角色世界书</span>
-                        </label>
-
-                        <label class="wbo-check-line">
-                            <input type="checkbox" data-setting="showNativeOptgroups">
-                            <span>编辑器下拉框按分组显示</span>
-                        </label>
-
-                        <div class="wbo-setting-row">
-                            <span>角色世界书标题显示</span>
-                            <select class="wbo-select" data-setting-select="charBookTitleMode">
-                                <option value="char_with_sub">角色名 + 小字原标题</option>
-                                <option value="char_only">仅角色名</option>
-                                <option value="original">原标题</option>
-                            </select>
-                        </div>
-
-                        <div class="wbo-setting-row">
-                            <span>显示别名样式</span>
-                            <select class="wbo-select" data-setting-select="aliasTitleMode">
-                                <option value="alias_with_sub">别名 + 小字原文件名</option>
-                                <option value="alias_only">仅别名</option>
-                            </select>
-                        </div>
-
-                        <div class="wbo-settings-actions">
-                            <button type="button" class="wbo-btn" data-settings-action="manager">
-                                <i class="fa-solid fa-layer-group"></i> 打开分组管理
-                            </button>
-                            <button type="button" class="wbo-btn" data-settings-action="scan">
-                                <i class="fa-solid fa-arrows-rotate"></i> 扫描角色卡
-                            </button>
-                            <button type="button" class="wbo-btn" data-settings-action="export">
-                                <i class="fa-solid fa-download"></i> 导出配置
-                            </button>
-                            <button type="button" class="wbo-btn" data-settings-action="import">
-                                <i class="fa-solid fa-upload"></i> 导入配置
-                            </button>
-                            <input type="file" id="wbo-import-config-file" accept=".json" hidden>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        bindSettingControlListeners(root);
-
-        root.querySelector('[data-settings-action="manager"]')?.addEventListener('click', () => {
-            openManagerModal();
-        });
-        root.querySelector('[data-settings-action="scan"]')?.addEventListener('click', () => {
-            openScanAndImportModal();
-        });
-        root.querySelector('[data-settings-action="export"]')?.addEventListener('click', triggerConfigExport);
-
-        const importFileInput = root.querySelector('#wbo-import-config-file');
-        root.querySelector('[data-settings-action="import"]')?.addEventListener('click', () => {
-            if (importFileInput instanceof HTMLInputElement) {
-                importFileInput.value = '';
-                importFileInput.click();
-            }
-        });
-        importFileInput?.addEventListener('change', async () => {
-            if (!(importFileInput instanceof HTMLInputElement) || !importFileInput.files?.[0]) return;
-            await handleConfigImportFile(importFileInput.files[0]);
-        });
-    }
-
-    const summaryEl = root.querySelector('#wbo-ext-settings-summary');
-    if (summaryEl) {
-        summaryEl.textContent = `共 ${classification.totalCount} 本世界书：${classification.nonCharCount} 本通用 / ${classification.charCount} 本角色绑定`;
-    }
-    syncSettingControlsInPlace(root, settings);
 }
 
 /**

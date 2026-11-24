@@ -37,6 +37,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     showCharBooks: false,
     charBookTitleMode: 'char_with_sub', // 'char_with_sub' | 'char_only' | 'original'
     aliasTitleMode: 'alias_with_sub',   // 'alias_with_sub' | 'alias_only'
+    themePalette: 'classic',            // 'classic' | 'ink' | 'warm' | 'sakura' | 'host'
+    themeMode: 'auto',                  // 'auto' | 'light' | 'dark'
     includeExtraCharBooks: true,
     includeEmbeddedNameMatch: true,
     autoImportMissingCharBook: false,
@@ -142,6 +144,12 @@ export function normalizeSettings(raw) {
     }
     if (!['alias_with_sub', 'alias_only'].includes(merged.aliasTitleMode)) {
         merged.aliasTitleMode = DEFAULT_SETTINGS.aliasTitleMode;
+    }
+    if (!['classic', 'ink', 'warm', 'sakura', 'host'].includes(merged.themePalette)) {
+        merged.themePalette = DEFAULT_SETTINGS.themePalette;
+    }
+    if (!['auto', 'light', 'dark'].includes(merged.themeMode)) {
+        merged.themeMode = DEFAULT_SETTINGS.themeMode;
     }
 
     const validGroupIds = new Set(merged.groups.map((g) => g.id));
@@ -1430,6 +1438,8 @@ export function exportConfigData(settings) {
             hideCharBooksByDefault: cfg.hideCharBooksByDefault,
             charBookTitleMode: cfg.charBookTitleMode,
             aliasTitleMode: cfg.aliasTitleMode,
+            themePalette: cfg.themePalette,
+            themeMode: cfg.themeMode,
             includeExtraCharBooks: cfg.includeExtraCharBooks,
             includeEmbeddedNameMatch: cfg.includeEmbeddedNameMatch,
             autoHideInCharBindPopup: cfg.autoHideInCharBindPopup,

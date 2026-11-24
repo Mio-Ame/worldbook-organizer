@@ -1,54 +1,61 @@
-/* Worldbook Organizer — Theme-following outside header + soft ink-wash modal + collapsible Select2 groups */
+/* Worldbook Organizer — Theme-following outside header + multi-palette modal + collapsible Select2 groups */
 
 .wbo-header-bar [hidden],
 .wbo-modal [hidden],
-.wbo-ext-settings [hidden],
 .wbo-ai-pick-row[hidden] {
     display: none !important;
 }
 
-/* Outside extension settings inherit active SillyTavern theme naturally */
-.wbo-ext-settings {
-    --wbo-fg: var(--SmartThemeBodyColor, currentColor);
-    --wbo-fg-muted: color-mix(in srgb, var(--wbo-fg) 68%, transparent);
-    --wbo-bg: transparent;
-    --wbo-border: var(--SmartThemeBorderColor, color-mix(in srgb, var(--wbo-fg) 18%, transparent));
-    --wbo-border-strong: color-mix(in srgb, var(--wbo-fg) 36%, transparent);
-    --wbo-surface: color-mix(in srgb, var(--wbo-fg) 5%, transparent);
-    --wbo-surface-hover: color-mix(in srgb, var(--wbo-fg) 10%, transparent);
-    --wbo-surface-active: color-mix(in srgb, var(--wbo-fg) 16%, transparent);
-    box-sizing: border-box;
-    font-family: inherit;
-}
-
-/* Standalone modals: original "素纸青岚 / 砚蓝青瓷" comfortable layered palettes */
+/* Standalone modals: Default Palette "经典清透" (clean neutral-light / sleek dark-slate + classic cobalt-indigo) */
 .wbo-modal {
-    --wbo-bg: #20252d;
-    --wbo-bg-elevated: #272d37;
-    --wbo-fg: #e2e8f0;
-    --wbo-fg-muted: #94a3b8;
-    --wbo-border: #384150;
-    --wbo-border-strong: #515e73;
-    --wbo-surface: #2a313c;
-    --wbo-surface-hover: #333c4a;
-    --wbo-surface-active: #3d4758;
-    --wbo-accent: #56b4b0;
-    --wbo-accent-hover: #67c4c0;
-    --wbo-accent-soft: rgba(86, 180, 176, 0.16);
-    --wbo-accent-fg: #132226;
-    --wbo-on-bg: #56b4b0;
-    --wbo-on-fg: #132226;
-    --wbo-row-active-bg: rgba(86, 180, 176, 0.14);
-    --wbo-row-active-bar: #56b4b0;
-    --wbo-track-off: #4a5568;
-    --wbo-track-on: #56b4b0;
+    --wbo-bg: #1b1d23;
+    --wbo-bg-elevated: #22252e;
+    --wbo-fg: #e8eaf0;
+    --wbo-fg-muted: #969dad;
+    --wbo-border: #323642;
+    --wbo-border-strong: #494f60;
+    --wbo-surface: #252832;
+    --wbo-surface-hover: #2e323f;
+    --wbo-surface-active: #373c4c;
+    --wbo-accent: #6c8cff;
+    --wbo-accent-hover: #829eff;
+    --wbo-accent-soft: rgba(108, 140, 255, 0.16);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: #6c8cff;
+    --wbo-on-fg: #ffffff;
+    --wbo-row-active-bg: rgba(108, 140, 255, 0.13);
+    --wbo-row-active-bar: #6c8cff;
+    --wbo-track-off: #4a4f5e;
+    --wbo-track-on: #6c8cff;
     box-sizing: border-box;
     color: var(--wbo-fg);
     font-family: inherit;
 }
 
-/* Day Palette: 素纸青岚 (cool airy silk-paper + deep slate ink + calm celadon-teal accent, zero glare & zero yellow) */
 .wbo-modal.wbo-theme-light {
+    --wbo-bg: #f5f6f8;
+    --wbo-bg-elevated: #eceff3;
+    --wbo-fg: #1f2329;
+    --wbo-fg-muted: #646c79;
+    --wbo-border: #e1e4eb;
+    --wbo-border-strong: #c5cbd6;
+    --wbo-surface: #ffffff;
+    --wbo-surface-hover: #f0f3f8;
+    --wbo-surface-active: #e6ebf5;
+    --wbo-accent: #4c6ef5;
+    --wbo-accent-hover: #3b5bdb;
+    --wbo-accent-soft: rgba(76, 110, 245, 0.10);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: #4c6ef5;
+    --wbo-on-fg: #ffffff;
+    --wbo-row-active-bg: rgba(76, 110, 245, 0.08);
+    --wbo-row-active-bar: #4c6ef5;
+    --wbo-track-off: #c8ced9;
+    --wbo-track-on: #4c6ef5;
+}
+
+/* Palette 2: 素纸青岚 (cool ink-wash silk-paper + celadon-teal) */
+.wbo-modal[data-wbo-palette="ink"].wbo-theme-light {
     --wbo-bg: #f1f4f6;
     --wbo-bg-elevated: #e7ecef;
     --wbo-fg: #1f2d3a;
@@ -70,8 +77,7 @@
     --wbo-track-on: #2c7a7b;
 }
 
-/* Night Palette: 砚蓝青瓷 (deep slate-indigo + luminous misty jade accent) */
-.wbo-modal.wbo-theme-dark {
+.wbo-modal[data-wbo-palette="ink"].wbo-theme-dark {
     --wbo-bg: #20252d;
     --wbo-bg-elevated: #272d37;
     --wbo-fg: #e2e8f0;
@@ -93,9 +99,121 @@
     --wbo-track-on: #56b4b0;
 }
 
+/* Palette 3: 暖笺琥珀 (soft ivory parchment + warm terracotta amber) */
+.wbo-modal[data-wbo-palette="warm"].wbo-theme-light {
+    --wbo-bg: #f6f2ea;
+    --wbo-bg-elevated: #ede7dc;
+    --wbo-fg: #2b241d;
+    --wbo-fg-muted: #756759;
+    --wbo-border: #dfd6c8;
+    --wbo-border-strong: #c5b8a4;
+    --wbo-surface: #fdfbf7;
+    --wbo-surface-hover: #f2ebe0;
+    --wbo-surface-active: #e9dfd0;
+    --wbo-accent: #b66634;
+    --wbo-accent-hover: #9c5428;
+    --wbo-accent-soft: rgba(182, 102, 52, 0.11);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: #b66634;
+    --wbo-on-fg: #ffffff;
+    --wbo-row-active-bg: rgba(182, 102, 52, 0.09);
+    --wbo-row-active-bar: #b66634;
+    --wbo-track-off: #cfc4b4;
+    --wbo-track-on: #b66634;
+}
+
+.wbo-modal[data-wbo-palette="warm"].wbo-theme-dark {
+    --wbo-bg: #221e1b;
+    --wbo-bg-elevated: #2a2521;
+    --wbo-fg: #efe8df;
+    --wbo-fg-muted: #a6998c;
+    --wbo-border: #3d352e;
+    --wbo-border-strong: #574c42;
+    --wbo-surface: #2d2823;
+    --wbo-surface-hover: #37312b;
+    --wbo-surface-active: #423b34;
+    --wbo-accent: #de935f;
+    --wbo-accent-hover: #eaa372;
+    --wbo-accent-soft: rgba(222, 147, 95, 0.16);
+    --wbo-accent-fg: #231810;
+    --wbo-on-bg: #de935f;
+    --wbo-on-fg: #231810;
+    --wbo-row-active-bg: rgba(222, 147, 95, 0.13);
+    --wbo-row-active-bar: #de935f;
+    --wbo-track-off: #544940;
+    --wbo-track-on: #de935f;
+}
+
+/* Palette 4: 雾粉紫烟 (misty rose-plum) */
+.wbo-modal[data-wbo-palette="sakura"].wbo-theme-light {
+    --wbo-bg: #f8f4f7;
+    --wbo-bg-elevated: #f0e8ee;
+    --wbo-fg: #2c2129;
+    --wbo-fg-muted: #766270;
+    --wbo-border: #e5d7e0;
+    --wbo-border-strong: #ccb7c5;
+    --wbo-surface: #fefcfd;
+    --wbo-surface-hover: #f4eaf0;
+    --wbo-surface-active: #ecdde6;
+    --wbo-accent: #b85c88;
+    --wbo-accent-hover: #9e4b73;
+    --wbo-accent-soft: rgba(184, 92, 136, 0.11);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: #b85c88;
+    --wbo-on-fg: #ffffff;
+    --wbo-row-active-bg: rgba(184, 92, 136, 0.09);
+    --wbo-row-active-bar: #b85c88;
+    --wbo-track-off: #d4c3ce;
+    --wbo-track-on: #b85c88;
+}
+
+.wbo-modal[data-wbo-palette="sakura"].wbo-theme-dark {
+    --wbo-bg: #211d24;
+    --wbo-bg-elevated: #29242d;
+    --wbo-fg: #efe8f0;
+    --wbo-fg-muted: #a696aa;
+    --wbo-border: #3d3544;
+    --wbo-border-strong: #564a60;
+    --wbo-surface: #2c2732;
+    --wbo-surface-hover: #362f3e;
+    --wbo-surface-active: #41394a;
+    --wbo-accent: #dc88b0;
+    --wbo-accent-hover: #e79bc0;
+    --wbo-accent-soft: rgba(220, 136, 176, 0.16);
+    --wbo-accent-fg: #24131c;
+    --wbo-on-bg: #dc88b0;
+    --wbo-on-fg: #24131c;
+    --wbo-row-active-bg: rgba(220, 136, 176, 0.13);
+    --wbo-row-active-bar: #dc88b0;
+    --wbo-track-off: #53485c;
+    --wbo-track-on: #dc88b0;
+}
+
+/* Palette 5: 跟随酒馆 (inherits active SillyTavern SmartTheme tokens with legible fallback) */
+.wbo-modal[data-wbo-palette="host"] {
+    --wbo-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e2128) 96%, #181a20);
+    --wbo-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 6%, var(--wbo-bg));
+    --wbo-fg: var(--SmartThemeBodyColor, #e2e8f0);
+    --wbo-fg-muted: color-mix(in srgb, var(--wbo-fg) 68%, transparent);
+    --wbo-border: var(--SmartThemeBorderColor, color-mix(in srgb, var(--wbo-fg) 20%, transparent));
+    --wbo-border-strong: color-mix(in srgb, var(--wbo-fg) 38%, transparent);
+    --wbo-surface: color-mix(in srgb, var(--wbo-fg) 6%, var(--wbo-bg));
+    --wbo-surface-hover: color-mix(in srgb, var(--wbo-fg) 12%, var(--wbo-bg));
+    --wbo-surface-active: color-mix(in srgb, var(--wbo-fg) 18%, var(--wbo-bg));
+    --wbo-accent: var(--SmartThemeQuoteColor, #4c6ef5);
+    --wbo-accent-hover: color-mix(in srgb, var(--wbo-accent) 85%, #ffffff);
+    --wbo-accent-soft: color-mix(in srgb, var(--wbo-accent) 16%, transparent);
+    --wbo-accent-fg: #ffffff;
+    --wbo-on-bg: var(--wbo-accent);
+    --wbo-on-fg: #ffffff;
+    --wbo-row-active-bg: color-mix(in srgb, var(--wbo-accent) 12%, transparent);
+    --wbo-row-active-bar: var(--wbo-accent);
+    --wbo-track-off: color-mix(in srgb, var(--wbo-fg) 26%, transparent);
+    --wbo-track-on: var(--wbo-accent);
+}
+
 .wbo-header-bar *,
-.wbo-modal *,
-.wbo-ext-settings * {
+.wbo-modal * {
     box-sizing: border-box;
 }
 
@@ -983,11 +1101,28 @@
     display: flex;
     flex-wrap: nowrap;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     padding: 5px 8px;
+    overflow: hidden;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.wbo-dd-divider {
+    flex: 0 0 1px;
+    width: 1px;
+    height: 15px;
+    background: color-mix(in srgb, currentColor 20%, transparent);
+}
+
+.wbo-dd-pill-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 5px;
     overflow-x: auto;
     scrollbar-width: thin;
-    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
 }
 
 .wbo-dd-pill {
@@ -1016,12 +1151,8 @@
 }
 
 .wbo-dd-pill.is-pinned-all {
-    position: sticky;
-    left: 0;
-    z-index: 2;
-    background: var(--SmartThemeBlurTintColor, rgba(240, 243, 246, 0.96)) !important;
-    backdrop-filter: blur(8px);
-    box-shadow: 6px 0 8px -4px rgba(0, 0, 0, 0.14) !important;
+    flex: 0 0 auto;
+    opacity: 0.88;
 }
 
 .wbo-dd-pill.is-active {
@@ -1976,28 +2107,85 @@ details[open] > summary .wbo-details-chev {
     gap: 6px;
 }
 
-/* Extension Settings Drawer */
-.wbo-settings-body {
+/* Settings modal palettes & mode selectors */
+.wbo-palette-grid {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 4px 0;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
-.wbo-settings-summary {
-    font-size: 12.5px;
-    opacity: 0.85;
-    padding: 6px 8px;
-    border-radius: 6px;
-    background: var(--wbo-surface);
-    border: 1px solid var(--wbo-border);
+.wbo-palette-chip {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    height: 30px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border-radius: 7px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-bg) !important;
+    color: var(--wbo-fg) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: border-color 0.14s ease, background-color 0.14s ease;
 }
 
-.wbo-setting-row {
-    display: flex;
-    flex-direction: column;
+.wbo-palette-chip:hover {
+    border-color: var(--wbo-border-strong) !important;
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-palette-chip.is-active {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+    color: var(--wbo-accent) !important;
+    font-weight: 600 !important;
+}
+
+.wbo-palette-swatch {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 1px solid rgba(128, 128, 128, 0.35);
+    flex-shrink: 0;
+}
+
+.wbo-mode-group {
+    display: inline-flex;
+    align-items: center;
     gap: 4px;
-    font-size: 12.5px;
+    padding: 2px;
+    border-radius: 7px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+}
+
+.wbo-mode-chip {
+    height: 24px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border-radius: 5px !important;
+    border: 1px solid transparent !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.wbo-mode-chip:hover {
+    color: var(--wbo-fg) !important;
+}
+
+.wbo-mode-chip.is-active {
+    background: var(--wbo-surface) !important;
+    border-color: var(--wbo-border) !important;
+    color: var(--wbo-fg) !important;
+    font-weight: 600 !important;
 }
 
 .wbo-setting-inline-row {

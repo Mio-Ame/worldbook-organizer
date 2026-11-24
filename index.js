@@ -46,7 +46,6 @@ import {
 import {
     bindPanelCallbacks,
     renderEmbeddedPanel,
-    renderExtensionSettingsPanel,
     syncEmbeddedPanelIndicators,
     teardownPanels,
 } from './src/panel.js';
@@ -107,7 +106,6 @@ function recomputeAndRender({ save = false } = {}) {
 
     applyAllNativeWorldFilters(_classification, settings);
     renderEmbeddedPanel();
-    renderExtensionSettingsPanel();
 }
 
 /**
@@ -254,6 +252,9 @@ async function init() {
         },
         onRescan: performManualRescan,
     });
+
+    // Remove any legacy extension-drawer mount from earlier versions (settings now live in Group Manager)
+    document.getElementById('wbo-extension-settings')?.remove();
 
     recomputeAndRender({ save: false });
 

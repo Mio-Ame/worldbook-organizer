@@ -805,14 +805,87 @@ let _lastWorldSelectMouseDownAt = 0;
 /**
  * Persistent in-session memory for `#world_editor_select` dropdown (both native Select2
  * and custom dropdown popovers) so reopening restores the exact group tab, horizontal
- * pill scroll offset, and vertical option scroll position instead of jumping!
+ * pill scroll offset, and per-group vertical option scroll position instead of jumping!
  */
 const _dropdownMemory = {
     activePillGroupId: SPECIAL_GROUPS.ALL,
     pillBarScrollLeft: 0,
-    resultsScrollTop: 0,
-    hasSavedScroll: false,
+    /** @type {Record<string, number>} */
+    scrollTopByGroup: {},
 };
+
+/**
+ * Locate the actual vertically scrollable container starting at `startEl` up to `boundaryEl`.
+ * Handles both Select2 (`ul.select2-results__options` or `.select2-results`) and
+ * custom popovers where either the options list or a wrapper scrolls.
+ * @param {HTMLElement} startEl
+ * @param {HTMLElement} boundaryEl
+ * @returns {HTMLElement}
+ */
+function findScrollableListEl(startEl, boundaryEl) {
+    let cur = startEl;
+    while (cur && cur instanceof HTMLElement) {
+        const cs = globalThis.getComputedStyle(cur);
+        const oy = cs?.overflowY || '';
+        const isScrollableStyle = oy === 'auto' || oy === 'scroll' || oy === 'overlay';
+        if (isScrollableStyle && cur.scrollHeight > cur.clientHeight + 2) {
+            return cur;
+        }
+        if (cur === boundaryEl) break;
+        cur = cur.parentElement;
+    }
+    cur = startEl;
+    while (cur && cur instanceof HTMLElement) {
+        const cs = globalThis.getComputedStyle(cur);
+        const oy = cs?.overflowY || '';
+        if (oy === 'auto' || oy === 'scroll' || oy === 'overlay') {
+            return cur;
+        }
+        if (cur === boundaryEl) break;
+        cur = cur.parentElement;
+    }
+    return startEl;
+}
+
+/**
+ * Build the split in-dropdown group filter bar:
+ * `[全部] | [scrollable group pills...]` so scrolled pills clip cleanly at the divider
+ * and NEVER slide underneath the pinned `全部` button!
+ * @param {Array<{ id: string, label: string }>} groupItems
+ * @param {string} activePillGroupId
+ * @param {string} [extraClass='']
+ * @returns {{ barEl: HTMLDivElement, scrollEl: HTMLDivElement }}
+ */
+function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '') {
+    const barEl = document.createElement('div');
+    barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}`;
+
+    const allBtn = document.createElement('button');
+    allBtn.type = 'button';
+    allBtn.className = `wbo-dd-pill is-pinned-all${activePillGroupId === SPECIAL_GROUPS.ALL ? ' is-active' : ''}`;
+    allBtn.setAttribute('data-wbo-pill', SPECIAL_GROUPS.ALL);
+    allBtn.textContent = '全部';
+
+    const divider = document.createElement('span');
+    divider.className = 'wbo-dd-divider';
+    divider.setAttribute('aria-hidden', 'true');
+
+    const scrollEl = document.createElement('div');
+    scrollEl.className = 'wbo-dd-pill-scroll';
+    scrollEl.innerHTML = groupItems
+        .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+        .join('');
+
+    scrollEl.addEventListener('wheel', (ev) => {
+        if (Math.abs(ev.deltaY) > Math.abs(ev.deltaX) && scrollEl.scrollWidth > scrollEl.clientWidth) {
+            ev.preventDefault();
+            scrollEl.scrollLeft += ev.deltaY;
+        }
+    }, { passive: false });
+
+    barEl.append(allBtn, divider, scrollEl);
+    return { barEl, scrollEl };
+}
 
 /**
  * Clean up any temporary interactive controls attached to an open `#world_editor_select`
@@ -940,6 +1013,7 @@ function enhanceOpenEditorDropdown() {
 
     // Optional compact 1-line group filter bar inside the dropdown when 2+ groups exist
     let filterBar = null;
+    let pillScrollEl = null;
     const syncPillButtons = () => {
         if (!filterBar) return;
         filterBar.querySelectorAll('.wbo-dd-pill').forEach((btn) => {
@@ -948,16 +1022,15 @@ function enhanceOpenEditorDropdown() {
         });
     };
 
+    const getScrollHost = () => findScrollableListEl(resultsList, dropdownEl);
+
     if (groups.length >= 2) {
-        filterBar = document.createElement('div');
-        filterBar.className = 'wbo-dd-filter-bar';
-        const pillItems = [
-            { id: SPECIAL_GROUPS.ALL, label: '全部' },
-            ...groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })),
-        ];
-        filterBar.innerHTML = pillItems
-            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === SPECIAL_GROUPS.ALL ? ' is-pinned-all' : ''}${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
-            .join('');
+        const built = createDropdownFilterBar(
+            groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })),
+            activePillGroupId,
+        );
+        filterBar = built.barEl;
+        pillScrollEl = built.scrollEl;
 
         // Keep dropdown open and NEVER let clicks bubble to `document` (which closes unpinned `#WorldInfo`!)
         filterBar.addEventListener('mousedown', (ev) => {
@@ -969,21 +1042,24 @@ function enhanceOpenEditorDropdown() {
             const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
             if (!btn) return;
             ev.preventDefault();
+            const scrollHost = getScrollHost();
+            if (!isSearching() && scrollHost.clientHeight > 0) {
+                _dropdownMemory.scrollTopByGroup[activePillGroupId] = scrollHost.scrollTop;
+            }
             const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
             _dropdownMemory.activePillGroupId = activePillGroupId;
-            _dropdownMemory.resultsScrollTop = 0;
-            _dropdownMemory.hasSavedScroll = true;
             syncPillButtons();
             decorateGroupItems();
-            resultsList.scrollTop = 0;
+            const targetTop = _dropdownMemory.scrollTopByGroup[activePillGroupId] ?? 0;
+            scrollHost.scrollTop = targetTop;
         });
 
-        filterBar.addEventListener('scroll', () => {
-            if (!isRestoringScroll) {
-                _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+        pillScrollEl.addEventListener('scroll', () => {
+            if (!isRestoringScroll && pillScrollEl.clientWidth > 0) {
+                _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
             }
         }, { passive: true });
 
@@ -1000,15 +1076,47 @@ function enhanceOpenEditorDropdown() {
     };
     dropdownEl.addEventListener('click', onDropdownClickStop);
 
-    const onResultsScroll = () => {
-        if (!isRestoringScroll && !isSearching()) {
-            _dropdownMemory.resultsScrollTop = resultsList.scrollTop;
-            _dropdownMemory.hasSavedScroll = true;
+    const scrollHost = getScrollHost();
+    const saveCurrentScroll = () => {
+        const host = getScrollHost();
+        // CRITICAL: ignore detached/hidden `scrollTop === 0` after Select2 starts closing!
+        if (!isSearching() && host.isConnected && host.clientHeight > 0) {
+            _dropdownMemory.scrollTopByGroup[activePillGroupId] = host.scrollTop;
+        }
+        if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
+            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
         }
     };
-    resultsList.addEventListener('scroll', onResultsScroll, { passive: true });
+
+    const restoreTimers = [];
+    const cancelRestore = () => {
+        isRestoringScroll = false;
+        while (restoreTimers.length) clearTimeout(restoreTimers.pop());
+    };
+
+    const onResultsScroll = () => {
+        if (!isRestoringScroll) {
+            saveCurrentScroll();
+        }
+    };
+    const onUserScrollInteract = () => {
+        cancelRestore();
+    };
+    const onOptionPointerDown = (ev) => {
+        const t = ev.target instanceof Element ? ev.target : null;
+        if (t?.closest('.select2-results__option:not(.select2-results__option--group)')) {
+            cancelRestore();
+            saveCurrentScroll();
+        }
+    };
+    scrollHost.addEventListener('scroll', onResultsScroll, { passive: true });
+    scrollHost.addEventListener('wheel', onUserScrollInteract, { passive: true });
+    scrollHost.addEventListener('touchmove', onUserScrollInteract, { passive: true });
+    resultsList.addEventListener('pointerdown', onOptionPointerDown, true);
+    resultsList.addEventListener('mousedown', onOptionPointerDown, true);
 
     const onSearchInput = () => {
+        cancelRestore();
         requestAnimationFrame(decorateGroupItems);
     };
     if (searchInput instanceof HTMLInputElement) {
@@ -1021,33 +1129,46 @@ function enhanceOpenEditorDropdown() {
     });
     _openDropdownResultsObserver.observe(resultsList, { childList: true });
 
-    // Restore both horizontal pill scroll & vertical list scroll AFTER Select2's
+    // Restore both horizontal pill scroll & per-group vertical list scroll AFTER Select2's
     // internal `ensureHighlightVisible()` runs so reopening stays at the exact spot!
     const applySavedScrollPositions = () => {
-        if (filterBar) {
-            filterBar.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+        if (!isRestoringScroll) return;
+        if (pillScrollEl && pillScrollEl.clientWidth > 0) {
+            pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
         }
-        if (_dropdownMemory.hasSavedScroll) {
-            resultsList.scrollTop = _dropdownMemory.resultsScrollTop;
+        const savedTop = _dropdownMemory.scrollTopByGroup[activePillGroupId];
+        if (typeof savedTop === 'number' && savedTop > 0) {
+            const host = getScrollHost();
+            if (host.clientHeight > 0) {
+                host.scrollTop = savedTop;
+            }
         }
     };
 
-    const restoreTimer1 = setTimeout(applySavedScrollPositions, 20);
-    const restoreTimer2 = setTimeout(() => {
-        applySavedScrollPositions();
-        isRestoringScroll = false;
-    }, 80);
+    restoreTimers.push(
+        setTimeout(applySavedScrollPositions, 25),
+        setTimeout(applySavedScrollPositions, 90),
+        setTimeout(() => {
+            applySavedScrollPositions();
+            isRestoringScroll = false;
+        }, 180),
+    );
 
     _openDropdownCleanup = () => {
-        clearTimeout(restoreTimer1);
-        clearTimeout(restoreTimer2);
-        if (!isRestoringScroll && !isSearching()) {
-            _dropdownMemory.resultsScrollTop = resultsList.scrollTop;
-            _dropdownMemory.hasSavedScroll = true;
-            if (filterBar) _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+        cancelRestore();
+        // Only snapshot scroll if the list is still visibly laid out (never overwrite with 0 when hidden!)
+        if (!isSearching() && scrollHost.isConnected && scrollHost.clientHeight > 0) {
+            _dropdownMemory.scrollTopByGroup[activePillGroupId] = scrollHost.scrollTop;
+        }
+        if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
+            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
         }
         dropdownEl.removeEventListener('click', onDropdownClickStop);
-        resultsList.removeEventListener('scroll', onResultsScroll);
+        scrollHost.removeEventListener('scroll', onResultsScroll);
+        scrollHost.removeEventListener('wheel', onUserScrollInteract);
+        scrollHost.removeEventListener('touchmove', onUserScrollInteract);
+        resultsList.removeEventListener('pointerdown', onOptionPointerDown, true);
+        resultsList.removeEventListener('mousedown', onOptionPointerDown, true);
         resultsList.removeEventListener('mousedown', onResultsMouseDown, true);
         resultsList.removeEventListener('click', onResultsClick, true);
         if (searchInput instanceof HTMLInputElement) {
@@ -1057,6 +1178,7 @@ function enhanceOpenEditorDropdown() {
     };
 
     decorateGroupItems();
+    requestAnimationFrame(applySavedScrollPositions);
     applySavedScrollPositions();
 }
 
@@ -1206,12 +1328,15 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     let filterBar = null;
+    let pillScrollEl = null;
     const syncPillButtons = () => {
         if (!filterBar) return;
         filterBar.querySelectorAll('.wbo-dd-pill').forEach((btn) => {
             btn.classList.toggle('is-active', btn.getAttribute('data-wbo-pill') === activePillGroupId);
         });
     };
+
+    const getScrollHost = () => findScrollableListEl(optionsHost, containerEl);
 
     const syncSections = () => {
         const searching = isSearching();
@@ -1259,18 +1384,16 @@ function enhanceCustomDropdownPopover(containerEl) {
     }, true);
 
     if (orderedSections.length >= 2) {
-        filterBar = document.createElement('div');
-        filterBar.className = 'wbo-dd-filter-bar wbo-gr-filter-bar';
-        const pillItems = [
-            { id: SPECIAL_GROUPS.ALL, label: '全部' },
-            ...orderedSections.map((sec) => ({
+        const built = createDropdownFilterBar(
+            orderedSections.map((sec) => ({
                 id: sec.id,
                 label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length}`,
             })),
-        ];
-        filterBar.innerHTML = pillItems
-            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === SPECIAL_GROUPS.ALL ? ' is-pinned-all' : ''}${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
-            .join('');
+            activePillGroupId,
+            'wbo-gr-filter-bar',
+        );
+        filterBar = built.barEl;
+        pillScrollEl = built.scrollEl;
 
         for (const evtName of ['mousedown', 'touchstart']) {
             filterBar.addEventListener(evtName, (ev) => {
@@ -1282,21 +1405,23 @@ function enhanceCustomDropdownPopover(containerEl) {
             const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
             if (!btn) return;
             ev.preventDefault();
+            const scrollHost = getScrollHost();
+            if (!isSearching() && scrollHost.clientHeight > 0) {
+                _dropdownMemory.scrollTopByGroup[activePillGroupId] = scrollHost.scrollTop;
+            }
             const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
             _dropdownMemory.activePillGroupId = activePillGroupId;
-            _dropdownMemory.resultsScrollTop = 0;
-            _dropdownMemory.hasSavedScroll = true;
             syncPillButtons();
             syncSections();
-            optionsHost.scrollTop = 0;
+            scrollHost.scrollTop = _dropdownMemory.scrollTopByGroup[activePillGroupId] ?? 0;
         });
 
-        filterBar.addEventListener('scroll', () => {
-            if (!isRestoringScroll) {
-                _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+        pillScrollEl.addEventListener('scroll', () => {
+            if (!isRestoringScroll && pillScrollEl.clientWidth > 0) {
+                _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
             }
         }, { passive: true });
 
@@ -1309,39 +1434,75 @@ function enhanceCustomDropdownPopover(containerEl) {
         ev.stopPropagation();
     });
 
-    optionsHost.addEventListener('scroll', () => {
-        if (!isRestoringScroll && !isSearching()) {
-            _dropdownMemory.resultsScrollTop = optionsHost.scrollTop;
-            _dropdownMemory.hasSavedScroll = true;
+    const popoverScrollHost = getScrollHost();
+    const restoreTimers = [];
+    const cancelRestore = () => {
+        isRestoringScroll = false;
+        while (restoreTimers.length) clearTimeout(restoreTimers.pop());
+    };
+    const savePopoverScroll = () => {
+        const host = getScrollHost();
+        if (!isSearching() && host.isConnected && host.clientHeight > 0) {
+            _dropdownMemory.scrollTopByGroup[activePillGroupId] = host.scrollTop;
         }
-    }, { passive: true });
+        if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
+            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
+        }
+    };
+
+    // Listen on BOTH optionsHost and discovered scrollHost (and containerEl) in case popover layout settles lazily
+    const scrollTargets = new Set([optionsHost, popoverScrollHost, containerEl]);
+    for (const st of scrollTargets) {
+        st.addEventListener('scroll', () => {
+            if (!isRestoringScroll && !isSearching() && st.clientHeight > 0 && st.scrollHeight > st.clientHeight + 2) {
+                _dropdownMemory.scrollTopByGroup[activePillGroupId] = st.scrollTop;
+            }
+        }, { passive: true });
+        st.addEventListener('wheel', cancelRestore, { passive: true });
+        st.addEventListener('touchmove', cancelRestore, { passive: true });
+    }
 
     // Capture exact scroll position right before clicking an option closes the popover
-    optionsHost.addEventListener('mousedown', (ev) => {
-        if (ev.target instanceof Element && ev.target.closest('.gr-option') && !isSearching()) {
-            _dropdownMemory.resultsScrollTop = optionsHost.scrollTop;
-            _dropdownMemory.hasSavedScroll = true;
-            if (filterBar) _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
+    const onGrOptionPointerDown = (ev) => {
+        if (ev.target instanceof Element && ev.target.closest('.gr-option')) {
+            cancelRestore();
+            savePopoverScroll();
         }
-    }, true);
+    };
+    optionsHost.addEventListener('pointerdown', onGrOptionPointerDown, true);
+    optionsHost.addEventListener('mousedown', onGrOptionPointerDown, true);
 
     if (searchInput instanceof HTMLInputElement) {
         searchInput.addEventListener('input', () => {
+            cancelRestore();
             requestAnimationFrame(syncSections);
         });
     }
 
     syncSections();
     const applyPopoverScroll = () => {
-        if (filterBar) filterBar.scrollLeft = _dropdownMemory.pillBarScrollLeft;
-        if (_dropdownMemory.hasSavedScroll) optionsHost.scrollTop = _dropdownMemory.resultsScrollTop;
+        if (!isRestoringScroll) return;
+        if (pillScrollEl && pillScrollEl.clientWidth > 0) {
+            pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+        }
+        const savedTop = _dropdownMemory.scrollTopByGroup[activePillGroupId];
+        if (typeof savedTop === 'number' && savedTop > 0) {
+            const host = getScrollHost();
+            if (host.clientHeight > 0) {
+                host.scrollTop = savedTop;
+            }
+        }
     };
     applyPopoverScroll();
-    setTimeout(applyPopoverScroll, 20);
-    setTimeout(() => {
-        applyPopoverScroll();
-        isRestoringScroll = false;
-    }, 80);
+    requestAnimationFrame(applyPopoverScroll);
+    restoreTimers.push(
+        setTimeout(applyPopoverScroll, 35),
+        setTimeout(applyPopoverScroll, 110),
+        setTimeout(() => {
+            applyPopoverScroll();
+            isRestoringScroll = false;
+        }, 210),
+    );
 }
 
 /**
