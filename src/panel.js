@@ -2032,7 +2032,7 @@ function openAiOrganizeModal() {
                                 <option value="0">仅标题与关键词</option>
                             </select>
                         </div>
-                        <div class="wbo-subtle-tip">本地直接截取条目开头，不会额外调用 AI 生成摘要；使用外部 AI 复制提示词则完全不消耗 API 额度。</div>
+                        <div class="wbo-subtle-tip">本地直接截取条目开头并自动跳过含敏感词条目，不会额外消耗生成额度；外部 AI 复制提示词完全免费。</div>
                         <label class="wbo-check-line">
                             <input type="checkbox" id="wbo-ai-allow-real-rename">
                             <span>允许规范修改世界书真实文件名，并自动同步角色卡与人设绑定</span>
@@ -2040,9 +2040,9 @@ function openAiOrganizeModal() {
                         <div class="wbo-preset-rows">
                             <div class="wbo-preset-group">
                                 <span class="wbo-preset-label">分类预设</span>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="按用途细分为「文风与写法」「世界观设定」「系统与规则」「小剧场与扩展」「人设与素材」等清晰分组。">按用途细分</button>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="优先按「文风」「缝合」「世界观」「玩法规则」「小剧场」等酒馆常用维度分类。">文风/缝合/设定</button>
-                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="尽量合并归类，总分组数量控制在 3~5 个高频大类内。">精简 3~5 大类</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="优先按酒馆常用维度分类：「文风」「缝合」「场景与互动」「世界观」「小剧场」「通用素材」。注意「缝合」指用于缝合进预设/指令模板的功能补丁、防抢话与输出控制规则；约会流程、恋爱/日常互动归入「场景与互动」，不要归入世界观。">文风/缝合/场景</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="按用途细分为「文风与写法」「缝合与规则」「场景与互动」「世界观设定」「小剧场与扩展」「人设与素材」等清晰分组。">按用途细分</button>
+                                <button type="button" class="wbo-preset-chip" data-preset-cat="group" data-preset-text="尽量合并归类，总分组数量控制在 3~5 个高频大类内（如文风、缝合规则、场景互动、世界观、通用素材）。">精简 3~5 大类</button>
                             </div>
                             <div class="wbo-preset-group">
                                 <span class="wbo-preset-label">命名预设</span>
@@ -2157,7 +2157,32 @@ function openAiOrganizeModal() {
                 <div class="wbo-real-hint" id="wbo-ai-real-hint" hidden>
                     将按下方「新名称」真实重命名世界书文件，并同步更新角色卡主/附绑定、User 人设绑定、当前聊天与全局激活。
                 </div>
+                <div class="wbo-preview-group-pills" id="wbo-preview-group-pills"></div>
+                <datalist id="wbo-preview-groups-datalist"></datalist>
                 <div class="wbo-ai-preview-list" id="wbo-ai-preview-list"></div>
+
+                <div class="wbo-card wbo-redo-card" id="wbo-preview-redo-card">
+                    <div class="wbo-ai-section-head">
+                        <span id="wbo-redo-summary">对部分分组不满意？点击上方「重排本组」或单条「重排」标记后重发</span>
+                        <button type="button" class="wbo-link-btn" id="wbo-redo-clear-btn" hidden>清除标记</button>
+                    </div>
+                    <input type="text" class="wbo-input" id="wbo-ai-redo-reason" placeholder="填写不满意的原因或期望（例如：约会指南不要放进世界观，请单独归入「场景与互动」）">
+                    <div class="wbo-ai-actions-row">
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-run-btn" disabled>
+                            <i class="fa-solid fa-rotate"></i> 重新发送给 AI
+                        </button>
+                        <button type="button" class="wbo-btn" id="wbo-ai-redo-copy-btn" disabled>
+                            <i class="fa-regular fa-copy"></i> 复制重排提示词
+                        </button>
+                    </div>
+                    <div class="wbo-redo-paste-box" id="wbo-redo-paste-box" hidden>
+                        <textarea class="wbo-textarea" id="wbo-ai-redo-json-input" rows="3" placeholder="将外部 AI 返回的重排 JSON 粘贴到此处，仅更新已标记的条目"></textarea>
+                        <div class="wbo-ai-actions-row">
+                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-merge-btn">解析并合并重排结果</button>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="wbo-ai-status" id="wbo-ai-preview-status"></div>
                 <div class="wbo-modal-footer">
                     <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-apply-btn">确认应用</button>
@@ -2461,11 +2486,23 @@ function openAiOrganizeModal() {
         setCheckedByPredicate(() => false),
     );
 
-    const preparePromptPayload = async () => {
+    /** @type {Map<string, string[]>} */
+    const cachedCluesByBook = new Map();
+
+    const buildCustomInstruction = () => {
+        const allowRealRename = Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
+        const customRule = modal.querySelector('#wbo-ai-custom-rule')?.value?.trim() || '';
+        const filenameRule = allowRealRename
+            ? '建议的新名称将直接作为规范化的世界书文件名，请勿包含 \\ / : * ? " < > | 等非法文件名字符。'
+            : '';
+        return [customRule, filenameRule].filter(Boolean).join(' ');
+    };
+
+    const preparePromptPayload = async ({ targetNames = null, feedback = null, statusTarget = 'main' } = {}) => {
         if (refusalBox instanceof HTMLElement) refusalBox.hidden = true;
-        const selectedNames = getSelectedBookNames();
+        const selectedNames = Array.isArray(targetNames) ? targetNames : getSelectedBookNames();
         if (selectedNames.length === 0) {
-            setStatus('请至少勾选一本世界书', true);
+            setStatus('请至少勾选一本世界书', true, statusTarget);
             return null;
         }
         const includeClues = Boolean(modal.querySelector('#wbo-ai-include-clues')?.checked);
@@ -2474,21 +2511,24 @@ function openAiOrganizeModal() {
         const snippetLenRaw = Number(modal.querySelector('#wbo-ai-snippet-len')?.value ?? 50);
         const snippetChars = Number.isFinite(snippetLenRaw) ? Math.max(0, Math.min(200, snippetLenRaw)) : 50;
 
-        const allowRealRename = Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
-        const customRule = modal.querySelector('#wbo-ai-custom-rule')?.value?.trim() || '';
-        const filenameRule = allowRealRename
-            ? '建议的新名称将直接作为规范化的世界书文件名，请勿包含 \\ / : * ? " < > | 等非法文件名字符。'
-            : '';
-        const customInstruction = [customRule, filenameRule].filter(Boolean).join(' ');
-
+        const clueStats = { skippedEntries: 0 };
         const booksPayload = [];
         for (let i = 0; i < selectedNames.length; i += 1) {
             const name = selectedNames[i];
             const meta = classification.byName.get(name);
             let sampleEntries = [];
             if (includeClues) {
-                setStatus(`读取条目摘要 (${i + 1}/${selectedNames.length})...`);
-                sampleEntries = await fetchWorldbookCluesOnDemand(name, clueCount, { snippetChars });
+                if (feedback && cachedCluesByBook.has(name)) {
+                    sampleEntries = cachedCluesByBook.get(name) || [];
+                } else {
+                    setStatus(`读取条目摘要 (${i + 1}/${selectedNames.length})...`, false, statusTarget);
+                    sampleEntries = await fetchWorldbookCluesOnDemand(name, clueCount, {
+                        snippetChars,
+                        filterSensitive: true,
+                        statsOut: clueStats,
+                    });
+                    cachedCluesByBook.set(name, sampleEntries);
+                }
             }
             booksPayload.push({
                 realName: name,
@@ -2498,18 +2538,152 @@ function openAiOrganizeModal() {
             });
         }
 
+        if (clueStats.skippedEntries > 0) {
+            setStatus(`已自动过滤 ${clueStats.skippedEntries} 条疑似含敏感词的条目摘要，正在准备请求...`, false, statusTarget);
+        }
+
         return buildAiOrganizePrompt({
             books: booksPayload,
             existingGroups: settings.groups.map((g) => g.name),
-            customInstruction,
+            customInstruction: buildCustomInstruction(),
+            feedback,
         });
     };
 
+    /** @type {Array<{ realName: string, alias: string, group: string, note: string, selected: boolean, redo: boolean }>} */
     let currentProposals = [];
+    let activePreviewGroupFilter = '__all__';
+
+    const previewPillsEl = modal.querySelector('#wbo-preview-group-pills');
+    const previewGroupsDatalist = modal.querySelector('#wbo-preview-groups-datalist');
+    const redoSummaryEl = modal.querySelector('#wbo-redo-summary');
+    const redoClearBtn = modal.querySelector('#wbo-redo-clear-btn');
+    const redoRunBtn = modal.querySelector('#wbo-ai-redo-run-btn');
+    const redoCopyBtn = modal.querySelector('#wbo-ai-redo-copy-btn');
+    const redoPasteBox = modal.querySelector('#wbo-redo-paste-box');
+    const redoReasonInput = modal.querySelector('#wbo-ai-redo-reason');
+
+    const getOrderedPreviewGroups = () => {
+        /** @type {Map<string, Array<{ item: any, idx: number }>>} */
+        const map = new Map();
+        currentProposals.forEach((item, idx) => {
+            const gname = (item.group || '').trim() || '未分组';
+            if (!map.has(gname)) map.set(gname, []);
+            map.get(gname).push({ item, idx });
+        });
+        return map;
+    };
+
+    const syncRedoBarUi = () => {
+        const redoItems = currentProposals.filter((p) => p.redo);
+        const count = redoItems.length;
+        if (redoSummaryEl) {
+            redoSummaryEl.textContent = count > 0
+                ? `已标记 ${count} 本待重新分组`
+                : '对部分分组不满意？点击上方「重排本组」或单条「重排」标记后重发';
+        }
+        if (redoClearBtn instanceof HTMLElement) redoClearBtn.hidden = count === 0;
+        if (redoRunBtn instanceof HTMLButtonElement) redoRunBtn.disabled = count === 0;
+        if (redoCopyBtn instanceof HTMLButtonElement) redoCopyBtn.disabled = count === 0;
+    };
+
+    const renderPreviewContent = () => {
+        if (!previewList) return;
+        const grouped = getOrderedPreviewGroups();
+        const groupNames = [...grouped.keys()];
+
+        if (activePreviewGroupFilter !== '__all__' && !grouped.has(activePreviewGroupFilter)) {
+            activePreviewGroupFilter = '__all__';
+        }
+
+        // Update datalist of available groups for quick manual edits
+        if (previewGroupsDatalist) {
+            const allSuggest = [...new Set([...groupNames, ...settings.groups.map((g) => g.name)])];
+            previewGroupsDatalist.innerHTML = allSuggest.map((g) => `<option value="${esc(g)}"></option>`).join('');
+        }
+
+        // Render group filter pills
+        if (previewPillsEl) {
+            const pills = [
+                { key: '__all__', label: `全部 ${currentProposals.length}` },
+                ...groupNames.map((g) => ({ key: g, label: `${g} ${grouped.get(g).length}` })),
+            ];
+            previewPillsEl.innerHTML = pills
+                .map((p) => `
+                    <button type="button"
+                        class="wbo-pill${activePreviewGroupFilter === p.key ? ' is-active' : ''}"
+                        data-preview-filter="${esc(p.key)}">
+                        <span>${esc(p.label)}</span>
+                    </button>
+                `)
+                .join('');
+        }
+
+        const sectionsToRender = activePreviewGroupFilter === '__all__'
+            ? groupNames
+            : [activePreviewGroupFilter];
+
+        const prevScroll = previewList.scrollTop;
+        previewList.innerHTML = sectionsToRender.map((gname) => {
+            const entries = grouped.get(gname) || [];
+            const allRedo = entries.length > 0 && entries.every((e) => e.item.redo);
+            const rowsHtml = entries.map(({ item, idx }) => `
+                <div class="wbo-ai-prop-row${item.redo ? ' is-redo' : ''}" data-idx="${idx}">
+                    <label class="wbo-ai-prop-check" title="勾选以应用此项">
+                        <input type="checkbox" class="wbo-prop-selected"${item.selected ? ' checked' : ''}>
+                    </label>
+                    <div class="wbo-ai-prop-fields">
+                        <div class="wbo-ai-prop-top">
+                            <span class="wbo-prop-badge">原名</span>
+                            <span class="wbo-ai-prop-orig" title="${esc(item.realName)}">${esc(item.realName)}</span>
+                            <button type="button" class="wbo-redo-toggle${item.redo ? ' is-active' : ''}" data-action="toggle-redo-item" data-idx="${idx}" title="标记此书为不满意，稍后一起让 AI 重新分组">
+                                <i class="fa-solid fa-rotate"></i> ${item.redo ? '已标记重排' : '重排'}
+                            </button>
+                        </div>
+                        <div class="wbo-prop-grid">
+                            <label class="wbo-prop-field">
+                                <span class="wbo-prop-label">新名称</span>
+                                <input type="text" class="wbo-input wbo-prop-alias" value="${esc(item.alias)}" placeholder="规范后的显示名">
+                            </label>
+                            <label class="wbo-prop-field">
+                                <span class="wbo-prop-label">分组</span>
+                                <input type="text" class="wbo-input wbo-prop-group" list="wbo-preview-groups-datalist" value="${esc(item.group)}" placeholder="归属分组">
+                            </label>
+                            <label class="wbo-prop-field is-full">
+                                <span class="wbo-prop-label">说明</span>
+                                <input type="text" class="wbo-input wbo-prop-note" value="${esc(item.note)}" placeholder="一句话用途说明">
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+
+            return `
+                <div class="wbo-preview-group-sec" data-preview-group="${esc(gname)}">
+                    <div class="wbo-preview-group-head">
+                        <span class="wbo-preview-group-title">${esc(gname)} <small>${entries.length}</small></span>
+                        <button type="button" class="wbo-redo-toggle${allRedo ? ' is-active' : ''}" data-action="toggle-redo-group" data-group-name="${esc(gname)}">
+                            <i class="fa-solid fa-rotate"></i> ${allRedo ? '取消重排本组' : '重排本组'}
+                        </button>
+                    </div>
+                    <div class="wbo-preview-group-body">${rowsHtml}</div>
+                </div>
+            `;
+        }).join('');
+
+        previewList.scrollTop = prevScroll;
+        syncRedoBarUi();
+    };
 
     const showPreview = (proposals, ignoredCount) => {
-        currentProposals = proposals;
+        currentProposals = proposals.map((p) => ({
+            ...p,
+            selected: true,
+            redo: false,
+        }));
+        activePreviewGroupFilter = '__all__';
         if (!previewList || !(stepSelect instanceof HTMLElement) || !(stepPreview instanceof HTMLElement)) return;
+        if (redoPasteBox instanceof HTMLElement) redoPasteBox.hidden = true;
 
         // Pre-select real rename radio if user checked "允许规范修改世界书真实文件名"
         const allowReal = Boolean(modal.querySelector('#wbo-ai-allow-real-rename')?.checked);
@@ -2517,34 +2691,188 @@ function openAiOrganizeModal() {
         if (targetRadio instanceof HTMLInputElement) targetRadio.checked = true;
         syncRealHint();
 
-        previewList.innerHTML = proposals
-            .map(
-                (p, idx) => `
-                <div class="wbo-ai-prop-row" data-idx="${idx}">
-                    <label class="wbo-ai-prop-check">
-                        <input type="checkbox" class="wbo-prop-selected" checked>
-                    </label>
-                    <div class="wbo-ai-prop-fields">
-                        <div class="wbo-ai-prop-orig" title="${esc(p.realName)}">${esc(p.realName)}</div>
-                        <div class="wbo-ai-prop-inputs">
-                            <input type="text" class="wbo-input wbo-prop-alias" value="${esc(p.alias)}" placeholder="新名称">
-                            <input type="text" class="wbo-input wbo-prop-group" value="${esc(p.group)}" placeholder="分组名">
-                        </div>
-                        <input type="text" class="wbo-input wbo-prop-note" value="${esc(p.note)}" placeholder="备注">
-                    </div>
-                </div>
-            `,
-            )
-            .join('');
+        renderPreviewContent();
 
         stepSelect.hidden = true;
         if (stepApi instanceof HTMLElement) stepApi.hidden = true;
         if (tabsBar instanceof HTMLElement) tabsBar.hidden = true;
         stepPreview.hidden = false;
+        setStatus('', false, 'preview');
         if (ignoredCount > 0) {
             showToast('info', `已解析 ${proposals.length} 条建议，忽略 ${ignoredCount} 条无效项`);
         }
     };
+
+    // Delegate preview group filter pill clicks
+    previewPillsEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-preview-filter]') : null;
+        if (!btn) return;
+        activePreviewGroupFilter = btn.getAttribute('data-preview-filter') || '__all__';
+        renderPreviewContent();
+    });
+
+    // Sync live edits & redo marks directly onto `currentProposals` so switching group tabs never loses changes
+    previewList?.addEventListener('input', (ev) => {
+        const target = ev.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const row = target.closest('.wbo-ai-prop-row[data-idx]');
+        if (!row) return;
+        const idx = Number(row.getAttribute('data-idx'));
+        const item = currentProposals[idx];
+        if (!item) return;
+        if (target.classList.contains('wbo-prop-alias')) item.alias = target.value;
+        else if (target.classList.contains('wbo-prop-group')) item.group = target.value;
+        else if (target.classList.contains('wbo-prop-note')) item.note = target.value;
+    });
+
+    previewList?.addEventListener('change', (ev) => {
+        const target = ev.target;
+        if (!(target instanceof HTMLInputElement)) return;
+        const row = target.closest('.wbo-ai-prop-row[data-idx]');
+        if (!row) return;
+        const idx = Number(row.getAttribute('data-idx'));
+        const item = currentProposals[idx];
+        if (!item) return;
+        if (target.classList.contains('wbo-prop-selected')) {
+            item.selected = target.checked;
+        } else if (target.classList.contains('wbo-prop-group')) {
+            item.group = target.value.trim();
+            renderPreviewContent();
+        }
+    });
+
+    previewList?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-action]') : null;
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        if (action === 'toggle-redo-item') {
+            const idx = Number(btn.getAttribute('data-idx'));
+            if (currentProposals[idx]) {
+                currentProposals[idx].redo = !currentProposals[idx].redo;
+                renderPreviewContent();
+            }
+        } else if (action === 'toggle-redo-group') {
+            const gname = btn.getAttribute('data-group-name') || '';
+            const matching = currentProposals.filter((p) => ((p.group || '').trim() || '未分组') === gname);
+            const nextState = !matching.every((p) => p.redo);
+            matching.forEach((p) => { p.redo = nextState; });
+            renderPreviewContent();
+        }
+    });
+
+    redoClearBtn?.addEventListener('click', () => {
+        currentProposals.forEach((p) => { p.redo = false; });
+        renderPreviewContent();
+    });
+
+    const mergeRedoResponseIntoPreview = (rawText) => {
+        const redoItems = currentProposals.filter((p) => p.redo);
+        const validRedoNames = new Set(redoItems.map((p) => p.realName));
+        const parsed = parseAiOrganizeResponse(rawText, validRedoNames.size > 0 ? validRedoNames : new Set(classification.byName.keys()));
+        if (!parsed.ok) {
+            setStatus(parsed.error || '重排结果解析失败', true, 'preview');
+            return false;
+        }
+        const byName = new Map(currentProposals.map((p) => [p.realName, p]));
+        let updatedCount = 0;
+        for (const nextItem of parsed.proposals) {
+            const target = byName.get(nextItem.realName);
+            if (!target) continue;
+            if (nextItem.alias) target.alias = nextItem.alias;
+            if (nextItem.group) target.group = nextItem.group;
+            if (nextItem.note) target.note = nextItem.note;
+            target.redo = false;
+            updatedCount += 1;
+        }
+        if (redoPasteBox instanceof HTMLElement) redoPasteBox.hidden = true;
+        renderPreviewContent();
+        setStatus(`已根据反馈更新 ${updatedCount} 本世界书的分组与名称`, false, 'preview');
+        showToast('success', `已更新 ${updatedCount} 本世界书的分组建议`);
+        return true;
+    };
+
+    const prepareRedoPromptPayload = async () => {
+        const redoItems = currentProposals.filter((p) => p.redo);
+        if (redoItems.length === 0) {
+            setStatus('请先标记至少一本需要重新分组的世界书', true, 'preview');
+            return null;
+        }
+        const acceptedGroups = [...new Set(
+            currentProposals
+                .filter((p) => !p.redo)
+                .map((p) => (p.group || '').trim())
+                .filter((g) => g && g !== '未分组'),
+        )];
+        const reason = redoReasonInput instanceof HTMLInputElement ? redoReasonInput.value.trim() : '';
+        return preparePromptPayload({
+            targetNames: redoItems.map((p) => p.realName),
+            feedback: {
+                reason,
+                previousProposals: redoItems.map((p) => ({
+                    realName: p.realName,
+                    alias: p.alias,
+                    group: p.group,
+                    note: p.note,
+                })),
+                acceptedGroups,
+            },
+            statusTarget: 'preview',
+        });
+    };
+
+    redoRunBtn?.addEventListener('click', async () => {
+        if (redoRunBtn instanceof HTMLButtonElement) redoRunBtn.disabled = true;
+        try {
+            const prompts = await prepareRedoPromptPayload();
+            if (!prompts) return;
+            if (settings.apiProvider === 'custom') {
+                const draft = readFormDraft();
+                setStatus('正在将不满意项重新发送给自定义 API...', false, 'preview');
+                const raw = await callCustomApiForOrganize({
+                    baseUrl: draft.baseUrl,
+                    apiKey: draft.apiKey,
+                    model: draft.model,
+                    systemPrompt: prompts.systemPrompt,
+                    userPrompt: prompts.userPrompt,
+                });
+                mergeRedoResponseIntoPreview(raw);
+            } else {
+                setStatus('正在将不满意项重新发送给酒馆当前 API...', false, 'preview');
+                const raw = await callHostAiForOrganize(prompts);
+                mergeRedoResponseIntoPreview(raw);
+            }
+        } catch (err) {
+            setStatus(`重排调用失败：${err?.message || err}`, true, 'preview');
+        } finally {
+            syncRedoBarUi();
+        }
+    });
+
+    redoCopyBtn?.addEventListener('click', async () => {
+        const prompts = await prepareRedoPromptPayload();
+        if (!prompts) return;
+        const fullPrompt = `${prompts.systemPrompt}\n\n---\n\n${prompts.userPrompt}`;
+        if (redoPasteBox instanceof HTMLElement) redoPasteBox.hidden = false;
+        try {
+            await navigator.clipboard.writeText(fullPrompt);
+            setStatus('已复制重排提示词，请将外部 AI 返回的 JSON 粘贴到下方合并。', false, 'preview');
+        } catch {
+            const ta = modal.querySelector('#wbo-ai-redo-json-input');
+            if (ta instanceof HTMLTextAreaElement) {
+                ta.value = fullPrompt;
+                ta.select();
+            }
+            setStatus('剪贴板受限，已将重排提示词填入下方文本框。', false, 'preview');
+        }
+    });
+
+    modal.querySelector('#wbo-ai-redo-merge-btn')?.addEventListener('click', () => {
+        const ta = modal.querySelector('#wbo-ai-redo-json-input');
+        const raw = ta instanceof HTMLTextAreaElement ? ta.value : '';
+        if (mergeRedoResponseIntoPreview(raw) && ta instanceof HTMLTextAreaElement) {
+            ta.value = '';
+        }
+    });
 
     const parseAndOpenPreview = (rawText) => {
         const validSet = new Set(classification.byName.keys());
@@ -2626,20 +2954,15 @@ function openAiOrganizeModal() {
     modal.querySelector('#wbo-ai-apply-btn')?.addEventListener('click', async (ev) => {
         const applyBtn = ev.currentTarget;
         const applyMode = modal.querySelector('input[name="wbo-ai-apply-mode"]:checked')?.value || 'alias';
-        const chosen = [];
-        modal.querySelectorAll('.wbo-ai-prop-row').forEach((row) => {
-            const checked = row.querySelector('.wbo-prop-selected')?.checked;
-            if (!checked) return;
-            const idx = Number(row.getAttribute('data-idx'));
-            const orig = currentProposals[idx];
-            if (!orig) return;
-            chosen.push({
-                realName: orig.realName,
-                alias: row.querySelector('.wbo-prop-alias')?.value?.trim() || '',
-                group: row.querySelector('.wbo-prop-group')?.value?.trim() || '',
-                note: row.querySelector('.wbo-prop-note')?.value?.trim() || '',
-            });
-        });
+        // Read directly from live `currentProposals` so items currently filtered out by a preview group pill are STILL applied!
+        const chosen = currentProposals
+            .filter((p) => p.selected)
+            .map((p) => ({
+                realName: p.realName,
+                alias: (p.alias || '').trim(),
+                group: (p.group || '').trim(),
+                note: (p.note || '').trim(),
+            }));
 
         if (chosen.length === 0) {
             showToast('warning', '请至少勾选一项');

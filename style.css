@@ -2076,15 +2076,75 @@ details[open] > summary .wbo-details-chev {
     font-weight: 600;
 }
 
+.wbo-preview-group-pills {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    padding-bottom: 2px;
+}
+
+.wbo-preview-group-sec {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    background: var(--wbo-bg);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.wbo-preview-group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--wbo-bg-elevated);
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-preview-group-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--wbo-fg);
+}
+
+.wbo-preview-group-title small {
+    font-weight: 500;
+    color: var(--wbo-fg-muted);
+    margin-left: 3px;
+}
+
+.wbo-preview-group-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 6px;
+}
+
 .wbo-ai-prop-row {
     flex: 0 0 auto;
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 6px;
-    border-radius: 6px;
+    padding: 8px;
+    border-radius: 7px;
     background: var(--wbo-surface);
     border: 1px solid var(--wbo-border);
+    transition: border-color 0.14s ease, background-color 0.14s ease;
+}
+
+.wbo-ai-prop-row.is-redo {
+    border-color: var(--wbo-accent);
+    background: var(--wbo-accent-soft);
+}
+
+.wbo-ai-prop-check {
+    padding-top: 2px;
+    margin: 0 !important;
 }
 
 .wbo-ai-prop-fields {
@@ -2092,18 +2152,107 @@ details[open] > summary .wbo-details-chev {
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 5px;
+    gap: 6px;
+}
+
+.wbo-ai-prop-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.wbo-prop-badge {
+    flex-shrink: 0;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: var(--wbo-bg-elevated);
+    color: var(--wbo-fg-muted);
 }
 
 .wbo-ai-prop-orig {
+    flex: 1;
+    min-width: 0;
     font-size: 11.5px;
-    opacity: 0.65;
+    color: var(--wbo-fg-muted);
     word-break: break-all;
 }
 
-.wbo-ai-prop-inputs {
+.wbo-redo-toggle {
+    flex-shrink: 0;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    height: 22px !important;
+    padding: 0 8px !important;
+    margin: 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-bg) !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: border-color 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+
+.wbo-redo-toggle:hover {
+    border-color: var(--wbo-accent) !important;
+    color: var(--wbo-accent) !important;
+}
+
+.wbo-redo-toggle.is-active {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
+    font-weight: 600 !important;
+}
+
+.wbo-prop-grid {
     display: grid;
-    grid-template-columns: 1fr 140px;
+    grid-template-columns: 1fr 180px;
+    gap: 6px 10px;
+}
+
+.wbo-prop-field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 0 !important;
+    min-width: 0;
+}
+
+.wbo-prop-field.is-full {
+    grid-column: 1 / -1;
+}
+
+.wbo-prop-label {
+    flex: 0 0 38px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
+    text-align: right;
+    white-space: nowrap;
+}
+
+.wbo-prop-field > .wbo-input {
+    flex: 1;
+    min-width: 0;
+    height: 28px !important;
+    min-height: 28px !important;
+    font-size: 12.5px !important;
+}
+
+.wbo-redo-card {
+    gap: 7px;
+}
+
+.wbo-redo-paste-box {
+    display: flex;
+    flex-direction: column;
     gap: 6px;
 }
 
@@ -2283,7 +2432,7 @@ details[open] > summary .wbo-details-chev {
         flex: 0 0 auto;
         width: 100%;
     }
-    .wbo-ai-prop-inputs {
+    .wbo-prop-grid {
         grid-template-columns: 1fr;
     }
     .wbo-icon-btn {

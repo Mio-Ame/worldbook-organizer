@@ -244,11 +244,31 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(isPotentiallySensitiveTitle('【R18】描写增强'), true);
     assert.equal(isPotentiallySensitiveTitle('恶俗文学扩展'), true);
     assert.equal(isPotentiallySensitiveTitle('反性凝视描写规范'), true);
+    assert.equal(isPotentiallySensitiveTitle('打飞机与飞机杯玩法'), true);
+    assert.equal(isPotentiallySensitiveTitle('孕期play指南'), true);
     assert.equal(isPotentiallySensitiveTitle('NTR修罗场'), true);
     assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);
+    assert.equal(isPotentiallySensitiveTitle('约会场景与流程指南'), false);
     assert.equal(isPotentiallySensitiveTitle('smart_prompt_small'), false);
     assert.equal(isPotentiallySensitiveTitle('成人礼仪与古代风俗'), false);
     assert.equal(isPotentiallySensitiveTitle('category_entry_ignore'), false);
+
+    // Feedback re-organize prompt includes ST taxonomy & previous rejected proposal
+    const redoPrompt = buildAiOrganizePrompt({
+        books: [{ realName: '约会场景与流程指南' }],
+        existingGroups: ['文风'],
+        feedback: {
+            reason: '约会指南不要归入世界观，请分到场景与互动',
+            previousProposals: [{ realName: '约会场景与流程指南', alias: '约会指南', group: '世界观与角色' }],
+            acceptedGroups: ['缝合'],
+        },
+    });
+    assert.match(redoPrompt.systemPrompt, /缝合/);
+    assert.match(redoPrompt.systemPrompt, /场景与互动/);
+    assert.match(redoPrompt.userPrompt, /重新分组反馈/);
+    assert.match(redoPrompt.userPrompt, /previousGroup/);
+    assert.match(redoPrompt.userPrompt, /世界观与角色/);
+    assert.match(redoPrompt.userPrompt, /缝合/);
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({

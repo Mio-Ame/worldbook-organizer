@@ -10,7 +10,7 @@
  *   triggers AI Organize with entry-clue sampling enabled.
  */
 
-import { MODULE_NAME, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
+import { MODULE_NAME, isPotentiallySensitiveTitle, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
 
@@ -402,14 +402,21 @@ function compactEntrySnippet(content, maxChars) {
 /**
  * On-demand read of a single worldbook's top entries (enabled entries prioritized)
  * with optional compact content snippets for AI Organize clues.
+ * Automatically skips individual entries whose title/keys/snippet contain NSFW
+ * or sensitive keywords so a single adult entry inside an otherwise normal book
+ * will NOT trigger commercial AI safety refusals!
  * NEVER called automatically in the background!
  *
  * @param {string} worldName
  * @param {number} [maxClues=5]
- * @param {{ snippetChars?: number }} [opts]
+ * @param {{ snippetChars?: number, filterSensitive?: boolean, statsOut?: { skippedEntries: number } }} [opts]
  * @returns {Promise<string[]>}
  */
-export async function fetchWorldbookCluesOnDemand(worldName, maxClues = 5, { snippetChars = 50 } = {}) {
+export async function fetchWorldbookCluesOnDemand(
+    worldName,
+    maxClues = 5,
+    { snippetChars = 50, filterSensitive = true, statsOut = null } = {},
+) {
     const limit = Math.max(1, Math.min(20, Number(maxClues) || 5));
     const maxSnippet = Math.max(0, Math.min(200, Number(snippetChars) || 0));
     const data = await loadWorldInfoPayload(worldName);
@@ -442,7 +449,15 @@ export async function fetchWorldbookCluesOnDemand(worldName, maxClues = 5, { sni
         else if (head) line = head;
         else if (snippet) line = snippet;
 
-        if (line && !clues.includes(line)) {
+        if (!line) continue;
+
+        // Skip individual sensitive entries while still collecting clean clues from the rest of the book
+        if (filterSensitive && isPotentiallySensitiveTitle(`${head} ${snippet}`)) {
+            if (statsOut) statsOut.skippedEntries = (statsOut.skippedEntries || 0) + 1;
+            continue;
+        }
+
+        if (!clues.includes(line)) {
             clues.push(line);
         }
         if (clues.length >= limit) break;

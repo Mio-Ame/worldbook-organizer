@@ -1072,7 +1072,7 @@ export function matchesSearch(bookMeta, query) {
 export function isPotentiallySensitiveTitle(text) {
     const s = String(text ?? '');
     if (
-        /(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|erotic|fetish|色情|情色|涩情|黄文|小黄文|肉文|纯肉|肉戏|床戏|车文|肉欲|情欲|淫荡|淫靡|淫秽|淫乱|淫词|调教|性爱|性癖|性奴|性交|性侵|性虐|性骚扰|性描写|性行为|性技巧|性器官|性高潮|性凝视|恶俗|恶堕|雌堕|涩涩|涩图|成人向|成人内容|成人描写|高h|h文|擦边|做爱|啪啪|榨精|触手|媚药|催情|春药|发情|情趣|色诱|凌辱|羞辱|拘束|母狗|肉便器|口交|足交|乳交|肛交|内射|颜射|中出|潮吹|自慰|手淫|双性|扶她|兽交|轮奸|强奸|迷奸|乱伦|绿帽|产卵|身体开发|工口|里番|重口|猎奇|血腥|虐杀|自残)/i.test(s)
+        /(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|erotic|fetish|色情|情色|涩情|黄文|小黄文|肉文|纯肉|肉戏|床戏|车文|肉欲|情欲|色欲|涩欲|色气|涩气|淫荡|淫靡|淫秽|淫乱|淫词|淫水|淫叫|娇喘|浪叫|发骚|发浪|调教|性爱|性癖|性奴|性交|性侵|性虐|性骚扰|性描写|性行为|性技巧|性器官|性高潮|性凝视|性玩具|成人玩具|情趣用品|情趣内衣|恶俗|恶堕|雌堕|涩涩|涩图|成人向|成人内容|成人描写|高h|h文|擦边|做爱|啪啪|打飞机|飞机杯|跳蛋|震动棒|假阳具|阳具|阴茎|肉棒|鸡巴|嫩穴|花穴|骚穴|蜜穴|阴道|阴蒂|精液|射精|喷水|潮喷|深喉|吞精|榨精|榨汁|抽插|后入|骑乘位|无套|触手|媚药|催情|春药|发情|情趣|色诱|凌辱|羞辱|拘束|母狗|肉便器|口交|足交|乳交|肛交|舔乳|舔阴|吮吸乳|乳首|内射|颜射|中出|潮吹|自慰|手淫|双性|扶她|兽交|轮奸|强奸|迷奸|乱伦|绿帽|产卵|产乳|泌乳|失禁|露出癖|灌肠|尿道|身体开发|约炮|一夜情|嫖娼|卖淫|援交|黄暴|黄腔|肉汤|炖肉|工口|里番|重口|猎奇|血腥|虐杀|自残|(?:孕期|孕|羞耻|放置|窒息|露出|捆绑|催眠|电击|尿道|灌肠)\s*play)/i.test(s)
     ) {
         return true;
     }
@@ -1111,23 +1111,36 @@ export function cleanupDeletedWorldSettings(settings, deletedNames = []) {
 
 /**
  * Build a compact, strict JSON-only prompt for AI worldbook naming & grouping.
- * Uses neutral file-cataloging framing and concise entry clues to maximize
- * classification accuracy while minimizing token usage.
+ * Uses neutral file-cataloging framing, SillyTavern domain taxonomy guidance,
+ * and optional user feedback for partial re-organization of dissatisfied items.
  *
  * @param {object} params
  * @param {Array<{ realName: string, currentAlias?: string, currentGroup?: string, sampleEntries?: string[] }>} params.books
  * @param {string[]} params.existingGroups
  * @param {string} [params.customInstruction='']
+ * @param {{
+ *   reason?: string,
+ *   previousProposals?: Array<{ realName: string, alias?: string, group?: string, note?: string }>,
+ *   acceptedGroups?: string[],
+ * } | null} [params.feedback=null]
  * @returns {{ systemPrompt: string, userPrompt: string }}
  */
-export function buildAiOrganizePrompt({ books, existingGroups = [], customInstruction = '' }) {
+export function buildAiOrganizePrompt({ books, existingGroups = [], customInstruction = '', feedback = null }) {
     const systemPrompt = [
-        '你是本地文档资料库的文件目录归类助手（用于整理小说写作设定集的文件名与文件夹分类）。',
+        '你是本地文档资料库（SillyTavern 角色扮演世界书）的文件目录归类助手。',
         '请仅做客观的文件名规范化与目录归类，不要展开或评价任何文件内容。',
         '根据输入的 realName 以及可选的条目摘要（clues），为每本资料建议：',
         '1. alias：更干净、简洁、统一风格的中文显示名（虚拟别名，不会修改原文件名，去掉冗余版本号/装饰符号/广告词，保留核心主题与必要区分）。',
-        '2. group：简短清晰的分类分组名（优先复用已有分组名，总分组数尽量精简在 3~8 个内，如「文风与写法」「世界观设定」「系统与规则」「小剧场与扩展」「通用素材」等）。',
+        '2. group：简短清晰的分类分组名（优先复用已有分组名，总分组数尽量精简在 3~8 个内）。',
         '3. note：一句话极简用途说明（不超过 25 字）。',
+        '',
+        '酒馆世界书常见分类维度参考（注意区分，勿混为一谈）：',
+        '- 「文风」：控制行文语气、叙事风格、描写质感、去 AI 味、对话风格、节奏等写作规范。',
+        '- 「缝合」：设计用来缝合进系统预设/指令模板的功能补丁与规则模块（如防抢话、思维链、输出格式、记忆/逻辑增强、通用规则指令等）。',
+        '- 「场景与互动」：约会场景与流程指南、恋爱/日常互动、生活情景、剧情推进模板、特定场合事件等（不要把约会指南、恋爱/日常互动流程误归入「世界观」或「角色设定」）。',
+        '- 「世界观设定」：架空历史、地理势力、时代背景、魔法/科技体系等宏观世界设定。',
+        '- 「小剧场与扩展」：随机小剧场、状态栏/前端扩展、互动小游戏等玩法组件。',
+        '- 「人设与素材」：外貌穿搭、职业生活常识、台词词库、通用素材参考等。',
         '',
         '严格要求：',
         '- 必须只输出一个合法 JSON 对象，不要包含任何解释文字、道歉或额外注释。',
@@ -1136,18 +1149,44 @@ export function buildAiOrganizePrompt({ books, existingGroups = [], customInstru
     ].join('\n');
 
     const lines = [];
-    if (existingGroups.length > 0) {
-        lines.push(`当前已有分组：${existingGroups.join('、')}`);
+    const mergedGroups = [...new Set([
+        ...(existingGroups || []),
+        ...(Array.isArray(feedback?.acceptedGroups) ? feedback.acceptedGroups : []),
+    ].map((g) => String(g || '').trim()).filter(Boolean))];
+
+    if (mergedGroups.length > 0) {
+        lines.push(`当前已有/已确认可复用的分组：${mergedGroups.join('、')}`);
     }
     if (customInstruction && customInstruction.trim()) {
         lines.push(`用户额外偏好：${customInstruction.trim()}`);
     }
+    if (feedback && typeof feedback === 'object') {
+        const fbLines = [
+            '【重新分组反馈】用户对上一次的整理结果中以下几项的分组或命名不满意，请根据用户意见重新归类并优化，不要机械沿用被退回的旧分组（previousGroup）。',
+        ];
+        if (feedback.reason && String(feedback.reason).trim()) {
+            fbLines.push(`用户不满意的原因与期望：${String(feedback.reason).trim()}`);
+        }
+        lines.push(fbLines.join('\n'));
+    }
+
+    const prevMap = new Map(
+        (Array.isArray(feedback?.previousProposals) ? feedback.previousProposals : [])
+            .filter((p) => p?.realName)
+            .map((p) => [p.realName, p]),
+    );
+
     lines.push('待归类资料清单（JSON 数组）：');
     const payload = books.map((b) => {
         const row = { realName: b.realName };
         if (b.currentAlias) row.currentAlias = b.currentAlias;
         if (b.currentGroup && b.currentGroup !== '未分组' && b.currentGroup !== '非角色世界书') {
             row.currentGroup = b.currentGroup;
+        }
+        const prev = prevMap.get(b.realName);
+        if (prev) {
+            if (prev.group) row.previousGroup = prev.group;
+            if (prev.alias) row.previousAlias = prev.alias;
         }
         if (Array.isArray(b.sampleEntries) && b.sampleEntries.length > 0) {
             row.clues = b.sampleEntries;
