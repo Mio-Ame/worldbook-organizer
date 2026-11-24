@@ -4451,6 +4451,10 @@ details[open] > summary .wbo-details-chev {
         align-items: stretch;
         gap: 6px;
     }
+    .wbo-mgr-search-row {
+        flex: 0 0 auto;
+        width: 100%;
+    }
     .wbo-mgr-list-tools {
         display: flex;
         flex-wrap: wrap;
