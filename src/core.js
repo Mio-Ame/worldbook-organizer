@@ -1871,6 +1871,7 @@ export function exportConfigData(settings) {
             adaptChatBindPopup: cfg.adaptChatBindPopup,
             adaptMoveEntryPopup: cfg.adaptMoveEntryPopup,
             showNativeOptgroups: cfg.showNativeOptgroups,
+            localOrganizeCategories: cfg.localOrganizeCategories,
             sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,
             assignments: cfg.assignments,

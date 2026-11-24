@@ -518,6 +518,8 @@
     text-align: left !important;
     cursor: pointer !important;
     box-shadow: none !important;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 38px;
 }
 
 .wbo-mp-row:active,
@@ -1334,6 +1336,8 @@
     padding: 6px 10px;
     border-bottom: 1px solid var(--wbo-border);
     transition: background-color 0.12s ease;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 40px;
 }
 
 .wbo-book-row:last-child {

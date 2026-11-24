@@ -995,16 +995,19 @@ function openMobileEditorPickerSheet() {
 
     if (searchInput instanceof HTMLInputElement) {
         let composing = false;
+        let searchTimer = null;
         searchInput.addEventListener('compositionstart', () => { composing = true; });
         searchInput.addEventListener('compositionend', () => {
             composing = false;
+            clearTimeout(searchTimer);
             searchQuery = searchInput.value;
             renderList();
         });
         searchInput.addEventListener('input', () => {
             if (composing) return;
             searchQuery = searchInput.value;
-            renderList();
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => { renderList(); }, 80);
         });
     }
 
@@ -1709,16 +1712,19 @@ function attachGroupedSelectControl(
 
         if (searchInput instanceof HTMLInputElement) {
             let composing = false;
+            let searchTimer = null;
             searchInput.addEventListener('compositionstart', () => { composing = true; });
             searchInput.addEventListener('compositionend', () => {
                 composing = false;
+                clearTimeout(searchTimer);
                 searchQuery = searchInput.value;
                 renderList();
             });
             searchInput.addEventListener('input', () => {
                 if (composing) return;
                 searchQuery = searchInput.value;
-                renderList();
+                clearTimeout(searchTimer);
+                searchTimer = setTimeout(() => { renderList(); }, 80);
             });
         }
 

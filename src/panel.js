@@ -72,6 +72,9 @@ let _callbacks = null;
 let _lastModalListSig = null;
 let _batchMode = false;
 let _mgrPillsExpanded = false;
+let _mgrSearchTimer = null;
+/** @type {MutationObserver | null} */
+let _charBtnWidthObserver = null;
 /** @type {Set<string>} */
 const _batchSelected = new Set();
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
@@ -218,17 +221,23 @@ function scheduleNativeCharBtnWidthSync(btn) {
     if (syncNativeCharBtnWidth(btn)) return;
     const wiDrawer = document.getElementById('WorldInfo');
     if (!wiDrawer || typeof MutationObserver !== 'function') return;
+    _charBtnWidthObserver?.disconnect();
     const obs = new MutationObserver(() => {
         if (!btn.isConnected) {
             obs.disconnect();
+            if (_charBtnWidthObserver === obs) _charBtnWidthObserver = null;
             return;
         }
         if (!wiDrawer.classList.contains('closedDrawer')) {
             requestAnimationFrame(() => {
-                if (syncNativeCharBtnWidth(btn)) obs.disconnect();
+                if (syncNativeCharBtnWidth(btn)) {
+                    obs.disconnect();
+                    if (_charBtnWidthObserver === obs) _charBtnWidthObserver = null;
+                }
             });
         }
     });
+    _charBtnWidthObserver = obs;
     obs.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
 }
 
@@ -1279,19 +1288,21 @@ function openManagerModal() {
         closeManagerModal();
     });
 
-    // IME-safe persistent search input inside modal
+    // IME-safe debounced search input inside modal (smooth even with 500+ worldbooks)
     const searchInput = modal.querySelector('#wbo-mgr-search-input');
     if (searchInput instanceof HTMLInputElement) {
         searchInput.addEventListener('compositionstart', () => { _isComposing = true; });
         searchInput.addEventListener('compositionend', () => {
             _isComposing = false;
+            clearTimeout(_mgrSearchTimer);
             _searchQuery = searchInput.value;
             renderManagerGroupsListOnly();
         });
         searchInput.addEventListener('input', () => {
             if (_isComposing) return;
             _searchQuery = searchInput.value;
-            renderManagerGroupsListOnly();
+            clearTimeout(_mgrSearchTimer);
+            _mgrSearchTimer = setTimeout(() => { renderManagerGroupsListOnly(); }, 80);
         });
     }
 
@@ -5164,6 +5175,10 @@ function openSettingsModal() {
  * Remove all DOM nodes mounted by this panel module cleanly.
  */
 export function teardownPanels() {
+    clearTimeout(_mgrSearchTimer);
+    _mgrSearchTimer = null;
+    _charBtnWidthObserver?.disconnect();
+    _charBtnWidthObserver = null;
     closeSubModal();
     closeManagerModal();
     document.getElementById(CHAR_TOGGLE_BTN_ID)?.remove();
