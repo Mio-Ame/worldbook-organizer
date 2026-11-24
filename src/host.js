@@ -226,23 +226,29 @@ export function getCharLoreEntries() {
 export function getWorldNames(extraKnownNames = []) {
     const ctx = getHostContext();
     let names = [];
+    let hasAuthoritativeHostList = false;
 
     if (typeof ctx?.getWorldInfoNames === 'function') {
         const list = ctx.getWorldInfoNames();
         if (Array.isArray(list) && list.length > 0) {
             names = list;
+            hasAuthoritativeHostList = true;
         }
     }
-    if (names.length === 0 && Array.isArray(_worldInfoModule?.world_names) && _worldInfoModule.world_names.length > 0) {
+    if (!hasAuthoritativeHostList && Array.isArray(_worldInfoModule?.world_names) && _worldInfoModule.world_names.length > 0) {
         names = _worldInfoModule.world_names;
+        hasAuthoritativeHostList = true;
     }
-    if (names.length === 0 && Array.isArray(_cachedSettingsWorldNames) && _cachedSettingsWorldNames.length > 0) {
+    if (!hasAuthoritativeHostList && Array.isArray(_cachedSettingsWorldNames) && _cachedSettingsWorldNames.length > 0) {
         names = _cachedSettingsWorldNames;
     }
 
+    // Only merge `extraKnownNames` (detached DOM options) when host modules are unavailable;
+    // when authoritative `world_names` is loaded, NEVER resurrect deleted books from detached maps!
+    const sourceList = hasAuthoritativeHostList ? names : [...names, ...extraKnownNames];
     const merged = [];
     const seen = new Set();
-    for (const item of [...names, ...extraKnownNames]) {
+    for (const item of sourceList) {
         const clean = String(item ?? '').trim();
         if (clean && !seen.has(clean)) {
             seen.add(clean);

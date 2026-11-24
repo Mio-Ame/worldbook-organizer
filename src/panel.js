@@ -5094,7 +5094,7 @@ function openScanAndImportModal() {
                 count: coverage.embeddedNameMatches.length,
                 rowsHtml: `
                     <div class="wbo-cov-orphan-bar">
-                        <span>这些角色卡已绑定主世界书，同时卡内嵌世界书名称与硬盘另一本世界书同名（非附加绑定，仅用于自动归入角色书隐藏）。</span>
+                        <span>这些角色卡已绑定主世界书，同时卡内自带世界书与另一本本地世界书同名（可能是旧版本残留，并非附加绑定，已归入角色世界书隐藏）。</span>
                     </div>
                     ${renderCovTable(coverage.embeddedNameMatches.map((m) => `
                         <div class="wbo-cov-row-wrap">

@@ -91,6 +91,35 @@ export function getDetachedWorldNames() {
 }
 
 /**
+ * Purge deleted worldbooks from detached option caches so a deleted hidden book
+ * is never resurrected into native `<select>` elements or stale group counts.
+ * @param {Set<string>} liveWorldNamesSet
+ */
+export function pruneDetachedWorldNames(liveWorldNamesSet) {
+    if (!(liveWorldNamesSet instanceof Set) || liveWorldNamesSet.size === 0) return;
+    let globalPruned = false;
+    let editorPruned = false;
+    for (const key of [..._globalDetachedMap.keys()]) {
+        if (!liveWorldNamesSet.has(key)) {
+            _globalDetachedMap.delete(key);
+            globalPruned = true;
+        }
+    }
+    for (const key of [..._editorDetachedMap.keys()]) {
+        if (!liveWorldNamesSet.has(key)) {
+            _editorDetachedMap.delete(key);
+            editorPruned = true;
+        }
+    }
+    if (_currentlyEditingWorld && !liveWorldNamesSet.has(_currentlyEditingWorld)) {
+        _currentlyEditingWorld = null;
+        editorPruned = true;
+    }
+    if (globalPruned) _lastGlobalSignature = null;
+    if (editorPruned) _lastEditorSignature = null;
+}
+
+/**
  * Record the worldbook currently opened in the native editor so we keep it visible.
  * @param {string | null} worldName
  */

@@ -42,6 +42,7 @@ import {
 import {
     applyAllNativeWorldFilters,
     getDetachedWorldNames,
+    pruneDetachedWorldNames,
     setCurrentlyEditingWorld,
     startNativeObservers,
     syncMobileEditorTriggerLabel,
@@ -54,7 +55,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-const STYLE_ASSET_VERSION = '2.34.3-dev.6';
+const STYLE_ASSET_VERSION = '2.34.3-dev.7';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;
@@ -118,6 +119,7 @@ function recomputeAndRender({ save = false } = {}) {
 
     const worldNames = getWorldNames(getDetachedWorldNames());
     const worldNamesSet = new Set(worldNames);
+    pruneDetachedWorldNames(worldNamesSet);
     if (pruneStaleWorldbookSettings(settings, worldNamesSet)) {
         save = true;
     }
