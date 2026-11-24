@@ -174,7 +174,8 @@ function renderSelect2OptionResult(state, { showGroupPill }) {
 
 /**
  * Build Select2 `templateSelection` for `#world_editor_select` (single select).
- * Safe because upstream reads `<option>` text/value, never the rendered span.
+ * Returns a plain string so the native single-line selection box, clear icon,
+ * and dropdown arrow layout remain 100% untouched across all themes.
  * @param {any} state
  */
 function renderEditorSelect2Selection(state) {
@@ -182,20 +183,12 @@ function renderEditorSelect2Selection(state) {
     const realName = String(state.text ?? '').trim();
     const meta = _latestClassification?.byName?.get(realName);
     if (!meta) return state.text;
-
-    const $ = globalThis.jQuery;
-    if (!$) return meta.primaryTitle;
-
-    const subHtml = meta.subtitle
-        ? ` <span class="wbo-s2-sel-sub">(${escHtml(meta.subtitle)})</span>`
-        : '';
-    return $(`<span class="wbo-s2-sel" title="${escHtml(meta.realName)}">${escHtml(meta.primaryTitle)}${subHtml}</span>`);
+    return meta.primaryTitle;
 }
 
 /**
  * Restore all detached options back into a `<select>` and unwrap ALL `<optgroup>`s
- * (including any leftover empty optgroups from other extensions like ST-BaiBai-Tools)
- * so ghost empty group headers never remain.
+ * so leftover or foreign empty group headers never remain.
  * @param {HTMLSelectElement} selectEl
  * @param {Map<string, HTMLOptionElement>} detachedMap
  */
@@ -292,6 +285,13 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         .join('|');
     const charSig = [...classification.characterBooks.map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)].join('|');
 
+    const foreignOptgroupCount = mode === 'editor'
+        ? selectEl.querySelectorAll('optgroup:not([data-wbo-group])').length
+        : 0;
+    const ownOptgroupCount = mode === 'editor'
+        ? selectEl.querySelectorAll('optgroup[data-wbo-group]').length
+        : 0;
+
     return JSON.stringify([
         mode,
         settings.activeFilterGroupId,
@@ -301,6 +301,8 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         settings.aliasTitleMode,
         mode === 'editor' ? _currentlyEditingWorld : '',
         isNativeMobileSelectMode() ? _mobileSearchQuery : '',
+        foreignOptgroupCount,
+        ownOptgroupCount,
         groupSig,
         assignmentSig,
         aliasSig,
@@ -502,7 +504,6 @@ function applyEditorWorldSelectFilter(classification, settings) {
 
     if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
         const patched = patchExistingSelect2InPlace($select, {
-            dropdownCssClass: 'wbo-editor-s2-dropdown',
             matcher: customSelect2Matcher,
             templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: false }),
             templateSelection: renderEditorSelect2Selection,
@@ -617,6 +618,7 @@ export function setGlobalWorldActive(realName, active) {
     }
 
     if (!targetOpt) return false;
+    const prevFocus = document.activeElement;
     targetOpt.selected = Boolean(active);
 
     const $ = globalThis.jQuery;
@@ -626,13 +628,28 @@ export function setGlobalWorldActive(realName, active) {
         selectEl.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
-    // Re-apply filter so deactivating a hidden character book hides it again cleanly
-    if (!active && _latestClassification && _latestSettings) {
-        setTimeout(() => {
-            if (_latestClassification && _latestSettings) {
-                applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+    // Prevent Select2 from stealing focus into `#world_info` and scrolling the page
+    const curFocus = document.activeElement;
+    if (curFocus instanceof HTMLElement && curFocus !== prevFocus) {
+        const inWorldInfo = curFocus === selectEl || Boolean(curFocus.closest?.('#world_info, .select2-container'));
+        if (inWorldInfo) {
+            curFocus.blur();
+            if (prevFocus instanceof HTMLElement && prevFocus.isConnected) {
+                try { prevFocus.focus({ preventScroll: true }); } catch { /* ignore */ }
             }
-        }, 0);
+        }
+    }
+
+    // Only re-hide a detached hidden character book if it was deactivated
+    if (!active && _latestClassification && _latestSettings) {
+        const meta = _latestClassification.byName?.get(clean);
+        if (meta?.isInCharGroup && !_latestSettings.showCharBooks) {
+            setTimeout(() => {
+                if (_latestClassification && _latestSettings) {
+                    applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+                }
+            }, 0);
+        }
     }
 
     return true;
@@ -780,6 +797,28 @@ function enhanceCharBindPopup(charWorldEl) {
     setTimeout(applyPopupFilter, 60);
 }
 
+/** @type {(() => void) | null} */
+let _editorNativeOpenHandler = null;
+/** @type {((ev: any) => void) | null} */
+let _editorSelect2OpeningHandler = null;
+
+/**
+ * Synchronously assert our custom `<optgroup>`s on `#world_editor_select` right
+ * before the dropdown opens (beats any capture-phase or document-level handlers
+ * that may have reorganized `<optgroup>`s on pointerdown/opening).
+ */
+function syncEditorBeforeOpen() {
+    if (_isApplying || !_latestClassification || !_latestSettings) return;
+    _isApplying = true;
+    try {
+        _lastEditorSignature = null;
+        applyEditorWorldSelectFilter(_latestClassification, _latestSettings);
+    } finally {
+        _editorSelectObserver?.takeRecords();
+        _isApplying = false;
+    }
+}
+
 /**
  * Install lightweight observers on `#world_info`, `#world_editor_select`, and
  * `.character_world` popups so upstream `updateWorldInfoList()` refreshes keep
@@ -812,6 +851,29 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     if (editorEl) {
         _editorSelectObserver = new MutationObserver(scheduleResync);
         _editorSelectObserver.observe(editorEl, { childList: true, subtree: false });
+
+        // Native mobile `<select>` fallback: ensure optgroups right before opening
+        _editorNativeOpenHandler = () => {
+            if (isNativeMobileSelectMode()) {
+                syncEditorBeforeOpen();
+            }
+        };
+        editorEl.addEventListener('mousedown', _editorNativeOpenHandler);
+        editorEl.addEventListener('focus', _editorNativeOpenHandler);
+    }
+
+    // Desktop Select2: bind on `window` so our `select2:opening` handler runs LAST
+    // in event bubbling (synchronously BEFORE Select2 populates dropdown items),
+    // ensuring user custom groups always take effect even if another script
+    // reorganized `<optgroup>`s earlier during pointerdown / document opening.
+    const $ = globalThis.jQuery;
+    if ($) {
+        _editorSelect2OpeningHandler = (ev) => {
+            if (ev?.target?.id === 'world_editor_select') {
+                syncEditorBeforeOpen();
+            }
+        };
+        $(window).on('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
     }
 
     // Lightweight popup observer: inspects only newly added top-level dialog/popup nodes
@@ -848,6 +910,18 @@ export function stopNativeObservers() {
     if (_charPopupObserver) {
         _charPopupObserver.disconnect();
         _charPopupObserver = null;
+    }
+    if (_editorNativeOpenHandler) {
+        const editorEl = document.getElementById('world_editor_select');
+        if (editorEl) {
+            editorEl.removeEventListener('mousedown', _editorNativeOpenHandler);
+            editorEl.removeEventListener('focus', _editorNativeOpenHandler);
+        }
+        _editorNativeOpenHandler = null;
+    }
+    if (_editorSelect2OpeningHandler && globalThis.jQuery) {
+        globalThis.jQuery(window).off('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
+        _editorSelect2OpeningHandler = null;
     }
 }
 

@@ -280,17 +280,31 @@ test('findUnscannedShallowCharacters and findCardsWithUnimportedBooks detect pen
     assert.equal(unimported[0].entryCount, 1);
 });
 
-test('addCustomGroup places new groups first and moveSectionOrder reorders custom/char/ungrouped sections', () => {
+test('addCustomGroup places new groups first, character books default to bottom, and v1 order migrates cleanly', () => {
     const settings = normalizeSettings(null);
-    assert.deepEqual(settings.sectionOrder, [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
+    assert.deepEqual(settings.sectionOrder, [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
 
     const g1 = addCustomGroup(settings, { name: '文风设定' });
     const g2 = addCustomGroup(settings, { name: '世界观' });
-    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
-
-    assert.equal(moveSectionOrder(settings, SPECIAL_GROUPS.UNGROUPED, -1), true);
     assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
+
+    assert.equal(moveSectionOrder(settings, SPECIAL_GROUPS.CHARACTER, -1), true);
+    assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
     assert.equal(moveSectionOrder(settings, g2.id, -1), false);
+
+    // Legacy v1 default [__char__, __ungrouped__] auto-migrates to [__ungrouped__, __char__]
+    const migrated = normalizeSettings({
+        sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
+    });
+    assert.equal(migrated.sectionOrderVersion, 2);
+    assert.deepEqual(migrated.sectionOrder, [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
+
+    // Explicit v2 user reorder is preserved
+    const kept = normalizeSettings({
+        sectionOrderVersion: 2,
+        sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
+    });
+    assert.deepEqual(kept.sectionOrder, [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
 });
 
 test('migrateSettingsOnWorldRename updates assignments, aliases, notes, overrides, and cached bindings', () => {

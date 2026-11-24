@@ -32,6 +32,7 @@ export const GROUP_COLOR_PALETTE = Object.freeze([
 
 export const DEFAULT_SETTINGS = Object.freeze({
     version: 1,
+    sectionOrderVersion: 2,
     hideCharBooksByDefault: true,
     showCharBooks: false,
     charBookTitleMode: 'char_with_sub', // 'char_with_sub' | 'char_only' | 'original'
@@ -45,7 +46,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
-    sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
+    sectionOrder: [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER],
     apiProvider: 'host', // 'host' | 'custom'
     activeApiChannelId: '',
     apiChannels: [], // Array<{ id, name, baseUrl, apiKey, model }>
@@ -148,11 +149,12 @@ export function normalizeSettings(raw) {
         merged.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
     }
 
-    // Normalize unified sectionOrder containing all custom groups + __char__ + __ungrouped__
+    // Normalize unified sectionOrder containing all custom groups + __ungrouped__ + __char__
+    // Default order places custom groups first, general/ungrouped next, and character books at the bottom.
     const allowedSectionIds = new Set([
         ...merged.groups.map((g) => g.id),
-        SPECIAL_GROUPS.CHARACTER,
         SPECIAL_GROUPS.UNGROUPED,
+        SPECIAL_GROUPS.CHARACTER,
     ]);
     const rawOrder = Array.isArray(merged.sectionOrder) ? merged.sectionOrder : [];
     const cleanedOrder = [];
@@ -166,9 +168,22 @@ export function normalizeSettings(raw) {
     // Any newly present custom groups not yet in sectionOrder go to the front
     const missingCustom = merged.groups.map((g) => g.id).filter((id) => !seenOrder.has(id));
     const finalOrder = [...missingCustom, ...cleanedOrder];
-    for (const builtin of [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]) {
+    for (const builtin of [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]) {
         if (!seenOrder.has(builtin)) finalOrder.push(builtin);
     }
+
+    // One-time v1 -> v2 migration: if user still had legacy default [..., __char__, __ungrouped__],
+    // place general/ungrouped above character worldbooks so character books default to the bottom.
+    const prevOrderVer = Number(source.sectionOrderVersion || 1);
+    if (prevOrderVer < 2 && finalOrder.length >= 2) {
+        const last = finalOrder[finalOrder.length - 1];
+        const secondLast = finalOrder[finalOrder.length - 2];
+        if (secondLast === SPECIAL_GROUPS.CHARACTER && last === SPECIAL_GROUPS.UNGROUPED) {
+            finalOrder[finalOrder.length - 2] = SPECIAL_GROUPS.UNGROUPED;
+            finalOrder[finalOrder.length - 1] = SPECIAL_GROUPS.CHARACTER;
+        }
+    }
+    merged.sectionOrderVersion = 2;
     merged.sectionOrder = finalOrder;
 
     return merged;
@@ -1136,6 +1151,7 @@ export function applyAiOrganizeProposals(settings, proposals) {
     // Save undo snapshot (keep last 3)
     const snapshot = {
         at: Date.now(),
+        count: proposals.length,
         groups: deepClone(settings.groups || []),
         assignments: deepClone(settings.assignments || {}),
         aliases: deepClone(settings.aliases || {}),

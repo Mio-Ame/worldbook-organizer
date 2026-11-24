@@ -270,21 +270,26 @@ export function getWorldNames(extraKnownNames = []) {
 
 /**
  * Return the Set of currently active global worldbooks.
+ * Prefers live `#world_info option:checked` in DOM because it updates synchronously
+ * on toggle while upstream `selected_world_info` updates asynchronously.
  * @returns {Set<string>}
  */
 export function getActiveGlobalWorldSet() {
+    if (typeof document !== 'undefined') {
+        const sel = document.getElementById('world_info');
+        if (sel) {
+            const active = new Set();
+            sel.querySelectorAll('option:checked').forEach((opt) => {
+                const t = (opt.textContent || '').trim();
+                if (opt.value !== '' && t) active.add(t);
+            });
+            return active;
+        }
+    }
     if (Array.isArray(_worldInfoModule?.selected_world_info)) {
         return new Set(_worldInfoModule.selected_world_info);
     }
-    const active = new Set();
-    const sel = document.getElementById('world_info');
-    if (sel) {
-        sel.querySelectorAll('option:checked').forEach((opt) => {
-            const t = (opt.textContent || '').trim();
-            if (opt.value !== '' && t) active.add(t);
-        });
-    }
-    return active;
+    return new Set();
 }
 
 /**
@@ -447,7 +452,7 @@ export async function scanShallowCharactersInBatches(targets, { onProgress, sign
 
 /**
  * Import a character card's embedded `character_book` into SillyTavern / TauriTavern
- * and bind it to the character, inspired by RedBird Tools `importCardWorld`.
+ * and bind it to the character via standard host APIs.
  * NEVER overwrites an existing worldbook with the same name!
  *
  * @param {string} avatar
@@ -514,7 +519,7 @@ export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSe
 
 /**
  * One-time migration from legacy v1.4.0 localStorage custom API config into
- * cross-device `extensionSettings` channels (just like ST-BaiBai-Book).
+ * cross-device `extensionSettings` channels.
  * @param {Record<string, any>} settings
  * @returns {boolean} true if migrated
  */
@@ -542,28 +547,6 @@ export function migrateLegacyLocalApiConfig(settings) {
     } catch {
         return false;
     }
-}
-
-/**
- * Read shared API channels from ST-BaiBai-Book (`extensionSettings.baibai_api_channels`
- * or `baibai_book.channels`) in read-only mode so users can import them in 1 click.
- * @returns {Array<{ name: string, baseUrl: string, apiKey: string, model: string }>}
- */
-export function readBaiBaiSharedChannels() {
-    const es = getHostContext()?.extensionSettings;
-    if (!es || typeof es !== 'object') return [];
-    const list =
-        (Array.isArray(es.baibai_api_channels?.channels) && es.baibai_api_channels.channels) ||
-        (Array.isArray(es.baibai_book?.channels) && es.baibai_book.channels) ||
-        [];
-    return list
-        .filter((ch) => ch && typeof ch === 'object' && (ch.url || ch.baseUrl))
-        .map((ch) => ({
-            name: String(ch.name || ch.model || '柏宝书渠道').trim(),
-            baseUrl: String(ch.url || ch.baseUrl || '').trim(),
-            apiKey: String(ch.key || ch.apiKey || '').trim(),
-            model: String(ch.model || '').trim(),
-        }));
 }
 
 /**
