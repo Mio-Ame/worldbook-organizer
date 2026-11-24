@@ -28,6 +28,7 @@ import {
     SPECIAL_GROUPS,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
+    matchesSearch,
 } from './core.js';
 import { getCurrentCharacterAvatar } from './host.js';
 
@@ -40,8 +41,34 @@ let _isApplying = false;
 let _latestClassification = null;
 let _latestSettings = null;
 let _currentlyEditingWorld = null;
+let _mobileSearchQuery = '';
 let _lastGlobalSignature = null;
 let _lastEditorSignature = null;
+
+/**
+ * Detect whether `#world_editor_select` lacks Select2 (e.g. mobile / TauriTavern iOS & Android).
+ * @returns {boolean}
+ */
+export function isNativeMobileSelectMode() {
+    const sel = document.getElementById('world_editor_select');
+    if (!sel) return false;
+    const $ = globalThis.jQuery;
+    const hasSelect2 = Boolean($ && ($(sel).data('select2') || $(sel).hasClass('select2-hidden-accessible')));
+    return !hasSelect2;
+}
+
+/**
+ * Set optional search query for native mobile `<select>` controls that lack Select2 search.
+ * @param {string} query
+ */
+export function setMobileSearchFilter(query) {
+    const clean = String(query ?? '').trim();
+    if (clean === _mobileSearchQuery) return;
+    _mobileSearchQuery = clean;
+    if (_latestClassification && _latestSettings && isNativeMobileSelectMode()) {
+        applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+    }
+}
 
 /** @type {MutationObserver | null} */
 let _globalSelectObserver = null;
@@ -273,6 +300,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         settings.charBookTitleMode,
         settings.aliasTitleMode,
         mode === 'editor' ? _currentlyEditingWorld : '',
+        isNativeMobileSelectMode() ? _mobileSearchQuery : '',
         groupSig,
         assignmentSig,
         aliasSig,
@@ -329,7 +357,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
             showCharBooks: Boolean(settings.showCharBooks),
             isSelected: opt.selected,
             isCurrentlyEditing: false,
-        });
+        }) && (opt.selected || hasSelect2 || !_mobileSearchQuery || matchesSearch(meta || { realName }, _mobileSearchQuery));
 
         if (visible) {
             visibleOpts.push(opt);
@@ -426,7 +454,7 @@ function applyEditorWorldSelectFilter(classification, settings) {
             showCharBooks: Boolean(settings.showCharBooks),
             isSelected: opt.selected,
             isCurrentlyEditing: isEditing,
-        });
+        }) && (isEditing || hasSelect2 || !_mobileSearchQuery || matchesSearch(meta || { realName }, _mobileSearchQuery));
 
         if (visible) {
             const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;

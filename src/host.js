@@ -10,10 +10,14 @@
  *   triggers AI Organize with entry-clue sampling enabled.
  */
 
-import { MODULE_NAME, normalizeSettings } from './core.js';
+import { MODULE_NAME, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
+
+const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
 
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
+let _powerUserModule = null;
+let _powerUserModuleTried = false;
 let _cachedSettingsCharLore = null;
 let _cachedSettingsWorldNames = null;
 
@@ -69,6 +73,34 @@ export async function ensureWorldInfoModule() {
         _worldInfoModule = null;
     }
     return _worldInfoModule;
+}
+
+/**
+ * ST 1.14 fallback: load `/scripts/power-user.js` once if `getContext().powerUserSettings`
+ * is not exposed on older SillyTavern versions.
+ */
+export async function ensurePowerUserModule() {
+    if (_powerUserModuleTried) return _powerUserModule;
+    _powerUserModuleTried = true;
+    if (getHostContext()?.powerUserSettings) return null;
+    try {
+        const url = new URL('/scripts/power-user.js', globalThis.location.href).href;
+        _powerUserModule = await import(/* @vite-ignore */ url);
+    } catch {
+        _powerUserModule = null;
+    }
+    return _powerUserModule;
+}
+
+/**
+ * Build request headers compatible with ST 1.14–1.19+ and TauriTavern.
+ */
+function buildRequestHeaders() {
+    const ctx = getHostContext();
+    if (typeof ctx?.getRequestHeaders === 'function') {
+        return ctx.getRequestHeaders();
+    }
+    return { 'Content-Type': 'application/json' };
 }
 
 /**
@@ -165,11 +197,11 @@ export function getCurrentCharacterAvatar() {
 }
 
 /**
- * Return in-memory `powerUserSettings` (for persona-bound lorebook indicators).
+ * Return in-memory `powerUserSettings` (compatible with ST 1.14–1.19+ and TauriTavern).
  * @returns {Record<string, any> | null}
  */
 export function getPowerUserSettings() {
-    return getHostContext()?.powerUserSettings || null;
+    return getHostContext()?.powerUserSettings || _powerUserModule?.power_user || null;
 }
 
 /**
@@ -475,6 +507,335 @@ export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSe
     } catch (err) {
         return { status: 'failed', name: targetName, error: String(err?.message || err) };
     }
+}
+
+/**
+ * Read custom OpenAI-compatible API settings from localStorage (device-local,
+ * never exported in backup JSON so API keys stay private).
+ */
+export function getCustomApiConfig() {
+    const defaults = {
+        provider: 'host', // 'host' | 'custom'
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: '',
+    };
+    try {
+        const raw = globalThis.localStorage?.getItem(CUSTOM_API_STORAGE_KEY);
+        if (!raw) return defaults;
+        const parsed = JSON.parse(raw);
+        return {
+            provider: parsed?.provider === 'custom' ? 'custom' : 'host',
+            baseUrl: String(parsed?.baseUrl || defaults.baseUrl).trim(),
+            apiKey: String(parsed?.apiKey || '').trim(),
+            model: String(parsed?.model || '').trim(),
+        };
+    } catch {
+        return defaults;
+    }
+}
+
+/**
+ * Save custom OpenAI-compatible API settings to localStorage.
+ * @param {{ provider?: string, baseUrl?: string, apiKey?: string, model?: string }} next
+ */
+export function saveCustomApiConfig(next) {
+    const current = getCustomApiConfig();
+    const merged = {
+        provider: next.provider === 'custom' ? 'custom' : (next.provider === 'host' ? 'host' : current.provider),
+        baseUrl: next.baseUrl !== undefined ? String(next.baseUrl).trim() : current.baseUrl,
+        apiKey: next.apiKey !== undefined ? String(next.apiKey).trim() : current.apiKey,
+        model: next.model !== undefined ? String(next.model).trim() : current.model,
+    };
+    try {
+        globalThis.localStorage?.setItem(CUSTOM_API_STORAGE_KEY, JSON.stringify(merged));
+    } catch {
+        // Ignore storage quota errors
+    }
+    return merged;
+}
+
+/**
+ * Normalize an OpenAI-compatible base URL into an endpoint URL.
+ * @param {string} baseUrl
+ * @param {string} suffix
+ * @returns {string}
+ */
+function buildOpenAiEndpoint(baseUrl, suffix) {
+    let clean = String(baseUrl || '').trim().replace(/\/+$/, '');
+    if (!clean) throw new Error('请填写 API Base URL');
+    if (clean.endsWith('/chat/completions') && suffix === '/chat/completions') return clean;
+    if (clean.endsWith('/chat/completions') && suffix === '/models') {
+        clean = clean.slice(0, -'/chat/completions'.length);
+    }
+    return `${clean}${suffix}`;
+}
+
+/**
+ * Fetch available model IDs from a custom OpenAI-compatible endpoint.
+ * @param {{ baseUrl: string, apiKey: string }} cfg
+ * @returns {Promise<string[]>}
+ */
+export async function fetchCustomApiModels({ baseUrl, apiKey }) {
+    const url = buildOpenAiEndpoint(baseUrl, '/models');
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+    const res = await fetch(url, { method: 'GET', headers });
+    if (!res.ok) {
+        throw new Error(`拉取模型失败 (HTTP ${res.status})`);
+    }
+    const json = await res.json();
+    const list = Array.isArray(json?.data) ? json.data : (Array.isArray(json?.models) ? json.models : []);
+    return list
+        .map((m) => (typeof m === 'string' ? m : String(m?.id || m?.name || '').trim()))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Call a user-configured OpenAI-compatible API directly for worldbook organizing.
+ * @param {{ baseUrl: string, apiKey: string, model: string, systemPrompt: string, userPrompt: string }} params
+ * @returns {Promise<string>}
+ */
+export async function callCustomApiForOrganize({ baseUrl, apiKey, model, systemPrompt, userPrompt }) {
+    const cleanModel = String(model || '').trim();
+    if (!cleanModel) throw new Error('请填写模型名称');
+    const url = buildOpenAiEndpoint(baseUrl, '/chat/completions');
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+
+    const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+            model: cleanModel,
+            temperature: 0.2,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ],
+        }),
+    });
+
+    if (!res.ok) {
+        let detail = '';
+        try {
+            detail = (await res.text()).slice(0, 180);
+        } catch {
+            // ignore
+        }
+        throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
+    }
+
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+        return content.map((part) => (typeof part === 'string' ? part : part?.text || '')).join('');
+    }
+    throw new Error('自定义 API 未返回有效文本内容');
+}
+
+/**
+ * Load a worldbook JSON payload safely across ST 1.14–1.19+ and TauriTavern.
+ * @param {string} worldName
+ * @returns {Promise<any | null>}
+ */
+async function loadWorldInfoPayload(worldName) {
+    const ctx = getHostContext();
+    await ensureWorldInfoModule();
+    const loader = ctx?.loadWorldInfo || _worldInfoModule?.loadWorldInfo;
+    if (typeof loader === 'function') {
+        return await loader(worldName);
+    }
+    const res = await fetch('/api/worldinfo/get', {
+        method: 'POST',
+        headers: buildRequestHeaders(),
+        body: JSON.stringify({ name: worldName }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+}
+
+/**
+ * Truly rename a worldbook on disk AND migrate all live bindings safely:
+ * 1. Save new file first (abort before deleting old if anything fails or collides)
+ * 2. Update all User Persona bindings (`power_user.persona_descriptions` + active persona)
+ * 3. Update all character primary bindings (`/api/characters/merge-attributes` / `writeExtensionField`)
+ * 4. Update all character extra bindings (`world_info.charLore[].extraBooks`)
+ * 5. Update current chat binding (`chat_metadata.world_info`)
+ * 6. Update active global selection (`selected_world_info`) & plugin metadata
+ * 7. Delete old file and refresh world list
+ *
+ * @param {string} oldName
+ * @param {string} newName
+ * @param {Record<string, any>} pluginSettings
+ * @returns {Promise<{ ok: boolean, error?: string, migrated?: { chars: number, extras: number, personas: number, currentChat: boolean, globalActive: boolean } }>}
+ */
+export async function realRenameWorldbook(oldName, newName, pluginSettings) {
+    const cleanOld = String(oldName ?? '').trim();
+    const cleanNew = String(newName ?? '').trim();
+    if (!cleanOld || !cleanNew) return { ok: false, error: '名称不能为空' };
+    if (cleanOld === cleanNew) return { ok: true, migrated: { chars: 0, extras: 0, personas: 0, currentChat: false, globalActive: false } };
+
+    // Sanitize illegal filename chars conservatively
+    if (/[\\/:*?"<>|]/.test(cleanNew)) {
+        return { ok: false, error: '真实文件名不能包含 \\ / : * ? " < > |' };
+    }
+
+    const ctx = getHostContext();
+    await ensureWorldInfoModule();
+    await ensurePowerUserModule();
+
+    const existingNames = new Set(getWorldNames());
+    if (existingNames.has(cleanNew)) {
+        return { ok: false, error: `已存在同名世界书「${cleanNew}」` };
+    }
+
+    // Step 1: Load original worldbook content
+    const data = await loadWorldInfoPayload(cleanOld);
+    if (!data || typeof data !== 'object' || !('entries' in data)) {
+        return { ok: false, error: `无法读取原世界书「${cleanOld}」` };
+    }
+
+    // Step 2: Save to new filename FIRST (never delete old before new succeeds!)
+    const saveFn = ctx?.saveWorldInfo || _worldInfoModule?.saveWorldInfo;
+    try {
+        if (typeof saveFn === 'function') {
+            await saveFn(cleanNew, data, true);
+        } else {
+            const saveRes = await fetch('/api/worldinfo/edit', {
+                method: 'POST',
+                headers: buildRequestHeaders(),
+                body: JSON.stringify({ name: cleanNew, data }),
+            });
+            if (!saveRes.ok) throw new Error(`HTTP ${saveRes.status}`);
+        }
+    } catch (err) {
+        return { ok: false, error: `写入新世界书失败：${err?.message || err}` };
+    }
+
+    const migrated = {
+        chars: 0,
+        extras: 0,
+        personas: 0,
+        currentChat: false,
+        globalActive: false,
+    };
+
+    // Step 3: Migrate character extra bindings (`world_info.charLore`)
+    const charLore = _worldInfoModule?.world_info?.charLore;
+    if (Array.isArray(charLore)) {
+        for (const item of charLore) {
+            if (Array.isArray(item?.extraBooks) && item.extraBooks.includes(cleanOld)) {
+                item.extraBooks = [...new Set(item.extraBooks.map((b) => (b === cleanOld ? cleanNew : b)))];
+                migrated.extras += 1;
+            }
+        }
+    }
+
+    // Step 4: Migrate User Persona bindings (`power_user.persona_descriptions` + active persona)
+    const pu = getPowerUserSettings();
+    if (pu) {
+        if (pu.persona_description_lorebook === cleanOld) {
+            pu.persona_description_lorebook = cleanNew;
+        }
+        const descs = pu.persona_descriptions;
+        if (descs && typeof descs === 'object') {
+            for (const desc of Object.values(descs)) {
+                if (desc && typeof desc === 'object' && desc.lorebook === cleanOld) {
+                    desc.lorebook = cleanNew;
+                    migrated.personas += 1;
+                }
+            }
+        }
+    }
+
+    // Step 5: Migrate current chat-bound worldbook (`chatMetadata.world_info`)
+    if (ctx?.chatMetadata?.world_info === cleanOld) {
+        ctx.chatMetadata.world_info = cleanNew;
+        migrated.currentChat = true;
+        if (typeof ctx.saveMetadata === 'function') {
+            try { await ctx.saveMetadata(); } catch { /* non-fatal */ }
+        }
+    }
+
+    // Step 6: Migrate character primary bindings (`extensions.world`)
+    const characters = getCharactersInMemory();
+    const linkedTargets = [];
+    characters.forEach((ch, chid) => {
+        if (!ch?.avatar) return;
+        const cached = pluginSettings?.cachedCharBindings?.[ch.avatar];
+        const primary = ch.shallow ? cached?.primary : ch.data?.extensions?.world;
+        if (primary === cleanOld) {
+            linkedTargets.push({ chid, avatar: ch.avatar });
+        }
+    });
+
+    for (const target of linkedTargets) {
+        try {
+            const res = await fetch('/api/characters/merge-attributes', {
+                method: 'POST',
+                headers: buildRequestHeaders(),
+                body: JSON.stringify({
+                    avatar: target.avatar,
+                    data: { extensions: { world: cleanNew } },
+                }),
+            });
+            if (res.ok) {
+                migrated.chars += 1;
+                if (characters[target.chid]?.data?.extensions) {
+                    characters[target.chid].data.extensions.world = cleanNew;
+                }
+            } else if (typeof ctx?.writeExtensionField === 'function') {
+                await ctx.writeExtensionField(target.chid, 'world', cleanNew);
+                migrated.chars += 1;
+            }
+        } catch {
+            // Best effort; keep going for other characters
+        }
+    }
+
+    // Step 7: Preserve global active status
+    const wasGlobalActive = getActiveGlobalWorldSet().has(cleanOld);
+    if (wasGlobalActive && Array.isArray(_worldInfoModule?.selected_world_info)) {
+        const idx = _worldInfoModule.selected_world_info.indexOf(cleanOld);
+        if (idx >= 0) {
+            _worldInfoModule.selected_world_info[idx] = cleanNew;
+            migrated.globalActive = true;
+        }
+    }
+
+    // Step 8: Migrate plugin metadata & save host settings
+    if (pluginSettings) {
+        migrateSettingsOnWorldRename(pluginSettings, cleanOld, cleanNew);
+    }
+    saveSettings();
+
+    // Step 9: Delete old file & refresh upstream list
+    try {
+        const delRes = await fetch('/api/worldinfo/delete', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: cleanOld }),
+        });
+        if (!delRes.ok) {
+            throw new Error(`HTTP ${delRes.status}`);
+        }
+    } catch (err) {
+        return {
+            ok: false,
+            error: `已创建新文件并迁移绑定，但删除旧文件失败：${err?.message || err}`,
+            migrated,
+        };
+    }
+
+    const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
+    if (typeof updateListFn === 'function') {
+        try { await updateListFn(); } catch { /* ignore */ }
+    }
+
+    return { ok: true, migrated };
 }
 
 /**

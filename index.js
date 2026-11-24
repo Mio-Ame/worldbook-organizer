@@ -19,6 +19,7 @@ import {
     updateCachedCharBindings,
 } from './src/core.js';
 import {
+    ensurePowerUserModule,
     ensureWorldInfoModule,
     getCharLoreEntries,
     getCharactersInMemory,
@@ -219,8 +220,9 @@ async function init() {
         }
     }
 
-    // Load in-memory world-info module once (falls back to single cached fetch only if needed)
+    // Load in-memory world-info & power-user modules once (with ST 1.14 fallbacks)
     await ensureWorldInfoModule();
+    await ensurePowerUserModule();
     await syncFallbackSettingsData(false);
 
     bindPanelCallbacks({

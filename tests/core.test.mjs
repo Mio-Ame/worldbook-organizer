@@ -16,6 +16,7 @@ import {
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
     matchesSearch,
+    migrateSettingsOnWorldRename,
     moveSectionOrder,
     normalizeSettings,
     parseAiOrganizeResponse,
@@ -289,6 +290,26 @@ test('addCustomGroup places new groups first and moveSectionOrder reorders custo
     assert.equal(moveSectionOrder(settings, SPECIAL_GROUPS.UNGROUPED, -1), true);
     assert.deepEqual(settings.sectionOrder, [g2.id, g1.id, SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
     assert.equal(moveSectionOrder(settings, g2.id, -1), false);
+});
+
+test('migrateSettingsOnWorldRename updates assignments, aliases, notes, overrides, and cached bindings', () => {
+    const settings = normalizeSettings({
+        assignments: { '旧书名': 'g1' },
+        aliases: { '旧书名': '临时别名' },
+        notes: { '旧书名': '备注内容' },
+        charBookOverrides: { '旧书名': 'exclude_from_char' },
+        cachedCharBindings: {
+            'Alice.png': { name: '艾莉丝', primary: '旧书名', embedded: '旧书名', embeddedEntryCount: 3, scanned: true },
+        },
+    });
+    migrateSettingsOnWorldRename(settings, '旧书名', '新书名');
+    assert.equal(settings.assignments['旧书名'], undefined);
+    assert.equal(settings.assignments['新书名'], 'g1');
+    assert.equal(settings.notes['新书名'], '备注内容');
+    assert.equal(settings.charBookOverrides['新书名'], 'exclude_from_char');
+    assert.equal(settings.cachedCharBindings['Alice.png'].primary, '新书名');
+    assert.equal(settings.cachedCharBindings['Alice.png'].embedded, '新书名');
+    assert.equal(settings.aliases['新书名'], '临时别名');
 });
 
 test('entry module and all submodules resolve and import without missing paths', async () => {

@@ -1089,6 +1089,42 @@ export function applyAiOrganizeProposals(settings, proposals) {
 }
 
 /**
+ * Migrate all plugin metadata keys cleanly when a worldbook is truly renamed on disk.
+ * @param {Record<string, any>} settings
+ * @param {string} oldName
+ * @param {string} newName
+ */
+export function migrateSettingsOnWorldRename(settings, oldName, newName) {
+    const cleanOld = String(oldName ?? '').trim();
+    const cleanNew = String(newName ?? '').trim();
+    if (!cleanOld || !cleanNew || cleanOld === cleanNew) return;
+
+    for (const dictKey of ['assignments', 'notes', 'charBookOverrides']) {
+        const dict = settings[dictKey];
+        if (dict && Object.hasOwn(dict, cleanOld)) {
+            dict[cleanNew] = dict[cleanOld];
+            delete dict[cleanOld];
+        }
+    }
+
+    if (settings.aliases && Object.hasOwn(settings.aliases, cleanOld)) {
+        const oldAlias = settings.aliases[cleanOld];
+        delete settings.aliases[cleanOld];
+        if (oldAlias && oldAlias !== cleanNew) {
+            settings.aliases[cleanNew] = oldAlias;
+        }
+    }
+
+    if (settings.cachedCharBindings && typeof settings.cachedCharBindings === 'object') {
+        for (const entry of Object.values(settings.cachedCharBindings)) {
+            if (!entry || typeof entry !== 'object') continue;
+            if (entry.primary === cleanOld) entry.primary = cleanNew;
+            if (entry.embedded === cleanOld) entry.embedded = cleanNew;
+        }
+    }
+}
+
+/**
  * Undo the most recent AI organize batch.
  * @param {Record<string, any>} settings
  * @returns {boolean}
