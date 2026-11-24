@@ -26,6 +26,7 @@
 
 import {
     SPECIAL_GROUPS,
+    compareZhCn,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
 } from './core.js';
@@ -35,6 +36,8 @@ import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, saveSe
 const _globalDetachedMap = new Map();
 /** @type {Map<string, HTMLOptionElement>} */
 const _editorDetachedMap = new Map();
+/** @type {WeakMap<HTMLSelectElement, { vw: number, multiple: boolean, metrics: Record<string, string> }>} */
+const _nativeAppearanceCache = new WeakMap();
 
 let _isApplying = false;
 let _latestClassification = null;
@@ -42,6 +45,7 @@ let _latestSettings = null;
 let _currentlyEditingWorld = null;
 let _lastGlobalSignature = null;
 let _lastEditorSignature = null;
+let _deferredGlobalTimer = null;
 
 /**
  * Detect whether `#world_editor_select` lacks Select2 (e.g. mobile / TauriTavern iOS & Android).
@@ -222,9 +226,30 @@ function sortByNativeValue(options) {
         const na = Number(a.value);
         const nb = Number(b.value);
         if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
-        return (a.textContent || '').localeCompare(b.textContent || '', 'zh-CN');
+        return compareZhCn(a.textContent || '', b.textContent || '');
     });
 }
+
+/**
+ * Build an O(1) rank lookup map from `classification.orderedSections` (already sorted by `compareZhCn`)
+ * so native `<option>` sorting uses pure integer subtraction with zero string collation overhead!
+ * @param {any} classification
+ * @returns {Map<string, number>}
+ */
+function buildBookOrderRankMap(classification) {
+    const rankMap = new Map();
+    let idx = 0;
+    for (const sec of classification?.orderedSections || []) {
+        for (const b of sec.books || []) {
+            if (b?.realName && !rankMap.has(b.realName)) {
+                rankMap.set(b.realName, idx++);
+            }
+        }
+    }
+    return rankMap;
+}
+
+const compareAsciiKey = ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0);
 
 /**
  * Compute a stable signature of what `#world_info` or `#world_editor_select`
@@ -251,11 +276,11 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
 
     const groupSig = (classification.orderedSections || []).map((s) => `${s.id}=${s.name}`).join('|');
     const assignmentSig = Object.entries(settings.assignments || {})
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(compareAsciiKey)
         .map(([k, v]) => `${k}>${v}`)
         .join('|');
     const aliasSig = Object.entries(settings.aliases || {})
-        .sort(([a], [b]) => a.localeCompare(b))
+        .sort(compareAsciiKey)
         .map(([k, v]) => `${k}=${v}`)
         .join('|');
     const charSig = [...classification.characterBooks.map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)].join('|');
@@ -350,19 +375,17 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         }
     }
 
-    // Order visible options cleanly by user's unified sectionOrder -> primary title
-    const groupOrder = new Map();
-    (classification.sectionOrder || []).forEach((id, idx) => groupOrder.set(id, idx));
-
+    // Order visible options cleanly by pre-sorted classification rank (O(1) integer compare — zero localeCompare!)
+    const rankMap = buildBookOrderRankMap(classification);
     visibleOpts.sort((a, b) => {
-        const ma = classification.byName.get((a.textContent || '').trim());
-        const mb = classification.byName.get((b.textContent || '').trim());
-        const ga = groupOrder.get(ma?.groupId) ?? 10000;
-        const gb = groupOrder.get(mb?.groupId) ?? 10000;
-        if (ga !== gb) return ga - gb;
-        const ta = ma?.primaryTitle || (a.textContent || '');
-        const tb = mb?.primaryTitle || (b.textContent || '');
-        return ta.localeCompare(tb, 'zh-CN');
+        const na = (a.textContent || '').trim();
+        const nb = (b.textContent || '').trim();
+        const ra = rankMap.get(na);
+        const rb = rankMap.get(nb);
+        if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
+        if (ra !== undefined) return -1;
+        if (rb !== undefined) return 1;
+        return compareZhCn(na, nb);
     });
 
     const frag = document.createDocumentFragment();
@@ -450,14 +473,18 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     // (e.g., user only uses "hide character worldbooks" with 0 custom groups — zero visual intrusion!)
     const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length >= 2;
 
+    const rankMap = buildBookOrderRankMap(classification);
     for (const sec of nonEmptySections) {
         const opts = visibleByGroup.get(sec.id);
         opts.sort((a, b) => {
-            const ma = classification.byName.get((a.textContent || '').trim());
-            const mb = classification.byName.get((b.textContent || '').trim());
-            const ta = ma?.primaryTitle || (a.textContent || '');
-            const tb = mb?.primaryTitle || (b.textContent || '');
-            return ta.localeCompare(tb, 'zh-CN');
+            const na = (a.textContent || '').trim();
+            const nb = (b.textContent || '').trim();
+            const ra = rankMap.get(na);
+            const rb = rankMap.get(nb);
+            if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
+            if (ra !== undefined) return -1;
+            if (rb !== undefined) return 1;
+            return compareZhCn(na, nb);
         });
 
         if (useOptgroups) {
@@ -531,34 +558,56 @@ export function syncMobileEditorTriggerLabel() {
  */
 function mirrorNativeSelectAppearance(selectEl, triggerEl) {
     if (!selectEl || !triggerEl) return;
+    const vw = globalThis.innerWidth || 0;
+    const cached = _nativeAppearanceCache.get(selectEl);
+    if (cached && cached.vw === vw && cached.multiple === Boolean(selectEl.multiple)) {
+        Object.assign(triggerEl.style, cached.metrics);
+        return;
+    }
+
     const wasHidden = selectEl.classList.contains('wbo-mobile-select-hidden');
     if (wasHidden) selectEl.classList.remove('wbo-mobile-select-hidden');
     try {
         // For `<select multiple>`, browsers default to a tall 4-row list box; mirror a clean single-line
-        // height from the sibling primary `<select>` (or cap at 36px) so it never looks bloated!
+        // height from the sibling primary `<select>` (or cap at 38px) so it never looks bloated!
         const styleSource = (selectEl.multiple && selectEl.closest('.character_world')?.querySelector('.character_world_info_selector'))
             || selectEl;
         const srcWasHidden = styleSource !== selectEl && styleSource.classList.contains('wbo-mobile-select-hidden');
         if (srcWasHidden) styleSource.classList.remove('wbo-mobile-select-hidden');
         try {
             const cs = globalThis.getComputedStyle(styleSource);
+            const selfCs = styleSource === selectEl ? cs : globalThis.getComputedStyle(selectEl);
             const rect = styleSource.getBoundingClientRect();
             const rawH = rect.height > 14 ? Math.round(rect.height) : parseFloat(cs.height);
             const finalH = Number.isFinite(rawH) && rawH > 14
-                ? Math.min(selectEl.multiple ? 38 : 44, Math.max(28, Math.round(rawH)))
+                ? Math.min(selectEl.multiple ? 38 : 48, Math.max(selectEl.multiple ? 28 : 22, Math.round(rawH)))
                 : 32;
-            triggerEl.style.height = `${finalH}px`;
-            triggerEl.style.minHeight = `${finalH}px`;
-            triggerEl.style.borderRadius = cs.borderRadius;
-            triggerEl.style.border = `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`;
-            triggerEl.style.backgroundColor = cs.backgroundColor;
-            triggerEl.style.color = cs.color;
-            triggerEl.style.fontSize = cs.fontSize;
-            triggerEl.style.fontFamily = cs.fontFamily;
-            triggerEl.style.fontWeight = cs.fontWeight;
-            triggerEl.style.boxShadow = cs.boxShadow;
             const padLeft = parseFloat(cs.paddingLeft) || 10;
-            triggerEl.style.padding = `0 ${Math.max(8, Math.round(padLeft))}px`;
+            const metrics = {
+                height: `${finalH}px`,
+                minHeight: `${finalH}px`,
+                maxHeight: `${finalH}px`,
+                lineHeight: '1',
+                borderRadius: cs.borderRadius,
+                border: `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`,
+                backgroundColor: cs.backgroundColor,
+                color: cs.color,
+                fontSize: cs.fontSize,
+                fontFamily: cs.fontFamily,
+                fontWeight: cs.fontWeight,
+                boxShadow: cs.boxShadow,
+                padding: `0 ${Math.max(8, Math.round(padLeft))}px`,
+                marginTop: selfCs.marginTop,
+                marginRight: selfCs.marginRight,
+                marginBottom: selfCs.marginBottom,
+                marginLeft: selfCs.marginLeft,
+                alignSelf: selfCs.alignSelf && selfCs.alignSelf !== 'auto' ? selfCs.alignSelf : '',
+                verticalAlign: selfCs.verticalAlign,
+            };
+            Object.assign(triggerEl.style, metrics);
+            if (rect.height > 14) {
+                _nativeAppearanceCache.set(selectEl, { vw, multiple: Boolean(selectEl.multiple), metrics });
+            }
         } finally {
             if (srcWasHidden) styleSource.classList.add('wbo-mobile-select-hidden');
         }
@@ -977,18 +1026,34 @@ function openMobileEditorPickerSheet() {
  * @param {Record<string, any>} settings
  * @param {{ force?: boolean }} [opts]
  */
-export function applyAllNativeWorldFilters(classification, settings, { force = false } = {}) {
+/**
+ * Apply native filtering safely while suppressing self-triggered MutationObserver loops.
+ * When `deferGlobal` is true (e.g. instant `#wbo-hdr-show-char` tap on mobile), updates
+ * `#world_editor_select` first on the immediate frame and schedules `#world_info` right after
+ * so the tapped toolbar responds without waiting on 200+ global `<option>` mutations.
+ * @param {any} classification
+ * @param {Record<string, any>} settings
+ * @param {{ force?: boolean, deferGlobal?: boolean }} [opts]
+ */
+export function applyAllNativeWorldFilters(classification, settings, { force = false, deferGlobal = false } = {}) {
     _latestClassification = classification;
     _latestSettings = settings;
     if (force) {
         _lastGlobalSignature = null;
         _lastEditorSignature = null;
     }
+    clearTimeout(_deferredGlobalTimer);
+    _deferredGlobalTimer = null;
+
     if (_isApplying) return;
     _isApplying = true;
     try {
-        applyGlobalWorldSelectFilter(classification, settings);
-        applyEditorWorldSelectFilter(classification, settings);
+        if (deferGlobal) {
+            applyEditorWorldSelectFilter(classification, settings);
+        } else {
+            applyGlobalWorldSelectFilter(classification, settings);
+            applyEditorWorldSelectFilter(classification, settings);
+        }
     } finally {
         // CRITICAL: flush mutation records generated by our own DOM updates BEFORE
         // releasing `_isApplying`, otherwise MutationObserver fires on the next microtask
@@ -996,6 +1061,20 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
         _globalSelectObserver?.takeRecords();
         _editorSelectObserver?.takeRecords();
         _isApplying = false;
+    }
+
+    if (deferGlobal) {
+        _deferredGlobalTimer = setTimeout(() => {
+            _deferredGlobalTimer = null;
+            if (_isApplying || !_latestClassification || !_latestSettings) return;
+            _isApplying = true;
+            try {
+                applyGlobalWorldSelectFilter(_latestClassification, _latestSettings);
+            } finally {
+                _globalSelectObserver?.takeRecords();
+                _isApplying = false;
+            }
+        }, 60);
     }
 }
 
@@ -2403,7 +2482,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             const mb = _latestClassification.byName.get(getOptionText(b));
             const ta = ma?.primaryTitle || getOptionText(a);
             const tb = mb?.primaryTitle || getOptionText(b);
-            return ta.localeCompare(tb, 'zh-CN');
+            return compareZhCn(ta, tb);
         });
 
         const secEl = document.createElement('div');
@@ -2862,6 +2941,8 @@ export function stopNativeObservers() {
  * (used on extension disable / clean).
  */
 export function teardownNativeFilters() {
+    clearTimeout(_deferredGlobalTimer);
+    _deferredGlobalTimer = null;
     stopNativeObservers();
     _lastGlobalSignature = null;
     _lastEditorSignature = null;

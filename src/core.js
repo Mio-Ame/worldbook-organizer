@@ -30,6 +30,23 @@ export const GROUP_COLOR_PALETTE = Object.freeze([
     '#8c99a6',
 ]);
 
+const _zhCollator = typeof Intl !== 'undefined' && typeof Intl.Collator === 'function'
+    ? new Intl.Collator('zh-CN')
+    : null;
+
+/**
+ * Fast cached zh-CN string comparator (10x–30x faster than per-call `localeCompare` on iOS WebKit).
+ * @param {string} a
+ * @param {string} b
+ * @returns {number}
+ */
+export function compareZhCn(a, b) {
+    const sa = String(a ?? '');
+    const sb = String(b ?? '');
+    if (sa === sb) return 0;
+    return _zhCollator ? _zhCollator.compare(sa, sb) : sa.localeCompare(sb, 'zh-CN');
+}
+
 export const DEFAULT_SETTINGS = Object.freeze({
     version: 1,
     sectionOrderVersion: 2,
@@ -947,7 +964,7 @@ export function classifyWorldbooks({
         }
     }
 
-    const sortByTitle = (a, b) => a.primaryTitle.localeCompare(b.primaryTitle, 'zh-CN');
+    const sortByTitle = (a, b) => compareZhCn(a.primaryTitle, b.primaryTitle);
     for (const bucket of customBuckets.values()) bucket.sort(sortByTitle);
     ungroupedBooks.sort(sortByTitle);
     characterBooks.sort(sortByTitle);

@@ -285,7 +285,7 @@
     text-align: left !important;
     cursor: pointer !important;
     overflow: hidden !important;
-    margin: 0 !important;
+    margin: 0;
     box-sizing: border-box !important;
 }
 
@@ -679,12 +679,21 @@
 }
 
 /* 100% theme-immune custom checkboxes & radios inside modals (unmistakable checked vs unchecked!) */
+.wbo-modal label:not(.wbo-tool-switch):not(.wbo-scope-card):not(.wbo-ai-pick-row) {
+    background: transparent !important;
+    padding: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    font-family: inherit !important;
+    line-height: 1.4 !important;
+}
+
 .wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):not([hidden]) {
     -webkit-appearance: none !important;
     appearance: none !important;
     position: relative !important;
-    display: inline-grid !important;
-    place-content: center !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
     width: 17px !important;
     height: 17px !important;
     min-width: 17px !important;
@@ -695,6 +704,7 @@
     border: 1.5px solid var(--wbo-border-strong) !important;
     background: var(--wbo-surface) !important;
     box-shadow: none !important;
+    box-sizing: border-box !important;
     cursor: pointer !important;
     flex-shrink: 0 !important;
     transition: background-color 0.14s ease, border-color 0.14s ease !important;
@@ -707,13 +717,22 @@
 
 .wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox)::after {
     content: '' !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    right: auto !important;
+    bottom: auto !important;
     display: block !important;
     width: 5px !important;
     height: 9px !important;
-    border: solid var(--wbo-accent-fg) !important;
-    border-width: 0 2.2px 2.2px 0 !important;
-    transform: rotate(45deg) scale(0) !important;
-    margin-top: -2px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    box-sizing: border-box !important;
+    border: none !important;
+    border-right: 2px solid var(--wbo-accent-fg) !important;
+    border-bottom: 2px solid var(--wbo-accent-fg) !important;
+    background: transparent !important;
+    transform: translate(-50%, -60%) rotate(45deg) scale(0) !important;
     transition: transform 0.12s ease !important;
 }
 
@@ -723,7 +742,9 @@
 }
 
 .wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):checked::after {
-    transform: rotate(45deg) scale(1) !important;
+    border-right-color: var(--wbo-accent-fg) !important;
+    border-bottom-color: var(--wbo-accent-fg) !important;
+    transform: translate(-50%, -60%) rotate(45deg) scale(1) !important;
 }
 
 .wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):indeterminate {
@@ -733,19 +754,18 @@
 
 .wbo-modal input[type="checkbox"]:not(.wbo-show-char-checkbox):indeterminate::after {
     width: 9px !important;
-    height: 0 !important;
+    height: 2px !important;
     border: none !important;
-    border-top: 2.2px solid var(--wbo-accent-fg) !important;
-    transform: scale(1) !important;
-    margin-top: 0 !important;
+    background: var(--wbo-accent-fg) !important;
+    transform: translate(-50%, -50%) scale(1) !important;
 }
 
 .wbo-modal input[type="radio"]:not([hidden]) {
     -webkit-appearance: none !important;
     appearance: none !important;
     position: relative !important;
-    display: inline-grid !important;
-    place-content: center !important;
+    display: inline-block !important;
+    vertical-align: middle !important;
     width: 16px !important;
     height: 16px !important;
     min-width: 16px !important;
@@ -756,6 +776,7 @@
     border: 1.5px solid var(--wbo-border-strong) !important;
     background: var(--wbo-surface) !important;
     box-shadow: none !important;
+    box-sizing: border-box !important;
     cursor: pointer !important;
     flex-shrink: 0 !important;
 }
@@ -767,11 +788,19 @@
 
 .wbo-modal input[type="radio"]::after {
     content: '' !important;
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    right: auto !important;
+    bottom: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
     width: 8px !important;
     height: 8px !important;
+    border: none !important;
     border-radius: 50% !important;
     background: var(--wbo-accent) !important;
-    transform: scale(0) !important;
+    transform: translate(-50%, -50%) scale(0) !important;
     transition: transform 0.12s ease !important;
 }
 
@@ -780,7 +809,7 @@
 }
 
 .wbo-modal input[type="radio"]:checked::after {
-    transform: scale(1) !important;
+    transform: translate(-50%, -50%) scale(1) !important;
 }
 
 /* Modals (desktop + mobile + TauriTavern safe-area — transparent backdrop so host page never dims!) */
@@ -829,6 +858,7 @@
     border: 1px solid var(--wbo-border-strong);
     background: var(--wbo-bg);
     color: var(--wbo-fg);
+    line-height: 1.45;
     box-shadow: 0 16px 48px rgba(15, 23, 42, 0.28), 0 4px 14px rgba(15, 23, 42, 0.14);
     overflow: hidden;
 }
@@ -1839,7 +1869,7 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-modal input[type="checkbox"].wbo-batch-check::after {
     width: 4px !important;
-    height: 8px !important;
+    height: 7.5px !important;
 }
 
 /* Preset prompt chips in AI Organize */
@@ -2861,12 +2891,17 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-radio-opt {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    font-size: 12.5px !important;
+    line-height: 1.4 !important;
     cursor: pointer;
     margin: 0 !important;
+}
+
+.wbo-radio-opt > span {
+    line-height: 1.4 !important;
 }
 
 .wbo-real-hint {
@@ -3053,21 +3088,24 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-ai-pick-row {
     flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 6px;
-    border-radius: 5px;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    padding: 5px 6px !important;
+    border-radius: 5px !important;
+    background: transparent !important;
+    font-family: inherit !important;
+    line-height: 1.4 !important;
     cursor: pointer;
     margin: 0 !important;
 }
 
 .wbo-ai-pick-row:hover {
-    background: var(--wbo-surface-hover);
+    background: var(--wbo-surface-hover) !important;
 }
 
 .wbo-ai-pick-row:has(input:checked) {
-    background: var(--wbo-accent-soft);
+    background: var(--wbo-accent-soft) !important;
 }
 
 .wbo-ai-pick-name {
@@ -3075,6 +3113,7 @@ details[open] > summary .wbo-details-chev {
     min-width: 0;
     word-break: break-word;
     font-size: 12.5px;
+    line-height: 1.4;
 }
 
 .wbo-ai-options {
@@ -3084,12 +3123,19 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-check-line {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 12.5px;
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    font-size: 12.5px !important;
+    line-height: 1.4 !important;
     margin: 2px 0 !important;
     cursor: pointer;
+}
+
+.wbo-check-line > span {
+    line-height: 1.4 !important;
+    margin: 0 !important;
+    padding: 0 !important;
 }
 
 .wbo-ai-actions-row {
@@ -3497,8 +3543,11 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-ai-prop-check {
-    padding-top: 2px;
-    margin: 0 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    align-self: flex-start;
+    margin: 4px 0 0 0 !important;
+    padding: 0 !important;
 }
 
 .wbo-ai-prop-fields {

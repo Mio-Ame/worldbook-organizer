@@ -56,6 +56,7 @@ import {
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _debounceTimer = null;
+let _deferredSaveTimer = null;
 let _classification = null;
 let _bindingMap = new Map();
 /** @type {Array<{ event: string, handler: Function }>} */
@@ -105,6 +106,8 @@ function recomputeAndRender({ save = false } = {}) {
     });
 
     if (save) {
+        clearTimeout(_deferredSaveTimer);
+        _deferredSaveTimer = null;
         saveSettings();
     }
 
@@ -145,6 +148,46 @@ function recomputeAndRender({ save = false } = {}) {
                 showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
             }
         }
+    }
+}
+
+/**
+ * Ultra-lightweight fast-path when ONLY `showCharBooks` (and optional section promotion) changed:
+ * reuses the existing in-memory `_classification` without rescanning characters or re-sorting 200+ books,
+ * updates `#world_editor_select` immediately, and defers `#world_info` + `saveSettings()` off the tap frame.
+ * @param {{ save?: boolean }} [opts]
+ */
+function applyCharToggleFastPath({ save = true } = {}) {
+    if (!_classification) {
+        recomputeAndRender({ save });
+        return;
+    }
+    const settings = getSettings();
+    const order = Array.isArray(settings.sectionOrder) ? settings.sectionOrder : _classification.sectionOrder;
+    if (Array.isArray(order) && Array.isArray(_classification.orderedSections)) {
+        const byId = new Map(_classification.orderedSections.map((s) => [s.id, s]));
+        const reordered = [];
+        for (const id of order) {
+            const sec = byId.get(id);
+            if (sec) {
+                reordered.push(sec);
+                byId.delete(id);
+            }
+        }
+        for (const rest of byId.values()) reordered.push(rest);
+        _classification.orderedSections = reordered;
+        _classification.sectionOrder = [...order];
+    }
+
+    applyAllNativeWorldFilters(_classification, settings, { deferGlobal: true });
+    renderEmbeddedPanel();
+
+    if (save) {
+        clearTimeout(_deferredSaveTimer);
+        _deferredSaveTimer = setTimeout(() => {
+            _deferredSaveTimer = null;
+            if (_initialized) saveSettings();
+        }, 120);
     }
 }
 
@@ -283,9 +326,13 @@ async function init() {
             bindingMap: _bindingMap,
             classification: _classification || classifyWorldbooks({ worldNames: [], bindingMap: new Map(), settings: getSettings() }),
         }),
-        onMutation: ({ save = true, uiOnly = false } = {}) => {
+        onMutation: ({ save = true, uiOnly = false, charToggleOnly = false } = {}) => {
             if (uiOnly) {
                 if (save) saveSettings();
+                return;
+            }
+            if (charToggleOnly && _classification) {
+                applyCharToggleFastPath({ save });
                 return;
             }
             recomputeAndRender({ save });
@@ -392,6 +439,8 @@ async function init() {
 export function onDisable() {
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
+    clearTimeout(_deferredSaveTimer);
+    _deferredSaveTimer = null;
 
     const ctx = getHostContext();
     const eventSource = ctx?.eventSource;

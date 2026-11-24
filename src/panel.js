@@ -246,7 +246,7 @@ function ensureHeaderBar() {
         btn.classList.toggle('is-active', nextShown);
         btn.setAttribute('aria-pressed', String(nextShown));
         requestAnimationFrame(() => {
-            void _callbacks?.onMutation({ save: true });
+            void _callbacks?.onMutation({ save: true, charToggleOnly: true });
         });
     });
 
@@ -1268,7 +1268,7 @@ function openManagerModal() {
             settings.charGroupCollapsed = false;
             promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
         }
-        await _callbacks.onMutation({ save: true });
+        await _callbacks.onMutation({ save: true, charToggleOnly: true });
     });
 
     // Smooth horizontal wheel scroll on the single-row group pill strip (disabled when expanded to multi-row)
@@ -1456,7 +1456,7 @@ function openManagerModal() {
                 settings.showCharBooks = true;
                 settings.charGroupCollapsed = false;
                 promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
-                await _callbacks.onMutation({ save: true });
+                await _callbacks.onMutation({ save: true, charToggleOnly: true });
                 break;
             }
             case 'select-filter': {
