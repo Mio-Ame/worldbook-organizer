@@ -1,0 +1,772 @@
+/* Worldbook Organizer — Theme-adaptive styles for SillyTavern & TauriTavern */
+
+.wbo-panel {
+    margin: 8px 0 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 22, 28, 0.55));
+    padding: 8px 10px;
+    font-size: 0.92em;
+    color: var(--SmartThemeBodyColor, inherit);
+}
+
+.wbo-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.wbo-toolbar-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: transparent;
+    border: none;
+    color: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 4px 2px;
+    font-size: 0.95em;
+}
+
+.wbo-stat-badge {
+    font-size: 0.8em;
+    font-weight: 400;
+    opacity: 0.72;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.15));
+}
+
+.wbo-toolbar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+}
+
+.wbo-btn-compact {
+    display: inline-flex !important;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px !important;
+    min-height: 28px;
+    font-size: 0.84em !important;
+    width: auto !important;
+    margin: 0 !important;
+    white-space: nowrap;
+}
+
+.wbo-btn-active {
+    border-color: var(--SmartThemeQuoteColor, #5b8def) !important;
+    box-shadow: inset 0 0 0 1px var(--SmartThemeQuoteColor, #5b8def);
+}
+
+.wbo-btn-ai {
+    border-color: rgba(155, 114, 207, 0.55) !important;
+}
+
+.wbo-btn-primary {
+    border-color: var(--SmartThemeQuoteColor, #5b8def) !important;
+    background: rgba(91, 141, 239, 0.22) !important;
+}
+
+.wbo-filter-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+}
+
+.wbo-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    flex: 1 1 220px;
+}
+
+.wbo-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.16));
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.82em;
+    line-height: 1.4;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.wbo-pill:hover {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.wbo-pill.is-active {
+    border-color: var(--SmartThemeQuoteColor, #5b8def);
+    background: rgba(91, 141, 239, 0.2);
+    font-weight: 600;
+}
+
+.wbo-pill.is-char.is-active {
+    border-color: #9b72cf;
+    background: rgba(155, 114, 207, 0.22);
+}
+
+.wbo-pill-dot,
+.wbo-group-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.wbo-pill-count {
+    opacity: 0.7;
+    font-size: 0.9em;
+}
+
+.wbo-search-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    flex: 0 1 210px;
+    min-width: 150px;
+}
+
+.wbo-search-wrap > i {
+    position: absolute;
+    left: 8px;
+    opacity: 0.6;
+    font-size: 0.82em;
+    pointer-events: none;
+}
+
+.wbo-search-input {
+    width: 100% !important;
+    padding: 4px 8px 4px 26px !important;
+    margin: 0 !important;
+    font-size: 0.85em !important;
+    min-height: 28px;
+}
+
+.wbo-groups-list {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 360px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.wbo-group {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    background: rgba(0, 0, 0, 0.14);
+    overflow: hidden;
+}
+
+.wbo-group.is-char-group {
+    border-color: rgba(155, 114, 207, 0.35);
+}
+
+.wbo-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.wbo-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    padding: 3px 0;
+    font-size: 0.88em;
+    font-weight: 600;
+}
+
+.wbo-chevron {
+    width: 12px;
+    font-size: 0.78em;
+    opacity: 0.7;
+}
+
+.wbo-group-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-group-count {
+    font-size: 0.82em;
+    font-weight: 400;
+    opacity: 0.68;
+}
+
+.wbo-group-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.wbo-group-body {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.08));
+}
+
+.wbo-book-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    transition: background-color 0.12s ease;
+}
+
+.wbo-book-row:last-child {
+    border-bottom: none;
+}
+
+.wbo-book-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.wbo-book-row.is-active {
+    background: rgba(76, 175, 132, 0.12);
+}
+
+.wbo-book-row.is-editing {
+    box-shadow: inset 3px 0 0 var(--SmartThemeQuoteColor, #5b8def);
+}
+
+.wbo-book-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.wbo-book-toggle input {
+    margin: 0;
+    cursor: pointer;
+}
+
+.wbo-book-main {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: none;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    padding: 1px 0;
+}
+
+.wbo-book-title-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.wbo-book-title {
+    font-weight: 500;
+    word-break: break-word;
+}
+
+.wbo-book-sub {
+    font-size: 0.78em;
+    opacity: 0.58;
+    word-break: break-word;
+}
+
+.wbo-book-note {
+    font-size: 0.78em;
+    opacity: 0.68;
+    margin-top: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-tag {
+    font-size: 0.72em;
+    padding: 0 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    opacity: 0.85;
+    white-space: nowrap;
+}
+
+.wbo-tag-char {
+    background: rgba(155, 114, 207, 0.22);
+    color: #d6beff;
+}
+
+.wbo-tag-persona {
+    background: rgba(61, 165, 184, 0.22);
+    color: #9be3f0;
+}
+
+.wbo-book-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+}
+
+.wbo-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    opacity: 0.72;
+    cursor: pointer;
+    transition: opacity 0.12s ease, background-color 0.12s ease;
+}
+
+.wbo-icon-btn:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.wbo-icon-btn.wbo-danger:hover {
+    color: #ff7b7b;
+}
+
+.wbo-char-hidden-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    border: 1px dashed rgba(155, 114, 207, 0.4);
+    background: rgba(155, 114, 207, 0.08);
+    font-size: 0.84em;
+}
+
+.wbo-char-hidden-text {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    opacity: 0.88;
+}
+
+.wbo-empty-hint {
+    padding: 10px;
+    text-align: center;
+    opacity: 0.65;
+    font-size: 0.85em;
+}
+
+/* Native Select2 visual enhancements */
+.wbo-s2-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+}
+
+.wbo-s2-main {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+}
+
+.wbo-s2-sub,
+.wbo-s2-sel-sub {
+    font-size: 0.8em;
+    opacity: 0.58;
+}
+
+.wbo-s2-badge {
+    font-size: 0.74em;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.1);
+    opacity: 0.82;
+    flex-shrink: 0;
+}
+
+.wbo-s2-badge.is-char {
+    background: rgba(155, 114, 207, 0.28);
+}
+
+/* Character bind popup filter bar */
+.wbo-charpopup-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.wbo-charpopup-select {
+    flex: 1 1 160px;
+    margin: 0 !important;
+    min-height: 28px;
+    font-size: 0.86em !important;
+}
+
+/* Modal overlay (desktop + mobile + TauriTavern safe-area) */
+.wbo-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.58);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding:
+        max(12px, var(--tt-inset-top, env(safe-area-inset-top, 0px)))
+        max(12px, var(--tt-inset-right, env(safe-area-inset-right, 0px)))
+        max(12px, var(--tt-inset-bottom, env(safe-area-inset-bottom, 0px)))
+        max(12px, var(--tt-inset-left, env(safe-area-inset-left, 0px)));
+}
+
+.wbo-modal {
+    width: min(460px, 100%);
+    max-height: min(86vh, calc(var(--tt-base-viewport-height, 100dvh) - 32px));
+    display: flex;
+    flex-direction: column;
+    border-radius: 12px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
+    background: var(--SmartThemeBlurTintColor, #1c1f26);
+    color: var(--SmartThemeBodyColor, #eceff4);
+    box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+}
+
+.wbo-modal.is-wide {
+    width: min(680px, 100%);
+}
+
+.wbo-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    font-weight: 600;
+}
+
+.wbo-modal-body {
+    padding: 12px 14px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.wbo-modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 6px;
+}
+
+.wbo-spacer {
+    flex: 1;
+}
+
+.wbo-safe-note {
+    font-size: 0.84em;
+    line-height: 1.45;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid rgba(76, 175, 132, 0.35);
+    background: rgba(76, 175, 132, 0.1);
+}
+
+.wbo-safe-note code {
+    word-break: break-all;
+}
+
+.wbo-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.wbo-label {
+    font-size: 0.84em;
+    opacity: 0.82;
+}
+
+.wbo-input,
+.wbo-textarea {
+    width: 100% !important;
+    margin: 0 !important;
+}
+
+.wbo-swatches {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.wbo-swatch {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    cursor: pointer;
+}
+
+.wbo-swatch.is-selected {
+    border-color: #ffffff;
+    transform: scale(1.1);
+}
+
+.wbo-move-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-move-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.wbo-move-option:hover,
+.wbo-move-option.is-current {
+    border-color: var(--SmartThemeQuoteColor, #5b8def);
+    background: rgba(91, 141, 239, 0.16);
+}
+
+.wbo-move-label {
+    flex: 1;
+    font-weight: 500;
+}
+
+.wbo-move-desc {
+    font-size: 0.78em;
+    opacity: 0.68;
+}
+
+/* AI Organize modal internals */
+.wbo-ai-section-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    font-size: 0.88em;
+    font-weight: 600;
+    margin-bottom: 6px;
+}
+
+.wbo-ai-quick-picks {
+    display: inline-flex;
+    gap: 8px;
+}
+
+.wbo-link-btn {
+    background: transparent;
+    border: none;
+    color: var(--SmartThemeQuoteColor, #7fb0ff);
+    cursor: pointer;
+    font-size: 0.85em;
+    padding: 0;
+}
+
+.wbo-ai-book-list,
+.wbo-ai-preview-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
+    border-radius: 8px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.wbo-ai-preview-list {
+    max-height: 320px;
+    gap: 8px;
+    padding: 6px;
+}
+
+.wbo-ai-pick-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin: 0;
+}
+
+.wbo-ai-pick-row:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.wbo-ai-pick-name {
+    flex: 1;
+    min-width: 0;
+    word-break: break-word;
+    font-size: 0.88em;
+}
+
+.wbo-ai-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.wbo-check-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88em;
+    margin: 2px 0;
+    cursor: pointer;
+}
+
+.wbo-ai-actions-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.wbo-ai-paste-box {
+    margin-top: 8px;
+    font-size: 0.86em;
+}
+
+.wbo-ai-paste-box summary {
+    cursor: pointer;
+    opacity: 0.85;
+    margin-bottom: 6px;
+}
+
+.wbo-ai-status {
+    margin-top: 6px;
+    font-size: 0.84em;
+    opacity: 0.86;
+}
+
+.wbo-ai-status.is-error {
+    color: #ff8a8a;
+    opacity: 1;
+}
+
+.wbo-ai-prop-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.wbo-ai-prop-fields {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.wbo-ai-prop-orig {
+    font-size: 0.78em;
+    opacity: 0.68;
+    word-break: break-all;
+}
+
+.wbo-ai-prop-inputs {
+    display: grid;
+    grid-template-columns: 1fr 140px;
+    gap: 6px;
+}
+
+/* Extension Settings Drawer */
+.wbo-settings-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 4px 0;
+}
+
+.wbo-settings-summary {
+    font-size: 0.86em;
+    opacity: 0.85;
+    padding: 6px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.wbo-setting-row {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 0.88em;
+}
+
+.wbo-settings-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+@media (max-width: 640px) {
+    .wbo-search-wrap {
+        flex: 1 1 100%;
+    }
+    .wbo-ai-prop-inputs {
+        grid-template-columns: 1fr;
+    }
+    .wbo-icon-btn {
+        width: 32px;
+        height: 32px;
+    }
+}

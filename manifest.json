@@ -1,0 +1,10 @@
+{
+  "display_name": "世界书分组管理 (Worldbook Organizer)",
+  "loading_order": 500,
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Mio-Ame",
+  "version": "1.0.0",
+  "homePage": "https://github.com/Mio-Ame/worldbook-organizer",
+  "auto_update": true
+}
