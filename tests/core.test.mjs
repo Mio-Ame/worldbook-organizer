@@ -9,6 +9,8 @@ import {
     buildPersonaBindingIndex,
     classifyWorldbooks,
     exportConfigData,
+    findCardsWithUnimportedBooks,
+    findUnscannedShallowCharacters,
     importConfigData,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
@@ -43,7 +45,8 @@ test('character binding detection covers primary, extra charLore, embedded, and 
     assert.equal(changed, true);
     assert.equal(cached['Alice.png'].primary, '【v3.2作者原版】艾莉丝世界观');
     assert.equal(cached['Alice.png'].embedded, '艾莉丝内嵌设定');
-    assert.equal(cached['Bob.png'], undefined);
+    assert.equal(cached['Bob.png'].scanned, true);
+    assert.equal(cached['Bob.png'].primary, null);
 
     // Step 2: simulate reload with lazyLoadCharacters=true (shallow characters)
     const shallowChars = [
@@ -220,6 +223,57 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(undone, true);
     assert.equal(settings.groups.length, 0);
     assert.equal(settings.aliases['【2026精修】古风去八股文风_v3'], undefined);
+});
+
+test('findUnscannedShallowCharacters and findCardsWithUnimportedBooks detect pending scans and safe imports', () => {
+    const chars = [
+        {
+            avatar: 'NewCard.png',
+            name: '新角色',
+            shallow: false,
+            data: {
+                extensions: { world: '' },
+                character_book: { name: '新角色设定集', entries: [{ uid: 0, content: 'hi' }] },
+            },
+        },
+        {
+            avatar: 'ExistingBookCard.png',
+            name: '已有书角色',
+            shallow: false,
+            data: {
+                extensions: { world: '已存在世界书' },
+                character_book: { name: '已存在世界书', entries: [{ uid: 0, content: 'hi' }] },
+            },
+        },
+        {
+            avatar: 'ShallowUnknown.png',
+            name: '未扫懒加载卡',
+            shallow: true,
+        },
+        {
+            avatar: 'ShallowCached.png',
+            name: '已扫懒加载卡',
+            shallow: true,
+        },
+    ];
+
+    const cache = {
+        'ShallowCached.png': { name: '已扫懒加载卡', primary: null, embedded: null, embeddedEntryCount: 0, scanned: true },
+    };
+
+    const unscanned = findUnscannedShallowCharacters(chars, cache);
+    assert.equal(unscanned.length, 1);
+    assert.equal(unscanned[0].avatar, 'ShallowUnknown.png');
+
+    const unimported = findCardsWithUnimportedBooks({
+        characters: chars,
+        worldNamesSet: new Set(['已存在世界书']),
+        cachedCharBindings: cache,
+    });
+    assert.equal(unimported.length, 1);
+    assert.equal(unimported[0].avatar, 'NewCard.png');
+    assert.equal(unimported[0].importName, '新角色设定集');
+    assert.equal(unimported[0].entryCount, 1);
 });
 
 test('entry module and all submodules resolve and import without missing paths', async () => {

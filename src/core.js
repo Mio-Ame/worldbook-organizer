@@ -38,6 +38,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     aliasTitleMode: 'alias_with_sub',   // 'alias_with_sub' | 'alias_only'
     includeExtraCharBooks: true,
     includeEmbeddedNameMatch: true,
+    autoImportMissingCharBook: false,
     autoHideInCharBindPopup: true,
     showNativeOptgroups: true,
     groupPanelExpanded: true,
@@ -179,7 +180,12 @@ export function updateCachedCharBindings(cachedBindings, characters) {
         const primary = typeof rawPrimary === 'string' && rawPrimary.trim() ? rawPrimary.trim() : null;
 
         let embedded = null;
+        let embeddedEntryCount = 0;
         if (ch?.data?.character_book && typeof ch.data.character_book === 'object') {
+            const entries = ch.data.character_book.entries;
+            embeddedEntryCount = Array.isArray(entries)
+                ? entries.length
+                : (entries && typeof entries === 'object' ? Object.keys(entries).length : 0);
             const rawEmb = ch.data.character_book.name || `${charName}'s Lorebook`;
             if (typeof rawEmb === 'string' && rawEmb.trim()) {
                 embedded = rawEmb.trim();
@@ -191,13 +197,28 @@ export function updateCachedCharBindings(cachedBindings, characters) {
                 !existing ||
                 existing.name !== charName ||
                 existing.primary !== primary ||
-                existing.embedded !== embedded
+                existing.embedded !== embedded ||
+                existing.embeddedEntryCount !== embeddedEntryCount ||
+                existing.scanned !== true
             ) {
-                next[avatar] = { name: charName, primary, embedded };
+                next[avatar] = {
+                    name: charName,
+                    primary,
+                    embedded,
+                    embeddedEntryCount,
+                    scanned: true,
+                };
                 changed = true;
             }
-        } else if (existing) {
-            delete next[avatar];
+        } else if (!existing || existing.scanned !== true || existing.primary || existing.embedded) {
+            // Remember scanned characters with no bindings too so shallow mode never re-scans them!
+            next[avatar] = {
+                name: charName,
+                primary: null,
+                embedded: null,
+                embeddedEntryCount: 0,
+                scanned: true,
+            };
             changed = true;
         }
     }
@@ -211,6 +232,97 @@ export function updateCachedCharBindings(cachedBindings, characters) {
     }
 
     return { cached: next, changed };
+}
+
+/**
+ * Find shallow characters that have not been scanned into cache yet.
+ * @param {Array<any>} characters
+ * @param {Record<string, any>} cachedBindings
+ * @returns {Array<{ chid: number, avatar: string, name: string }>}
+ */
+export function findUnscannedShallowCharacters(characters = [], cachedBindings = {}) {
+    const out = [];
+    if (!Array.isArray(characters)) return out;
+    characters.forEach((ch, chid) => {
+        const avatar = String(ch?.avatar ?? '').trim();
+        if (!avatar || !ch?.shallow) return;
+        const cached = cachedBindings?.[avatar];
+        if (!cached || cached.scanned !== true) {
+            out.push({
+                chid,
+                avatar,
+                name: String(ch?.name || ch?.data?.name || charaFileName(avatar)).trim() || avatar,
+            });
+        }
+    });
+    return out;
+}
+
+/**
+ * Find characters whose embedded `character_book` has entries and can be imported
+ * cleanly without overwriting any existing worldbook file.
+ * @param {object} params
+ * @param {Array<any>} params.characters
+ * @param {Set<string>} params.worldNamesSet
+ * @param {Record<string, any>} [params.cachedCharBindings={}]
+ * @returns {Array<{ chid: number, avatar: string, charName: string, importName: string, entryCount: number, reason: 'missing' | 'unbound' }>}
+ */
+export function findCardsWithUnimportedBooks({
+    characters = [],
+    worldNamesSet = new Set(),
+    cachedCharBindings = {},
+}) {
+    const out = [];
+    if (!Array.isArray(characters)) return out;
+
+    characters.forEach((ch, chid) => {
+        const avatar = String(ch?.avatar ?? '').trim();
+        if (!avatar) return;
+        const charName = String(ch?.name || ch?.data?.name || charaFileName(avatar)).trim() || avatar;
+        const isShallow = Boolean(ch?.shallow);
+        const cached = cachedCharBindings?.[avatar];
+
+        let primary = '';
+        let embeddedName = '';
+        let entryCount = 0;
+
+        if (isShallow) {
+            if (!cached) return;
+            primary = String(cached.primary || '').trim();
+            embeddedName = String(cached.embedded || '').trim();
+            entryCount = Number(cached.embeddedEntryCount || 0);
+        } else {
+            primary = String(ch?.data?.extensions?.world || '').trim();
+            const book = ch?.data?.character_book;
+            if (book && typeof book === 'object') {
+                const entries = book.entries;
+                entryCount = Array.isArray(entries)
+                    ? entries.length
+                    : (entries && typeof entries === 'object' ? Object.keys(entries).length : 0);
+                embeddedName = String(book.name || `${charName}'s Lorebook`).trim();
+            }
+        }
+
+        if (!embeddedName || entryCount <= 0) return;
+
+        // Already bound to an existing worldbook -> no import needed
+        if (primary && worldNamesSet.has(primary)) return;
+
+        const targetName = primary || embeddedName;
+        // Never propose overwriting an existing worldbook with the same name
+        if (worldNamesSet.has(targetName)) return;
+
+        out.push({
+            chid,
+            avatar,
+            charName,
+            importName: targetName,
+            entryCount,
+            reason: primary ? 'missing' : 'unbound',
+        });
+    });
+
+    return out;
 }
 
 /**

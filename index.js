@@ -22,10 +22,12 @@ import {
     ensureWorldInfoModule,
     getCharLoreEntries,
     getCharactersInMemory,
+    getCurrentCharacterAvatar,
     getHostContext,
     getPowerUserSettings,
     getSettings,
     getWorldNames,
+    importEmbeddedWorldbookForCharacter,
     saveSettings,
     showToast,
     syncFallbackSettingsData,
@@ -277,9 +279,45 @@ async function init() {
         }
     });
 
+    // Always rescan once APP_READY fires (in SillyTavern, `getCharacters()` finishes right before APP_READY!)
+    trackHostEvent(eventSource, et.APP_READY, () => scheduleRefresh(120));
+    trackHostEvent(eventSource, et.EXTENSION_SETTINGS_LOADED, () => scheduleRefresh(200));
+
     // When switching to a chat with a shallow character that just became unshallowed,
-    // refresh in-memory cache once gently (no disk scan).
-    trackHostEvent(eventSource, et.CHAT_CHANGED, () => scheduleRefresh(800));
+    // refresh in-memory cache once gently (no disk scan), and optionally auto-import
+    // its missing embedded lorebook if user enabled that setting.
+    trackHostEvent(eventSource, et.CHAT_CHANGED, () => {
+        scheduleRefresh(600);
+        const curSettings = getSettings();
+        if (curSettings.autoImportMissingCharBook) {
+            setTimeout(async () => {
+                const avatar = getCurrentCharacterAvatar();
+                if (!avatar) return;
+                const res = await importEmbeddedWorldbookForCharacter(avatar);
+                if (res.status === 'imported') {
+                    showToast('info', `已自动导入角色内嵌世界书「${res.name}」并归入角色分组`);
+                    recomputeAndRender({ save: true });
+                }
+            }, 900);
+        }
+    });
+
+    // One-time gentle fallback if characters finished loading right after early init
+    if (getCharactersInMemory().length === 0) {
+        let retries = 0;
+        const waitCharsOnce = () => {
+            if (!_initialized) return;
+            if (getCharactersInMemory().length > 0) {
+                recomputeAndRender({ save: false });
+                return;
+            }
+            if (retries < 6) {
+                retries += 1;
+                setTimeout(waitCharsOnce, 700);
+            }
+        };
+        setTimeout(waitCharsOnce, 700);
+    }
 
     registerSlashCommands(ctx);
 }

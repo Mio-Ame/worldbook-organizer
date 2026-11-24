@@ -334,6 +334,150 @@ export async function callHostAiForOrganize({ systemPrompt, userPrompt }) {
 }
 
 /**
+ * Fetch full character data for a single shallow character on demand (without
+ * switching chats). Used ONLY when user clicks "Scan unscanned cards" or imports
+ * an embedded worldbook.
+ * @param {string} avatar
+ * @returns {Promise<any | null>}
+ */
+export async function fetchFullCharacterOnDemand(avatar) {
+    const ctx = getHostContext();
+    const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
+    const chid = list.findIndex((c) => c?.avatar === avatar);
+    if (chid >= 0 && !list[chid]?.shallow) {
+        return list[chid];
+    }
+
+    if (chid >= 0 && typeof ctx?.unshallowCharacter === 'function') {
+        try {
+            await ctx.unshallowCharacter(chid);
+            return ctx.characters?.[chid] || null;
+        } catch {
+            // Fall through to direct API fetch
+        }
+    }
+
+    try {
+        const headers = typeof ctx?.getRequestHeaders === 'function'
+            ? ctx.getRequestHeaders()
+            : { 'Content-Type': 'application/json' };
+        const res = await fetch('/api/characters/get', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ avatar_url: avatar }),
+        });
+        if (!res.ok) return null;
+        return await res.json();
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Scan unscanned shallow characters in small throttled batches (concurrency = 3)
+ * to avoid freezing mobile WebViews or TauriTavern.
+ *
+ * @param {Array<{ chid: number, avatar: string, name: string }>} targets
+ * @param {{ onProgress?: (done: number, total: number, currentName: string) => void, signal?: { cancelled: boolean } }} [opts]
+ * @returns {Promise<{ scanned: Array<any>, done: number, cancelled: boolean }>}
+ */
+export async function scanShallowCharactersInBatches(targets, { onProgress, signal } = {}) {
+    const scanned = [];
+    const total = targets.length;
+    const batchSize = 3;
+    let done = 0;
+
+    for (let i = 0; i < total; i += batchSize) {
+        if (signal?.cancelled) {
+            return { scanned, done, cancelled: true };
+        }
+        const batch = targets.slice(i, i + batchSize);
+        const results = await Promise.all(
+            batch.map(async (item) => {
+                const full = await fetchFullCharacterOnDemand(item.avatar);
+                done += 1;
+                onProgress?.(done, total, item.name);
+                return full;
+            }),
+        );
+        for (const ch of results) {
+            if (ch && ch.avatar) scanned.push(ch);
+        }
+        // Yield a frame to keep UI responsive on mobile
+        await new Promise((r) => setTimeout(r, 20));
+    }
+
+    return { scanned, done, cancelled: false };
+}
+
+/**
+ * Import a character card's embedded `character_book` into SillyTavern / TauriTavern
+ * and bind it to the character, inspired by RedBird Tools `importCardWorld`.
+ * NEVER overwrites an existing worldbook with the same name!
+ *
+ * @param {string} avatar
+ * @param {{ worldNamesSet?: Set<string> }} [opts]
+ * @returns {Promise<{ status: 'imported' | 'exists' | 'nobook' | 'failed', name?: string, error?: string }>}
+ */
+export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSet } = {}) {
+    const ctx = getHostContext();
+    await ensureWorldInfoModule();
+
+    const fullChar = await fetchFullCharacterOnDemand(avatar);
+    const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
+    const chid = list.findIndex((c) => c?.avatar === avatar);
+    const charObj = (chid >= 0 && !list[chid]?.shallow ? list[chid] : fullChar) || null;
+    const book = charObj?.data?.character_book;
+
+    if (!charObj || !book || typeof book !== 'object') {
+        return { status: 'nobook' };
+    }
+
+    const entries = book.entries;
+    const count = Array.isArray(entries)
+        ? entries.length
+        : (entries && typeof entries === 'object' ? Object.keys(entries).length : 0);
+    if (count <= 0) {
+        return { status: 'nobook' };
+    }
+
+    const charName = String(charObj.name || charObj.data?.name || avatar).trim();
+    const boundName = String(charObj.data?.extensions?.world || '').trim();
+    const targetName = boundName || String(book.name || `${charName}'s Lorebook`).trim();
+    if (!targetName) return { status: 'nobook' };
+
+    const existingNames = worldNamesSet || new Set(getWorldNames());
+    if (existingNames.has(targetName)) {
+        return { status: 'exists', name: targetName };
+    }
+
+    const convertFn = _worldInfoModule?.convertCharacterBook || ctx?.convertCharacterBook;
+    const saveFn = ctx?.saveWorldInfo || _worldInfoModule?.saveWorldInfo;
+    const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
+
+    if (typeof convertFn !== 'function' || typeof saveFn !== 'function') {
+        return { status: 'failed', name: targetName, error: '当前宿主缺少 convertCharacterBook 或 saveWorldInfo 接口' };
+    }
+
+    try {
+        const clonedBook = typeof structuredClone === 'function'
+            ? structuredClone(book)
+            : JSON.parse(JSON.stringify(book));
+        const converted = convertFn(clonedBook);
+        await saveFn(targetName, converted, true);
+        if (typeof updateListFn === 'function') {
+            await updateListFn();
+        }
+        if (chid >= 0 && boundName !== targetName && typeof ctx?.writeExtensionField === 'function') {
+            await ctx.writeExtensionField(chid, 'world', targetName);
+        }
+        return { status: 'imported', name: targetName };
+    } catch (err) {
+        return { status: 'failed', name: targetName, error: String(err?.message || err) };
+    }
+}
+
+/**
  * Apply TauriTavern mobile surface attribute cleanly when applicable.
  * @param {HTMLElement | null} el
  * @param {'fullscreen-window' | 'backdrop' | 'free-window'} surface

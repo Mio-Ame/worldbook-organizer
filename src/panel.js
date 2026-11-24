@@ -10,17 +10,24 @@ import {
     buildAiOrganizePrompt,
     createGroupId,
     exportConfigData,
+    findCardsWithUnimportedBooks,
+    findUnscannedShallowCharacters,
     importConfigData,
     matchesSearch,
     parseAiOrganizeResponse,
     undoLastAiOrganize,
+    updateCachedCharBindings,
 } from './core.js';
 import {
     applyTauriSurface,
     callHostAiForOrganize,
     fetchWorldbookCluesOnDemand,
     getActiveGlobalWorldSet,
+    getCharactersInMemory,
     getCurrentEditorWorldName,
+    getWorldNames,
+    importEmbeddedWorldbookForCharacter,
+    scanShallowCharactersInBatches,
     showToast,
 } from './host.js';
 import {
@@ -371,6 +378,14 @@ export function renderEmbeddedPanel() {
     }
 
     const undoVisible = Array.isArray(settings.undoSnapshots) && settings.undoSnapshots.length > 0;
+    const characters = getCharactersInMemory();
+    const unscannedShallowCount = findUnscannedShallowCharacters(characters, settings.cachedCharBindings).length;
+    const unimportedBookCount = findCardsWithUnimportedBooks({
+        characters,
+        worldNamesSet: new Set(classification.byName.keys()),
+        cachedCharBindings: settings.cachedCharBindings,
+    }).length;
+    const scanBadgeCount = unscannedShallowCount + unimportedBookCount;
     const hideBtnLabel = settings.showCharBooks
         ? `显示角色书 (${classification.charCount})`
         : `隐藏角色书 (${classification.charCount})`;
@@ -407,8 +422,9 @@ export function renderEmbeddedPanel() {
                 <button type="button" class="menu_button wbo-btn-compact" data-action="undo-ai" title="撤销最近一次 AI 整理">
                     <i class="fa-solid fa-rotate-left"></i>
                 </button>` : ''}
-                <button type="button" class="menu_button wbo-btn-compact" data-action="rescan-bindings" title="手动重新扫描角色绑定（平时不自动扫盘）">
+                <button type="button" class="menu_button wbo-btn-compact${scanBadgeCount > 0 ? ' wbo-btn-active' : ''}" data-action="open-scan-modal" title="扫描角色卡绑定 / 导入未导入的角色内嵌世界书（按需触发，平时不扫盘）">
                     <i class="fa-solid fa-arrows-rotate"></i>
+                    <span>扫描${scanBadgeCount > 0 ? ` (${scanBadgeCount})` : ''}</span>
                 </button>
             </div>
         </div>
@@ -562,6 +578,10 @@ function bindPanelDelegatedEvents(root) {
                     await _callbacks.onMutation({ save: true });
                     showToast('success', '已撤销上一次 AI 整理');
                 }
+                break;
+            }
+            case 'open-scan-modal': {
+                openScanAndImportModal();
                 break;
             }
             case 'rescan-bindings': {
@@ -1137,6 +1157,197 @@ function openAiOrganizeModal() {
     });
 }
 
+/**
+ * On-demand Character Binding Scan & Embedded Lorebook Import modal.
+ * Inspired by RedBird Tools: handles both `lazyLoadCharacters: true` (shallow cards)
+ * and characters carrying an embedded `character_book` that has not been imported yet.
+ * Never runs automatically in a background loop!
+ */
+function openScanAndImportModal() {
+    if (!_callbacks) return;
+
+    const renderModalBody = () => {
+        const { settings, classification } = _callbacks.getState();
+        const characters = getCharactersInMemory();
+        const worldNamesSet = new Set(getWorldNames([...classification.byName.keys()]));
+        const unscannedShallow = findUnscannedShallowCharacters(characters, settings.cachedCharBindings);
+        const unimported = findCardsWithUnimportedBooks({
+            characters,
+            worldNamesSet,
+            cachedCharBindings: settings.cachedCharBindings,
+        });
+
+        const unimportedListHtml = unimported.length === 0
+            ? '<div class="wbo-empty-hint">所有已加载角色卡的内嵌世界书均已导入或无内嵌世界书。</div>'
+            : unimported
+                .map(
+                    (item) => `
+                    <label class="wbo-ai-pick-row">
+                        <input type="checkbox" class="wbo-import-book-check" value="${esc(item.avatar)}" checked>
+                        <span class="wbo-ai-pick-name">
+                            <b>${esc(item.charName)}</b>
+                            <small>→ ${esc(item.importName)}（${item.entryCount} 条）</small>
+                        </span>
+                        <span class="wbo-tag">${item.reason === 'missing' ? '缺失' : '未导入'}</span>
+                    </label>
+                `,
+                )
+                .join('');
+
+        return `
+            <div class="wbo-safe-note">
+                <i class="fa-solid fa-bolt"></i>
+                <b>按需扫描，平时 0 扫盘</b>：日常使用只读内存与本地缓存，绝不持续扫盘。首次安装或批量新导入角色卡后，可在此手动扫描一次。
+            </div>
+
+            <div class="wbo-field">
+                <div class="wbo-ai-section-head">
+                    <span>1. 角色绑定索引（当前共 ${characters.length} 张卡，已识别 ${classification.charCount} 本角色世界书）</span>
+                </div>
+                <div class="wbo-ai-actions-row">
+                    <button type="button" class="menu_button" id="wbo-scan-memory-btn">
+                        <i class="fa-solid fa-arrows-rotate"></i> 刷新绑定缓存（极速）
+                    </button>
+                    ${unscannedShallow.length > 0 ? `
+                    <button type="button" class="menu_button wbo-btn-primary" id="wbo-scan-shallow-btn">
+                        <i class="fa-solid fa-magnifying-glass"></i> 深度扫描未加载角色卡 (${unscannedShallow.length} 张)
+                    </button>` : ''}
+                </div>
+                ${unscannedShallow.length > 0
+                    ? `<small class="wbo-label">检测到开启了懒加载（lazyLoadCharacters），以上 ${unscannedShallow.length} 张卡尚未打开过，点一次深度扫描后会自动永久记住绑定。</small>`
+                    : `<small class="wbo-label">所有角色卡绑定均已在内存或缓存中就绪。</small>`}
+            </div>
+
+            <div class="wbo-field">
+                <div class="wbo-ai-section-head">
+                    <span>2. 卡内自带但尚未导入的世界书（${unimported.length} 本，绝不覆盖同名文件）</span>
+                </div>
+                <div class="wbo-ai-book-list">${unimportedListHtml}</div>
+                ${unimported.length > 0 ? `
+                <div class="wbo-ai-actions-row">
+                    <button type="button" class="menu_button wbo-btn-primary" id="wbo-import-selected-books-btn">
+                        <i class="fa-solid fa-file-import"></i> 一键导入选中世界书并自动归组隐藏
+                    </button>
+                </div>` : ''}
+            </div>
+
+            <div class="wbo-ai-status" id="wbo-scan-status"></div>
+
+            <div class="wbo-modal-footer">
+                <button type="button" class="menu_button" id="wbo-scan-close-btn">关闭</button>
+            </div>
+        `;
+    };
+
+    const { modal } = createModal('扫描角色卡与内嵌世界书', renderModalBody(), { wide: true });
+    const cancelSignal = { cancelled: false };
+
+    const bindHandlers = () => {
+        const statusEl = modal.querySelector('#wbo-scan-status');
+        const setStatus = (msg, isError = false) => {
+            if (!statusEl) return;
+            statusEl.textContent = msg;
+            statusEl.className = `wbo-ai-status${isError ? ' is-error' : ''}`;
+        };
+
+        modal.querySelector('#wbo-scan-close-btn')?.addEventListener('click', () => {
+            cancelSignal.cancelled = true;
+            closeModal();
+        });
+
+        modal.querySelector('#wbo-scan-memory-btn')?.addEventListener('click', async () => {
+            setStatus('正在刷新绑定缓存...');
+            await _callbacks.onRescan();
+            const body = modal.querySelector('.wbo-modal-body');
+            if (body) {
+                body.innerHTML = renderModalBody();
+                bindHandlers();
+                const nextStatus = modal.querySelector('#wbo-scan-status');
+                if (nextStatus) nextStatus.textContent = '已完成绑定刷新并更新缓存。';
+            }
+        });
+
+        modal.querySelector('#wbo-scan-shallow-btn')?.addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            if (btn instanceof HTMLButtonElement) btn.disabled = true;
+            cancelSignal.cancelled = false;
+
+            const { settings } = _callbacks.getState();
+            const targets = findUnscannedShallowCharacters(getCharactersInMemory(), settings.cachedCharBindings);
+            setStatus(`开始分批扫描 ${targets.length} 张未加载角色卡...`);
+
+            const res = await scanShallowCharactersInBatches(targets, {
+                signal: cancelSignal,
+                onProgress: (done, total, currentName) => {
+                    setStatus(`正在扫描 (${done}/${total})：${currentName}`);
+                },
+            });
+
+            if (res.scanned.length > 0) {
+                const { cached } = updateCachedCharBindings({}, res.scanned);
+                Object.assign(settings.cachedCharBindings, cached);
+            }
+
+            await _callbacks.onMutation({ save: true });
+            const body = modal.querySelector('.wbo-modal-body');
+            if (body && !cancelSignal.cancelled) {
+                body.innerHTML = renderModalBody();
+                bindHandlers();
+                const nextStatus = modal.querySelector('#wbo-scan-status');
+                if (nextStatus) {
+                    nextStatus.textContent = `已完成 ${res.done} 张角色卡扫描并写入持久化缓存！`;
+                }
+            }
+        });
+
+        modal.querySelector('#wbo-import-selected-books-btn')?.addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            if (btn instanceof HTMLButtonElement) btn.disabled = true;
+
+            const avatars = Array.from(modal.querySelectorAll('.wbo-import-book-check:checked')).map((el) => el.value);
+            if (avatars.length === 0) {
+                setStatus('请先勾选要导入的角色世界书', true);
+                if (btn instanceof HTMLButtonElement) btn.disabled = false;
+                return;
+            }
+
+            let imported = 0;
+            let skipped = 0;
+            let failed = 0;
+            const knownNames = new Set(getWorldNames());
+
+            for (let i = 0; i < avatars.length; i += 1) {
+                setStatus(`正在导入内嵌世界书 (${i + 1}/${avatars.length})...`);
+                const res = await importEmbeddedWorldbookForCharacter(avatars[i], { worldNamesSet: knownNames });
+                if (res.status === 'imported') {
+                    imported += 1;
+                    if (res.name) knownNames.add(res.name);
+                } else if (res.status === 'exists' || res.status === 'nobook') {
+                    skipped += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+
+            await _callbacks.onRescan();
+            const body = modal.querySelector('.wbo-modal-body');
+            if (body) {
+                body.innerHTML = renderModalBody();
+                bindHandlers();
+                const nextStatus = modal.querySelector('#wbo-scan-status');
+                if (nextStatus) {
+                    nextStatus.textContent = `导入完成：成功 ${imported} 本，跳过 ${skipped} 本${failed > 0 ? `，失败 ${failed} 本` : ''}，已自动归入「角色世界书」分组。`;
+                }
+            }
+            if (imported > 0) {
+                showToast('success', `已导入 ${imported} 本角色内嵌世界书并归入角色分组`);
+            }
+        });
+    };
+
+    bindHandlers();
+}
+
 // ==================== Extension Settings Panel ====================
 
 /**
@@ -1183,6 +1394,11 @@ export function renderExtensionSettingsPanel() {
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="includeEmbeddedNameMatch" ${settings.includeEmbeddedNameMatch ? 'checked' : ''}>
                         <span>识别角色卡内嵌同名世界书（character_book）</span>
+                    </label>
+
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoImportMissingCharBook" ${settings.autoImportMissingCharBook ? 'checked' : ''}>
+                        <span>打开角色卡时自动导入缺失的卡内世界书（绝不覆盖同名文件）</span>
                     </label>
 
                     <label class="wbo-check-line">
