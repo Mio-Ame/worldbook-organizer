@@ -397,7 +397,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
  * @param {any} classification
  * @param {Record<string, any>} settings
  */
-function applyEditorWorldSelectFilter(classification, settings) {
+function applyEditorWorldSelectFilter(classification, settings, { skipSelectionSync = false } = {}) {
     const $ = globalThis.jQuery;
     const selectEl = document.getElementById('world_editor_select');
     if (!selectEl) return;
@@ -494,6 +494,10 @@ function applyEditorWorldSelectFilter(classification, settings) {
         if (patched) {
             selectEl.dataset.wboS2Ready = '1';
         }
+    } else if (!skipSelectionSync && hasSelect2 && $select && prevValue !== '') {
+        // Refresh displayed title in Select2 box (namespaced so host `change` does NOT refire;
+        // skipped during `select2:opening` so `.select2-selection__rendered` is never rebuilt mid-click)
+        try { $select.trigger('change.select2'); } catch { /* ignore */ }
     }
 }
 
@@ -792,6 +796,11 @@ let _editorSelect2CloseHandler = null;
 let _openDropdownResultsObserver = null;
 /** @type {(() => void) | null} */
 let _openDropdownCleanup = null;
+/** @type {((ev: Event) => void) | null} */
+let _docDrawerGuardMouseDown = null;
+/** @type {((ev: Event) => void) | null} */
+let _docDrawerGuardClick = null;
+let _lastWorldSelectMouseDownAt = 0;
 
 /**
  * Persistent in-session memory for `#world_editor_select` dropdown (both native Select2
@@ -950,16 +959,16 @@ function enhanceOpenEditorDropdown() {
             .map((p) => `<button type="button" class="wbo-dd-pill${p.id === SPECIAL_GROUPS.ALL ? ' is-pinned-all' : ''}${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
             .join('');
 
-        // Keep dropdown open and search intact when tapping a pill
+        // Keep dropdown open and NEVER let clicks bubble to `document` (which closes unpinned `#WorldInfo`!)
         filterBar.addEventListener('mousedown', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
         });
         filterBar.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
             if (!btn) return;
             ev.preventDefault();
-            ev.stopPropagation();
             const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
@@ -983,6 +992,13 @@ function enhanceOpenEditorDropdown() {
             resultsWrap.parentElement.insertBefore(filterBar, resultsWrap);
         }
     }
+
+    // Prevent ANY click inside `.select2-dropdown` (search bar, filter bar, margins) from
+    // bubbling to `document` and triggering SillyTavern's unpinned-drawer auto-closer!
+    const onDropdownClickStop = (ev) => {
+        ev.stopPropagation();
+    };
+    dropdownEl.addEventListener('click', onDropdownClickStop);
 
     const onResultsScroll = () => {
         if (!isRestoringScroll && !isSearching()) {
@@ -1030,6 +1046,7 @@ function enhanceOpenEditorDropdown() {
             _dropdownMemory.hasSavedScroll = true;
             if (filterBar) _dropdownMemory.pillBarScrollLeft = filterBar.scrollLeft;
         }
+        dropdownEl.removeEventListener('click', onDropdownClickStop);
         resultsList.removeEventListener('scroll', onResultsScroll);
         resultsList.removeEventListener('mousedown', onResultsMouseDown, true);
         resultsList.removeEventListener('click', onResultsClick, true);
@@ -1053,7 +1070,7 @@ function syncEditorBeforeOpen() {
     _isApplying = true;
     try {
         _lastEditorSignature = null;
-        applyEditorWorldSelectFilter(_latestClassification, _latestSettings);
+        applyEditorWorldSelectFilter(_latestClassification, _latestSettings, { skipSelectionSync: true });
     } finally {
         _editorSelectObserver?.takeRecords();
         _isApplying = false;
@@ -1261,10 +1278,10 @@ function enhanceCustomDropdownPopover(containerEl) {
             });
         }
         filterBar.addEventListener('click', (ev) => {
+            ev.stopPropagation();
             const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
             if (!btn) return;
             ev.preventDefault();
-            ev.stopPropagation();
             const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
@@ -1285,6 +1302,12 @@ function enhanceCustomDropdownPopover(containerEl) {
 
         optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
     }
+
+    // Prevent ANY click inside the body-mounted custom popover from bubbling to `document`
+    // and closing an unpinned `#WorldInfo` drawer!
+    containerEl.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+    });
 
     optionsHost.addEventListener('scroll', () => {
         if (!isRestoringScroll && !isSearching()) {
@@ -1390,6 +1413,41 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         $(window).on('select2:close.wboEditorOpen', _editorSelect2CloseHandler);
     }
 
+    // Guard against SillyTavern's `$(document).on('click')` unpinned-drawer auto-closer
+    // firing when opening `#world_editor_select` / `#world_info` spawns a body-mounted
+    // Select2 dropdown or custom popover directly under the pointer between pointerdown & click!
+    _docDrawerGuardMouseDown = (ev) => {
+        const t = ev.target instanceof Element ? ev.target : null;
+        if (!t) return;
+        const inWorldSelect = Boolean(
+            t.closest('#world_editor_select, #world_info, #world_popup .select2-container, #WIMultiSelector .select2-container, #WorldInfo .select2-container, #WorldInfo .gr-select2-display, .select2-dropdown, #gr-global-dropdown-container, .gr-container-enhanced'),
+        );
+        if (inWorldSelect) {
+            _lastWorldSelectMouseDownAt = Date.now();
+        }
+    };
+    _docDrawerGuardClick = (ev) => {
+        const wiDrawer = document.getElementById('WorldInfo');
+        if (!wiDrawer || wiDrawer.classList.contains('closedDrawer')) return;
+        const t = ev.target instanceof Element ? ev.target : null;
+        if (!t) return;
+        if (t.closest?.('.drawer-icon')) return;
+        const inDropdownOverlay = Boolean(
+            t.closest?.('.select2-dropdown, #gr-global-dropdown-container, .gr-container-enhanced'),
+        );
+        const isRecentOrphanClick =
+            Date.now() - _lastWorldSelectMouseDownAt < 500 &&
+            (t === document.body || t === document.documentElement || !t.isConnected);
+        if (inDropdownOverlay || isRecentOrphanClick) {
+            ev.stopPropagation();
+        }
+    };
+    document.addEventListener('pointerdown', _docDrawerGuardMouseDown, true);
+    document.addEventListener('mousedown', _docDrawerGuardMouseDown, true);
+    // Attach on `document.body` in BUBBLE phase (fires AFTER all dropdown inner buttons/options,
+    // and strictly BEFORE SillyTavern's `$(document).on('click')` unpinned-drawer auto-closer!).
+    document.body.addEventListener('click', _docDrawerGuardClick);
+
     // Lightweight popup observer: inspects only newly added top-level dialog/popup/custom-dropdown nodes
     _charPopupObserver = new MutationObserver((mutations) => {
         for (const mutation of mutations) {
@@ -1435,6 +1493,15 @@ export function stopNativeObservers() {
             editorEl.removeEventListener('focus', _editorNativeOpenHandler);
         }
         _editorNativeOpenHandler = null;
+    }
+    if (_docDrawerGuardMouseDown) {
+        document.removeEventListener('pointerdown', _docDrawerGuardMouseDown, true);
+        document.removeEventListener('mousedown', _docDrawerGuardMouseDown, true);
+        _docDrawerGuardMouseDown = null;
+    }
+    if (_docDrawerGuardClick) {
+        document.body.removeEventListener('click', _docDrawerGuardClick);
+        _docDrawerGuardClick = null;
     }
     if (globalThis.jQuery) {
         if (_editorSelect2OpeningHandler) {

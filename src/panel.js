@@ -477,6 +477,17 @@ function assignBookToGroup(settings, bookMeta, targetGroupId) {
 }
 
 /**
+ * Short display label for the inline character-worldbook title mode pill.
+ * @param {string} mode
+ * @returns {string}
+ */
+function getCharTitleModeShortLabel(mode) {
+    if (mode === 'char_only') return '仅角色名';
+    if (mode === 'original') return '原标题';
+    return '角色+原名';
+}
+
+/**
  * Render one collapsible group section with sticky header and drag-reorder support.
  */
 function renderGroupSectionHtml({
@@ -486,6 +497,7 @@ function renderGroupSectionHtml({
     collapsed,
     isCustom,
     isSingleView = false,
+    charBookTitleMode = 'char_with_sub',
     canMoveUp,
     canMoveDown,
     books,
@@ -494,6 +506,14 @@ function renderGroupSectionHtml({
 }) {
     const activeCount = books.filter((b) => activeGlobals.has(b.realName)).length;
     const countLabel = activeCount > 0 ? `${activeCount}/${books.length}` : `${books.length}`;
+    const charTitlePill = id === SPECIAL_GROUPS.CHARACTER
+        ? `
+            <button type="button" class="wbo-char-mode-pill" data-action="cycle-char-title-mode" title="切换角色世界书标题显示：角色+原名 / 仅角色名 / 原标题">
+                <i class="fa-solid fa-font"></i>
+                <span>${esc(getCharTitleModeShortLabel(charBookTitleMode))}</span>
+            </button>
+        `
+        : '';
     const orderActions = isSingleView
         ? ''
         : `
@@ -544,6 +564,7 @@ function renderGroupSectionHtml({
             <div class="wbo-group-header"${isSingleView ? '' : ` draggable="true" data-drag-group-id="${esc(id)}"`}>
                 ${titleNode}
                 <div class="wbo-group-actions">
+                    ${charTitlePill}
                     ${orderActions}
                     ${customActions}
                 </div>
@@ -761,6 +782,10 @@ function openManagerModal() {
                 <button type="button" class="wbo-tool-btn" id="wbo-mgr-scan-btn" data-action="open-scan-modal" title="扫描角色世界书">
                     <i class="fa-solid fa-arrows-rotate"></i>
                     <span id="wbo-mgr-scan-label">扫描</span>
+                </button>
+                <button type="button" class="wbo-tool-btn" data-action="open-settings-modal" title="显示与行为设置">
+                    <i class="fa-solid fa-gear"></i>
+                    <span>设置</span>
                 </button>
                 <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
                     <i class="fa-solid fa-xmark"></i>
@@ -1203,6 +1228,19 @@ function openManagerModal() {
                 openScanAndImportModal();
                 break;
             }
+            case 'open-settings-modal': {
+                openSettingsModal();
+                break;
+            }
+            case 'cycle-char-title-mode': {
+                const order = ['char_with_sub', 'char_only', 'original'];
+                const curIdx = order.indexOf(settings.charBookTitleMode);
+                const nextMode = order[(curIdx + 1) % order.length];
+                settings.charBookTitleMode = nextMode;
+                await _callbacks.onMutation({ save: true });
+                showToast('info', `角色世界书标题：${getCharTitleModeShortLabel(nextMode)}`);
+                break;
+            }
         }
     });
 
@@ -1296,6 +1334,8 @@ function renderManagerGroupsListOnly() {
         q,
         _batchMode,
         settings.activeFilterGroupId,
+        settings.charBookTitleMode,
+        settings.aliasTitleMode,
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
         Boolean(settings.ungroupedCollapsed),
@@ -1396,6 +1436,7 @@ function renderManagerGroupsListOnly() {
                         collapsed: forceOpen ? false : Boolean(settings.charGroupCollapsed),
                         isCustom: false,
                         isSingleView,
+                        charBookTitleMode: settings.charBookTitleMode,
                         canMoveUp,
                         canMoveDown,
                         books: matchedCharBooks,
@@ -2947,10 +2988,185 @@ function openScanAndImportModal() {
     bindHandlers();
 }
 
-// ==================== Extension Settings Panel ====================
+// ==================== Settings Modal & Extension Settings Panel ====================
+
+function triggerConfigExport() {
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+    const data = exportConfigData(settings);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `worldbook-organizer-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    showToast('success', '已导出配置');
+}
+
+async function handleConfigImportFile(file) {
+    if (!_callbacks || !file) return;
+    const { settings } = _callbacks.getState();
+    try {
+        const text = await file.text();
+        const res = importConfigData(settings, text);
+        if (!res.ok) {
+            showToast('error', res.error || '导入失败');
+            return;
+        }
+        await _callbacks.onMutation({ save: true });
+        showToast('success', `导入成功：${res.stats.groups} 个分组、${res.stats.aliases} 条别名`);
+    } catch (err) {
+        showToast('error', `读取配置失败：${err?.message || err}`);
+    }
+}
+
+/**
+ * Sync live setting values into any container holding `[data-setting]` / `[data-setting-select]`.
+ * @param {Element} container
+ * @param {Record<string, any>} settings
+ */
+function syncSettingControlsInPlace(container, settings) {
+    container.querySelectorAll('input[data-setting]').forEach((el) => {
+        if (!(el instanceof HTMLInputElement)) return;
+        const key = el.getAttribute('data-setting');
+        if (key) el.checked = Boolean(settings[key]);
+    });
+    container.querySelectorAll('select[data-setting-select]').forEach((el) => {
+        if (!(el instanceof HTMLSelectElement)) return;
+        const key = el.getAttribute('data-setting-select');
+        if (key && settings[key] !== undefined) el.value = String(settings[key]);
+    });
+}
+
+/**
+ * Bind change listeners for `[data-setting]` and `[data-setting-select]` reading live state.
+ * @param {Element} container
+ */
+function bindSettingControlListeners(container) {
+    container.querySelectorAll('input[data-setting]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            if (!(el instanceof HTMLInputElement) || !_callbacks) return;
+            const key = el.getAttribute('data-setting');
+            if (!key) return;
+            const { settings } = _callbacks.getState();
+            settings[key] = el.checked;
+            if (key === 'hideCharBooksByDefault') {
+                settings.showCharBooks = !el.checked;
+            }
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    container.querySelectorAll('select[data-setting-select]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            if (!(el instanceof HTMLSelectElement) || !_callbacks) return;
+            const key = el.getAttribute('data-setting-select');
+            if (!key) return;
+            const { settings } = _callbacks.getState();
+            settings[key] = el.value;
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+}
+
+/**
+ * Open the Display & Behavior Settings sub-modal directly inside Group Manager
+ * so users don't have to hunt in SillyTavern's Extension Settings drawer.
+ */
+function openSettingsModal() {
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+
+    const { modal } = createSubModal(
+        '显示与行为设置',
+        `
+            <div class="wbo-card">
+                <div class="wbo-ai-section-head"><span>标题显示</span></div>
+                <div class="wbo-setting-inline-row">
+                    <span>角色世界书标题</span>
+                    <select class="wbo-select" data-setting-select="charBookTitleMode">
+                        <option value="char_with_sub">角色名 + 小字原标题</option>
+                        <option value="char_only">仅角色名</option>
+                        <option value="original">原标题</option>
+                    </select>
+                </div>
+                <div class="wbo-setting-inline-row">
+                    <span>自定义别名样式</span>
+                    <select class="wbo-select" data-setting-select="aliasTitleMode">
+                        <option value="alias_with_sub">别名 + 小字原文件名</option>
+                        <option value="alias_only">仅别名</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="wbo-card">
+                <div class="wbo-ai-section-head"><span>识别与默认行为</span></div>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="hideCharBooksByDefault">
+                    <span>默认隐藏角色卡绑定的世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="includeExtraCharBooks">
+                    <span>将角色附加世界书归入角色世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="includeEmbeddedNameMatch">
+                    <span>识别角色卡内嵌同名世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="autoImportMissingCharBook">
+                    <span>打开角色卡时自动导入缺失的卡内世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="autoHideInCharBindPopup">
+                    <span>角色绑定弹窗默认隐藏其他角色世界书</span>
+                </label>
+                <label class="wbo-check-line">
+                    <input type="checkbox" data-setting="showNativeOptgroups">
+                    <span>编辑器下拉框按分组显示</span>
+                </label>
+            </div>
+
+            <div class="wbo-modal-footer">
+                <button type="button" class="wbo-btn" id="wbo-modal-export-btn">
+                    <i class="fa-solid fa-download"></i> 导出配置
+                </button>
+                <button type="button" class="wbo-btn" id="wbo-modal-import-btn">
+                    <i class="fa-solid fa-upload"></i> 导入配置
+                </button>
+                <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
+                <span class="wbo-spacer"></span>
+                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
+            </div>
+        `,
+    );
+
+    syncSettingControlsInPlace(modal, settings);
+    bindSettingControlListeners(modal);
+
+    modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
+    const importInput = modal.querySelector('#wbo-modal-import-file');
+    modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
+        if (importInput instanceof HTMLInputElement) {
+            importInput.value = '';
+            importInput.click();
+        }
+    });
+    importInput?.addEventListener('change', async () => {
+        if (!(importInput instanceof HTMLInputElement) || !importInput.files?.[0]) return;
+        await handleConfigImportFile(importInput.files[0]);
+        if (_callbacks) syncSettingControlsInPlace(modal, _callbacks.getState().settings);
+    });
+    modal.querySelector('#wbo-settings-close-btn')?.addEventListener('click', closeSubModal);
+}
 
 /**
  * Mount the extension settings accordion inside `#extensions_settings2` (or `#extensions_settings`).
+ * Mounts DOM ONCE and updates values in place on subsequent calls so `.inline-drawer` open state
+ * and active `<select>` controls are NEVER destroyed mid-interaction!
  */
 export function renderExtensionSettingsPanel() {
     if (!_callbacks) return;
@@ -2967,153 +3183,113 @@ export function renderExtensionSettingsPanel() {
 
     const { settings, classification } = _callbacks.getState();
 
-    root.innerHTML = `
-        <div class="inline-drawer">
-            <div class="inline-drawer-toggle inline-drawer-header">
-                <b>世界书分组管理</b>
-                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-            </div>
-            <div class="inline-drawer-content">
-                <div class="wbo-settings-body">
-                    <div class="wbo-settings-summary">
-                        共 ${classification.totalCount} 本世界书：${classification.nonCharCount} 本通用 / ${classification.charCount} 本角色绑定
-                    </div>
+    if (root.dataset.wboMounted !== '1') {
+        root.dataset.wboMounted = '1';
+        root.innerHTML = `
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <b>世界书分组管理</b>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <div class="wbo-settings-body">
+                        <div class="wbo-settings-summary" id="wbo-ext-settings-summary"></div>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="hideCharBooksByDefault" ${settings.hideCharBooksByDefault ? 'checked' : ''}>
-                        <span>默认隐藏角色卡绑定的世界书</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="hideCharBooksByDefault">
+                            <span>默认隐藏角色卡绑定的世界书</span>
+                        </label>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="includeExtraCharBooks" ${settings.includeExtraCharBooks ? 'checked' : ''}>
-                        <span>将角色附加世界书归入角色世界书</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="includeExtraCharBooks">
+                            <span>将角色附加世界书归入角色世界书</span>
+                        </label>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="includeEmbeddedNameMatch" ${settings.includeEmbeddedNameMatch ? 'checked' : ''}>
-                        <span>识别角色卡内嵌同名世界书</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="includeEmbeddedNameMatch">
+                            <span>识别角色卡内嵌同名世界书</span>
+                        </label>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="autoImportMissingCharBook" ${settings.autoImportMissingCharBook ? 'checked' : ''}>
-                        <span>打开角色卡时自动导入缺失的卡内世界书</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="autoImportMissingCharBook">
+                            <span>打开角色卡时自动导入缺失的卡内世界书</span>
+                        </label>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="autoHideInCharBindPopup" ${settings.autoHideInCharBindPopup ? 'checked' : ''}>
-                        <span>角色绑定弹窗默认隐藏其他角色世界书</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="autoHideInCharBindPopup">
+                            <span>角色绑定弹窗默认隐藏其他角色世界书</span>
+                        </label>
 
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="showNativeOptgroups" ${settings.showNativeOptgroups ? 'checked' : ''}>
-                        <span>编辑器下拉框按分组显示</span>
-                    </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeOptgroups">
+                            <span>编辑器下拉框按分组显示</span>
+                        </label>
 
-                    <div class="wbo-setting-row">
-                        <span>角色世界书标题显示</span>
-                        <select class="wbo-select" data-setting-select="charBookTitleMode">
-                            <option value="char_with_sub" ${settings.charBookTitleMode === 'char_with_sub' ? 'selected' : ''}>角色名 + 小字原标题</option>
-                            <option value="char_only" ${settings.charBookTitleMode === 'char_only' ? 'selected' : ''}>仅角色名</option>
-                            <option value="original" ${settings.charBookTitleMode === 'original' ? 'selected' : ''}>原标题</option>
-                        </select>
-                    </div>
+                        <div class="wbo-setting-row">
+                            <span>角色世界书标题显示</span>
+                            <select class="wbo-select" data-setting-select="charBookTitleMode">
+                                <option value="char_with_sub">角色名 + 小字原标题</option>
+                                <option value="char_only">仅角色名</option>
+                                <option value="original">原标题</option>
+                            </select>
+                        </div>
 
-                    <div class="wbo-setting-row">
-                        <span>显示别名样式</span>
-                        <select class="wbo-select" data-setting-select="aliasTitleMode">
-                            <option value="alias_with_sub" ${settings.aliasTitleMode === 'alias_with_sub' ? 'selected' : ''}>别名 + 小字原文件名</option>
-                            <option value="alias_only" ${settings.aliasTitleMode === 'alias_only' ? 'selected' : ''}>仅别名</option>
-                        </select>
-                    </div>
+                        <div class="wbo-setting-row">
+                            <span>显示别名样式</span>
+                            <select class="wbo-select" data-setting-select="aliasTitleMode">
+                                <option value="alias_with_sub">别名 + 小字原文件名</option>
+                                <option value="alias_only">仅别名</option>
+                            </select>
+                        </div>
 
-                    <div class="wbo-settings-actions">
-                        <button type="button" class="wbo-btn" data-settings-action="manager">
-                            <i class="fa-solid fa-layer-group"></i> 打开分组管理
-                        </button>
-                        <button type="button" class="wbo-btn" data-settings-action="scan">
-                            <i class="fa-solid fa-arrows-rotate"></i> 扫描角色卡
-                        </button>
-                        <button type="button" class="wbo-btn" data-settings-action="export">
-                            <i class="fa-solid fa-download"></i> 导出配置
-                        </button>
-                        <button type="button" class="wbo-btn" data-settings-action="import">
-                            <i class="fa-solid fa-upload"></i> 导入配置
-                        </button>
-                        <input type="file" id="wbo-import-config-file" accept=".json" hidden>
+                        <div class="wbo-settings-actions">
+                            <button type="button" class="wbo-btn" data-settings-action="manager">
+                                <i class="fa-solid fa-layer-group"></i> 打开分组管理
+                            </button>
+                            <button type="button" class="wbo-btn" data-settings-action="scan">
+                                <i class="fa-solid fa-arrows-rotate"></i> 扫描角色卡
+                            </button>
+                            <button type="button" class="wbo-btn" data-settings-action="export">
+                                <i class="fa-solid fa-download"></i> 导出配置
+                            </button>
+                            <button type="button" class="wbo-btn" data-settings-action="import">
+                                <i class="fa-solid fa-upload"></i> 导入配置
+                            </button>
+                            <input type="file" id="wbo-import-config-file" accept=".json" hidden>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-    `;
+        `;
 
-    root.querySelectorAll('input[data-setting]').forEach((el) => {
-        el.addEventListener('change', async () => {
-            if (!(el instanceof HTMLInputElement)) return;
-            const key = el.getAttribute('data-setting');
-            if (!key) return;
-            settings[key] = el.checked;
-            if (key === 'hideCharBooksByDefault') {
-                settings.showCharBooks = !el.checked;
-            }
-            await _callbacks.onMutation({ save: true });
+        bindSettingControlListeners(root);
+
+        root.querySelector('[data-settings-action="manager"]')?.addEventListener('click', () => {
+            openManagerModal();
         });
-    });
-
-    root.querySelectorAll('select[data-setting-select]').forEach((el) => {
-        el.addEventListener('change', async () => {
-            if (!(el instanceof HTMLSelectElement)) return;
-            const key = el.getAttribute('data-setting-select');
-            if (!key) return;
-            settings[key] = el.value;
-            await _callbacks.onMutation({ save: true });
+        root.querySelector('[data-settings-action="scan"]')?.addEventListener('click', () => {
+            openScanAndImportModal();
         });
-    });
+        root.querySelector('[data-settings-action="export"]')?.addEventListener('click', triggerConfigExport);
 
-    root.querySelector('[data-settings-action="manager"]')?.addEventListener('click', () => {
-        openManagerModal();
-    });
-
-    root.querySelector('[data-settings-action="scan"]')?.addEventListener('click', () => {
-        openScanAndImportModal();
-    });
-
-    root.querySelector('[data-settings-action="export"]')?.addEventListener('click', () => {
-        const data = exportConfigData(settings);
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `worldbook-organizer-backup-${new Date().toISOString().slice(0, 10)}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-        showToast('success', '已导出配置');
-    });
-
-    const importFileInput = root.querySelector('#wbo-import-config-file');
-    root.querySelector('[data-settings-action="import"]')?.addEventListener('click', () => {
-        if (importFileInput instanceof HTMLInputElement) {
-            importFileInput.value = '';
-            importFileInput.click();
-        }
-    });
-
-    importFileInput?.addEventListener('change', async () => {
-        if (!(importFileInput instanceof HTMLInputElement) || !importFileInput.files?.[0]) return;
-        try {
-            const text = await importFileInput.files[0].text();
-            const res = importConfigData(settings, text);
-            if (!res.ok) {
-                showToast('error', res.error || '导入失败');
-                return;
+        const importFileInput = root.querySelector('#wbo-import-config-file');
+        root.querySelector('[data-settings-action="import"]')?.addEventListener('click', () => {
+            if (importFileInput instanceof HTMLInputElement) {
+                importFileInput.value = '';
+                importFileInput.click();
             }
-            await _callbacks.onMutation({ save: true });
-            showToast('success', `导入成功：${res.stats.groups} 个分组、${res.stats.aliases} 条别名`);
-        } catch (err) {
-            showToast('error', `读取配置失败：${err?.message || err}`);
-        }
-    });
+        });
+        importFileInput?.addEventListener('change', async () => {
+            if (!(importFileInput instanceof HTMLInputElement) || !importFileInput.files?.[0]) return;
+            await handleConfigImportFile(importFileInput.files[0]);
+        });
+    }
+
+    const summaryEl = root.querySelector('#wbo-ext-settings-summary');
+    if (summaryEl) {
+        summaryEl.textContent = `共 ${classification.totalCount} 本世界书：${classification.nonCharCount} 本通用 / ${classification.charCount} 本角色绑定`;
+    }
+    syncSettingControlsInPlace(root, settings);
 }
 
 /**

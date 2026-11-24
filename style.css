@@ -2000,6 +2000,56 @@ details[open] > summary .wbo-details-chev {
     font-size: 12.5px;
 }
 
+.wbo-setting-inline-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 10px;
+    font-size: 12.5px;
+}
+
+.wbo-setting-inline-row > span {
+    flex-shrink: 0;
+}
+
+.wbo-setting-inline-row > .wbo-select {
+    width: auto !important;
+    min-width: 175px;
+    max-width: 60%;
+}
+
+.wbo-char-mode-pill {
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    height: 22px !important;
+    padding: 0 8px !important;
+    margin: 0 2px 0 0 !important;
+    border-radius: 999px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-bg) !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 11px !important;
+    font-weight: 500 !important;
+    line-height: 1 !important;
+    white-space: nowrap !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: border-color 0.14s ease, color 0.14s ease, background-color 0.14s ease;
+}
+
+.wbo-char-mode-pill i {
+    font-size: 10px !important;
+    opacity: 0.78;
+}
+
+.wbo-char-mode-pill:hover {
+    border-color: var(--wbo-accent) !important;
+    color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+}
+
 .wbo-settings-actions {
     display: flex;
     flex-wrap: wrap;
