@@ -16,6 +16,7 @@ import {
     buildCharacterBindingIndex,
     buildPersonaBindingIndex,
     classifyWorldbooks,
+    promoteSectionToTop,
     updateCachedCharBindings,
 } from './src/core.js';
 import {
@@ -158,6 +159,8 @@ function registerSlashCommands(ctx) {
                     const settings = getSettings();
                     if (action === 'show') {
                         settings.showCharBooks = true;
+                        settings.charGroupCollapsed = false;
+                        promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
                         recomputeAndRender({ save: true });
                         showToast('info', '已显示角色世界书');
                         return 'shown';
@@ -177,7 +180,10 @@ function registerSlashCommands(ctx) {
                         return 'rescanned';
                     }
                     settings.showCharBooks = !settings.showCharBooks;
-                    if (!settings.showCharBooks && settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
+                    if (settings.showCharBooks) {
+                        settings.charGroupCollapsed = false;
+                        promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
+                    } else if (settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
                         settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
                     }
                     recomputeAndRender({ save: true });

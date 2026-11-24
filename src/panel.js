@@ -20,6 +20,7 @@ import {
     matchesSearch,
     moveSectionOrder,
     parseAiOrganizeResponse,
+    promoteSectionToTop,
     reorderSection,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
@@ -169,6 +170,7 @@ function ensureHeaderBar() {
         }
         if (settings.showCharBooks) {
             settings.charGroupCollapsed = false;
+            promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
         }
         await _callbacks.onMutation({ save: true });
     });
@@ -310,17 +312,18 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
         `;
 
     const batchChecked = _batchSelected.has(book.realName);
-    const leadingControl = _batchMode
+    const batchCheckHtml = _batchMode
         ? `<input type="checkbox" class="wbo-batch-check" data-action="toggle-batch-item" value="${esc(book.realName)}"${batchChecked ? ' checked' : ''}>`
-        : `<span class="wbo-drag-handle" title="拖动移动到分组"><i class="fa-solid fa-grip-vertical"></i></span>`;
+        : '';
 
     return `
         <div class="wbo-book-item" data-book="${esc(book.realName)}">
-            <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}${_batchMode && batchChecked ? ' is-batch-selected' : ''}" data-book="${esc(book.realName)}" draggable="${_batchMode ? 'false' : 'true'}">
-                ${leadingControl}
-                <button type="button" class="wbo-book-main" data-action="${_batchMode ? 'toggle-batch-row' : 'toggle-book-preview'}" title="${_batchMode ? '点击勾选或取消' : '点击展开预览条目内容'}">
+            <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}${_batchMode && batchChecked ? ' is-batch-selected' : ''}" data-book="${esc(book.realName)}" draggable="true">
+                <span class="wbo-drag-handle" title="${_batchMode ? '拖动移动当前项或全部已勾选项' : '拖动移动到分组'}"><i class="fa-solid fa-grip-vertical"></i></span>
+                ${batchCheckHtml}
+                <button type="button" class="wbo-book-main" data-action="toggle-book-preview" title="点击展开预览条目内容">
                     <div class="wbo-book-title-line">
-                        ${_batchMode ? '' : '<i class="fa-solid fa-chevron-right wbo-book-chev"></i>'}
+                        <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
                         <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
                         ${subHtml}
                         ${extraTag}
@@ -335,10 +338,13 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn" data-action="rename-alias" title="编辑名称与备注">
-                        <i class="fa-solid fa-tag"></i>
+                        <i class="fa-solid fa-pen-to-square"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn" data-action="move-group" title="移动分组">
                         <i class="fa-solid fa-folder-open"></i>
+                    </button>
+                    <button type="button" class="wbo-icon-btn wbo-icon-danger" data-action="delete-single-book" title="删除世界书">
+                        <i class="fa-regular fa-trash-can"></i>
                     </button>
                 </div>
             </div>
@@ -808,6 +814,7 @@ function openManagerModal() {
         }
         if (settings.showCharBooks) {
             settings.charGroupCollapsed = false;
+            promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
         }
         await _callbacks.onMutation({ save: true });
     });
@@ -824,9 +831,10 @@ function openManagerModal() {
     }
 
     // Drag & Drop inside Group Manager:
-    // 1. Drag any `.wbo-book-row` onto any `.wbo-group` or `.wbo-pill` to move that book.
+    // 1. Drag any `.wbo-book-row` onto any `.wbo-group` or `.wbo-pill` to move that book
+    //    (in batch mode, dragging a checked book moves ALL checked books together!).
     // 2. Drag any `.wbo-group-header` onto another `.wbo-group` to reorder sections!
-    /** @type {{ type: 'book', bookName: string } | { type: 'group', groupId: string } | null} */
+    /** @type {{ type: 'book', bookNames: string[] } | { type: 'group', groupId: string } | null} */
     let dragState = null;
 
     const clearDropHighlights = () => {
@@ -843,12 +851,22 @@ function openManagerModal() {
         if (bookRow instanceof HTMLElement) {
             const bookName = bookRow.getAttribute('data-book');
             if (!bookName) return;
-            dragState = { type: 'book', bookName };
+            const bookNames = (_batchMode && _batchSelected.has(bookName) && _batchSelected.size > 1)
+                ? [..._batchSelected]
+                : [bookName];
+            dragState = { type: 'book', bookNames };
             if (ev.dataTransfer) {
                 ev.dataTransfer.effectAllowed = 'move';
-                ev.dataTransfer.setData('text/plain', bookName);
+                ev.dataTransfer.setData('text/plain', bookNames.join('\n'));
             }
-            bookRow.classList.add('is-dragging');
+            if (bookNames.length > 1) {
+                const nameSet = new Set(bookNames);
+                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]').forEach((r) => {
+                    if (nameSet.has(r.getAttribute('data-book') || '')) r.classList.add('is-dragging');
+                });
+            } else {
+                bookRow.classList.add('is-dragging');
+            }
             return;
         }
 
@@ -925,15 +943,27 @@ function openManagerModal() {
             if (!targetGroupId) return;
 
             ev.preventDefault();
-            const meta = classification.byName.get(activeDrag.bookName);
-            if (meta && assignBookToGroup(settings, meta, targetGroupId)) {
+            let movedCount = 0;
+            let lastTitle = '';
+            for (const name of activeDrag.bookNames) {
+                const meta = classification.byName.get(name);
+                if (meta && assignBookToGroup(settings, meta, targetGroupId)) {
+                    movedCount += 1;
+                    lastTitle = meta.primaryTitle;
+                }
+            }
+            if (movedCount > 0) {
+                if (activeDrag.bookNames.length > 1) _batchSelected.clear();
                 await _callbacks.onMutation({ save: true });
                 const targetName = targetGroupId === SPECIAL_GROUPS.UNGROUPED
                     ? '未分组'
                     : targetGroupId === SPECIAL_GROUPS.CHARACTER
                         ? '角色世界书'
                         : settings.groups.find((g) => g.id === targetGroupId)?.name || '分组';
-                showToast('success', `已将「${meta.primaryTitle}」移入「${targetName}」`);
+                const msg = movedCount > 1
+                    ? `已将 ${movedCount} 本世界书移入「${targetName}」`
+                    : `已将「${lastTitle}」移入「${targetName}」`;
+                showToast('success', msg);
             }
             return;
         }
@@ -973,6 +1003,7 @@ function openManagerModal() {
             case 'reveal-char-books': {
                 settings.showCharBooks = true;
                 settings.charGroupCollapsed = false;
+                promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
                 await _callbacks.onMutation({ save: true });
                 break;
             }

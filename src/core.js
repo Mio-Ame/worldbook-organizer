@@ -225,6 +225,20 @@ export function moveSectionOrder(settings, sectionId, delta) {
 }
 
 /**
+ * Promote a section ID to the very first slot of `settings.sectionOrder`
+ * (e.g. bringing `角色世界书` to the top whenever the user toggles it ON).
+ * @param {Record<string, any>} settings
+ * @param {string} sectionId
+ */
+export function promoteSectionToTop(settings, sectionId) {
+    const normalized = normalizeSettings(settings);
+    const nextOrder = [sectionId, ...normalized.sectionOrder.filter((id) => id !== sectionId)];
+    settings.sectionOrder = nextOrder;
+    const groupById = new Map((settings.groups || []).map((g) => [g.id, g]));
+    settings.groups = nextOrder.filter((id) => groupById.has(id)).map((id) => groupById.get(id));
+}
+
+/**
  * Reorder a section ID by dragging it before or after a target section ID,
  * keeping `settings.groups` order synchronized for custom groups.
  * @param {Record<string, any>} settings

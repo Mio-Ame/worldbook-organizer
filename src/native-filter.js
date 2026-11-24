@@ -867,35 +867,34 @@ function enhanceOpenEditorDropdown() {
             li.setAttribute('data-wbo-dd-group', gid);
 
             const head = li.querySelector(':scope > .select2-results__group');
+            const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL;
             if (head instanceof HTMLElement) {
                 head.classList.add('wbo-dd-group-head');
+                head.classList.toggle('is-isolated', isIsolated);
                 head.setAttribute('data-wbo-dd-group', gid);
-                head.setAttribute('title', '点击展开或折叠该分组');
+                head.setAttribute('title', isIsolated ? '' : '点击展开或折叠该分组');
             }
 
             // Filter visibility when user picked a single group pill inside the dropdown
-            const hiddenByPill = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && gid !== activePillGroupId;
+            const hiddenByPill = isIsolated && gid !== activePillGroupId;
             li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
 
             // Auto-expand while searching OR when isolated via filter pill
-            const isCollapsed = !searching && activePillGroupId === SPECIAL_GROUPS.ALL && Boolean(_latestSettings.dropdownCollapsed[gid]);
+            const isCollapsed = !searching && !isIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
             li.classList.toggle('wbo-dd-collapsed', isCollapsed);
         });
     };
 
-    // Delegate mousedown/click on group headers to fold/unfold without closing Select2!
+    // Delegate mousedown/click on group headers: ONLY fold/unfold in "全部" view
+    // (never unexpectedly teleport back to "全部" — use the "全部" pill for that!).
     const onResultsMouseDown = (ev) => {
         const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
         if (!head) return;
         ev.preventDefault();
         ev.stopPropagation();
+        if (activePillGroupId !== SPECIAL_GROUPS.ALL) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
-        if (activePillGroupId !== SPECIAL_GROUPS.ALL) {
-            // If isolated to one group, clicking its header folds/unfolds via returning to ALL
-            activePillGroupId = SPECIAL_GROUPS.ALL;
-            syncPillButtons();
-        }
         _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
         saveSettings();
         decorateGroupItems();
@@ -1129,8 +1128,14 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     const syncSections = () => {
         const searching = isSearching();
+        const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL;
         for (const secEl of sectionEls) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
+            const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
+            if (headEl instanceof HTMLElement) {
+                headEl.classList.toggle('is-isolated', isIsolated);
+                headEl.title = isIsolated ? '' : '点击展开或折叠该分组';
+            }
             if (searching) {
                 const hasVisibleChild = Array.from(secEl.querySelectorAll('.gr-option')).some(
                     (o) => o instanceof HTMLElement && o.style.display !== 'none',
@@ -1138,9 +1143,9 @@ function enhanceCustomDropdownPopover(containerEl) {
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild);
                 secEl.classList.remove('wbo-dd-collapsed');
             } else {
-                const hiddenByPill = activePillGroupId !== SPECIAL_GROUPS.ALL && gid !== activePillGroupId;
+                const hiddenByPill = isIsolated && gid !== activePillGroupId;
                 secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const collapsed = activePillGroupId === SPECIAL_GROUPS.ALL && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                const collapsed = !isIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
                 secEl.classList.toggle('wbo-dd-collapsed', collapsed);
             }
         }
@@ -1151,12 +1156,9 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (!head) return;
         ev.preventDefault();
         ev.stopPropagation();
+        if (activePillGroupId !== SPECIAL_GROUPS.ALL) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
-        if (activePillGroupId !== SPECIAL_GROUPS.ALL) {
-            activePillGroupId = SPECIAL_GROUPS.ALL;
-            syncPillButtons();
-        }
         _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
         saveSettings();
         syncSections();

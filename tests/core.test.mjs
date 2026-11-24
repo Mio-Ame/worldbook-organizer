@@ -23,6 +23,7 @@ import {
     moveSectionOrder,
     normalizeSettings,
     parseAiOrganizeResponse,
+    promoteSectionToTop,
     reorderSection,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
@@ -321,6 +322,10 @@ test('addCustomGroup preserves creation order (g1 -> g2 -> ungrouped -> char) an
     assert.equal(reorderSection(settings, g3.id, g1.id, 'before'), true);
     assert.deepEqual(settings.sectionOrder, [g3.id, g1.id, g2.id, SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]);
     assert.deepEqual(settings.groups.map((g) => g.id), [g3.id, g1.id, g2.id]);
+
+    // Promote character group to first when enabled
+    promoteSectionToTop(settings, SPECIAL_GROUPS.CHARACTER);
+    assert.equal(settings.sectionOrder[0], SPECIAL_GROUPS.CHARACTER);
 
     // Legacy v1 default [__char__, __ungrouped__] auto-migrates to [__ungrouped__, __char__]
     const migrated = normalizeSettings({
