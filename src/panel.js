@@ -84,6 +84,18 @@ let _charBtnWidthObserver = null;
 const _batchSelected = new Set();
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
 const _previewCache = new Map();
+const MAX_PREVIEW_CACHE_BOOKS = 8;
+
+function setPreviewCache(bookName, data) {
+    if (!bookName) return;
+    if (_previewCache.has(bookName)) _previewCache.delete(bookName);
+    _previewCache.set(bookName, data);
+    while (_previewCache.size > MAX_PREVIEW_CACHE_BOOKS) {
+        const oldest = _previewCache.keys().next().value;
+        if (oldest === undefined) break;
+        _previewCache.delete(oldest);
+    }
+}
 
 /**
  * Detect whether the current SillyTavern / TauriTavern theme is light or dark
@@ -646,7 +658,7 @@ async function toggleInlineBookPreview(itemEl, bookName) {
     previewEl.innerHTML = '<div class="wbo-preview-loading">正在读取条目内容...</div>';
     try {
         const data = await fetchWorldbookPreviewEntries(bookName);
-        _previewCache.set(bookName, data);
+        setPreviewCache(bookName, data);
         if (previewEl.isConnected && !previewEl.hidden) {
             renderData(data);
         }
@@ -2780,7 +2792,7 @@ function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
     }
 
     const input = modal.querySelector('#wbo-group-name-input');
-    if (input instanceof HTMLInputElement) {
+    if (input instanceof HTMLInputElement && (globalThis.innerWidth || 999) > 680) {
         input.focus();
         input.select();
     }
@@ -5287,7 +5299,7 @@ function openScanAndImportModal() {
                     const data = _previewCache.has(worldName)
                         ? _previewCache.get(worldName)
                         : await fetchWorldbookPreviewEntries(worldName);
-                    _previewCache.set(worldName, data);
+                    setPreviewCache(worldName, data);
                     if (!drawer.isConnected || drawer.getAttribute('data-drawer-key') !== key) return;
                     const shown = (data?.entries || []).slice(0, 20);
                     const itemsHtml = shown.length > 0
@@ -5345,8 +5357,8 @@ function openScanAndImportModal() {
                         _previewCache.has(bookA) ? _previewCache.get(bookA) : fetchWorldbookPreviewEntries(bookA),
                         _previewCache.has(bookB) ? _previewCache.get(bookB) : fetchWorldbookPreviewEntries(bookB),
                     ]);
-                    _previewCache.set(bookA, dataA);
-                    _previewCache.set(bookB, dataB);
+                    setPreviewCache(bookA, dataA);
+                    setPreviewCache(bookB, dataB);
                     if (!drawer.isConnected || drawer.getAttribute('data-drawer-key') !== key) return;
                     const diff = compareWorldbookEntries(dataA?.entries || [], dataB?.entries || []);
                     const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0 && diff.modified.length === 0;
@@ -6737,7 +6749,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
 
     if (autoRun && String(initialQuery).trim()) {
         setTimeout(() => { void runSearch(); }, 30);
-    } else if (queryInput instanceof HTMLInputElement) {
+    } else if (queryInput instanceof HTMLInputElement && (globalThis.innerWidth || 999) > 680) {
         setTimeout(() => queryInput.focus(), 20);
     }
 }

@@ -137,7 +137,9 @@ export function saveSettings() {
  * @param {boolean} [force=false]
  */
 export async function syncFallbackSettingsData(force = false) {
-    if (!force && _worldInfoModule?.world_info && Array.isArray(_worldInfoModule?.world_names)) {
+    // When live SillyTavern `world-info.js` exports are already loaded in memory,
+    // NEVER re-download & JSON-parse the entire multi-MB `/api/settings/get` payload!
+    if (_worldInfoModule?.world_info && Array.isArray(_worldInfoModule?.world_names)) {
         return;
     }
     if (!force && _cachedSettingsCharLore !== null) {
@@ -318,7 +320,10 @@ export function getCurrentEditorWorldName() {
  * @returns {Promise<{ total: number, enabledCount: number, entries: Array<{ uid: string, title: string, keys: string[], content: string, disabled: boolean, constant: boolean }> }>}
  */
 export async function fetchWorldbookPreviewEntries(worldName) {
-    const data = await loadWorldInfoPayload(worldName);
+    let data = await fetchWorldInfoUncached(worldName);
+    if (!data || typeof data !== 'object') {
+        data = await loadWorldInfoPayload(worldName);
+    }
     const entriesObj = data?.entries;
     if (!entriesObj || typeof entriesObj !== 'object') {
         return { total: 0, enabledCount: 0, entries: [] };
@@ -425,7 +430,10 @@ export async function fetchWorldbookCluesOnDemand(
 ) {
     const limit = Math.max(1, Math.min(20, Number(maxClues) || 5));
     const maxSnippet = Math.max(0, Math.min(200, Number(snippetChars) || 0));
-    const data = await loadWorldInfoPayload(worldName);
+    let data = await fetchWorldInfoUncached(worldName);
+    if (!data || typeof data !== 'object') {
+        data = await loadWorldInfoPayload(worldName);
+    }
     const entriesObj = data?.entries;
     if (!entriesObj || typeof entriesObj !== 'object') return [];
 
