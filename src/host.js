@@ -10,7 +10,7 @@
  *   triggers AI Organize with entry-clue sampling enabled.
  */
 
-import { MODULE_NAME, isPotentiallySensitiveTitle, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
+import { MODULE_NAME, charaFileName, isPotentiallySensitiveTitle, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
 
@@ -1102,6 +1102,91 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
     }
 
     return { ok: true, migrated };
+}
+
+/**
+ * Remove a specific extra worldbook binding from `world_info.charLore` for a character
+ * (also works for deleted/orphan character entries!).
+ * @param {string} charKeyOrAvatar
+ * @param {string} worldName
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function unbindExtraWorldbookFromChar(charKeyOrAvatar, worldName) {
+    const cleanWorld = String(worldName ?? '').trim();
+    const keyCandidate = charaFileName(String(charKeyOrAvatar ?? '').trim()) || String(charKeyOrAvatar ?? '').trim();
+    if (!keyCandidate || !cleanWorld) return { ok: false, error: '参数无效' };
+
+    await ensureWorldInfoModule();
+    const charLore = _worldInfoModule?.world_info?.charLore;
+    if (!Array.isArray(charLore)) {
+        return { ok: false, error: '未能访问酒馆附加世界书列表' };
+    }
+
+    let removed = false;
+    for (let i = charLore.length - 1; i >= 0; i -= 1) {
+        const entry = charLore[i];
+        const entryKey = String(entry?.name ?? '').trim();
+        if (!entryKey) continue;
+        if (entryKey !== keyCandidate && entryKey !== String(charKeyOrAvatar ?? '').trim()) continue;
+        if (Array.isArray(entry.extraBooks) && entry.extraBooks.includes(cleanWorld)) {
+            entry.extraBooks = entry.extraBooks.filter((b) => b !== cleanWorld);
+            removed = true;
+            if (entry.extraBooks.length === 0) {
+                charLore.splice(i, 1);
+            }
+        }
+    }
+
+    if (!removed) {
+        return { ok: false, error: '未找到对应的附加世界书绑定记录' };
+    }
+
+    saveSettings();
+    return { ok: true };
+}
+
+/**
+ * Clear a character card's primary worldbook binding (`extensions.world = ''`),
+ * e.g. to clean up a broken reference to a deleted worldbook file.
+ * @param {string} avatar
+ * @param {Record<string, any>} [pluginSettings]
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function unbindPrimaryWorldbookFromChar(avatar, pluginSettings = null) {
+    const cleanAvatar = String(avatar ?? '').trim();
+    if (!cleanAvatar) return { ok: false, error: '角色标识为空' };
+
+    const ctx = getHostContext();
+    const characters = getCharactersInMemory();
+    const chid = characters.findIndex((c) => c?.avatar === cleanAvatar);
+
+    try {
+        const res = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({
+                avatar: cleanAvatar,
+                data: { extensions: { world: '' } },
+            }),
+        });
+        if (!res.ok) {
+            if (chid >= 0 && typeof ctx?.writeExtensionField === 'function') {
+                await ctx.writeExtensionField(chid, 'world', '');
+            } else {
+                throw new Error(`HTTP ${res.status}`);
+            }
+        }
+        if (chid >= 0 && characters[chid]?.data?.extensions) {
+            characters[chid].data.extensions.world = '';
+        }
+        if (pluginSettings?.cachedCharBindings?.[cleanAvatar]) {
+            pluginSettings.cachedCharBindings[cleanAvatar].primary = null;
+        }
+        saveSettings();
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: String(err?.message || err) };
+    }
 }
 
 /**

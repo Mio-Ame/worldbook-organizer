@@ -61,6 +61,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     charBookOverrides: {},
     cachedCharBindings: {},
     undoSnapshots: [],
+    initialSnapshot: null,
 });
 
 /**
@@ -116,6 +117,9 @@ export function normalizeSettings(raw) {
 
     if (!Array.isArray(merged.undoSnapshots)) {
         merged.undoSnapshots = [];
+    }
+    if (merged.initialSnapshot && typeof merged.initialSnapshot !== 'object') {
+        merged.initialSnapshot = null;
     }
 
     if (merged.apiProvider !== 'custom') {
@@ -534,7 +538,12 @@ export function summarizeCharacterWorldCoverage({
         for (const o of owners) {
             boundAvatars.add(o.avatar);
             if (!liveAvatarSet.has(o.avatar)) {
-                orphanExtraBooks.push({ worldName, charName: o.charName, source: o.source });
+                orphanExtraBooks.push({
+                    worldName,
+                    charName: o.charName,
+                    charKey: charaFileName(o.avatar) || o.charName,
+                    source: o.source,
+                });
             } else {
                 let list = booksByAvatar.get(o.avatar);
                 if (!list) {
@@ -1073,7 +1082,7 @@ export function matchesSearch(bookMeta, query) {
 export function isPotentiallySensitiveTitle(text) {
     const s = String(text ?? '');
     if (
-        /(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|erotic|fetish|色情|情色|涩情|黄文|小黄文|肉文|纯肉|肉戏|床戏|车文|肉欲|情欲|色欲|涩欲|色气|涩气|淫荡|淫靡|淫秽|淫乱|淫词|淫水|淫叫|淫娃|娇喘|浪叫|发骚|发浪|骚货|荡妇|母猪|调教|性爱|性癖|性奴|性交|性侵|性虐|性骚扰|性描写|性行为|性技巧|性器官|性器|生殖器|性高潮|性凝视|性玩具|成人玩具|情趣用品|情趣内衣|恶俗|恶堕|雌堕|涩涩|涩图|成人向|成人内容|成人描写|高h|h文|擦边|做爱|啪啪|打飞机|飞机杯|名器|撸管|手冲|导管|自渎|跳蛋|震动棒|假阳具|假鸡巴|假肉棒|肛塞|拉珠|贞操锁|贞操带|口球|乳夹|阴夹|阴环|乳环|阳具|阴茎|肉棒|鸡巴|龟头|睾丸|嫩穴|花穴|骚穴|蜜穴|肉洞|穴口|宫口|阴唇|阴道|阴蒂|后庭|前列腺|精液|射精|喷水|潮喷|深喉|吞精|口爆|颜爆|榨精|榨汁|抽插|后入|骑乘位|素股|臀交|无套|寸止|放尿|触手|媚药|催情|春药|发情|情趣|色诱|凌辱|羞辱|拘束|母狗|肉便器|精盆|肉壶|口交|足交|乳交|肛交|舔乳|舔阴|舔脚|舔足|吮吸乳|乳首|奶头|奶子|揉奶|舔奶|吸奶|爆乳|内射|颜射|中出|潮吹|自慰|手淫|双性|扶她|兽交|轮奸|强奸|迷奸|乱伦|绿帽|绿奴|牛头人|媚黑|产卵|产乳|泌乳|催乳|失禁|露出癖|灌肠|尿道|身体开发|炮友|约炮|一夜情|嫖娼|卖淫|援交|多p|3p|群p|群交|乱交|黄暴|黄腔|肉汤|炖肉|后庭扩张|阴道扩张|工口|里番|重口|猎奇|血腥|虐杀|自残|(?:孕期|孕|羞耻|放置|窒息|露出|捆绑|催眠|电击|尿道|灌肠|黄金)\s*play)/i.test(s)
+        /(?:nsfw|18\+|r-?18g?|bdsm|hentai|erotica|erotic|fetish|dirty\s*talk|色情|情色|涩情|黄文|小黄文|肉文|纯肉|肉戏|床戏|车文|车速|开车|肉欲|情欲|色欲|涩欲|色气|涩气|淫荡|淫靡|淫秽|淫乱|淫词|淫语|淫水|淫叫|淫娃|骚话|荤话|下流话|娇喘|浪叫|发骚|发浪|骚货|荡妇|母猪|调教|性爱|性癖|性奴|性交|性侵|性虐|性骚扰|性描写|性行为|性技巧|性器官|性器|生殖器|性高潮|性凝视|性玩具|成人玩具|情趣用品|情趣内衣|恶俗|恶堕|雌堕|涩涩|瑟瑟|色色|涩图|成人向|成人内容|成人描写|高h|h文|擦边|做爱|啪啪|打飞机|飞机杯|名器|撸管|手冲|导管|自渎|跳蛋|震动棒|假阳具|假鸡巴|假肉棒|肛塞|拉珠|贞操锁|贞操带|口球|乳夹|阴夹|阴环|乳环|阳具|阴茎|肉棒|鸡巴|龟头|睾丸|嫩穴|花穴|骚穴|蜜穴|肉洞|穴口|宫口|阴唇|阴道|阴蒂|后庭|前列腺|精液|射精|喷水|潮喷|深喉|吞精|口爆|颜爆|榨精|榨汁|抽插|后入|骑乘位|素股|臀交|无套|寸止|放尿|触手|媚药|催情|春药|发情|情趣|色诱|凌辱|羞辱|拘束|捆绑|绳艺|项圈|恋足|足控|肉偿|强制爱|母狗|肉便器|精盆|肉壶|口交|足交|乳交|肛交|舔乳|舔阴|舔脚|舔足|吮吸乳|乳首|奶头|奶子|揉奶|舔奶|吸奶|爆乳|内射|颜射|中出|潮吹|自慰|手淫|双性|扶她|兽交|轮奸|强奸|迷奸|乱伦|绿帽|绿奴|牛头人|媚黑|产卵|产乳|泌乳|催乳|失禁|露出癖|灌肠|尿道|身体开发|炮友|约炮|一夜情|嫖娼|卖淫|援交|多p|3p|群p|群交|乱交|黄暴|黄腔|肉汤|炖肉|后庭扩张|阴道扩张|工口|里番|重口|猎奇|血腥|虐杀|自残|(?:孕期|孕|羞耻|放置|窒息|露出|捆绑|催眠|电击|尿道|灌肠|黄金|强制)\s*play)/i.test(s)
     ) {
         return true;
     }
@@ -1156,11 +1165,11 @@ export function buildLocalOrganizeProposals({
         [/^(?:场景|约会|互动|剧情|日常|事件)$/i, '场景与互动'],
         [/^(?:小剧场|剧场|彩蛋|随机|玩法|扩展)$/i, '小剧场'],
         [/^(?:补充|穿搭|素材|通用|常识|百科|词库|语料)$/i, '补充素材'],
-        [/^(?:nsfw|18\+|r18|成人|敏感|肉|车)$/i, '成人向'],
+        [/^(?:nsfw|18\+|r18|成人|敏感|肉|车)$/i, 'NSFW'],
     ];
 
     const keywordRules = [
-        { test: (s) => isPotentiallySensitiveTitle(s), group: '成人向' },
+        { test: (s) => isPotentiallySensitiveTitle(s), group: 'NSFW' },
         { test: (s) => /(?:人设|user|自设|娇妻|软萌|性格设定|主角设定)/i.test(s), group: '人设' },
         { test: (s) => /(?:文风|去八股|去ai味|叙事|文笔|描写|对话风格|散文|古风写作|网文风|小说风|节奏控制|遣词)/i.test(s), group: '文风' },
         { test: (s) => /(?:缝合|防抢话|不抢话|思维链|破限|输出格式|状态栏|前端|美化|记忆增强|防复读|防重复|规则指令|系统指令|提示词|模板|插件|mvu|变量)/i.test(s), group: '缝合' },
@@ -1437,29 +1446,47 @@ export function parseAiOrganizeResponse(rawText, validWorldNames) {
 }
 
 /**
- * Apply confirmed AI organize proposals to settings (non-destructive virtual aliases & groups).
- * Saves an undo snapshot beforehand.
- *
+ * Capture an undo snapshot (keeping up to 8 history steps + immutable initial state before first organize).
  * @param {Record<string, any>} settings
- * @param {Array<{ realName: string, alias?: string, group?: string, note?: string, applyAlias?: boolean, applyGroup?: boolean, applyNote?: boolean }>} proposals
- * @returns {{ appliedCount: number, createdGroups: string[] }}
+ * @param {{ count?: number, label?: string }} [meta]
  */
-export function applyAiOrganizeProposals(settings, proposals) {
-    if (!Array.isArray(proposals) || proposals.length === 0) {
-        return { appliedCount: 0, createdGroups: [] };
-    }
-
-    // Save undo snapshot (keep last 3)
-    const snapshot = {
+export function pushUndoSnapshot(settings, { count = 0, label = '整理' } = {}) {
+    if (!settings) return;
+    const makeSnap = (snapLabel, snapCount) => ({
         at: Date.now(),
-        count: proposals.length,
+        count: snapCount,
+        label: snapLabel,
+        groupCount: Array.isArray(settings.groups) ? settings.groups.length : 0,
         groups: deepClone(settings.groups || []),
         assignments: deepClone(settings.assignments || {}),
         aliases: deepClone(settings.aliases || {}),
         notes: deepClone(settings.notes || {}),
         charBookOverrides: deepClone(settings.charBookOverrides || {}),
-    };
-    settings.undoSnapshots = [snapshot, ...(settings.undoSnapshots || [])].slice(0, 3);
+        sectionOrder: deepClone(settings.sectionOrder || []),
+    });
+
+    if (!settings.initialSnapshot) {
+        settings.initialSnapshot = makeSnap('最初状态', 0);
+    }
+    const snapshot = makeSnap(label, count);
+    settings.undoSnapshots = [snapshot, ...(settings.undoSnapshots || [])].slice(0, 8);
+}
+
+/**
+ * Apply confirmed AI/local organize proposals to settings (non-destructive virtual aliases & groups).
+ * Saves an undo snapshot beforehand.
+ *
+ * @param {Record<string, any>} settings
+ * @param {Array<{ realName: string, alias?: string, group?: string, note?: string, applyAlias?: boolean, applyGroup?: boolean, applyNote?: boolean }>} proposals
+ * @param {{ label?: string }} [opts]
+ * @returns {{ appliedCount: number, createdGroups: string[] }}
+ */
+export function applyAiOrganizeProposals(settings, proposals, { label = '整理' } = {}) {
+    if (!Array.isArray(proposals) || proposals.length === 0) {
+        return { appliedCount: 0, createdGroups: [] };
+    }
+
+    pushUndoSnapshot(settings, { count: proposals.length, label });
 
     const groupByName = new Map(
         (settings.groups || []).map((g) => [g.name.trim().toLowerCase(), g]),
@@ -1561,22 +1588,113 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
 }
 
 /**
- * Undo the most recent AI organize batch.
+ * Restore a specific historical snapshot (`0` = latest, `1` = second-latest, ..., or `'initial'` = pre-first-organize state).
+ * @param {Record<string, any>} settings
+ * @param {number | 'initial'} [target=0]
+ * @returns {boolean}
+ */
+export function restoreOrganizeSnapshot(settings, target = 0) {
+    if (!settings) return false;
+    let snap = null;
+    if (target === 'initial') {
+        snap = settings.initialSnapshot || null;
+        if (!snap) return false;
+        settings.undoSnapshots = [];
+    } else {
+        const idx = Number(target);
+        if (!Array.isArray(settings.undoSnapshots) || !Number.isInteger(idx) || idx < 0 || idx >= settings.undoSnapshots.length) {
+            return false;
+        }
+        snap = settings.undoSnapshots[idx];
+        settings.undoSnapshots = settings.undoSnapshots.slice(idx + 1);
+    }
+
+    settings.groups = deepClone(snap.groups || []);
+    settings.assignments = deepClone(snap.assignments || {});
+    settings.aliases = deepClone(snap.aliases || {});
+    settings.notes = deepClone(snap.notes || {});
+    settings.charBookOverrides = deepClone(snap.charBookOverrides || {});
+    if (Array.isArray(snap.sectionOrder) && snap.sectionOrder.length > 0) {
+        settings.sectionOrder = deepClone(snap.sectionOrder);
+    }
+    return true;
+}
+
+/**
+ * Undo the most recent organize batch (backward-compatible wrapper).
  * @param {Record<string, any>} settings
  * @returns {boolean}
  */
 export function undoLastAiOrganize(settings) {
-    if (!Array.isArray(settings.undoSnapshots) || settings.undoSnapshots.length === 0) {
-        return false;
+    return restoreOrganizeSnapshot(settings, 0);
+}
+
+/**
+ * Compare two worldbooks' entries by normalized title/keys so users can inspect
+ * why a character has multiple bound books and decide which one to keep or unbind.
+ * @param {Array<{ title: string, keys?: string[], content?: string }>} entriesA
+ * @param {Array<{ title: string, keys?: string[], content?: string }>} entriesB
+ */
+export function compareWorldbookEntries(entriesA = [], entriesB = []) {
+    const buildIndexed = (list) => {
+        const counts = new Map();
+        const map = new Map();
+        for (const item of list || []) {
+            const base = String(item?.title || '').trim().toLowerCase()
+                || (Array.isArray(item?.keys) ? item.keys.slice(0, 3).join('|').toLowerCase() : '')
+                || String(item?.content || '').slice(0, 40).toLowerCase();
+            const n = (counts.get(base) || 0) + 1;
+            counts.set(base, n);
+            const key = n > 1 ? `${base}#${n}` : base;
+            map.set(key, {
+                title: String(item?.title || '').trim() || '(无标题)',
+                keys: Array.isArray(item?.keys) ? item.keys : [],
+                content: String(item?.content || '').trim(),
+            });
+        }
+        return map;
+    };
+
+    const mapA = buildIndexed(entriesA);
+    const mapB = buildIndexed(entriesB);
+
+    let sameCount = 0;
+    const onlyA = [];
+    const onlyB = [];
+    const modified = [];
+
+    for (const [k, a] of mapA.entries()) {
+        if (!mapB.has(k)) {
+            onlyA.push(a);
+        } else {
+            const b = mapB.get(k);
+            if (a.content === b.content) {
+                sameCount += 1;
+            } else {
+                modified.push({
+                    title: a.title,
+                    lenA: a.content.length,
+                    lenB: b.content.length,
+                    snippetA: a.content.slice(0, 120),
+                    snippetB: b.content.slice(0, 120),
+                });
+            }
+        }
     }
-    const [latest, ...rest] = settings.undoSnapshots;
-    settings.groups = deepClone(latest.groups || []);
-    settings.assignments = deepClone(latest.assignments || {});
-    settings.aliases = deepClone(latest.aliases || {});
-    settings.notes = deepClone(latest.notes || {});
-    settings.charBookOverrides = deepClone(latest.charBookOverrides || {});
-    settings.undoSnapshots = rest;
-    return true;
+    for (const [k, b] of mapB.entries()) {
+        if (!mapA.has(k)) {
+            onlyB.push(b);
+        }
+    }
+
+    return {
+        totalA: (entriesA || []).length,
+        totalB: (entriesB || []).length,
+        sameCount,
+        onlyA,
+        onlyB,
+        modified,
+    };
 }
 
 /**

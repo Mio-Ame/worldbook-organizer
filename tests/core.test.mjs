@@ -11,6 +11,7 @@ import {
     buildPersonaBindingIndex,
     classifyWorldbooks,
     cleanupDeletedWorldSettings,
+    compareWorldbookEntries,
     detectAiRefusal,
     exportConfigData,
     findCardsWithUnimportedBooks,
@@ -25,7 +26,9 @@ import {
     normalizeSettings,
     parseAiOrganizeResponse,
     promoteSectionToTop,
+    pushUndoSnapshot,
     reorderSection,
+    restoreOrganizeSnapshot,
     summarizeCharacterWorldCoverage,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -248,6 +251,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(isPotentiallySensitiveTitle('打飞机与飞机杯玩法'), true);
     assert.equal(isPotentiallySensitiveTitle('名器倒模评测'), true);
     assert.equal(isPotentiallySensitiveTitle('孕期play指南'), true);
+    assert.equal(isPotentiallySensitiveTitle('Dirty Talk 词库'), true);
     assert.equal(isPotentiallySensitiveTitle('NTR修罗场'), true);
     assert.equal(isPotentiallySensitiveTitle('古风去八股文风'), false);
     assert.equal(isPotentiallySensitiveTitle('约会场景与流程指南'), false);
@@ -292,9 +296,44 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(localProps[1].group, '人设');
     assert.equal(localProps[1].note, '');
     assert.equal(localProps[2].group, '场景与互动');
-    assert.equal(localProps[3].group, '成人向');
+    assert.equal(localProps[3].group, 'NSFW');
     assert.equal(localProps[4].group, '同人专区');
     assert.equal(localProps[4].alias, '我的咒回设定集');
+
+    // Multi-step undo history + initialSnapshot restore
+    const histSettings = normalizeSettings(null);
+    applyAiOrganizeProposals(histSettings, [{ realName: '书1', alias: '书1A', group: '文风' }], { label: '第1次' });
+    applyAiOrganizeProposals(histSettings, [{ realName: '书2', alias: '书2A', group: '世界观' }], { label: '第2次' });
+    applyAiOrganizeProposals(histSettings, [{ realName: '书3', alias: '书3A', group: '人设' }], { label: '第3次' });
+    assert.equal(histSettings.groups.length, 3);
+    assert.equal(histSettings.undoSnapshots.length, 3);
+    assert.ok(histSettings.initialSnapshot);
+    // Jump back 2 steps (before 第2次 -> only 第1次 remains)
+    assert.equal(restoreOrganizeSnapshot(histSettings, 1), true);
+    assert.equal(histSettings.groups.length, 1);
+    assert.equal(histSettings.groups[0].name, '文风');
+    // Restore to initial pre-first-organize state
+    assert.equal(restoreOrganizeSnapshot(histSettings, 'initial'), true);
+    assert.equal(histSettings.groups.length, 0);
+    assert.deepEqual(histSettings.aliases, {});
+
+    // Two-book entry comparison
+    const diff = compareWorldbookEntries(
+        [
+            { title: '相同条', content: 'AAA' },
+            { title: '改过条', content: '旧版本内容' },
+            { title: '仅A条', content: 'onlyA' },
+        ],
+        [
+            { title: '相同条', content: 'AAA' },
+            { title: '改过条', content: '新版本内容更长' },
+            { title: '仅B条', content: 'onlyB' },
+        ],
+    );
+    assert.equal(diff.sameCount, 1);
+    assert.equal(diff.onlyA.length, 1);
+    assert.equal(diff.onlyB.length, 1);
+    assert.equal(diff.modified.length, 1);
 
     // Cleanup deleted worldbook settings
     const sDel = normalizeSettings({
