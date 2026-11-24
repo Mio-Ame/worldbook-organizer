@@ -39,14 +39,11 @@ import {
     testCustomApiChannel,
 } from './host.js';
 import {
-    isNativeMobileSelectMode,
     openWorldInNativeEditor,
     setGlobalWorldActive,
-    setMobileSearchFilter,
 } from './native-filter.js';
 
 const HEADER_BAR_ID = 'wbo-header-bar';
-const MOBILE_SEARCH_ID = 'wbo-mobile-search-bar';
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const MANAGER_OVERLAY_ID = 'wbo-manager-overlay';
 const SUBMODAL_OVERLAY_ID = 'wbo-submodal-overlay';
@@ -119,8 +116,9 @@ export function bindPanelCallbacks(callbacks) {
 }
 
 /**
- * Mount minimal zero-footprint controls right into `#WorldInfo`'s existing title row
- * (`margin-left: auto`), adding 0px vertical bloat to the native World Info page!
+ * Mount minimal theme-native controls cleanly on the right of `#WorldInfo`'s
+ * title row (`margin-left: auto`), inheriting the user's active SillyTavern theme
+ * and adding 0px vertical bloat!
  * @returns {HTMLElement | null}
  */
 function ensureHeaderBar() {
@@ -139,13 +137,11 @@ function ensureHeaderBar() {
     bar.id = HEADER_BAR_ID;
     bar.className = 'wbo-header-bar';
     bar.innerHTML = `
-        <label class="wbo-tool-switch" title="开启后显示角色卡绑定的世界书，关闭则隐藏">
-            <input type="checkbox" class="wbo-show-char-checkbox" id="wbo-hdr-show-char">
-            <span class="wbo-switch-track"></span>
+        <button type="button" class="menu_button menu_button_icon wbo-native-hdr-btn" id="wbo-hdr-show-char" title="点击切换显示或隐藏角色卡世界书">
+            <i class="fa-solid fa-eye-slash" id="wbo-hdr-char-icon"></i>
             <span id="wbo-hdr-char-label">角色书 0</span>
-        </label>
-        <select class="wbo-tool-select" id="wbo-hdr-group-select" title="按分组筛选世界书" hidden></select>
-        <button type="button" class="wbo-tool-btn" id="wbo-hdr-open-manager" title="打开世界书分组管理">
+        </button>
+        <button type="button" class="menu_button menu_button_icon wbo-native-hdr-btn" id="wbo-hdr-open-manager" title="打开世界书分组管理">
             <i class="fa-solid fa-layer-group"></i>
             <span id="wbo-hdr-manager-label">分组管理</span>
         </button>
@@ -153,29 +149,15 @@ function ensureHeaderBar() {
 
     titleRow.appendChild(bar);
 
-    // Bind header bar events once
-    bar.querySelector('#wbo-hdr-show-char')?.addEventListener('change', async (ev) => {
+    bar.querySelector('#wbo-hdr-show-char')?.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
         if (!_callbacks) return;
-        const cb = ev.currentTarget;
-        if (!(cb instanceof HTMLInputElement)) return;
         const { settings } = _callbacks.getState();
-        settings.showCharBooks = cb.checked;
+        settings.showCharBooks = !settings.showCharBooks;
         if (!settings.showCharBooks && settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
             settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
         }
         if (settings.showCharBooks) {
-            settings.charGroupCollapsed = false;
-        }
-        await _callbacks.onMutation({ save: true });
-    });
-
-    bar.querySelector('#wbo-hdr-group-select')?.addEventListener('change', async (ev) => {
-        if (!_callbacks) return;
-        const sel = ev.currentTarget;
-        if (!(sel instanceof HTMLSelectElement)) return;
-        const { settings } = _callbacks.getState();
-        settings.activeFilterGroupId = sel.value || SPECIAL_GROUPS.DEFAULT;
-        if (settings.activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
             settings.charGroupCollapsed = false;
         }
         await _callbacks.onMutation({ save: true });
@@ -186,71 +168,17 @@ function ensureHeaderBar() {
         openManagerModal();
     });
 
-    // Optional ultra-slim search bar ONLY on mobile native selects that lack Select2 search
-    ensureMobileSearchBar();
     return bar;
 }
 
 /**
- * Mount a slim IME-safe search bar ONLY when `#world_editor_select` lacks Select2
- * (e.g. TauriTavern iOS/Android mobile). Completely hidden on desktop!
- */
-function ensureMobileSearchBar() {
-    let wrap = document.getElementById(MOBILE_SEARCH_ID);
-    const mobileNoSelect2 = isNativeMobileSelectMode();
-
-    if (!mobileNoSelect2) {
-        if (wrap) wrap.hidden = true;
-        return;
-    }
-
-    if (!wrap) {
-        const holder = document.getElementById('wi-holder');
-        const worldPopup = document.getElementById('world_popup');
-        if (!holder) return;
-
-        wrap = document.createElement('div');
-        wrap.id = MOBILE_SEARCH_ID;
-        wrap.className = 'wbo-mobile-search-bar';
-        wrap.innerHTML = `
-            <i class="fa-solid fa-magnifying-glass"></i>
-            <input type="search" class="wbo-search-input" id="wbo-mobile-search-input" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
-        `;
-        if (worldPopup && worldPopup.parentElement === holder) {
-            holder.insertBefore(wrap, worldPopup);
-        } else {
-            holder.appendChild(wrap);
-        }
-
-        const input = wrap.querySelector('#wbo-mobile-search-input');
-        if (input instanceof HTMLInputElement) {
-            let composing = false;
-            input.addEventListener('compositionstart', () => { composing = true; });
-            input.addEventListener('compositionend', () => {
-                composing = false;
-                setMobileSearchFilter(input.value);
-            });
-            input.addEventListener('input', () => {
-                if (composing) return;
-                setMobileSearchFilter(input.value);
-            });
-        }
-    }
-
-    wrap.hidden = false;
-}
-
-/**
- * Sync the lightweight header controls AND the Group Manager modal (if open).
+ * Sync the lightweight theme-following header controls AND the Group Manager modal (if open).
  */
 export function renderEmbeddedPanel() {
     if (!_callbacks) return;
     const bar = ensureHeaderBar();
-    ensureMobileSearchBar();
 
     const { settings, classification } = _callbacks.getState();
-    const hasCustomGroups = classification.customGroups.length > 0;
-    const orderedSections = classification.orderedSections || [];
 
     const characters = getCharactersInMemory();
     const unscannedShallowCount = findUnscannedShallowCharacters(characters, settings.cachedCharBindings).length;
@@ -262,42 +190,24 @@ export function renderEmbeddedPanel() {
     const scanBadgeCount = unscannedShallowCount + unimportedBookCount;
 
     if (bar) {
-        applyThemeClass(bar);
-        const cb = bar.querySelector('#wbo-hdr-show-char');
+        const showCharBtn = bar.querySelector('#wbo-hdr-show-char');
+        const charIcon = bar.querySelector('#wbo-hdr-char-icon');
         const lbl = bar.querySelector('#wbo-hdr-char-label');
-        if (cb instanceof HTMLInputElement) cb.checked = Boolean(settings.showCharBooks);
-        if (lbl) lbl.textContent = `角色书 ${classification.charCount}`;
-
-        const quickSel = bar.querySelector('#wbo-hdr-group-select');
-        if (quickSel instanceof HTMLSelectElement) {
-            if (hasCustomGroups) {
-                const opts = [
-                    {
-                        id: SPECIAL_GROUPS.DEFAULT,
-                        label: settings.showCharBooks ? `全部 (${classification.totalCount})` : `通用 (${classification.nonCharCount})`,
-                    },
-                    ...orderedSections.map((sec) => ({
-                        id: sec.id,
-                        label: `${sec.name} (${sec.books.length})`,
-                    })),
-                ];
-                quickSel.innerHTML = opts
-                    .map((o) => `<option value="${esc(o.id)}"${o.id === settings.activeFilterGroupId ? ' selected' : ''}>${esc(o.label)}</option>`)
-                    .join('');
-                quickSel.hidden = false;
-            } else {
-                quickSel.hidden = true;
-            }
+        const shown = Boolean(settings.showCharBooks);
+        if (showCharBtn) {
+            showCharBtn.classList.toggle('is-active', shown);
+            showCharBtn.setAttribute('aria-pressed', String(shown));
         }
+        if (charIcon) {
+            charIcon.className = shown ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
+        }
+        if (lbl) lbl.textContent = `角色书 ${classification.charCount}`;
 
         const mgrLabel = bar.querySelector('#wbo-hdr-manager-label');
         if (mgrLabel) {
             mgrLabel.textContent = scanBadgeCount > 0 ? `分组管理 · ${scanBadgeCount}` : '分组管理';
         }
     }
-
-    const mobileSearch = document.getElementById(MOBILE_SEARCH_ID);
-    if (mobileSearch) applyThemeClass(mobileSearch);
 
     // If the Group Manager modal is currently open, refresh it cleanly in place
     if (document.getElementById(MANAGER_OVERLAY_ID)) {
@@ -501,6 +411,10 @@ function openManagerModal() {
     modal.className = 'wbo-modal wbo-manager-modal';
     applyThemeClass(modal);
     applyTauriSurface(modal, 'fullscreen-window');
+    // Lock a stable height at open time so mobile virtual keyboards never shrink/bounce the modal
+    const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
+    const stableH = Math.round(Math.min(baseVh * 0.84, 720));
+    modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
 
     modal.innerHTML = `
         <div class="wbo-modal-header">
@@ -605,7 +519,8 @@ function openManagerModal() {
                 if (gid === SPECIAL_GROUPS.CHARACTER) {
                     settings.charGroupCollapsed = false;
                 }
-                await _callbacks.onMutation({ save: true });
+                refreshManagerModalContent();
+                await _callbacks.onMutation({ save: true, uiOnly: true });
                 break;
             }
             case 'toggle-group-collapse': {
@@ -2195,7 +2110,6 @@ export function renderExtensionSettingsPanel() {
         root.className = 'wbo-ext-settings';
         container.appendChild(root);
     }
-    applyThemeClass(root);
 
     const { settings, classification } = _callbacks.getState();
 
@@ -2355,6 +2269,5 @@ export function teardownPanels() {
     closeSubModal();
     closeManagerModal();
     document.getElementById(HEADER_BAR_ID)?.remove();
-    document.getElementById(MOBILE_SEARCH_ID)?.remove();
     document.getElementById(SETTINGS_ROOT_ID)?.remove();
 }

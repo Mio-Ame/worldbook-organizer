@@ -45,6 +45,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
+    dropdownCollapsed: {},
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
     sectionOrder: [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER],
     apiProvider: 'host', // 'host' | 'custom'
@@ -104,7 +105,7 @@ export function normalizeSettings(raw) {
             collapsed: Boolean(g.collapsed),
         }));
 
-    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings']) {
+    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed']) {
         if (!merged[dictKey] || typeof merged[dictKey] !== 'object' || Array.isArray(merged[dictKey])) {
             merged[dictKey] = {};
         }

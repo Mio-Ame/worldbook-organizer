@@ -28,9 +28,8 @@ import {
     SPECIAL_GROUPS,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
-    matchesSearch,
 } from './core.js';
-import { getCurrentCharacterAvatar } from './host.js';
+import { getCurrentCharacterAvatar, saveSettings } from './host.js';
 
 /** @type {Map<string, HTMLOptionElement>} */
 const _globalDetachedMap = new Map();
@@ -41,7 +40,6 @@ let _isApplying = false;
 let _latestClassification = null;
 let _latestSettings = null;
 let _currentlyEditingWorld = null;
-let _mobileSearchQuery = '';
 let _lastGlobalSignature = null;
 let _lastEditorSignature = null;
 
@@ -55,19 +53,6 @@ export function isNativeMobileSelectMode() {
     const $ = globalThis.jQuery;
     const hasSelect2 = Boolean($ && ($(sel).data('select2') || $(sel).hasClass('select2-hidden-accessible')));
     return !hasSelect2;
-}
-
-/**
- * Set optional search query for native mobile `<select>` controls that lack Select2 search.
- * @param {string} query
- */
-export function setMobileSearchFilter(query) {
-    const clean = String(query ?? '').trim();
-    if (clean === _mobileSearchQuery) return;
-    _mobileSearchQuery = clean;
-    if (_latestClassification && _latestSettings && isNativeMobileSelectMode()) {
-        applyAllNativeWorldFilters(_latestClassification, _latestSettings);
-    }
 }
 
 /** @type {MutationObserver | null} */
@@ -294,13 +279,11 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
 
     return JSON.stringify([
         mode,
-        settings.activeFilterGroupId,
         Boolean(settings.showCharBooks),
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
         settings.aliasTitleMode,
         mode === 'editor' ? _currentlyEditingWorld : '',
-        isNativeMobileSelectMode() ? _mobileSearchQuery : '',
         foreignOptgroupCount,
         ownOptgroupCount,
         groupSig,
@@ -363,11 +346,11 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         const meta = classification.byName.get(realName);
         const visible = isBookVisibleInSelector({
             bookMeta: meta,
-            activeFilterGroupId: settings.activeFilterGroupId,
+            activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
             isSelected: opt.selected,
             isCurrentlyEditing: false,
-        }) && (opt.selected || hasSelect2 || !_mobileSearchQuery || matchesSearch(meta || { realName }, _mobileSearchQuery));
+        });
 
         if (visible) {
             visibleOpts.push(opt);
@@ -443,11 +426,11 @@ function applyEditorWorldSelectFilter(classification, settings) {
 
         const visible = isBookVisibleInSelector({
             bookMeta: meta,
-            activeFilterGroupId: settings.activeFilterGroupId,
+            activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
             isSelected: opt.selected,
             isCurrentlyEditing: isEditing,
-        }) && (isEditing || hasSelect2 || !_mobileSearchQuery || matchesSearch(meta || { realName }, _mobileSearchQuery));
+        });
 
         if (visible) {
             const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
@@ -801,6 +784,202 @@ function enhanceCharBindPopup(charWorldEl) {
 let _editorNativeOpenHandler = null;
 /** @type {((ev: any) => void) | null} */
 let _editorSelect2OpeningHandler = null;
+/** @type {((ev: any) => void) | null} */
+let _editorSelect2OpenHandler = null;
+/** @type {((ev: any) => void) | null} */
+let _editorSelect2CloseHandler = null;
+/** @type {MutationObserver | null} */
+let _openDropdownResultsObserver = null;
+/** @type {(() => void) | null} */
+let _openDropdownCleanup = null;
+
+/**
+ * Clean up any temporary interactive controls attached to an open `#world_editor_select`
+ * Select2 dropdown (zero DOM left behind once closed!).
+ */
+function cleanupOpenEditorDropdown() {
+    if (_openDropdownResultsObserver) {
+        _openDropdownResultsObserver.disconnect();
+        _openDropdownResultsObserver = null;
+    }
+    if (_openDropdownCleanup) {
+        try { _openDropdownCleanup(); } catch { /* ignore */ }
+        _openDropdownCleanup = null;
+    }
+    document.querySelectorAll('.wbo-dd-filter-bar').forEach((el) => el.remove());
+}
+
+/**
+ * Enhance the currently open `#world_editor_select` Select2 dropdown with:
+ * 1. Clickable collapsible/expandable group headers (with instant chevron toggle,
+ *    auto-expanding whenever the user types a search query).
+ * 2. A sleek 1-line in-dropdown group filter pill strip (when 2+ groups exist)
+ *    so users can switch or isolate groups right inside the dropdown without
+ *    ever leaving it!
+ */
+function enhanceOpenEditorDropdown() {
+    cleanupOpenEditorDropdown();
+    const $ = globalThis.jQuery;
+    const selectEl = document.getElementById('world_editor_select');
+    if (!$ || !selectEl || !_latestSettings) return;
+
+    const inst = $(selectEl).data('select2');
+    const dropdownEl = inst?.$dropdown?.[0];
+    if (!(dropdownEl instanceof HTMLElement)) return;
+
+    const resultsList = dropdownEl.querySelector('.select2-results__options');
+    if (!(resultsList instanceof HTMLElement)) return;
+
+    // Build ordered group descriptors directly from the live `<optgroup>` elements
+    const groups = Array.from(selectEl.querySelectorAll('optgroup[data-wbo-group]')).map((og) => {
+        const id = og.getAttribute('data-wbo-group') || '';
+        const fullLabel = og.label || '';
+        const shortName = fullLabel.replace(/\s*\(\d+\)\s*$/, '').trim() || fullLabel;
+        return { id, fullLabel, shortName, count: og.querySelectorAll('option').length };
+    });
+
+    if (groups.length === 0) return;
+
+    const groupByLabel = new Map(groups.map((g) => [g.fullLabel, g]));
+    if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
+        _latestSettings.dropdownCollapsed = {};
+    }
+
+    let activePillGroupId = SPECIAL_GROUPS.ALL;
+    const searchInput = dropdownEl.querySelector('.select2-search__field');
+
+    const isSearching = () =>
+        searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
+
+    /**
+     * Synchronize collapsible state, chevrons, and active pill filter onto every
+     * `<li class="select2-results__option--group">` inside the open dropdown.
+     */
+    const decorateGroupItems = () => {
+        const searching = isSearching();
+        const groupNodes = resultsList.querySelectorAll(':scope > li.select2-results__option--group');
+
+        groupNodes.forEach((li) => {
+            if (!(li instanceof HTMLElement)) return;
+            const label = li.getAttribute('aria-label') || li.querySelector(':scope > .select2-results__group')?.textContent?.trim() || '';
+            const desc = groupByLabel.get(label);
+            const gid = desc?.id || label;
+            li.setAttribute('data-wbo-dd-group', gid);
+
+            const head = li.querySelector(':scope > .select2-results__group');
+            if (head instanceof HTMLElement) {
+                head.classList.add('wbo-dd-group-head');
+                head.setAttribute('data-wbo-dd-group', gid);
+                head.setAttribute('title', '点击展开或折叠该分组');
+            }
+
+            // Filter visibility when user picked a single group pill inside the dropdown
+            const hiddenByPill = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && gid !== activePillGroupId;
+            li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
+
+            // Auto-expand while searching OR when isolated via filter pill
+            const isCollapsed = !searching && activePillGroupId === SPECIAL_GROUPS.ALL && Boolean(_latestSettings.dropdownCollapsed[gid]);
+            li.classList.toggle('wbo-dd-collapsed', isCollapsed);
+        });
+    };
+
+    // Delegate mousedown/click on group headers to fold/unfold without closing Select2!
+    const onResultsMouseDown = (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+        if (!head) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const gid = head.getAttribute('data-wbo-dd-group');
+        if (!gid) return;
+        if (activePillGroupId !== SPECIAL_GROUPS.ALL) {
+            // If isolated to one group, clicking its header folds/unfolds via returning to ALL
+            activePillGroupId = SPECIAL_GROUPS.ALL;
+            syncPillButtons();
+        }
+        _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
+        saveSettings();
+        decorateGroupItems();
+    };
+    const onResultsClick = (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+        if (!head) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+    };
+
+    resultsList.addEventListener('mousedown', onResultsMouseDown, true);
+    resultsList.addEventListener('click', onResultsClick, true);
+
+    // Optional compact 1-line group filter bar inside the dropdown when 2+ groups exist
+    let filterBar = null;
+    const syncPillButtons = () => {
+        if (!filterBar) return;
+        filterBar.querySelectorAll('.wbo-dd-pill').forEach((btn) => {
+            const gid = btn.getAttribute('data-wbo-pill');
+            btn.classList.toggle('is-active', gid === activePillGroupId);
+        });
+    };
+
+    if (groups.length >= 2) {
+        filterBar = document.createElement('div');
+        filterBar.className = 'wbo-dd-filter-bar';
+        const pillItems = [
+            { id: SPECIAL_GROUPS.ALL, label: '全部' },
+            ...groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })),
+        ];
+        filterBar.innerHTML = pillItems
+            .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+            .join('');
+
+        // Keep dropdown open and search intact when tapping a pill
+        filterBar.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        });
+        filterBar.addEventListener('click', (ev) => {
+            const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+            activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
+                ? SPECIAL_GROUPS.ALL
+                : gid;
+            syncPillButtons();
+            decorateGroupItems();
+            resultsList.scrollTop = 0;
+        });
+
+        const resultsWrap = dropdownEl.querySelector('.select2-results');
+        if (resultsWrap && resultsWrap.parentElement) {
+            resultsWrap.parentElement.insertBefore(filterBar, resultsWrap);
+        }
+    }
+
+    const onSearchInput = () => {
+        requestAnimationFrame(decorateGroupItems);
+    };
+    if (searchInput instanceof HTMLInputElement) {
+        searchInput.addEventListener('input', onSearchInput);
+    }
+
+    // Re-decorate whenever Select2 rebuilds result `<li>` nodes during search
+    _openDropdownResultsObserver = new MutationObserver(() => {
+        decorateGroupItems();
+    });
+    _openDropdownResultsObserver.observe(resultsList, { childList: true });
+
+    _openDropdownCleanup = () => {
+        resultsList.removeEventListener('mousedown', onResultsMouseDown, true);
+        resultsList.removeEventListener('click', onResultsClick, true);
+        if (searchInput instanceof HTMLInputElement) {
+            searchInput.removeEventListener('input', onSearchInput);
+        }
+        filterBar?.remove();
+    };
+
+    decorateGroupItems();
+}
 
 /**
  * Synchronously assert our custom `<optgroup>`s on `#world_editor_select` right
@@ -862,10 +1041,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         editorEl.addEventListener('focus', _editorNativeOpenHandler);
     }
 
-    // Desktop Select2: bind on `window` so our `select2:opening` handler runs LAST
-    // in event bubbling (synchronously BEFORE Select2 populates dropdown items),
-    // ensuring user custom groups always take effect even if another script
-    // reorganized `<optgroup>`s earlier during pointerdown / document opening.
+    // Desktop Select2:
+    // 1. On `select2:opening` (window level), assert our `<optgroup>`s right before render.
+    // 2. On `select2:open`, attach collapsible group headers + in-dropdown group filter bar.
+    // 3. On `select2:close`, clean up temporary dropdown listeners/bar immediately.
     const $ = globalThis.jQuery;
     if ($) {
         _editorSelect2OpeningHandler = (ev) => {
@@ -873,7 +1052,19 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 syncEditorBeforeOpen();
             }
         };
+        _editorSelect2OpenHandler = (ev) => {
+            if (ev?.target?.id === 'world_editor_select') {
+                requestAnimationFrame(enhanceOpenEditorDropdown);
+            }
+        };
+        _editorSelect2CloseHandler = (ev) => {
+            if (ev?.target?.id === 'world_editor_select') {
+                cleanupOpenEditorDropdown();
+            }
+        };
         $(window).on('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
+        $(window).on('select2:open.wboEditorOpen', _editorSelect2OpenHandler);
+        $(window).on('select2:close.wboEditorOpen', _editorSelect2CloseHandler);
     }
 
     // Lightweight popup observer: inspects only newly added top-level dialog/popup nodes
@@ -897,6 +1088,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
  * Stop observers cleanly.
  */
 export function stopNativeObservers() {
+    cleanupOpenEditorDropdown();
     clearTimeout(_resyncTimer);
     _resyncTimer = null;
     if (_globalSelectObserver) {
@@ -919,9 +1111,19 @@ export function stopNativeObservers() {
         }
         _editorNativeOpenHandler = null;
     }
-    if (_editorSelect2OpeningHandler && globalThis.jQuery) {
-        globalThis.jQuery(window).off('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
-        _editorSelect2OpeningHandler = null;
+    if (globalThis.jQuery) {
+        if (_editorSelect2OpeningHandler) {
+            globalThis.jQuery(window).off('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
+            _editorSelect2OpeningHandler = null;
+        }
+        if (_editorSelect2OpenHandler) {
+            globalThis.jQuery(window).off('select2:open.wboEditorOpen', _editorSelect2OpenHandler);
+            _editorSelect2OpenHandler = null;
+        }
+        if (_editorSelect2CloseHandler) {
+            globalThis.jQuery(window).off('select2:close.wboEditorOpen', _editorSelect2CloseHandler);
+            _editorSelect2CloseHandler = null;
+        }
     }
 }
 
