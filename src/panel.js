@@ -545,7 +545,7 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                 </button>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
-                    <button type="button" class="wbo-icon-btn" data-action="edit-book" title="在酒馆编辑器中打开">
+                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="edit-book" title="在酒馆编辑器中打开">
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="rename-alias" title="编辑名称与备注">
@@ -2846,6 +2846,9 @@ function openAliasNoteModal(bookMeta) {
     if (!_callbacks) return;
     const { settings } = _callbacks.getState();
 
+    const initialDisplayValue = bookMeta.alias || bookMeta.primaryTitle;
+    const initialRealValue = bookMeta.alias || bookMeta.realName;
+
     const { modal } = createSubModal(
         '编辑名称与备注',
         `
@@ -2867,7 +2870,10 @@ function openAliasNoteModal(bookMeta) {
             </div>
             <div class="wbo-field">
                 <label class="wbo-label" id="wbo-name-input-label">显示名称</label>
-                <input type="text" class="wbo-input" id="wbo-alias-input" value="${esc(bookMeta.alias || '')}" placeholder="${esc(bookMeta.primaryTitle)}">
+                <div class="wbo-input-clear-row">
+                    <input type="text" class="wbo-input" id="wbo-alias-input" value="${esc(initialDisplayValue)}" placeholder="${esc(bookMeta.primaryTitle)}">
+                    <button type="button" class="wbo-btn wbo-input-clear-btn" id="wbo-clear-name-input-btn" title="清空输入框">清空</button>
+                </div>
             </div>
             <div class="wbo-field">
                 <label class="wbo-label">备注</label>
@@ -2888,7 +2894,13 @@ function openAliasNoteModal(bookMeta) {
     const realHint = modal.querySelector('#wbo-real-rename-hint');
     const nameLabel = modal.querySelector('#wbo-name-input-label');
     const clearBtn = modal.querySelector('#wbo-clear-alias-btn');
+    const clearInputBtn = modal.querySelector('#wbo-clear-name-input-btn');
     const statusEl = modal.querySelector('#wbo-rename-status');
+
+    let userEditedName = false;
+    aliasInput?.addEventListener('input', () => {
+        userEditedName = true;
+    });
 
     const getMode = () => modal.querySelector('input[name="wbo-rename-mode"]:checked')?.value || 'alias';
 
@@ -2898,9 +2910,8 @@ function openAliasNoteModal(bookMeta) {
             if (realHint instanceof HTMLElement) realHint.hidden = !isReal;
             if (nameLabel) nameLabel.textContent = isReal ? '新文件名' : '显示名称';
             if (clearBtn instanceof HTMLElement) clearBtn.hidden = isReal;
-            if (isReal && aliasInput instanceof HTMLInputElement && !aliasInput.value.trim()) {
-                aliasInput.value = bookMeta.alias || bookMeta.realName;
-                aliasInput.select();
+            if (aliasInput instanceof HTMLInputElement && !userEditedName) {
+                aliasInput.value = isReal ? initialRealValue : initialDisplayValue;
             }
         });
     });
@@ -2944,7 +2955,9 @@ function openAliasNoteModal(bookMeta) {
             delete settings.aliases[inputName];
 
             closeSubModal();
-            await _callbacks.onRescan();
+            // Avoid full `onRescan()` (`/api/settings/get` + double save) which can trigger iOS WebView OOM;
+            // `realRenameWorldbook` already refreshed the host world list & migrated bindings in memory.
+            await _callbacks.onMutation({ save: true });
             const m = res.migrated;
             const summary = [
                 m?.chars ? `${m.chars} 张角色卡` : '',
@@ -2955,9 +2968,10 @@ function openAliasNoteModal(bookMeta) {
             return;
         }
 
-        if (inputName && inputName !== bookMeta.realName) {
+        const isUnchangedDefault = !bookMeta.alias && inputName === bookMeta.primaryTitle;
+        if (inputName && inputName !== bookMeta.realName && !isUnchangedDefault) {
             settings.aliases[bookMeta.realName] = inputName;
-        } else {
+        } else if (!inputName || inputName === bookMeta.realName) {
             delete settings.aliases[bookMeta.realName];
         }
 
@@ -2968,8 +2982,18 @@ function openAliasNoteModal(bookMeta) {
         await _callbacks.onMutation({ save: true });
     };
 
+    clearInputBtn?.addEventListener('click', () => {
+        if (aliasInput instanceof HTMLInputElement) {
+            aliasInput.value = '';
+            userEditedName = true;
+            aliasInput.focus();
+        }
+    });
     clearBtn?.addEventListener('click', () => {
-        if (aliasInput instanceof HTMLInputElement) aliasInput.value = '';
+        if (aliasInput instanceof HTMLInputElement) {
+            aliasInput.value = bookMeta.realName;
+            userEditedName = true;
+        }
     });
     modal.querySelector('#wbo-cancel-btn')?.addEventListener('click', closeSubModal);
     modal.querySelector('#wbo-save-alias-btn')?.addEventListener('click', save);
@@ -6287,6 +6311,9 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     pop.className = 'wbo-modal wbo-vis-popover wbo-book-more-popover';
     applyThemeClass(pop);
     pop.innerHTML = `
+        <button type="button" class="wbo-book-more-item" data-more-act="edit-book">
+            <i class="fa-solid fa-arrow-up-right-from-square"></i><span>在编辑器中打开</span>
+        </button>
         <button type="button" class="wbo-book-more-item" data-more-act="rename-alias">
             <i class="fa-solid fa-pen-to-square"></i><span>编辑名称与备注</span>
         </button>
@@ -6305,9 +6332,9 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     const rect = anchorBtn.getBoundingClientRect();
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
-    const popW = 158;
+    const popW = 164;
     const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
-    const openAbove = vh - rect.bottom < 146 && rect.top > 146;
+    const openAbove = vh - rect.bottom < 184 && rect.top > 184;
     pop.style.width = `${popW}px`;
     pop.style.left = `${Math.round(left)}px`;
     if (openAbove) {
@@ -6341,7 +6368,10 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             ev.stopPropagation();
             const act = btn.getAttribute('data-more-act');
             cleanup();
-            if (act === 'rename-alias') {
+            if (act === 'edit-book') {
+                openWorldInNativeEditor(bookMeta.realName);
+                closeManagerModal();
+            } else if (act === 'rename-alias') {
                 openAliasNoteModal(bookMeta);
             } else if (act === 'move-group') {
                 openMoveGroupModal(bookMeta);

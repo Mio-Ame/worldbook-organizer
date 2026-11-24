@@ -1083,6 +1083,8 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
     } catch (err) {
         return { ok: false, error: `写入新世界书失败：${err?.message || err}` };
     }
+    // Release potentially large worldbook payload immediately for mobile GC before list refresh
+    data = null;
 
     const migrated = {
         chars: 0,

@@ -1748,6 +1748,22 @@
     background: var(--wbo-border);
 }
 
+.wbo-input-clear-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-input-clear-row > .wbo-input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.wbo-input-clear-btn {
+    flex: 0 0 auto;
+    padding: 0 10px !important;
+}
+
 /* Explicit anti-misclick global toggle pill on right side of non-character books */
 .wbo-global-pill {
     display: inline-flex !important;
