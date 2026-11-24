@@ -544,7 +544,7 @@ async function init() {
         setTimeout(waitCharsOnce, 700);
     }
 
-    if (!_openPanelBridgeHandler) {
+    if (!_openPanelBridgeHandler && typeof window !== 'undefined') {
         _openPanelBridgeHandler = () => {
             openManagerModal();
         };
@@ -561,7 +561,7 @@ let _openPanelBridgeHandler = null;
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
  */
 export function onDisable() {
-    if (_openPanelBridgeHandler) {
+    if (_openPanelBridgeHandler && typeof window !== 'undefined') {
         window.removeEventListener('wbo:open-panel', _openPanelBridgeHandler);
         _openPanelBridgeHandler = null;
     }

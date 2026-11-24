@@ -1269,14 +1269,14 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
         existingNamesSet.add(cleanNew);
     }
 
-    emitBridgeEvent('wbo:worldbook-renamed', { oldName: cleanOld, newName: cleanNew });
-
     if (!deferRefresh) {
         const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
         if (typeof updateListFn === 'function') {
             try { await updateListFn(); } catch { /* ignore */ }
         }
     }
+
+    emitBridgeEvent('wbo:worldbook-renamed', { oldName: cleanOld, newName: cleanNew });
 
     return { ok: true, migrated };
 }
