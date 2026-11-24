@@ -29,7 +29,7 @@ import {
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
 } from './core.js';
-import { getCurrentCharacterAvatar, saveSettings } from './host.js';
+import { getCurrentCharacterAvatar, getHostContext, saveSettings } from './host.js';
 
 /** @type {Map<string, HTMLOptionElement>} */
 const _globalDetachedMap = new Map();
@@ -532,6 +532,35 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
 }
 
 /**
+ * Synchronously ensure a specific worldbook's `<option>` is attached in `#world_editor_select`
+ * BEFORE SillyTavern's own `openWorldInfoEditor(worldName)` runs `$('#world_editor_select').val(idx).trigger('change')`.
+ * Without this, clicking a character card's globe button (`#world_button`) or chat lorebook button
+ * when character worldbooks are hidden would fail to find the detached `<option>` and close the editor!
+ * @param {string | null | undefined} worldName
+ */
+export function ensureEditorOptionAttached(worldName) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean) return;
+    setCurrentlyEditingWorld(clean);
+
+    const selectEl = document.getElementById('world_editor_select');
+    if (!selectEl) return;
+
+    if (_editorDetachedMap.has(clean)) {
+        _isApplying = true;
+        try {
+            const opt = _editorDetachedMap.get(clean);
+            _editorDetachedMap.delete(clean);
+            if (opt) selectEl.appendChild(opt);
+            _lastEditorSignature = null;
+        } finally {
+            _editorSelectObserver?.takeRecords();
+            _isApplying = false;
+        }
+    }
+}
+
+/**
  * Programmatically open a worldbook in the native editor — even if it belongs to
  * the currently hidden character group!
  * @param {string} realName
@@ -540,10 +569,10 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
 export function openWorldInNativeEditor(realName) {
     const clean = String(realName ?? '').trim();
     if (!clean) return false;
-    setCurrentlyEditingWorld(clean);
+    ensureEditorOptionAttached(clean);
 
-    // Ensure the option is attached in `#world_editor_select`
-    if (_editorDetachedMap.has(clean) && _latestClassification && _latestSettings) {
+    // Re-apply cleanly if classification is ready so optgroups stay tidy
+    if (_latestClassification && _latestSettings) {
         applyAllNativeWorldFilters(_latestClassification, _latestSettings);
     }
 
@@ -703,10 +732,12 @@ function enhanceCharBindPopup(charWorldEl) {
             const detached = popupDetached.get(sel);
             const $sel = $ ? $(sel) : null;
             const hadS2 = Boolean($sel && ($sel.data('select2') || $sel.hasClass('select2-hidden-accessible')));
-            if (hadS2) {
-                try { $sel.select2('destroy'); } catch { /* ignore */ }
-            }
 
+            // CRITICAL: NEVER call `$sel.select2('destroy')` inside SillyTavern's native `<dialog>`!
+            // Re-initializing Select2 without `dropdownParent: $(popup.dlg)` moves its dropdown to
+            // `document.body` BEHIND the top-layer `<dialog>`, turning the multi-select into an
+            // unopenable text input! Mutating `<option>`s + patching Select2 in place preserves
+            // `dropdownParent`, placeholder, and top-layer isolation 100%!
             restoreSelectOptions(sel, detached);
             const placeholders = [];
             const visible = [];
@@ -740,15 +771,11 @@ function enhanceCharBindPopup(charWorldEl) {
             }
 
             if (hadS2 && $sel) {
-                try {
-                    $sel.select2({
-                        width: '100%',
-                        allowClear: true,
-                        closeOnSelect: !sel.multiple,
-                        matcher: customSelect2Matcher,
-                        templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
-                    });
-                } catch { /* ignore */ }
+                patchExistingSelect2InPlace($sel, {
+                    matcher: customSelect2Matcher,
+                    templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
+                });
+                try { $sel.trigger('change.select2'); } catch { /* ignore */ }
             }
         }
 
@@ -757,6 +784,9 @@ function enhanceCharBindPopup(charWorldEl) {
             : `<i class="fa-solid fa-eye"></i> 显示全部角色书`;
         toggleBtn.classList.toggle('wbo-btn-active', hideOthers);
     };
+
+    bar.addEventListener('click', (ev) => ev.stopPropagation());
+    bar.addEventListener('mousedown', (ev) => ev.stopPropagation());
 
     toggleBtn.addEventListener('click', () => {
         hideOthers = !hideOthers;
@@ -780,8 +810,21 @@ function enhanceCharBindPopup(charWorldEl) {
     bar.append(toggleBtn, groupSelect);
     charWorldEl.prepend(bar);
 
-    // Let upstream Select2 finish initializing if it runs right after DOM insertion
+    // Let upstream Select2 finish initializing in `Popup.onOpen`, then filter & patch in place
     setTimeout(applyPopupFilter, 60);
+    setTimeout(() => {
+        const $ = globalThis.jQuery;
+        if (!$ || !charWorldEl.isConnected) return;
+        for (const sel of [primarySelect, extrasSelect].filter(Boolean)) {
+            const $sel = $(sel);
+            if ($sel.data('select2')) {
+                patchExistingSelect2InPlace($sel, {
+                    matcher: customSelect2Matcher,
+                    templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
+                });
+            }
+        }
+    }, 220);
 }
 
 /** @type {(() => void) | null} */
@@ -800,6 +843,8 @@ let _openDropdownCleanup = null;
 let _docDrawerGuardMouseDown = null;
 /** @type {((ev: Event) => void) | null} */
 let _docDrawerGuardClick = null;
+/** @type {((ev: MouseEvent) => void) | null} */
+let _docWorldJumpPreAttach = null;
 let _lastWorldSelectMouseDownAt = 0;
 
 /**
@@ -1593,6 +1638,40 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         $(window).on('select2:close.wboEditorOpen', _editorSelect2CloseHandler);
     }
 
+    // Pre-attach hidden character/chat worldbooks synchronously in CAPTURE phase BEFORE
+    // SillyTavern's `#world_button` or `.chat_lorebook_button` click handler calls
+    // `openWorldInfoEditor(worldName)` -> `$('#world_editor_select').val(idx).trigger('change')`!
+    _docWorldJumpPreAttach = (ev) => {
+        const t = ev.target instanceof Element ? ev.target : null;
+        if (!t || ev.shiftKey || ev.altKey) return;
+
+        if (t.closest('#world_button')) {
+            const ctx = getHostContext();
+            const $ = globalThis.jQuery;
+            const chid = $ ? $('#set_character_world').data('chid') : undefined;
+            const ch = chid !== undefined && chid !== -1 ? ctx?.characters?.[chid] : null;
+            const charWorldInput = document.getElementById('character_world');
+            const worldName =
+                ch?.data?.extensions?.world ||
+                (charWorldInput instanceof HTMLInputElement ? charWorldInput.value : '') ||
+                (ch?.avatar ? _latestSettings?.cachedCharBindings?.[ch.avatar]?.primary : '') ||
+                '';
+            if (worldName) {
+                ensureEditorOptionAttached(worldName);
+            }
+            return;
+        }
+
+        if (t.closest('.chat_lorebook_button')) {
+            const ctx = getHostContext();
+            const chatWorld = ctx?.chatMetadata?.world_info || '';
+            if (chatWorld) {
+                ensureEditorOptionAttached(chatWorld);
+            }
+        }
+    };
+    document.addEventListener('click', _docWorldJumpPreAttach, true);
+
     // Guard against SillyTavern's `$(document).on('click')` unpinned-drawer auto-closer
     // firing when opening `#world_editor_select` / `#world_info` spawns a body-mounted
     // Select2 dropdown or custom popover directly under the pointer between pointerdown & click!
@@ -1673,6 +1752,10 @@ export function stopNativeObservers() {
             editorEl.removeEventListener('focus', _editorNativeOpenHandler);
         }
         _editorNativeOpenHandler = null;
+    }
+    if (_docWorldJumpPreAttach) {
+        document.removeEventListener('click', _docWorldJumpPreAttach, true);
+        _docWorldJumpPreAttach = null;
     }
     if (_docDrawerGuardMouseDown) {
         document.removeEventListener('pointerdown', _docDrawerGuardMouseDown, true);
