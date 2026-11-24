@@ -354,12 +354,15 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
         ? `<input type="checkbox" class="wbo-batch-check" data-action="toggle-batch-item" value="${esc(book.realName)}"${batchChecked ? ' checked' : ''}>`
         : '';
 
+    const mainAction = _batchMode ? 'toggle-batch-row' : 'toggle-book-preview';
+    const mainTitle = _batchMode ? '点击勾选或取消勾选' : '点击展开预览条目内容';
+
     return `
         <div class="wbo-book-item" data-book="${esc(book.realName)}">
             <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}${_batchMode && batchChecked ? ' is-batch-selected' : ''}" data-book="${esc(book.realName)}" draggable="true">
                 <span class="wbo-drag-handle" title="${_batchMode ? '拖动移动当前项或全部已勾选项' : '拖动移动到分组'}"><i class="fa-solid fa-grip-vertical"></i></span>
                 ${batchCheckHtml}
-                <button type="button" class="wbo-book-main" data-action="toggle-book-preview" title="点击展开预览条目内容">
+                <button type="button" class="wbo-book-main" data-action="${mainAction}" title="${mainTitle}">
                     <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
                     <span class="wbo-book-text-col">
                         <span class="wbo-book-title-line">
@@ -581,8 +584,13 @@ function renderGroupSectionHtml({
             ? `<div class="wbo-group-body">${books.map((b) => renderBookRowHtml(b, activeGlobals, currentEditor)).join('')}</div>`
             : `<div class="wbo-group-body wbo-empty-hint">暂无世界书，可直接拖动世界书到此处</div>`);
 
+    const batchGroupCheckHtml = _batchMode
+        ? `<input type="checkbox" class="wbo-batch-check wbo-batch-group-check" data-action="toggle-batch-group" data-group-id="${esc(id)}" title="全选或取消全选本组世界书"${books.length === 0 ? ' disabled' : ''}>`
+        : '';
+
     const titleNode = isSingleView
         ? `
+            ${batchGroupCheckHtml}
             <div class="wbo-group-toggle is-static">
                 <span class="wbo-group-dot" style="background:${esc(color)}"></span>
                 <span class="wbo-group-name">${esc(name)}</span>
@@ -591,6 +599,7 @@ function renderGroupSectionHtml({
         `
         : `
             <span class="wbo-group-drag-handle" title="拖动调整分组顺序"><i class="fa-solid fa-grip-vertical"></i></span>
+            ${batchGroupCheckHtml}
             <button type="button" class="wbo-group-toggle" data-action="toggle-group-collapse" data-group-id="${esc(id)}" aria-expanded="${!collapsed}">
                 <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>
                 <span class="wbo-group-dot" style="background:${esc(color)}"></span>
@@ -600,7 +609,7 @@ function renderGroupSectionHtml({
         `;
 
     return `
-        <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}">
+        <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}" data-group-books="${esc(JSON.stringify(books.map((b) => b.realName)))}">
             <div class="wbo-group-header"${isSingleView ? '' : ` draggable="true" data-drag-group-id="${esc(id)}"`}>
                 ${titleNode}
                 <div class="wbo-group-actions">
@@ -623,7 +632,24 @@ function closeManagerModal() {
 }
 
 /**
- * Sync batch selection toolbar state inside the Group Manager modal without rebuilding the list.
+ * Read the list of book realNames belonging to a rendered `.wbo-group` element (works even when collapsed!).
+ * @param {Element} groupEl
+ * @returns {string[]}
+ */
+function getRenderedGroupBookNames(groupEl) {
+    const raw = groupEl.getAttribute('data-group-books');
+    if (!raw) return [];
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Sync batch selection toolbar state & per-group checkboxes inside the Group Manager modal
+ * without rebuilding the list.
  */
 function syncBatchBarUi() {
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
@@ -639,16 +665,208 @@ function syncBatchBarUi() {
     if (batchBar instanceof HTMLElement) batchBar.hidden = !_batchMode;
     const count = _batchSelected.size;
     if (countEl) countEl.textContent = `已选 ${count} 本`;
+
+    const allVisibleNames = [];
+    overlay.querySelectorAll('#wbo-mgr-groups-list .wbo-group[data-group-id]').forEach((groupEl) => {
+        const names = getRenderedGroupBookNames(groupEl);
+        for (const n of names) allVisibleNames.push(n);
+        const grpCheck = groupEl.querySelector('.wbo-batch-group-check');
+        if (grpCheck instanceof HTMLInputElement) {
+            const selectedInGroup = names.filter((n) => _batchSelected.has(n)).length;
+            grpCheck.checked = names.length > 0 && selectedInGroup === names.length;
+            grpCheck.indeterminate = selectedInGroup > 0 && selectedInGroup < names.length;
+        }
+    });
+
     if (toggleAllBtn) {
-        const visibleRows = Array.from(overlay.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]'));
         const allVisibleSelected =
-            visibleRows.length > 0 &&
-            visibleRows.every((r) => _batchSelected.has(r.getAttribute('data-book') || ''));
+            allVisibleNames.length > 0 &&
+            allVisibleNames.every((n) => _batchSelected.has(n));
         toggleAllBtn.textContent = allVisibleSelected ? '取消全选' : '全选当前';
     }
     if (moveBtn instanceof HTMLButtonElement) moveBtn.disabled = count === 0;
     if (ungroupBtn instanceof HTMLButtonElement) ungroupBtn.disabled = count === 0;
     if (delBtn instanceof HTMLButtonElement) delBtn.disabled = count === 0;
+}
+
+/**
+ * Dedicated Group Management modal: view all custom groups in one clean list,
+ * batch-select groups to dissolve/delete at once, reorder, or rename.
+ */
+function openManageGroupsModal() {
+    if (!_callbacks) return;
+    const selectedGroupIds = new Set();
+
+    const { modal } = createSubModal(
+        '管理分组',
+        `
+            <div class="wbo-gm-toolbar">
+                <span class="wbo-batch-count" id="wbo-gm-sel-count">已选 0 个分组</span>
+                <button type="button" class="wbo-link-btn" id="wbo-gm-toggle-all">全选</button>
+                <span class="wbo-spacer"></span>
+                <button type="button" class="wbo-btn" id="wbo-gm-new-btn">
+                    <i class="fa-solid fa-folder-plus"></i> 新建分组
+                </button>
+            </div>
+            <div class="wbo-gm-list" id="wbo-gm-list"></div>
+            <div class="wbo-subtle-tip">删除或解除分组仅取消归类，世界书本体不会被删除，相关世界书将回到「未分组」。</div>
+            <div class="wbo-modal-footer wbo-ai-footer">
+                <div class="wbo-ai-footer-left">
+                    <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-gm-del-selected" disabled>
+                        <i class="fa-regular fa-trash-can"></i> 解除所选分组
+                    </button>
+                </div>
+                <div class="wbo-ai-footer-right">
+                    <button type="button" class="wbo-btn" id="wbo-gm-close-btn">完成</button>
+                </div>
+            </div>
+        `,
+    );
+
+    const listEl = modal.querySelector('#wbo-gm-list');
+    const selCountEl = modal.querySelector('#wbo-gm-sel-count');
+    const toggleAllBtn = modal.querySelector('#wbo-gm-toggle-all');
+    const delSelBtn = modal.querySelector('#wbo-gm-del-selected');
+
+    const syncSelectionUi = () => {
+        const { settings } = _callbacks.getState();
+        const total = (settings.groups || []).length;
+        const validIds = new Set((settings.groups || []).map((g) => g.id));
+        for (const id of [...selectedGroupIds]) {
+            if (!validIds.has(id)) selectedGroupIds.delete(id);
+        }
+        const selCount = selectedGroupIds.size;
+        if (selCountEl) selCountEl.textContent = `已选 ${selCount} / ${total} 个分组`;
+        if (toggleAllBtn) {
+            toggleAllBtn.textContent = total > 0 && selCount === total ? '取消全选' : '全选';
+            toggleAllBtn.hidden = total === 0;
+        }
+        if (delSelBtn instanceof HTMLButtonElement) {
+            delSelBtn.disabled = selCount === 0;
+            delSelBtn.innerHTML = selCount > 0
+                ? `<i class="fa-regular fa-trash-can"></i> 解除所选分组 (${selCount})`
+                : '<i class="fa-regular fa-trash-can"></i> 解除所选分组';
+        }
+    };
+
+    const renderList = () => {
+        const { settings, classification } = _callbacks.getState();
+        const countByGroupId = new Map(
+            (classification.customGroups || []).map((g) => [g.id, g.books.length]),
+        );
+        const groups = settings.groups || [];
+        if (!listEl) return;
+
+        if (groups.length === 0) {
+            listEl.innerHTML = '<div class="wbo-empty-hint">暂无自定义分组，可点右上角「新建分组」或使用「整理」自动创建</div>';
+            syncSelectionUi();
+            return;
+        }
+
+        listEl.innerHTML = groups.map((g, idx) => {
+            const bookCount = countByGroupId.get(g.id) || 0;
+            const checked = selectedGroupIds.has(g.id) ? ' checked' : '';
+            return `
+                <div class="wbo-gm-row${checked ? ' is-selected' : ''}" data-gm-id="${esc(g.id)}">
+                    <label class="wbo-gm-main">
+                        <input type="checkbox" class="wbo-gm-check" value="${esc(g.id)}"${checked}>
+                        <span class="wbo-group-dot" style="background:${esc(g.color)}"></span>
+                        <span class="wbo-gm-name">${esc(g.name)}</span>
+                        <span class="wbo-tag">${bookCount} 本</span>
+                    </label>
+                    <div class="wbo-gm-actions">
+                        <button type="button" class="wbo-icon-btn" data-gm-action="up" data-gm-id="${esc(g.id)}" ${idx === 0 ? 'disabled' : ''} title="上移">
+                            <i class="fa-solid fa-arrow-up"></i>
+                        </button>
+                        <button type="button" class="wbo-icon-btn" data-gm-action="down" data-gm-id="${esc(g.id)}" ${idx === groups.length - 1 ? 'disabled' : ''} title="下移">
+                            <i class="fa-solid fa-arrow-down"></i>
+                        </button>
+                        <button type="button" class="wbo-icon-btn" data-gm-action="edit" data-gm-id="${esc(g.id)}" title="编辑分组名称、颜色与成员">
+                            <i class="fa-solid fa-pen"></i>
+                        </button>
+                        <button type="button" class="wbo-icon-btn wbo-icon-danger" data-gm-action="delete" data-gm-id="${esc(g.id)}" title="删除分组">
+                            <i class="fa-regular fa-trash-can"></i>
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+        syncSelectionUi();
+    };
+
+    const deleteGroupsByIds = async (ids) => {
+        if (!ids.length) return;
+        const { settings } = _callbacks.getState();
+        const idSet = new Set(ids);
+        const names = settings.groups.filter((g) => idSet.has(g.id)).map((g) => g.name);
+        if (names.length === 0) return;
+        const label = names.length === 1 ? `「${names[0]}」` : `这 ${names.length} 个分组（${names.slice(0, 3).join('、')}${names.length > 3 ? ' 等' : ''}）`;
+        if (!globalThis.confirm(`确认解除并删除${label}？世界书本体不会被删除，将回到未分组。`)) return;
+
+        settings.groups = settings.groups.filter((g) => !idSet.has(g.id));
+        for (const [book, assigned] of Object.entries(settings.assignments || {})) {
+            if (idSet.has(assigned)) delete settings.assignments[book];
+        }
+        if (idSet.has(settings.activeFilterGroupId)) {
+            settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
+        }
+        for (const id of ids) selectedGroupIds.delete(id);
+        await _callbacks.onMutation({ save: true });
+        renderList();
+        showToast('success', names.length === 1 ? `已删除分组「${names[0]}」` : `已解除并删除 ${names.length} 个分组`);
+    };
+
+    listEl?.addEventListener('change', (ev) => {
+        const cb = ev.target;
+        if (!(cb instanceof HTMLInputElement) || !cb.classList.contains('wbo-gm-check')) return;
+        const gid = cb.value;
+        if (cb.checked) selectedGroupIds.add(gid);
+        else selectedGroupIds.delete(gid);
+        cb.closest('.wbo-gm-row')?.classList.toggle('is-selected', cb.checked);
+        syncSelectionUi();
+    });
+
+    listEl?.addEventListener('click', async (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-gm-action]') : null;
+        if (!btn) return;
+        const act = btn.getAttribute('data-gm-action');
+        const gid = btn.getAttribute('data-gm-id');
+        if (!gid) return;
+        const { settings } = _callbacks.getState();
+
+        if (act === 'up' || act === 'down') {
+            if (moveSectionOrder(settings, gid, act === 'up' ? -1 : 1)) {
+                await _callbacks.onMutation({ save: true });
+                renderList();
+            }
+            return;
+        }
+        if (act === 'edit') {
+            const grp = settings.groups.find((g) => g.id === gid);
+            if (grp) openCreateOrRenameGroupModal(grp);
+            return;
+        }
+        if (act === 'delete') {
+            await deleteGroupsByIds([gid]);
+        }
+    });
+
+    toggleAllBtn?.addEventListener('click', () => {
+        const { settings } = _callbacks.getState();
+        const groups = settings.groups || [];
+        if (selectedGroupIds.size === groups.length) {
+            selectedGroupIds.clear();
+        } else {
+            groups.forEach((g) => selectedGroupIds.add(g.id));
+        }
+        renderList();
+    });
+
+    delSelBtn?.addEventListener('click', () => deleteGroupsByIds([...selectedGroupIds]));
+    modal.querySelector('#wbo-gm-new-btn')?.addEventListener('click', () => openCreateOrRenameGroupModal(null));
+    modal.querySelector('#wbo-gm-close-btn')?.addEventListener('click', closeSubModal);
+
+    renderList();
 }
 
 /**
@@ -812,19 +1030,6 @@ function openManagerModal() {
         <div class="wbo-modal-header">
             <span class="wbo-modal-title">世界书分组管理</span>
             <div class="wbo-mgr-header-tools">
-                <label class="wbo-tool-switch" title="开启后显示角色卡世界书，关闭则隐藏">
-                    <input type="checkbox" class="wbo-show-char-checkbox" id="wbo-mgr-show-char">
-                    <span class="wbo-switch-track"></span>
-                    <span id="wbo-mgr-char-label">角色书 0</span>
-                </label>
-                <button type="button" class="wbo-tool-btn" data-action="create-group" title="新建分组">
-                    <i class="fa-solid fa-folder-plus"></i>
-                    <span>新建</span>
-                </button>
-                <button type="button" class="wbo-tool-btn" id="wbo-mgr-batch-btn" data-action="toggle-batch-mode" title="批量勾选移入分组或清理删除">
-                    <i class="fa-solid fa-list-check"></i>
-                    <span>批量</span>
-                </button>
                 <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="本地一键整理 / AI 智能整理">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>整理</span>
@@ -843,15 +1048,40 @@ function openManagerModal() {
             </div>
         </div>
         <div class="wbo-mgr-subbar${_mgrPillsExpanded ? ' is-pills-expanded' : ''}">
-            <div class="wbo-pills-rail">
-                <div class="wbo-pills${_mgrPillsExpanded ? ' is-expanded' : ''}" id="wbo-mgr-pills"></div>
-                <button type="button" class="wbo-pill-expand-btn" id="wbo-mgr-pills-expand" data-action="toggle-pills-expand" title="${_mgrPillsExpanded ? '收起为单行' : '展开查看全部分组'}">
-                    <i class="fa-solid ${_mgrPillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>
-                </button>
+            <div class="wbo-mgr-groupbar">
+                <div class="wbo-pills-rail">
+                    <div class="wbo-pills${_mgrPillsExpanded ? ' is-expanded' : ''}" id="wbo-mgr-pills"></div>
+                    <button type="button" class="wbo-pill-expand-btn" id="wbo-mgr-pills-expand" data-action="toggle-pills-expand" title="${_mgrPillsExpanded ? '收起为单行' : '展开查看全部分组'}">
+                        <i class="fa-solid ${_mgrPillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>
+                    </button>
+                </div>
+                <div class="wbo-mgr-group-actions">
+                    <button type="button" class="wbo-tool-btn" data-action="create-group" title="新建自定义分组">
+                        <i class="fa-solid fa-plus"></i>
+                        <span>新建</span>
+                    </button>
+                    <button type="button" class="wbo-tool-btn" id="wbo-mgr-manage-groups-btn" data-action="open-manage-groups" title="集中查看、排序或批量删除分组">
+                        <i class="fa-solid fa-sliders"></i>
+                        <span>管理分组</span>
+                    </button>
+                </div>
             </div>
-            <div class="wbo-search-wrap">
-                <i class="fa-solid fa-magnifying-glass"></i>
-                <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
+            <div class="wbo-mgr-listbar">
+                <div class="wbo-search-wrap">
+                    <i class="fa-solid fa-magnifying-glass"></i>
+                    <input type="search" class="wbo-search-input" id="wbo-mgr-search-input" value="${esc(_searchQuery)}" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
+                </div>
+                <div class="wbo-mgr-list-tools">
+                    <label class="wbo-tool-switch" title="开启后显示角色卡世界书，关闭则隐藏">
+                        <input type="checkbox" class="wbo-show-char-checkbox" id="wbo-mgr-show-char">
+                        <span class="wbo-switch-track"></span>
+                        <span id="wbo-mgr-char-label">角色书 0</span>
+                    </label>
+                    <button type="button" class="wbo-tool-btn" id="wbo-mgr-batch-btn" data-action="toggle-batch-mode" title="批量勾选世界书移入分组、解除分组或删除">
+                        <i class="fa-solid fa-list-check"></i>
+                        <span>批量</span>
+                    </button>
+                </div>
             </div>
         </div>
         <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
@@ -1156,6 +1386,10 @@ function openManagerModal() {
                 openCreateOrRenameGroupModal(null);
                 break;
             }
+            case 'open-manage-groups': {
+                openManageGroupsModal();
+                break;
+            }
             case 'rename-group': {
                 const gid = target.getAttribute('data-group-id');
                 const grp = settings.groups.find((g) => g.id === gid);
@@ -1195,6 +1429,25 @@ function openManagerModal() {
                 renderManagerGroupsListOnly();
                 break;
             }
+            case 'toggle-batch-group': {
+                const groupEl = target.closest('.wbo-group[data-group-id]');
+                if (!groupEl) return;
+                const names = getRenderedGroupBookNames(groupEl);
+                if (names.length === 0) return;
+                const cb = target instanceof HTMLInputElement ? target : groupEl.querySelector('.wbo-batch-group-check');
+                const nextChecked = cb instanceof HTMLInputElement ? cb.checked : !names.every((n) => _batchSelected.has(n));
+                for (const n of names) {
+                    if (nextChecked) _batchSelected.add(n);
+                    else _batchSelected.delete(n);
+                }
+                groupEl.querySelectorAll('.wbo-book-row[data-book]').forEach((row) => {
+                    row.classList.toggle('is-batch-selected', nextChecked);
+                    const rowCb = row.querySelector('.wbo-batch-check');
+                    if (rowCb instanceof HTMLInputElement) rowCb.checked = nextChecked;
+                });
+                syncBatchBarUi();
+                break;
+            }
             case 'toggle-batch-item':
             case 'toggle-batch-row': {
                 const row = target.closest('.wbo-book-row');
@@ -1228,29 +1481,23 @@ function openManagerModal() {
                 break;
             }
             case 'batch-toggle-visible': {
-                const visibleRows = Array.from(modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]'));
+                const groupEls = Array.from(modal.querySelectorAll('#wbo-mgr-groups-list .wbo-group[data-group-id]'));
+                const allNames = groupEls.flatMap((g) => getRenderedGroupBookNames(g));
                 const allSelected =
-                    visibleRows.length > 0 &&
-                    visibleRows.every((row) => _batchSelected.has(row.getAttribute('data-book') || ''));
+                    allNames.length > 0 &&
+                    allNames.every((name) => _batchSelected.has(name));
                 if (allSelected) {
-                    visibleRows.forEach((row) => {
-                        const name = row.getAttribute('data-book');
-                        if (!name) return;
-                        _batchSelected.delete(name);
-                        row.classList.remove('is-batch-selected');
-                        const cb = row.querySelector('.wbo-batch-check');
-                        if (cb instanceof HTMLInputElement) cb.checked = false;
-                    });
+                    allNames.forEach((name) => _batchSelected.delete(name));
                 } else {
-                    visibleRows.forEach((row) => {
-                        const name = row.getAttribute('data-book');
-                        if (!name) return;
-                        _batchSelected.add(name);
-                        row.classList.add('is-batch-selected');
-                        const cb = row.querySelector('.wbo-batch-check');
-                        if (cb instanceof HTMLInputElement) cb.checked = true;
-                    });
+                    allNames.forEach((name) => _batchSelected.add(name));
                 }
+                modal.querySelectorAll('#wbo-mgr-groups-list .wbo-book-row[data-book]').forEach((row) => {
+                    const name = row.getAttribute('data-book') || '';
+                    const isChecked = _batchSelected.has(name);
+                    row.classList.toggle('is-batch-selected', isChecked);
+                    const cb = row.querySelector('.wbo-batch-check');
+                    if (cb instanceof HTMLInputElement) cb.checked = isChecked;
+                });
                 syncBatchBarUi();
                 break;
             }
@@ -1390,6 +1637,11 @@ function refreshManagerModalContent() {
     const scanLbl = overlay.querySelector('#wbo-mgr-scan-label');
     if (scanBtn) scanBtn.classList.toggle('is-active', scanBadgeCount > 0);
     if (scanLbl) scanLbl.textContent = scanBadgeCount > 0 ? `扫描 ${scanBadgeCount}` : '扫描';
+
+    const manageGroupsBtn = overlay.querySelector('#wbo-mgr-manage-groups-btn');
+    if (manageGroupsBtn instanceof HTMLElement) {
+        manageGroupsBtn.hidden = !hasCustomGroups;
+    }
 
     const pillsEl = overlay.querySelector('#wbo-mgr-pills');
     if (pillsEl) {
@@ -2113,52 +2365,77 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         '整理世界书',
         `
             <div class="wbo-tabs" id="wbo-ai-tabs">
-                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">一键本地整理（免费）</button>
-                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 智能整理</button>
+                <button type="button" class="wbo-tab${startTab === 'local' ? ' is-active' : ''}" data-ai-tab="local">本地整理</button>
+                <button type="button" class="wbo-tab${startTab === 'organize' ? ' is-active' : ''}" data-ai-tab="organize">AI 整理</button>
             </div>
 
-            <div class="wbo-ai-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
-                <div class="wbo-card wbo-ai-card">
+            <div class="wbo-ai-step wbo-local-step" id="wbo-ai-step-local"${startTab === 'local' ? '' : ' hidden'}>
+                <div class="wbo-card wbo-local-card">
                     <div class="wbo-ai-section-head">
-                        <span>自动按书名前缀与用途归组（零额度，1 秒完成）</span>
+                        <span>1. 选择整理范围</span>
                     </div>
-                    <div class="wbo-ai-options">
-                        <div class="wbo-radio-row">
-                            <label class="wbo-radio-opt">
-                                <input type="radio" name="wbo-local-scope" value="ungrouped"${classification.ungroupedBooks.length > 0 ? ' checked' : ''}>
-                                <span>仅整理未分组（${classification.ungroupedBooks.length} 本）</span>
-                            </label>
-                            <label class="wbo-radio-opt">
-                                <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
-                                <span>整理全部非角色书（${classification.nonCharCount} 本）</span>
-                            </label>
-                        </div>
-                        <input type="checkbox" id="wbo-local-use-prefix" checked hidden>
-                        <details class="wbo-collapse-box" id="wbo-local-rules-details">
-                            <summary class="wbo-collapse-summary">
-                                <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>更多选项（清理书名尾巴 / 自定义归类词）</span></span>
-                                <span class="wbo-collapse-hint" id="wbo-local-rules-count">可选</span>
-                            </summary>
-                            <div class="wbo-collapse-body">
-                                <label class="wbo-check-line">
-                                    <input type="checkbox" id="wbo-local-clean-titles">
-                                    <span>顺手清理显示名尾巴（去掉 (1)、副本、by作者名，不改原文件）</span>
-                                </label>
-                                <div class="wbo-rule-builder-row">
-                                    <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="书名包含词，如：穿搭">
-                                    <span class="wbo-rule-arrow">归入</span>
-                                    <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设">
-                                    <button type="button" class="wbo-btn" id="wbo-local-rule-add-btn">添加</button>
-                                </div>
-                                <datalist id="wbo-existing-groups-datalist">
-                                    ${settings.groups.map((g) => `<option value="${esc(g.name)}"></option>`).join('')}
-                                </datalist>
-                                <div class="wbo-rule-chips" id="wbo-local-rule-chips"></div>
-                            </div>
-                        </details>
+                    <div class="wbo-scope-grid">
+                        <label class="wbo-scope-card">
+                            <input type="radio" name="wbo-local-scope" value="ungrouped"${classification.ungroupedBooks.length > 0 ? ' checked' : ''}>
+                            <span class="wbo-scope-body">
+                                <span class="wbo-scope-title">仅整理未分组 <span class="wbo-tag">${classification.ungroupedBooks.length} 本</span></span>
+                                <span class="wbo-scope-desc">保持已有分组不变</span>
+                            </span>
+                        </label>
+                        <label class="wbo-scope-card">
+                            <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
+                            <span class="wbo-scope-body">
+                                <span class="wbo-scope-title">全部非角色书 <span class="wbo-tag">${classification.nonCharCount} 本</span></span>
+                                <span class="wbo-scope-desc">按规则重新归类</span>
+                            </span>
+                        </label>
                     </div>
                 </div>
+
+                <div class="wbo-card wbo-local-card">
+                    <div class="wbo-ai-section-head">
+                        <span>2. 自动归类规则</span>
+                    </div>
+                    <div class="wbo-local-cats">
+                        <span class="wbo-local-cat">人设</span>
+                        <span class="wbo-local-cat">文风</span>
+                        <span class="wbo-local-cat">缝合</span>
+                        <span class="wbo-local-cat">世界观</span>
+                        <span class="wbo-local-cat">场景与互动</span>
+                        <span class="wbo-local-cat">小剧场</span>
+                        <span class="wbo-local-cat">补充素材</span>
+                        <span class="wbo-local-cat">成人向</span>
+                    </div>
+                    <div class="wbo-subtle-tip">优先识别书名前缀（如 [人设]、【文风】），其次按关键词匹配，不修改原文件。</div>
+                    <div class="wbo-local-divider"></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" id="wbo-local-clean-titles">
+                        <span>顺手清理显示名末尾的 (1)、副本、作者署名</span>
+                    </label>
+                </div>
+
+                <input type="checkbox" id="wbo-local-use-prefix" checked hidden>
+                <details class="wbo-collapse-box" id="wbo-local-rules-details">
+                    <summary class="wbo-collapse-summary">
+                        <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>自定义归类关键词</span></span>
+                        <span class="wbo-collapse-hint" id="wbo-local-rules-count">可选</span>
+                    </summary>
+                    <div class="wbo-collapse-body">
+                        <div class="wbo-rule-builder-row">
+                            <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="书名包含词，如：穿搭">
+                            <span class="wbo-rule-arrow">归入</span>
+                            <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="分组名，如：人设">
+                            <button type="button" class="wbo-btn" id="wbo-local-rule-add-btn">添加</button>
+                        </div>
+                        <datalist id="wbo-existing-groups-datalist">
+                            ${settings.groups.map((g) => `<option value="${esc(g.name)}"></option>`).join('')}
+                        </datalist>
+                        <div class="wbo-rule-chips" id="wbo-local-rule-chips"></div>
+                    </div>
+                </details>
+
                 <div class="wbo-ai-status" id="wbo-local-status"></div>
+                <div class="wbo-spacer"></div>
                 <div class="wbo-modal-footer wbo-ai-footer">
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-local-undo-btn" ${hasUndo ? '' : 'hidden'}>
