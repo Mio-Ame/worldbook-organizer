@@ -222,6 +222,19 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(settings.aliases['【2026精修】古风去八股文风_v3'], undefined);
 });
 
+test('entry module and all submodules resolve and import without missing paths', async () => {
+    const prevDoc = globalThis.document;
+    globalThis.document = { readyState: 'loading', addEventListener() {} };
+    try {
+        const mod = await import('../index.js');
+        assert.equal(typeof mod.onDisable, 'function');
+        assert.equal(typeof mod.onClean, 'function');
+    } finally {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    }
+});
+
 test('config export and import round-trip cleanly', () => {
     const src = normalizeSettings({
         charBookTitleMode: 'char_only',

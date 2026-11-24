@@ -17,7 +17,7 @@ import {
     buildPersonaBindingIndex,
     classifyWorldbooks,
     updateCachedCharBindings,
-} from './core.js';
+} from './src/core.js';
 import {
     ensureWorldInfoModule,
     getCharLoreEntries,
@@ -30,20 +30,20 @@ import {
     showToast,
     syncFallbackSettingsData,
     waitForTauriReadyIfPresent,
-} from './host.js';
+} from './src/host.js';
 import {
     applyAllNativeWorldFilters,
     getDetachedWorldNames,
     setCurrentlyEditingWorld,
     startNativeObservers,
     teardownNativeFilters,
-} from './native-filter.js';
+} from './src/native-filter.js';
 import {
     bindPanelCallbacks,
     renderEmbeddedPanel,
     renderExtensionSettingsPanel,
     teardownPanels,
-} from './panel.js';
+} from './src/panel.js';
 
 let _initialized = false;
 let _debounceTimer = null;
