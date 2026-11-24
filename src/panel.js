@@ -1463,15 +1463,27 @@ function openManagerModal() {
             }
             case 'toggle-group-collapse': {
                 const gid = target.getAttribute('data-group-id');
+                let willCollapse = false;
                 if (gid === SPECIAL_GROUPS.CHARACTER) {
                     settings.charGroupCollapsed = !settings.charGroupCollapsed;
+                    willCollapse = settings.charGroupCollapsed;
                 } else if (gid === SPECIAL_GROUPS.UNGROUPED) {
                     settings.ungroupedCollapsed = !settings.ungroupedCollapsed;
+                    willCollapse = settings.ungroupedCollapsed;
                 } else {
                     const grp = settings.groups.find((g) => g.id === gid);
-                    if (grp) grp.collapsed = !grp.collapsed;
+                    if (grp) {
+                        grp.collapsed = !grp.collapsed;
+                        willCollapse = grp.collapsed;
+                    }
                 }
                 renderManagerGroupsListOnly();
+                if (willCollapse && gid) {
+                    const collapsedEl = modal.querySelector(`#wbo-mgr-groups-list .wbo-group[data-group-id="${CSS.escape(gid)}"]`);
+                    if (collapsedEl instanceof HTMLElement) {
+                        collapsedEl.scrollIntoView({ block: 'nearest' });
+                    }
+                }
                 await _callbacks.onMutation({ save: true, uiOnly: true });
                 break;
             }

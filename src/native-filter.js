@@ -800,11 +800,19 @@ function openMobileEditorPickerSheet() {
             if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
-            _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
+            const willCollapse = !_latestSettings.dropdownCollapsed[gid];
+            _latestSettings.dropdownCollapsed[gid] = willCollapse;
             saveSettings();
             const prevTop = listEl.scrollTop;
             renderList();
-            listEl.scrollTop = prevTop;
+            if (willCollapse) {
+                const nextBtn = listEl.querySelector(`[data-mp-toggle="${CSS.escape(gid)}"]`);
+                if (nextBtn instanceof HTMLElement) {
+                    nextBtn.scrollIntoView({ block: 'nearest' });
+                }
+            } else {
+                listEl.scrollTop = prevTop;
+            }
             return;
         }
         const rowBtn = target.closest('[data-mp-val]');

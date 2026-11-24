@@ -352,6 +352,9 @@
 }
 
 .wbo-mp-sec-head {
+    position: sticky;
+    top: 0;
+    z-index: 3;
     display: flex !important;
     align-items: center !important;
     gap: 6px !important;
@@ -365,7 +368,7 @@
     font-weight: 600 !important;
     text-align: left !important;
     cursor: pointer !important;
-    box-shadow: none !important;
+    box-shadow: 0 1px 0 var(--wbo-border) !important;
 }
 
 .wbo-mp-sec-head.is-static {
@@ -1525,18 +1528,25 @@
 
 .select2-results__group.wbo-dd-group-head,
 .gr-group-label.wbo-dd-group-head {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 4 !important;
     display: flex !important;
     align-items: center !important;
     gap: 6px;
     cursor: pointer !important;
     user-select: none;
-    border-radius: 4px;
+    border-radius: 0;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1f2229) 96%, transparent);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 1px 0 color-mix(in srgb, currentColor 12%, transparent);
     transition: background-color 0.12s ease;
 }
 
 .select2-results__group.wbo-dd-group-head:hover,
 .gr-group-label.wbo-dd-group-head:hover {
-    background: color-mix(in srgb, currentColor 8%, transparent);
+    background: color-mix(in srgb, currentColor 10%, var(--SmartThemeBlurTintColor, #1f2229));
 }
 
 .select2-results__group.wbo-dd-group-head::before,
@@ -3263,17 +3273,20 @@ details[open] > summary .wbo-details-chev {
     border: 1px solid var(--wbo-border);
     border-radius: 8px;
     background: var(--wbo-bg);
-    overflow: hidden;
     flex-shrink: 0;
 }
 
 .wbo-preview-group-head {
+    position: sticky;
+    top: -6px;
+    z-index: 3;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
     padding: 6px 10px;
     background: var(--wbo-bg-elevated);
+    border-radius: 7px 7px 0 0;
     border-bottom: 1px solid var(--wbo-border);
 }
 
