@@ -548,14 +548,17 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                     <button type="button" class="wbo-icon-btn" data-action="edit-book" title="在酒馆编辑器中打开">
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn" data-action="rename-alias" title="编辑名称与备注">
+                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="rename-alias" title="编辑名称与备注">
                         <i class="fa-solid fa-pen-to-square"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn" data-action="move-group" title="移动分组">
+                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="move-group" title="移动分组">
                         <i class="fa-solid fa-folder-open"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn wbo-icon-danger" data-action="delete-single-book" title="删除世界书">
+                    <button type="button" class="wbo-icon-btn wbo-icon-danger wbo-book-action-secondary" data-action="delete-single-book" title="删除世界书">
                         <i class="fa-regular fa-trash-can"></i>
+                    </button>
+                    <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作">
+                        <i class="fa-solid fa-ellipsis"></i>
                     </button>
                 </div>
             </div>
@@ -2007,6 +2010,15 @@ function openManagerModal() {
                 const bookName = row?.getAttribute('data-book');
                 const meta = bookName ? classification.byName.get(bookName) : null;
                 if (meta) openMoveGroupModal(meta);
+                break;
+            }
+            case 'book-more-menu': {
+                const row = target.closest('.wbo-book-row');
+                const bookName = row?.getAttribute('data-book');
+                const meta = bookName ? classification.byName.get(bookName) : null;
+                if (meta && target instanceof HTMLElement) {
+                    openBookMorePopover(target, meta);
+                }
                 break;
             }
             case 'open-ai-organize': {
@@ -6250,6 +6262,89 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
                     (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
             }
             await _callbacks.onMutation({ save: true });
+        });
+    });
+}
+
+/**
+ * Compact mobile overflow popover (`···`) for secondary worldbook row actions
+ * (rename/note, move group, delete) so rows stay clean and single-line on phones.
+ * @param {HTMLElement} anchorBtn
+ * @param {object} bookMeta
+ */
+function openBookMorePopover(anchorBtn, bookMeta) {
+    closeGroupVisibilityPopover();
+    if (!bookMeta?.realName) return;
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'wbo-vis-popover-backdrop';
+    backdrop.className = 'wbo-vis-backdrop';
+
+    const pop = document.createElement('div');
+    pop.className = 'wbo-modal wbo-vis-popover wbo-book-more-popover';
+    applyThemeClass(pop);
+    pop.innerHTML = `
+        <button type="button" class="wbo-book-more-item" data-more-act="rename-alias">
+            <i class="fa-solid fa-pen-to-square"></i><span>编辑名称与备注</span>
+        </button>
+        <button type="button" class="wbo-book-more-item" data-more-act="move-group">
+            <i class="fa-solid fa-folder-open"></i><span>移动分组</span>
+        </button>
+        <div class="wbo-book-more-divider"></div>
+        <button type="button" class="wbo-book-more-item is-danger" data-more-act="delete-single-book">
+            <i class="fa-regular fa-trash-can"></i><span>删除世界书</span>
+        </button>
+    `;
+
+    backdrop.appendChild(pop);
+    document.body.appendChild(backdrop);
+
+    const rect = anchorBtn.getBoundingClientRect();
+    const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+    const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+    const popW = 158;
+    const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
+    const openAbove = vh - rect.bottom < 146 && rect.top > 146;
+    pop.style.width = `${popW}px`;
+    pop.style.left = `${Math.round(left)}px`;
+    if (openAbove) {
+        pop.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
+        pop.style.top = 'auto';
+    } else {
+        pop.style.top = `${Math.round(rect.bottom + 4)}px`;
+        pop.style.bottom = 'auto';
+    }
+
+    const onKeyDown = (ev) => {
+        if (ev.key === 'Escape') {
+            ev.stopPropagation();
+            cleanup();
+        }
+    };
+    const cleanup = () => {
+        document.removeEventListener('keydown', onKeyDown, true);
+        closeGroupVisibilityPopover();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+
+    pop.addEventListener('click', (ev) => ev.stopPropagation());
+    backdrop.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        if (ev.target === backdrop) cleanup();
+    });
+
+    pop.querySelectorAll('[data-more-act]').forEach((btn) => {
+        btn.addEventListener('click', async (ev) => {
+            ev.stopPropagation();
+            const act = btn.getAttribute('data-more-act');
+            cleanup();
+            if (act === 'rename-alias') {
+                openAliasNoteModal(bookMeta);
+            } else if (act === 'move-group') {
+                openMoveGroupModal(bookMeta);
+            } else if (act === 'delete-single-book') {
+                await confirmAndDeleteWorldbooks([bookMeta.realName]);
+            }
         });
     });
 }

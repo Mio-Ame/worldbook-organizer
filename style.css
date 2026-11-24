@@ -1686,6 +1686,68 @@
     flex-shrink: 0;
 }
 
+.wbo-book-more-btn {
+    display: none !important;
+}
+
+.wbo-book-more-popover {
+    padding: 5px !important;
+    gap: 2px !important;
+}
+
+.wbo-book-more-item {
+    display: flex !important;
+    align-items: center !important;
+    gap: 9px !important;
+    width: 100% !important;
+    height: 34px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 7px !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    font-size: 12.5px !important;
+    font-weight: 500 !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+    transition: background-color 0.12s ease;
+}
+
+.wbo-book-more-item > i {
+    width: 14px;
+    text-align: center;
+    font-size: 12.5px;
+    opacity: 0.78;
+    flex-shrink: 0;
+}
+
+.wbo-book-more-item:hover,
+.wbo-book-more-item:active {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-book-more-item.is-danger {
+    color: #c53030 !important;
+}
+
+.wbo-book-more-item.is-danger > i {
+    color: #c53030 !important;
+    opacity: 0.9;
+}
+
+.wbo-modal.wbo-theme-dark .wbo-book-more-item.is-danger,
+.wbo-modal.wbo-theme-dark .wbo-book-more-item.is-danger > i {
+    color: #f38b8b !important;
+}
+
+.wbo-book-more-divider {
+    height: 1px;
+    margin: 3px 6px;
+    background: var(--wbo-border);
+}
+
 /* Explicit anti-misclick global toggle pill on right side of non-character books */
 .wbo-global-pill {
     display: inline-flex !important;
@@ -4659,19 +4721,38 @@ details[open] > summary .wbo-details-chev {
         max-width: none;
     }
     .wbo-book-row {
-        flex-wrap: wrap;
-        align-items: flex-start;
+        flex-wrap: nowrap;
+        align-items: center;
         gap: 6px;
-        padding: 8px 10px;
+        padding: 7px 10px;
     }
     .wbo-book-main {
-        flex: 1 1 calc(100% - 46px);
+        flex: 1 1 auto;
+        min-width: 0;
     }
     .wbo-book-actions {
-        width: 100%;
+        width: auto;
+        flex-shrink: 0;
         justify-content: flex-end;
-        padding-left: 22px;
-        gap: 6px;
+        padding-left: 0;
+        gap: 4px;
+    }
+    .wbo-book-action-secondary {
+        display: none !important;
+    }
+    .wbo-book-more-btn {
+        display: inline-flex !important;
+    }
+    .wbo-book-actions .wbo-global-pill {
+        height: 26px !important;
+        min-height: 26px !important;
+        max-height: 26px !important;
+        padding: 0 7px !important;
+        font-size: 11.5px !important;
+    }
+    .wbo-book-actions .wbo-icon-btn {
+        width: 28px !important;
+        height: 28px !important;
     }
     .wbo-prop-grid {
         grid-template-columns: 1fr;
