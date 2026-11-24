@@ -4124,6 +4124,74 @@ details[open] > summary .wbo-details-chev {
     min-width: 0 !important;
 }
 
+.wbo-es-history-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.wbo-es-history-row[hidden] {
+    display: none !important;
+}
+
+.wbo-es-history-label {
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
+    margin-right: 2px;
+}
+
+.wbo-es-hist-chip {
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    border-radius: 999px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-surface);
+    overflow: hidden;
+}
+
+.wbo-es-hist-chip:hover {
+    border-color: var(--wbo-border-strong);
+    background: var(--wbo-surface-hover);
+}
+
+.wbo-es-hist-term {
+    height: 100% !important;
+    padding: 0 4px 0 9px !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    font-size: 12px !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-es-hist-del {
+    height: 100% !important;
+    padding: 0 7px 0 3px !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 13px !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-es-hist-del:hover {
+    color: var(--wbo-fg) !important;
+}
+
+.wbo-es-hist-clear {
+    font-size: 12px !important;
+    margin-left: 2px;
+}
+
 .wbo-es-controls {
     display: flex;
     flex-wrap: wrap;

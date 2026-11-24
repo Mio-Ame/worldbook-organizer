@@ -164,6 +164,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     globalHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     editorHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     localOrganizeCategories: ['user_persona', 'style', 'nsfw'],
+    entrySearchHistory: [],
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
@@ -283,6 +284,14 @@ export function normalizeSettings(raw) {
         merged.localOrganizeCategories = [...new Set(
             merged.localOrganizeCategories.filter((id) => typeof id === 'string' && validLocalCatIds.has(id)),
         )];
+    }
+
+    if (!Array.isArray(merged.entrySearchHistory)) {
+        merged.entrySearchHistory = [];
+    } else {
+        merged.entrySearchHistory = [...new Set(
+            merged.entrySearchHistory.map((s) => String(s ?? '').trim()).filter(Boolean),
+        )].slice(0, 10);
     }
 
     const validGroupIds = new Set(merged.groups.map((g) => g.id));

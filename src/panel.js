@@ -5830,7 +5830,7 @@ function highlightTokensHtml(text, tokens) {
  */
 function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     if (!_callbacks) return;
-    const { classification } = _callbacks.getState();
+    const { settings, classification } = _callbacks.getState();
 
     const nonCharBooks = [...classification.byName.values()].filter((b) => !b.isInCharGroup);
     const allBooks = [...classification.byName.values()];
@@ -5848,15 +5848,17 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
             <div class="wbo-es-top">
                 <div class="wbo-search-wrap wbo-es-input-wrap">
                     <i class="fa-solid fa-magnifying-glass"></i>
-                    <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(initialQuery)}" placeholder="输入关键词，空格可搜多词，如：软萌 可爱" autocomplete="off" spellcheck="false">
+                    <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(initialQuery)}" placeholder="输入关键词，空格可搜多词" autocomplete="off" spellcheck="false">
                 </div>
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-es-run-btn">
-                    <i class="fa-solid fa-magnifying-glass"></i> 开始搜索
+                    <i class="fa-solid fa-magnifying-glass"></i> 搜索
                 </button>
                 <button type="button" class="wbo-btn" id="wbo-es-stop-btn" hidden>
                     <i class="fa-solid fa-stop"></i> 停止
                 </button>
             </div>
+
+            <div class="wbo-es-history-row" id="wbo-es-history-row" hidden></div>
 
             <div class="wbo-es-controls">
                 <select class="wbo-select wbo-es-scope" id="wbo-es-scope">
@@ -5884,13 +5886,14 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
             </div>
 
             <div class="wbo-es-results" id="wbo-es-results">
-                <div class="wbo-empty-hint">按需流式读取、不常驻内存；输入关键词后点「开始搜索」或按回车。</div>
+                <div class="wbo-empty-hint">输入关键词开始搜索</div>
             </div>
         `,
         { wide: true },
     );
 
     const queryInput = modal.querySelector('#wbo-es-query');
+    const historyRow = modal.querySelector('#wbo-es-history-row');
     const scopeSelect = modal.querySelector('#wbo-es-scope');
     const inTitleCb = modal.querySelector('#wbo-es-in-title');
     const inContentCb = modal.querySelector('#wbo-es-in-content');
@@ -5901,6 +5904,61 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     const progFill = modal.querySelector('#wbo-es-progress-fill');
     const progText = modal.querySelector('#wbo-es-progress-text');
     const resultsEl = modal.querySelector('#wbo-es-results');
+
+    const renderHistoryChips = () => {
+        if (!(historyRow instanceof HTMLElement)) return;
+        const list = Array.isArray(settings.entrySearchHistory) ? settings.entrySearchHistory : [];
+        if (list.length === 0) {
+            historyRow.hidden = true;
+            historyRow.innerHTML = '';
+            return;
+        }
+        historyRow.hidden = false;
+        historyRow.innerHTML = `
+            <span class="wbo-es-history-label">最近</span>
+            ${list.map((term) => `
+                <span class="wbo-es-hist-chip">
+                    <button type="button" class="wbo-es-hist-term" data-es-hist-pick="${esc(term)}">${esc(term)}</button>
+                    <button type="button" class="wbo-es-hist-del" data-es-hist-del="${esc(term)}" aria-label="删除">×</button>
+                </span>
+            `).join('')}
+            <button type="button" class="wbo-link-btn wbo-es-hist-clear" id="wbo-es-hist-clear">清空</button>
+        `;
+    };
+    const pushSearchHistory = (term) => {
+        const clean = String(term ?? '').trim();
+        if (!clean) return;
+        const prev = Array.isArray(settings.entrySearchHistory) ? settings.entrySearchHistory : [];
+        settings.entrySearchHistory = [clean, ...prev.filter((x) => x !== clean)].slice(0, 10);
+        renderHistoryChips();
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
+    };
+    renderHistoryChips();
+
+    historyRow?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target) return;
+        if (target.closest('#wbo-es-hist-clear')) {
+            settings.entrySearchHistory = [];
+            renderHistoryChips();
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+            return;
+        }
+        const delBtn = target.closest('[data-es-hist-del]');
+        if (delBtn) {
+            const term = delBtn.getAttribute('data-es-hist-del') || '';
+            settings.entrySearchHistory = (settings.entrySearchHistory || []).filter((x) => x !== term);
+            renderHistoryChips();
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+            return;
+        }
+        const pickBtn = target.closest('[data-es-hist-pick]');
+        if (pickBtn) {
+            const term = pickBtn.getAttribute('data-es-hist-pick') || '';
+            if (queryInput instanceof HTMLInputElement) queryInput.value = term;
+            void runSearch();
+        }
+    });
 
     /** @type {{ cancelled: boolean } | null} */
     let activeSignal = null;
@@ -5940,6 +5998,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
         if (activeSignal) activeSignal.cancelled = true;
         const signal = { cancelled: false };
         activeSignal = signal;
+        pushSearchHistory(q);
 
         const targetBooks = resolveTargetBooks();
         const bookMetaByName = new Map(targetBooks.map((b) => [b.realName, b]));
