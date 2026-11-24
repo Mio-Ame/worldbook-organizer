@@ -512,6 +512,43 @@ export function syncMobileEditorTriggerLabel() {
 }
 
 /**
+ * Mirror the exact live visual geometry & theme tokens of a native `<select>` onto our
+ * custom trigger button so swapping `<select>` <-> trigger never turns thicker or squarer!
+ * @param {HTMLSelectElement} selectEl
+ * @param {HTMLElement} triggerEl
+ */
+function mirrorNativeSelectAppearance(selectEl, triggerEl) {
+    if (!selectEl || !triggerEl) return;
+    const wasHidden = selectEl.classList.contains('wbo-mobile-select-hidden');
+    if (wasHidden) selectEl.classList.remove('wbo-mobile-select-hidden');
+    try {
+        const cs = globalThis.getComputedStyle(selectEl);
+        const rect = selectEl.getBoundingClientRect();
+        if (rect.height > 14) {
+            triggerEl.style.height = `${Math.round(rect.height)}px`;
+            triggerEl.style.minHeight = `${Math.round(rect.height)}px`;
+        } else if (cs.height && cs.height !== 'auto') {
+            triggerEl.style.height = cs.height;
+            triggerEl.style.minHeight = cs.height;
+        }
+        triggerEl.style.borderRadius = cs.borderRadius;
+        triggerEl.style.border = `${cs.borderTopWidth} ${cs.borderTopStyle} ${cs.borderTopColor}`;
+        triggerEl.style.backgroundColor = cs.backgroundColor;
+        triggerEl.style.color = cs.color;
+        triggerEl.style.fontSize = cs.fontSize;
+        triggerEl.style.fontFamily = cs.fontFamily;
+        triggerEl.style.fontWeight = cs.fontWeight;
+        triggerEl.style.boxShadow = cs.boxShadow;
+        const padLeft = parseFloat(cs.paddingLeft) || 10;
+        triggerEl.style.padding = `0 ${Math.max(8, Math.round(padLeft))}px`;
+    } catch {
+        // Fallback to theme defaults
+    } finally {
+        if (wasHidden) selectEl.classList.add('wbo-mobile-select-hidden');
+    }
+}
+
+/**
  * Mount or remove the iOS/mobile grouped worldbook trigger button in place of the native `<select>`.
  * @param {HTMLSelectElement} selectEl
  * @param {boolean} enabled
@@ -531,7 +568,7 @@ function syncMobileEditorTrigger(selectEl, enabled) {
         trigger = document.createElement('button');
         trigger.type = 'button';
         trigger.id = MOBILE_TRIGGER_ID;
-        trigger.className = 'text_pole wbo-mobile-editor-trigger';
+        trigger.className = 'wbo-mobile-editor-trigger';
         trigger.innerHTML = `
             <span class="wbo-mobile-trigger-text">--- 选择以编辑 ---</span>
             <i class="fa-solid fa-chevron-down wbo-mobile-trigger-chev"></i>
@@ -544,6 +581,7 @@ function syncMobileEditorTrigger(selectEl, enabled) {
         selectEl.insertAdjacentElement('afterend', trigger);
     }
 
+    mirrorNativeSelectAppearance(selectEl, trigger);
     selectEl.classList.add('wbo-mobile-select-hidden');
     syncMobileEditorTriggerLabel();
 }
@@ -675,10 +713,41 @@ function openMobileEditorPickerSheet() {
     };
     positionPopover();
 
+    /** @type {MutationObserver | null} */
+    let wiDrawerObserver = null;
+    const onGlobalDismiss = (ev) => {
+        const t = ev?.target instanceof Element ? ev.target : null;
+        if (t && (popover.contains(t) || triggerEl.contains(t))) return;
+        closePicker();
+    };
+    const onViewportChange = () => closePicker();
+
     const closePicker = () => {
+        if (wiDrawerObserver) {
+            wiDrawerObserver.disconnect();
+            wiDrawerObserver = null;
+        }
+        document.removeEventListener('pointerdown', onGlobalDismiss, true);
+        globalThis.removeEventListener('resize', onViewportChange);
+        globalThis.removeEventListener('orientationchange', onViewportChange);
         overlay.remove();
         triggerEl.classList.remove('is-open');
     };
+
+    // Immediately dismiss the dropdown whenever `#WorldInfo` drawer closes, any top-bar drawer icon is tapped,
+    // or orientation/viewport changes — never leave a floating picker stranded after closing `#WorldInfo`!
+    const wiDrawer = document.getElementById('WorldInfo');
+    if (wiDrawer) {
+        wiDrawerObserver = new MutationObserver(() => {
+            if (wiDrawer.classList.contains('closedDrawer') || !triggerEl.isConnected) {
+                closePicker();
+            }
+        });
+        wiDrawerObserver.observe(wiDrawer, { attributes: true, attributeFilter: ['class', 'style'] });
+    }
+    document.addEventListener('pointerdown', onGlobalDismiss, true);
+    globalThis.addEventListener('resize', onViewportChange);
+    globalThis.addEventListener('orientationchange', onViewportChange);
 
     const stopPopover = (ev) => ev.stopPropagation();
     for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
@@ -1159,7 +1228,7 @@ function attachGroupedSelectControl(
 
     const trigger = document.createElement('button');
     trigger.type = 'button';
-    trigger.className = 'text_pole wbo-mobile-editor-trigger wbo-popup-select-trigger';
+    trigger.className = 'wbo-mobile-editor-trigger wbo-popup-select-trigger';
     trigger.innerHTML = `
         <span class="wbo-mobile-trigger-text"></span>
         <i class="fa-solid fa-chevron-down wbo-mobile-trigger-chev"></i>
@@ -1457,8 +1526,9 @@ function attachGroupedSelectControl(
         openPopover();
     });
 
-    selectEl.classList.add('wbo-mobile-select-hidden');
     selectEl.insertAdjacentElement('afterend', trigger);
+    mirrorNativeSelectAppearance(selectEl, trigger);
+    selectEl.classList.add('wbo-mobile-select-hidden');
     selectEl.addEventListener('change', syncTriggerText);
     syncTriggerText();
 }
