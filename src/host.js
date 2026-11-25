@@ -501,6 +501,7 @@ export async function saveWorldbookEntryPatch(worldName, uid, patch) {
     if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
         try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
     }
+    emitBridgeEvent('wbo:entries-updated', { worldName: clean });
 
     const savedEntry = extractSingleEntryForEdit({ entries: { [entryKey]: mergedEntry } }, targetUid);
     data = null;
@@ -546,6 +547,7 @@ export async function createWorldbookEntryDirect(worldName, initialFields = {}) 
     if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
         try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
     }
+    emitBridgeEvent('wbo:entries-updated', { worldName: clean });
 
     const createdEntry = extractSingleEntryForEdit({ entries: { [uidKey]: newEntry } }, uidKey);
     data = null;
@@ -1232,6 +1234,49 @@ export async function searchWorldbookEntriesStream({
 }
 
 /**
+ * Discard queued `wbo:worldbook-renamed` bridge events (both forward and reverse)
+ * for forward rename pairs that were successfully rolled back BEFORE `flushWorldInfoListRefresh()`.
+ * Note: If a forward rename was already flushed before rollback (e.g. post-batch rollback),
+ * its forward event is no longer in `_pendingRenamedEvents`, so the reverse rollback event
+ * is preserved so companion extensions can revert the book name cleanly.
+ *
+ * @param {Array<{ oldName: string, newName: string }>} rolledBackPairs
+ * @returns {number} number of discarded pending event entries
+ */
+export function discardPendingRenamedEventsForRollback(rolledBackPairs = []) {
+    if (!Array.isArray(rolledBackPairs) || rolledBackPairs.length === 0) return 0;
+    const cancelKeys = new Set();
+    for (const p of rolledBackPairs) {
+        const o = String(p?.oldName ?? '').trim();
+        const n = String(p?.newName ?? '').trim();
+        if (!o || !n) continue;
+        const fwdKey = `${o}\0${n}`;
+        const hasPendingForward = _pendingRenamedEvents.some((ev) => `${ev.oldName}\0${ev.newName}` === fwdKey);
+        if (hasPendingForward) {
+            cancelKeys.add(fwdKey);
+            cancelKeys.add(`${n}\0${o}`);
+        }
+    }
+    if (cancelKeys.size === 0) return 0;
+    let removed = 0;
+    for (let i = _pendingRenamedEvents.length - 1; i >= 0; i -= 1) {
+        const ev = _pendingRenamedEvents[i];
+        if (cancelKeys.has(`${ev.oldName}\0${ev.newName}`)) {
+            _pendingRenamedEvents.splice(i, 1);
+            removed += 1;
+        }
+    }
+    return removed;
+}
+
+/**
+ * Clear all queued `wbo:worldbook-renamed` bridge events without emitting them.
+ */
+export function clearPendingRenamedEvents() {
+    _pendingRenamedEvents.length = 0;
+}
+
+/**
  * Flush SillyTavern's worldbook list once after a batch of file renames/deletes,
  * and emit any queued `wbo:worldbook-renamed` bridge events strictly AFTER `world_names` refreshes.
  */
@@ -1529,6 +1574,43 @@ export async function unbindPrimaryWorldbookFromChar(avatar, pluginSettings = nu
     } catch (err) {
         return { ok: false, error: String(err?.message || err) };
     }
+}
+
+/**
+ * Clear a User Persona's worldbook binding (`persona_descriptions[pid].lorebook = ''`
+ * and active `persona_description_lorebook` when matching) without touching disk files.
+ * @param {string} pid
+ * @param {string} [expectedWorld='']
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function unbindWorldbookFromPersona(pid, expectedWorld = '') {
+    const cleanPid = String(pid ?? '').trim();
+    const cleanWorld = String(expectedWorld ?? '').trim();
+    if (!cleanPid) return { ok: false, error: '人设标识为空' };
+
+    await ensurePowerUserModule();
+    const pu = getPowerUserSettings();
+    if (!pu) return { ok: false, error: '未能访问人设配置' };
+
+    let changed = false;
+    if (cleanPid !== '__active__' && pu.persona_descriptions?.[cleanPid] && typeof pu.persona_descriptions[cleanPid] === 'object') {
+        const cur = String(pu.persona_descriptions[cleanPid].lorebook ?? '').trim();
+        if (!cleanWorld || cur === cleanWorld) {
+            pu.persona_descriptions[cleanPid].lorebook = '';
+            changed = true;
+        }
+    }
+    if (cleanWorld && String(pu.persona_description_lorebook ?? '').trim() === cleanWorld) {
+        pu.persona_description_lorebook = '';
+        changed = true;
+    } else if (cleanPid === '__active__' && pu.persona_description_lorebook) {
+        pu.persona_description_lorebook = '';
+        changed = true;
+    }
+
+    if (!changed) return { ok: false, error: '未找到对应的人设世界书绑定' };
+    saveSettings();
+    return { ok: true };
 }
 
 /**

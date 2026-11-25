@@ -55,8 +55,8 @@
 4. **声明顺序整理（INT-07）**：将 `_openPanelBridgeHandler` 声明上移至模块顶部状态区。
 
 ### 4. 文案合规与单测补强（CMP-01 ~ CMP-04）
-- 清理注释、类名（`.wbo-gr-*` → `.wbo-pop-*`）、外部弹窗选择器集中至中性常量 `ENHANCED_POPOVER_SELECTORS`；替换「甲薄模型」→「内容限制较宽松的模型」、移除生硬词汇与夸张性能表述、修正按钮位置提示。
-- `tests/core.test.mjs` 补齐 `src/core.js` 全部未测导出与边界分支，新增版本号一致性及宿主低内存/事件时序单测（共 21 项全部通过）。
+- 清理兼容注释并重命名内部弹窗类名（统一使用 `.wbo-pop-*`），外部弹窗选择器集中至中性常量 `ENHANCED_POPOVER_SELECTORS`；将模型提示语改为更自然易懂的「内容限制较宽松的模型」、移除生硬词汇与夸张性能表述、修正按钮位置提示。
+- `tests/core.test.mjs` 补齐 `src/core.js` 全部未测导出与边界分支，新增版本号一致性、宿主低内存/事件时序、批量改名回滚与置顶/直编边界单测（共 25 项全部通过）。
 
 ### 5. 高频顺手功能补齐（仅 `dev` 分支）
 1. **常用世界书一键置顶 / 收藏（`pinnedBooks`）**
@@ -68,6 +68,27 @@
      - **条目列表**：仅渲染轻量行（蓝/绿灯、标题、触发词摘要、1 键开关），搜索框带 IME 合成守卫，支持直接「新建条目」；
      - **单条编辑**：仅在点开单条时挂载单个 `<textarea>` 与核心字段（标题、启用、蓝/绿灯、主/次触发词、插入位置、深度、顺序、正文）；
      - **零原生字段丢失 & 低内存直写**：保存时直连 `/api/worldinfo/get` 读取完整原始 JSON，通过 `mergeEntryPatchOntoRaw` 在原始条目对象上浅合并覆盖核心字段（100% 保留概率、递归开关、包含组、角色过滤与扩展字段等全部未展示原生键），再写回 `/api/worldinfo/edit`，仅当 `worldInfoCache` 已存在该书时做 `.set()` 同步，绝不污染宿主缓存。
+
+### 6. 二轮缺陷修复与实测痛点精修（dev 分支）
+1. **修复批量真实改名中途取消撤回失败与事件误派发**：
+   - **原来**：`rollbackRealRenames` 重新从旧的 `getWorldNames()` 构造名称集合导致命中冲突报「已存在同名世界书」，`preSnapshot` 漏存 `pinnedBooks`，且未清理被撤回条目的待派发 `wbo:worldbook-renamed` 队列。
+   - **现在**：撤回复用循环中实时维护的 `liveNamesSet`，通过 `discardPendingRenamedEventsForRollback` 撤掉已回滚项的待派发改名事件（避免伴生插件收到假改名），并在 `preSnapshot` 中完整备份与恢复 `pinnedBooks`。
+2. **修复数值留空 / `null` 归零与 `selective` 误覆写**：
+   - **原来**：`Number(null)` / `Number("")` 均被求值为 `0`，导致单条直编清空深度/顺序或原始字段为 `null` 时被写成 `0`；未切换蓝绿灯时也无条件覆盖 `selective: true`。
+   - **现在**：新增 `parseOptionalFiniteNumber` 守卫，保留原值与默认回退（`depth: 4` / `order: 100`），显式 `0` 仍正常保存；仅在蓝/绿灯模式实际切换时写入 `selective`。
+3. **补齐「★ 已置顶」内联搜条目与旧弹窗清空焦点守卫**：
+   - `runManagerInlineEntrySearch` 新增 `SPECIAL_GROUPS.PINNED` 分支；`openAliasNoteModal` 清空按钮补全 `isDesktopAutoFocusAllowed()` 守卫避免手机端误弹键盘。
+4. **AI 整理疑似敏感书防误报、独立分区与一键归入 NSFW**：
+   - **原来**：不管敏感书是否已归组，均弹出黄色警告横幅且与普通书混排，「包含敏感书」还会把已归组书与角色书一并勾上。
+   - **现在**：通过 `analyzeSensitiveOrganizeState` 区分未分组敏感书与已归组敏感书（已归组且未勾选时不再弹黄条误报）；选书列表单独分出「疑似敏感世界书 (N)」区块，并在横幅与区块头部提供「一键归入 NSFW 分组」按钮（无 `NSFW` 分组时自动创建并同步派发 `wbo:settings-updated`）。
+5. **扫描角色世界书升级：大白话标签、User 人设绑定异常与原地操作条**：
+   - **原来**：`主书 / 附加 / 内嵌` 标签晦涩；未检出 `powerUserSettings` 的 User 人设世界书异常；点击世界书直接关掉两层弹窗跳走。
+   - **现在**：改为 `当前主绑`、`额外附加（可能为通用书或旧版残留）`、`同名未绑（本地同名文件，多为旧版残留）`；「卡内同名书」行展示当前主绑书并支持「对比差异」（轻量对比卡内 `character_book` 与本地同名书，不调用 `loadWorldInfo`）；新增「User 人设绑定」明细页明确区分「角色卡绑定」与「User 人设绑定」及失效/交叉绑定；点击扫描结果中的世界书展开原地操作条，提供 ① **插件内查看/编辑条目**（叠层打开，不关扫描窗）、② **跳去原生编辑器**、③（附加/人设绑定）**直接解除此绑定**。
+6. **搜条目直达插件内单条直编、预览直编、删组撤回与 `wbo:entries-updated`**：
+   - `openBookEntryBrowserModal` 支持 `{ initialUid, stack }` 直达单条编辑视图；内联搜条目与跨书搜条目结果均优先提供「插件内编辑」（保留原生定位兜底）。
+   - 主列表展开预览每条旁新增「编辑此条」，底部溢出提示改为可点击的「浏览/编辑全部条目」。
+   - `delete-group` 执行前自动调用 `pushUndoSnapshot(settings, { count, label: '删除分组' })` 留存撤销快照。
+   - `saveWorldbookEntryPatch` 与 `createWorldbookEntryDirect` 写盘并同步缓存后派发 `wbo:entries-updated`（载荷 `{ worldName }`），便于伴生扩展同步刷新。
 
 ---
 

@@ -803,6 +803,144 @@ export function summarizeCharacterWorldCoverage({
 }
 
 /**
+ * Extract a lightweight preview entry list from an embedded V2 `character_book`
+ * (supporting both Array and Object `entries` layouts) without touching host cache.
+ * @param {any} charObj
+ * @param {number} [maxChars=1600]
+ * @returns {{ name: string, total: number, enabledCount: number, entries: Array<{ uid: string, title: string, keys: string[], content: string, disabled: boolean, constant: boolean }> } | null}
+ */
+export function extractEmbeddedCharacterBookPreview(charObj, maxChars = 1600) {
+    const book = charObj?.data?.character_book;
+    if (!book || typeof book !== 'object') return null;
+
+    const charName = String(charObj?.name || charObj?.data?.name || charaFileName(charObj?.avatar || '')).trim();
+    const bookName = String(book.name || (charName ? `${charName}'s Lorebook` : '卡内世界书')).trim();
+    const rawEntries = Array.isArray(book.entries)
+        ? book.entries
+        : (book.entries && typeof book.entries === 'object' ? Object.values(book.entries) : []);
+
+    const entries = rawEntries
+        .filter((e) => e && typeof e === 'object')
+        .map((e, idx) => {
+            const rawKeys = Array.isArray(e.keys) ? e.keys : (Array.isArray(e.key) ? e.key : []);
+            const keys = rawKeys.map((k) => String(k ?? '').trim()).filter(Boolean);
+            const rawContent = String(e.content ?? '').trim();
+            const content = rawContent.length > maxChars
+                ? `${rawContent.slice(0, maxChars)}…`
+                : rawContent;
+            const disabled = e.enabled !== undefined ? !e.enabled : Boolean(e.disable);
+            return {
+                uid: String(e.id ?? e.uid ?? idx),
+                title: String(e.comment || e.name || '').trim() || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
+                keys: keys.slice(0, 6),
+                content,
+                disabled,
+                constant: Boolean(e.constant),
+            };
+        });
+
+    const enabledCount = entries.filter((x) => !x.disabled).length;
+    return {
+        name: bookName,
+        total: entries.length,
+        enabledCount,
+        entries,
+    };
+}
+
+/**
+ * Inspect `powerUserSettings` User Persona worldbook bindings (`persona_descriptions`
+ * and active `persona_description_lorebook`) to surface missing files, multi-persona
+ * sharing, and cross-bindings with Character Cards.
+ *
+ * @param {object} params
+ * @param {Record<string, any> | null | undefined} params.powerUserSettings
+ * @param {Set<string>} [params.worldNamesSet]
+ * @param {Map<string, Array<{ avatar: string, charName: string, source: string }>>} [params.bindingMap]
+ */
+export function summarizePersonaWorldBindings({
+    powerUserSettings,
+    worldNamesSet = new Set(),
+    bindingMap = new Map(),
+}) {
+    const descs = powerUserSettings?.persona_descriptions;
+    const names = powerUserSettings?.personas || {};
+    const personaBindings = [];
+    const missingPersonaBindings = [];
+    const personaCharCrossBindings = [];
+    const byWorld = new Map();
+    const seenPid = new Set();
+
+    const recordBinding = (pid, personaName, lorebook) => {
+        const cleanBook = String(lorebook ?? '').trim();
+        if (!cleanBook) return;
+        const missing = worldNamesSet.size > 0 ? !worldNamesSet.has(cleanBook) : false;
+        const charOwners = (bindingMap?.get?.(cleanBook) || []).map((o) => ({
+            avatar: o.avatar,
+            charName: o.charName,
+            source: o.source,
+        }));
+        const item = {
+            pid: String(pid),
+            personaName: String(personaName || pid).trim(),
+            worldName: cleanBook,
+            missing,
+            charOwners,
+        };
+        personaBindings.push(item);
+        if (missing) missingPersonaBindings.push(item);
+        if (charOwners.length > 0) personaCharCrossBindings.push(item);
+
+        let list = byWorld.get(cleanBook);
+        if (!list) {
+            list = [];
+            byWorld.set(cleanBook, list);
+        }
+        list.push(item);
+    };
+
+    if (descs && typeof descs === 'object') {
+        for (const [pid, desc] of Object.entries(descs)) {
+            if (!desc || typeof desc !== 'object') continue;
+            const lorebook = typeof desc.lorebook === 'string' ? desc.lorebook.trim() : '';
+            if (!lorebook) continue;
+            seenPid.add(pid);
+            const baseName = String(names[pid] || pid).trim();
+            const sub = String(desc.title || '').trim();
+            const label = sub ? `${baseName} (${sub})` : baseName;
+            recordBinding(pid, label, lorebook);
+        }
+    }
+
+    const activeBook = typeof powerUserSettings?.persona_description_lorebook === 'string'
+        ? powerUserSettings.persona_description_lorebook.trim()
+        : '';
+    if (activeBook && !personaBindings.some((b) => b.worldName === activeBook)) {
+        recordBinding('__active__', '当前激活人设', activeBook);
+    }
+
+    const sharedPersonaBooks = [];
+    for (const [worldName, items] of byWorld.entries()) {
+        if (items.length > 1) {
+            sharedPersonaBooks.push({
+                worldName,
+                personas: items.map((x) => x.personaName),
+                items,
+            });
+        }
+    }
+
+    return {
+        personaBindings,
+        missingPersonaBindings,
+        personaCharCrossBindings,
+        sharedPersonaBooks,
+        totalBoundCount: personaBindings.length,
+        anomalyCount: missingPersonaBindings.length + personaCharCrossBindings.length,
+    };
+}
+
+/**
  * Generate a collision-free API channel ID.
  * @param {Array<{ id: string }>} existingChannels
  */
@@ -1943,6 +2081,138 @@ export function undoLastAiOrganize(settings) {
 }
 
 /**
+ * Partition AI Organize candidate books by sensitive-title status and active candidate scope
+ * so already-grouped unselected sensitive books never trigger false-alarm warning banners
+ * and "Include/Exclude Sensitive" only toggles books in the active scope.
+ *
+ * @param {object} params
+ * @param {Array<any>} params.allBooks
+ * @param {'ungrouped' | 'nonchar' | 'all'} [params.scope='ungrouped']
+ * @param {Iterable<string>} [params.checkedNames=[]]
+ */
+export function analyzeSensitiveOrganizeState({
+    allBooks = [],
+    scope = 'ungrouped',
+    checkedNames = [],
+}) {
+    const checkedSet = new Set(checkedNames || []);
+    const normalBooks = [];
+    const sensitiveBooks = [];
+    const ungroupedSensitive = [];
+    const groupedSensitive = [];
+    const charSensitive = [];
+
+    for (const b of allBooks || []) {
+        if (!b?.realName) continue;
+        if (isPotentiallySensitiveTitle(b.realName)) {
+            sensitiveBooks.push(b);
+            if (b.isInCharGroup) {
+                charSensitive.push(b);
+            } else if (b.groupId === SPECIAL_GROUPS.UNGROUPED) {
+                ungroupedSensitive.push(b);
+            } else {
+                groupedSensitive.push(b);
+            }
+        } else {
+            normalBooks.push(b);
+        }
+    }
+
+    // Active candidate scope for "Include Sensitive":
+    // - 'ungrouped': ONLY ungrouped sensitive books (never already-grouped or character books)
+    // - 'nonchar': ungrouped sensitive books first; if none ungrouped, non-char grouped sensitive books (never character books)
+    // - 'all': all sensitive books
+    const scopeSensitive = scope === 'all'
+        ? sensitiveBooks
+        : scope === 'nonchar'
+            ? (ungroupedSensitive.length > 0 ? ungroupedSensitive : [...ungroupedSensitive, ...groupedSensitive])
+            : ungroupedSensitive;
+
+    const checkedSensitive = sensitiveBooks.filter((b) => checkedSet.has(b.realName));
+    let bannerMode = 'hidden';
+    if (checkedSensitive.length > 0) {
+        bannerMode = 'danger';
+    } else if (ungroupedSensitive.length > 0 && scope !== 'custom_none') {
+        bannerMode = 'warn';
+    }
+
+    return {
+        normalBooks,
+        sensitiveBooks,
+        ungroupedSensitive,
+        groupedSensitive,
+        charSensitive,
+        scopeSensitive,
+        checkedSensitive,
+        bannerMode,
+    };
+}
+
+/**
+ * Move a list of worldbooks into a named custom group (creating the group if absent),
+ * saving an undo snapshot beforehand.
+ *
+ * @param {Record<string, any>} settings
+ * @param {string[]} bookNames
+ * @param {string} [targetGroupName='NSFW']
+ * @param {{ label?: string, isCharBoundFn?: (name: string) => boolean }} [opts]
+ * @returns {{ movedCount: number, groupId: string, groupName: string, createdGroup: boolean }}
+ */
+export function moveBooksToNamedGroup(
+    settings,
+    bookNames = [],
+    targetGroupName = 'NSFW',
+    { label = '一键归入 NSFW 分组', isCharBoundFn = null } = {},
+) {
+    if (!settings) {
+        return { movedCount: 0, groupId: '', groupName: targetGroupName, createdGroup: false };
+    }
+    const cleanGroupName = String(targetGroupName || '').trim() || 'NSFW';
+    const cleanTargets = [...new Set((bookNames || []).map((n) => String(n ?? '').trim()).filter(Boolean))];
+    if (cleanTargets.length === 0) {
+        return { movedCount: 0, groupId: '', groupName: cleanGroupName, createdGroup: false };
+    }
+
+    if (!Array.isArray(settings.groups)) settings.groups = [];
+    if (!settings.assignments || typeof settings.assignments !== 'object') settings.assignments = {};
+    if (!settings.charBookOverrides || typeof settings.charBookOverrides !== 'object') settings.charBookOverrides = {};
+
+    const key = cleanGroupName.toLowerCase();
+    let targetGroup = settings.groups.find((g) => String(g?.name ?? '').trim().toLowerCase() === key) || null;
+    const toMove = cleanTargets.filter((name) => !targetGroup || settings.assignments[name] !== targetGroup.id);
+    if (toMove.length === 0) {
+        return {
+            movedCount: 0,
+            groupId: targetGroup?.id || '',
+            groupName: targetGroup?.name || cleanGroupName,
+            createdGroup: false,
+        };
+    }
+
+    pushUndoSnapshot(settings, { count: toMove.length, label });
+
+    let createdGroup = false;
+    if (!targetGroup) {
+        targetGroup = addCustomGroup(settings, { name: cleanGroupName });
+        createdGroup = true;
+    }
+
+    for (const name of toMove) {
+        settings.assignments[name] = targetGroup.id;
+        if (typeof isCharBoundFn === 'function' && isCharBoundFn(name)) {
+            settings.charBookOverrides[name] = 'exclude_from_char';
+        }
+    }
+
+    return {
+        movedCount: toMove.length,
+        groupId: targetGroup.id,
+        groupName: targetGroup.name,
+        createdGroup,
+    };
+}
+
+/**
  * Compare two worldbooks' entries by normalized title/keys so users can inspect
  * why a character has multiple bound books and decide which one to keep or unbind.
  * @param {Array<{ title: string, keys?: string[], content?: string }>} entriesA
@@ -2232,6 +2502,19 @@ export const WORLD_ENTRY_POSITIONS = Object.freeze([
 ]);
 
 /**
+ * Parse an optional finite number without coercing `null`, `undefined`, booleans,
+ * or empty/whitespace strings into `0`.
+ * @param {any} val
+ * @returns {number | null}
+ */
+export function parseOptionalFiniteNumber(val) {
+    if (val === null || val === undefined || typeof val === 'boolean') return null;
+    if (typeof val === 'string' && val.trim() === '') return null;
+    const n = Number(val);
+    return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Normalize comma / Chinese-comma / newline separated entry keywords into a clean deduplicated array.
  * @param {string | string[]} raw
  * @returns {string[]}
@@ -2275,9 +2558,12 @@ export function extractEntryListItems(payload) {
         const disable = Boolean(e.disable);
         const constant = Boolean(e.constant);
         const selective = e.selective !== undefined ? Boolean(e.selective) : !constant;
-        const position = Number.isInteger(Number(e.position)) ? Number(e.position) : 0;
-        const depth = Number.isFinite(Number(e.depth)) ? Number(e.depth) : 4;
-        const order = Number.isFinite(Number(e.order)) ? Number(e.order) : 100;
+        const posNum = parseOptionalFiniteNumber(e.position);
+        const position = posNum !== null && Number.isInteger(posNum) ? posNum : 0;
+        const depthNum = parseOptionalFiniteNumber(e.depth);
+        const depth = depthNum !== null ? depthNum : 4;
+        const orderNum = parseOptionalFiniteNumber(e.order);
+        const order = orderNum !== null ? orderNum : 100;
         const searchText = [comment, ...keys, ...keysecondary].join('\n').toLowerCase();
         return {
             uid,
@@ -2319,6 +2605,9 @@ export function extractSingleEntryForEdit(payload, uid) {
     }
     if (!raw) return null;
     const constant = Boolean(raw.constant);
+    const posNum = parseOptionalFiniteNumber(raw.position);
+    const depthNum = parseOptionalFiniteNumber(raw.depth);
+    const orderNum = parseOptionalFiniteNumber(raw.order);
     return {
         uid: String(raw.uid ?? targetUid),
         comment: String(raw.comment ?? ''),
@@ -2327,9 +2616,9 @@ export function extractSingleEntryForEdit(payload, uid) {
         selective: raw.selective !== undefined ? Boolean(raw.selective) : !constant,
         key: Array.isArray(raw.key) ? raw.key.map((k) => String(k ?? '').trim()).filter(Boolean) : [],
         keysecondary: Array.isArray(raw.keysecondary) ? raw.keysecondary.map((k) => String(k ?? '').trim()).filter(Boolean) : [],
-        position: Number.isInteger(Number(raw.position)) ? Number(raw.position) : 0,
-        depth: Number.isFinite(Number(raw.depth)) ? Number(raw.depth) : 4,
-        order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 100,
+        position: posNum !== null && Number.isInteger(posNum) ? posNum : 0,
+        depth: depthNum !== null ? depthNum : 4,
+        order: orderNum !== null ? orderNum : 100,
         content: String(raw.content ?? ''),
     };
 }
@@ -2367,13 +2656,12 @@ export function mergeEntryPatchOntoRaw(rawEntry, patch = {}) {
         next.disable = Boolean(patch.disable);
     }
     if (patch.constant !== undefined) {
+        const prevConstant = Boolean(base.constant);
         next.constant = Boolean(patch.constant);
         if (patch.selective !== undefined) {
             next.selective = Boolean(patch.selective);
-        } else if (next.constant) {
-            next.selective = false;
-        } else {
-            next.selective = true;
+        } else if (next.constant !== prevConstant) {
+            next.selective = !next.constant;
         }
     } else if (patch.selective !== undefined) {
         next.selective = Boolean(patch.selective);
@@ -2385,16 +2673,16 @@ export function mergeEntryPatchOntoRaw(rawEntry, patch = {}) {
         next.keysecondary = normalizeEntryKeywordsInput(patch.keysecondary);
     }
     if (patch.position !== undefined) {
-        const pos = Number(patch.position);
-        next.position = Number.isInteger(pos) && pos >= 0 && pos <= 7 ? pos : (base.position ?? 0);
+        const pos = parseOptionalFiniteNumber(patch.position);
+        next.position = pos !== null && Number.isInteger(pos) && pos >= 0 && pos <= 7 ? pos : (base.position ?? 0);
     }
     if (patch.depth !== undefined) {
-        const d = Number(patch.depth);
-        next.depth = Number.isFinite(d) && d >= 0 ? Math.round(d) : (base.depth ?? 4);
+        const d = parseOptionalFiniteNumber(patch.depth);
+        next.depth = d !== null && d >= 0 ? Math.round(d) : (base.depth ?? 4);
     }
     if (patch.order !== undefined) {
-        const ord = Number(patch.order);
-        next.order = Number.isFinite(ord) ? Math.round(ord) : (base.order ?? 100);
+        const ord = parseOptionalFiniteNumber(patch.order);
+        next.order = ord !== null ? Math.round(ord) : (base.order ?? 100);
     }
     if (patch.content !== undefined) {
         next.content = String(patch.content);

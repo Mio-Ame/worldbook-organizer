@@ -11,6 +11,7 @@ import {
     SPECIAL_GROUPS,
     WORLD_ENTRY_POSITIONS,
     addCustomGroup,
+    analyzeSensitiveOrganizeState,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
     buildCharBooksCountMap,
@@ -28,6 +29,7 @@ import {
     deepClone,
     detectAiRefusal,
     exportConfigData,
+    extractEmbeddedCharacterBookPreview,
     extractEntryListItems,
     extractSingleEntryForEdit,
     findCardsWithUnimportedBooks,
@@ -41,10 +43,12 @@ import {
     matchesSearch,
     mergeEntryPatchOntoRaw,
     migrateSettingsOnWorldRename,
+    moveBooksToNamedGroup,
     moveSectionOrder,
     normalizeEntryKeywordsInput,
     normalizeSettings,
     parseAiOrganizeResponse,
+    parseOptionalFiniteNumber,
     promoteSectionToTop,
     pruneStaleWorldbookSettings,
     pushUndoSnapshot,
@@ -52,6 +56,7 @@ import {
     restoreOrganizeSnapshot,
     searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
+    summarizePersonaWorldBindings,
     togglePinnedBook,
     undoLastAiOrganize,
     updateCachedCharBindings,
@@ -1292,4 +1297,276 @@ test('single-entry direct edit patch preserves 100% of undisplayed native and un
         if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
         if (prevFetch === undefined) delete globalThis.fetch; else globalThis.fetch = prevFetch;
     }
+});
+
+test('null/empty numeric coercion guards and selective flag preservation hold across extract and merge', () => {
+    assert.equal(parseOptionalFiniteNumber(null), null);
+    assert.equal(parseOptionalFiniteNumber(undefined), null);
+    assert.equal(parseOptionalFiniteNumber(''), null);
+    assert.equal(parseOptionalFiniteNumber('   '), null);
+    assert.equal(parseOptionalFiniteNumber(false), null);
+    assert.equal(parseOptionalFiniteNumber(0), 0);
+    assert.equal(parseOptionalFiniteNumber('0'), 0);
+    assert.equal(parseOptionalFiniteNumber('4'), 4);
+
+    // depth: null -> 4, order: null -> 100 while explicit 0 remains 0
+    const nullPayload = {
+        entries: {
+            0: { uid: 0, comment: 'NullNum', position: null, depth: null, order: null, constant: false, selective: false },
+            1: { uid: 1, comment: 'ZeroNum', position: 0, depth: 0, order: 0, constant: false, selective: false },
+        },
+    };
+    const listNull = extractEntryListItems(nullPayload);
+    assert.equal(listNull.items[0].position, 0);
+    assert.equal(listNull.items[0].depth, 4);
+    assert.equal(listNull.items[0].order, 100);
+    assert.equal(listNull.items[0].selective, false);
+    assert.equal(listNull.items[1].position, 0);
+    assert.equal(listNull.items[1].depth, 0);
+    assert.equal(listNull.items[1].order, 0);
+
+    const editNull = extractSingleEntryForEdit(nullPayload, '0');
+    assert.equal(editNull?.depth, 4);
+    assert.equal(editNull?.order, 100);
+    const editZero = extractSingleEntryForEdit(nullPayload, '1');
+    assert.equal(editZero?.depth, 0);
+    assert.equal(editZero?.order, 0);
+
+    // mergeEntryPatchOntoRaw: null / '' preserve base values, while explicit 0 overrides to 0
+    const base = { uid: 1, position: 4, depth: 5, order: 120, constant: false, selective: false };
+    const preserved = mergeEntryPatchOntoRaw(base, { position: null, depth: '', order: '   ', constant: false, comment: '微调' });
+    assert.equal(preserved.position, 4);
+    assert.equal(preserved.depth, 5);
+    assert.equal(preserved.order, 120);
+    assert.equal(preserved.selective, false);
+
+    const zeroed = mergeEntryPatchOntoRaw(base, { position: 0, depth: 0, order: 0 });
+    assert.equal(zeroed.position, 0);
+    assert.equal(zeroed.depth, 0);
+    assert.equal(zeroed.order, 0);
+});
+
+test('mid-batch realRenameWorldbook rollback succeeds with stale world_names, restores pinnedBooks, and suppresses rolled-back rename events', async () => {
+    const hostMod = await import('../src/host.js');
+    hostMod.clearPendingRenamedEvents();
+
+    const prevST = globalThis.SillyTavern;
+    const prevFetch = globalThis.fetch;
+    const prevWin = globalThis.window;
+    const prevCustomEvent = globalThis.CustomEvent;
+
+    // Simulate faithful SillyTavern semantics: world_names only updates inside updateWorldInfoList()
+    let worldNames = ['BookA', 'BookB', 'KeepBook'];
+    const diskBooks = new Map([
+        ['BookA', { entries: { 0: { uid: 0, comment: 'A0', content: 'bodyA' } } }],
+        ['BookB', { entries: { 0: { uid: 0, comment: 'B0', content: 'bodyB' } } }],
+        ['KeepBook', { entries: { 0: { uid: 0, comment: 'K0', content: 'bodyK' } } }],
+    ]);
+    const emittedEvents = [];
+
+    globalThis.SillyTavern = {
+        getContext: () => ({
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+            getWorldInfoNames: () => [...worldNames],
+            updateWorldInfoList: async () => {
+                worldNames = [...diskBooks.keys()];
+            },
+            extensionSettings: {},
+            saveSettingsDebounced: () => {},
+        }),
+    };
+    globalThis.CustomEvent = class MockCustomEvent {
+        constructor(type, init = {}) {
+            this.type = type;
+            this.detail = init.detail;
+        }
+    };
+    globalThis.window = {
+        dispatchEvent: (ev) => {
+            emittedEvents.push({ type: ev.type, detail: ev.detail });
+            return true;
+        },
+    };
+    globalThis.fetch = async (url, opts) => {
+        const body = opts?.body ? JSON.parse(opts.body) : {};
+        if (url === '/api/worldinfo/get') {
+            const payload = diskBooks.get(body.name);
+            return payload ? { ok: true, json: async () => deepClone(payload) } : { ok: false, status: 404, json: async () => ({}) };
+        }
+        if (url === '/api/worldinfo/edit') {
+            diskBooks.set(body.name, deepClone(body.data));
+            return { ok: true, json: async () => ({}) };
+        }
+        if (url === '/api/worldinfo/delete') {
+            diskBooks.delete(body.name);
+            return { ok: true, json: async () => ({}) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    try {
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '组1', color: '#5b8def' }],
+            assignments: { BookA: 'g1' },
+            pinnedBooks: ['BookA', 'KeepBook'],
+        });
+        const preSnapshot = {
+            groups: deepClone(settings.groups),
+            assignments: deepClone(settings.assignments),
+            aliases: deepClone(settings.aliases),
+            notes: deepClone(settings.notes),
+            charBookOverrides: deepClone(settings.charBookOverrides),
+            cachedCharBindings: deepClone(settings.cachedCharBindings),
+            sectionOrder: deepClone(settings.sectionOrder),
+            undoSnapshots: deepClone(settings.undoSnapshots),
+            pinnedBooks: deepClone(settings.pinnedBooks),
+        };
+        const liveNamesSet = new Set(hostMod.getWorldNames());
+        const completed = [];
+
+        // Forward rename 1 & 2 with deferRefresh: true (ST world_names stays stale!)
+        const r1 = await hostMod.realRenameWorldbook('BookA', 'BookA_New', settings, {
+            deferRefresh: true,
+            existingNamesSet: liveNamesSet,
+        });
+        assert.equal(r1.ok, true);
+        completed.push({ oldName: 'BookA', newName: 'BookA_New' });
+
+        const r2 = await hostMod.realRenameWorldbook('BookB', 'BookB_New', settings, {
+            deferRefresh: true,
+            existingNamesSet: liveNamesSet,
+        });
+        assert.equal(r2.ok, true);
+        completed.push({ oldName: 'BookB', newName: 'BookB_New' });
+
+        // Confirm ST world_names is still stale before flush, while settings.pinnedBooks migrated
+        assert.deepEqual(worldNames, ['BookA', 'BookB', 'KeepBook']);
+        assert.deepEqual(settings.pinnedBooks, ['BookA_New', 'KeepBook']);
+
+        // Mid-batch abort rollback using the liveNamesSet + discardPendingRenamedEventsForRollback
+        const rolledBackPairs = [];
+        for (let i = completed.length - 1; i >= 0; i -= 1) {
+            const pair = completed[i];
+            const rb = await hostMod.realRenameWorldbook(pair.newName, pair.oldName, settings, {
+                deferRefresh: true,
+                existingNamesSet: liveNamesSet,
+            });
+            assert.equal(rb.ok, true, `rollback ${pair.newName} -> ${pair.oldName} failed: ${rb.error}`);
+            rolledBackPairs.push(pair);
+        }
+        const discarded = hostMod.discardPendingRenamedEventsForRollback(rolledBackPairs);
+        assert.equal(discarded, 4);
+
+        settings.pinnedBooks = deepClone(preSnapshot.pinnedBooks);
+        settings.assignments = deepClone(preSnapshot.assignments);
+        await hostMod.flushWorldInfoListRefresh();
+
+        assert.deepEqual([...diskBooks.keys()].sort(), ['BookA', 'BookB', 'KeepBook']);
+        assert.deepEqual(worldNames.sort(), ['BookA', 'BookB', 'KeepBook']);
+        assert.deepEqual(settings.pinnedBooks, ['BookA', 'KeepBook']);
+        assert.equal(emittedEvents.filter((e) => e.type === 'wbo:worldbook-renamed').length, 0);
+
+        // Also verify wbo:entries-updated fires on saveWorldbookEntryPatch & createWorldbookEntryDirect
+        emittedEvents.length = 0;
+        const saveRes = await hostMod.saveWorldbookEntryPatch('BookA', '0', { comment: 'UpdatedA0' });
+        assert.equal(saveRes.ok, true);
+        const createRes = await hostMod.createWorldbookEntryDirect('BookA', { comment: 'NewA1' });
+        assert.equal(createRes.ok, true);
+        const entryUpdatedEvents = emittedEvents.filter((e) => e.type === 'wbo:entries-updated');
+        assert.equal(entryUpdatedEvents.length, 2);
+        assert.deepEqual(entryUpdatedEvents[0].detail, { worldName: 'BookA' });
+        assert.deepEqual(entryUpdatedEvents[1].detail, { worldName: 'BookA' });
+    } finally {
+        hostMod.clearPendingRenamedEvents();
+        if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
+        if (prevFetch === undefined) delete globalThis.fetch; else globalThis.fetch = prevFetch;
+        if (prevWin === undefined) delete globalThis.window; else globalThis.window = prevWin;
+        if (prevCustomEvent === undefined) delete globalThis.CustomEvent; else globalThis.CustomEvent = prevCustomEvent;
+    }
+});
+
+test('AI organize sensitive partitioning suppresses false alarms on grouped books and 1-click moves ungrouped sensitive books to NSFW', () => {
+    const books = [
+        { realName: '普通世界观', groupId: SPECIAL_GROUPS.UNGROUPED, isInCharGroup: false },
+        { realName: 'nsfw_已归组', groupId: 'grp_nsfw', isInCharGroup: false },
+        { realName: '角色卡_nsfw', groupId: SPECIAL_GROUPS.CHARACTER, isInCharGroup: true },
+    ];
+    // Case 1: Only already-grouped & character sensitive books exist -> NO yellow banner!
+    const groupedOnly = analyzeSensitiveOrganizeState({
+        allBooks: books,
+        scope: 'ungrouped',
+        checkedNames: ['普通世界观'],
+    });
+    assert.equal(groupedOnly.bannerMode, 'hidden');
+    assert.equal(groupedOnly.ungroupedSensitive.length, 0);
+    assert.equal(groupedOnly.scopeSensitive.length, 0);
+
+    // Case 2: Ungrouped sensitive book exists -> bannerMode 'warn', scopeSensitive excludes grouped & char books
+    const withUngrouped = [
+        ...books,
+        { realName: '肉文玩法未分组', groupId: SPECIAL_GROUPS.UNGROUPED, isInCharGroup: false },
+    ];
+    const ungroupedState = analyzeSensitiveOrganizeState({
+        allBooks: withUngrouped,
+        scope: 'ungrouped',
+        checkedNames: ['普通世界观'],
+    });
+    assert.equal(ungroupedState.bannerMode, 'warn');
+    assert.deepEqual(ungroupedState.scopeSensitive.map((b) => b.realName), ['肉文玩法未分组']);
+
+    // Case 3: 1-click move to NSFW auto-creates NSFW group, moves ungrouped sensitive book, and saves undo snapshot
+    const settings = normalizeSettings(null);
+    const moveRes = moveBooksToNamedGroup(settings, ['肉文玩法未分组'], 'NSFW');
+    assert.equal(moveRes.movedCount, 1);
+    assert.equal(moveRes.createdGroup, true);
+    assert.equal(moveRes.groupName, 'NSFW');
+    assert.equal(settings.assignments['肉文玩法未分组'], moveRes.groupId);
+    assert.equal(settings.undoSnapshots.length, 1);
+    assert.equal(undoLastAiOrganize(settings), true);
+    assert.equal(settings.assignments['肉文玩法未分组'], undefined);
+});
+
+test('summarizePersonaWorldBindings and extractEmbeddedCharacterBookPreview report anomalies and V2 embedded entries cleanly', () => {
+    const bindingMap = new Map([
+        ['共用书', [{ avatar: 'Alice.png', charName: 'Alice', source: 'primary' }]],
+    ]);
+    const personaSummary = summarizePersonaWorldBindings({
+        powerUserSettings: {
+            personas: { 'p1.png': '主控甲', 'p2.png': '主控乙' },
+            persona_descriptions: {
+                'p1.png': { lorebook: '已删人设书', title: '现代线' },
+                'p2.png': { lorebook: '共用书', title: '' },
+            },
+        },
+        worldNamesSet: new Set(['共用书']),
+        bindingMap,
+    });
+    assert.equal(personaSummary.totalBoundCount, 2);
+    assert.equal(personaSummary.missingPersonaBindings.length, 1);
+    assert.equal(personaSummary.missingPersonaBindings[0].worldName, '已删人设书');
+    assert.equal(personaSummary.personaCharCrossBindings.length, 1);
+    assert.equal(personaSummary.personaCharCrossBindings[0].personaName, '主控乙');
+    assert.equal(personaSummary.personaCharCrossBindings[0].charOwners[0].charName, 'Alice');
+
+    const embPreview = extractEmbeddedCharacterBookPreview({
+        avatar: 'Alice.png',
+        name: 'Alice',
+        data: {
+            character_book: {
+                name: 'AliceEmbedded',
+                entries: [
+                    { id: 0, comment: '背景', keys: ['alice'], content: '卡内版本', enabled: true, constant: true },
+                    { id: 1, comment: '关闭条', keys: ['off'], content: '停用', enabled: false },
+                ],
+            },
+        },
+    });
+    assert.equal(embPreview?.name, 'AliceEmbedded');
+    assert.equal(embPreview?.total, 2);
+    assert.equal(embPreview?.enabledCount, 1);
+    const diff = compareWorldbookEntries(embPreview?.entries || [], [
+        { title: '背景', keys: ['alice'], content: '本地改版' },
+    ]);
+    assert.equal(diff.modified.length, 1);
+    assert.equal(diff.onlyA.length, 1);
 });

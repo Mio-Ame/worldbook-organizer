@@ -2595,6 +2595,12 @@ details[open] > summary .wbo-details-chev {
     justify-content: flex-end;
 }
 
+.wbo-preview-edit-btn {
+    flex-shrink: 0;
+    font-size: 11px !important;
+    margin-left: 2px;
+}
+
 /* Batch toolbar, segmented AI cards & tabs, inline clue controls, danger & refusal boxes */
 .wbo-batch-bar {
     display: flex;
@@ -3155,8 +3161,9 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-sens-banner {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
+    gap: 6px 8px;
     padding: 7px 10px;
     border-radius: 8px;
     border: 1px solid rgba(217, 119, 6, 0.32);
@@ -3180,8 +3187,8 @@ details[open] > summary .wbo-details-chev {
     color: #c53030;
 }
 
-.wbo-sens-banner > span {
-    flex: 1;
+.wbo-sens-banner > #wbo-sens-banner-text {
+    flex: 1 1 200px;
     min-width: 0;
 }
 
@@ -4940,6 +4947,109 @@ details[open] > summary .wbo-details-chev {
     min-height: 170px !important;
     resize: vertical;
     line-height: 1.5 !important;
+}
+
+.wbo-sens-banner-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.wbo-ai-pick-section {
+    display: flex;
+    flex-direction: column;
+}
+
+.wbo-ai-pick-sec-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
+    background: var(--wbo-bg-elevated);
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-ai-pick-section.is-sensitive .wbo-ai-pick-sec-head {
+    color: var(--wbo-fg);
+    border-top: 1px solid var(--wbo-border);
+}
+
+.wbo-ai-pick-sec-head small {
+    font-weight: 400;
+    opacity: 0.78;
+}
+
+.wbo-cov-subject-badge {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    white-space: nowrap;
+}
+
+.wbo-cov-subject-badge.is-char {
+    background: var(--wbo-surface-hover);
+    border: 1px solid var(--wbo-border);
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-cov-subject-badge.is-persona {
+    background: var(--wbo-accent-soft);
+    border: 1px solid var(--wbo-border-strong);
+    color: var(--wbo-accent);
+}
+
+.wbo-cov-persona-name {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--wbo-fg);
+    word-break: break-word;
+}
+
+.wbo-cov-action-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-surface);
+}
+
+.wbo-cov-action-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wbo-cov-role-note {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--wbo-fg);
+    word-break: break-word;
+}
+
+.wbo-cov-action-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wbo-es-book-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
 }
 
 @media (max-width: 680px) {
