@@ -23,6 +23,7 @@ let _callbacks = null;
 
 /** @type {{ left?: number, top?: number, width: number, height: number } | null} */
 let _sessionManagerModalBox = null;
+let _sessionManagerMobileBox = null;
 
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
 const _previewCache = new Map();
@@ -172,6 +173,9 @@ function bindDrawerSafeBubbleGuard(rootEl) {
 function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) {
     if (!modal || !handleEl) return () => {};
 
+    const isManager = modal.classList.contains('wbo-manager-modal');
+    const fullScreen = modal.querySelector('[data-wbo-fullscreen-btn]');
+    const stableHeight = modal.style.getPropertyValue('--wbo-stable-h');
     let posLeft = 0;
     let posTop = 0;
     let hasFixedPos = false;
@@ -183,6 +187,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     let baseLeft = 0;
     let baseTop = 0;
     let dragW = 0;
+    let dragH = 0;
     let startRect = null;
 
     const getBounds = () => {
@@ -194,6 +199,20 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         const maxW = isMobile ? Math.max(minW, Math.round(vw - 16)) : Math.max(minW, vw);
         const maxH = isMobile ? Math.max(minH, Math.round(vh - 16)) : Math.max(minH, vh);
         return { vw, vh, isMobile, minW, minH, maxW, maxH };
+    };
+
+    const isMobileFloating = () => isManager && modal.classList.contains('is-resized');
+
+    const getMobileArea = ({ vw, vh }) => {
+        const surface = isMobileFloating() ? modal.parentElement : modal;
+        const css = globalThis.getComputedStyle(surface);
+        const inset = (edge) => Math.max(8, Math.ceil(parseFloat(css?.[edge]) || 0));
+        return {
+            left: inset('paddingLeft'),
+            top: inset('paddingTop'),
+            right: vw - inset('paddingRight'),
+            bottom: vh - inset('paddingBottom'),
+        };
     };
 
     const applyFixedPosition = (left, top) => {
@@ -208,28 +227,48 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
     const pinToFixedPosition = () => {
         const { isMobile } = getBounds();
-        if (isMobile || hasFixedPos) return;
+        if (hasFixedPos || (isMobile && !isMobileFloating())) return;
         const rect = modal.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
         applyFixedPosition(rect.left, rect.top);
     };
 
-    const saveManagerBoxSession = () => {
-        if (!modal.classList.contains('wbo-manager-modal') || getBounds().isMobile) return;
-        const r = modal.getBoundingClientRect();
-        if (r.width >= 300 && r.height >= 260) {
-            _sessionManagerModalBox = {
-                left: hasFixedPos ? posLeft : Math.round(r.left),
-                top: hasFixedPos ? posTop : Math.round(r.top),
-                width: Math.round(r.width),
-                height: Math.round(r.height),
-            };
-        }
+    const fitMobileBox = (box, area = getMobileArea(getBounds())) => {
+        const maxW = Math.max(1, area.right - area.left);
+        const maxH = Math.max(1, area.bottom - area.top);
+        const width = Math.round(Math.max(Math.min(310, maxW), Math.min(maxW, box.width)));
+        const height = Math.round(Math.max(Math.min(250, maxH), Math.min(maxH, box.height)));
+        modal.classList.add('is-resized');
+        modal.style.width = `${width}px`;
+        modal.style.height = `${height}px`;
+        modal.style.maxHeight = `${height}px`;
+        modal.style.setProperty('--wbo-stable-h', `${height}px`);
+        applyFixedPosition(
+            Math.max(area.left, Math.min(area.right - width, box.left)),
+            Math.max(area.top, Math.min(area.bottom - height, box.top)),
+        );
     };
 
-    const clampIntoViewport = () => {
+    const saveManagerBoxSession = () => {
+        if (!isManager) return;
+        const { isMobile } = getBounds();
+        const r = modal.getBoundingClientRect();
+        const box = {
+            left: hasFixedPos ? posLeft : Math.round(r.left),
+            top: hasFixedPos ? posTop : Math.round(r.top),
+            width: Math.round(r.width),
+            height: Math.round(r.height),
+        };
+        if (isMobile && isMobileFloating()) _sessionManagerMobileBox = box;
+        if (!isMobile && r.width >= 300 && r.height >= 260) _sessionManagerModalBox = box;
+    };
+
+    const clampIntoViewport = (preferredMobileBox = null) => {
         const { vw, vh, isMobile, minW, minH, maxW, maxH } = getBounds();
-        if (isMobile) return;
+        if (isMobile) {
+            if (isMobileFloating()) fitMobileBox(preferredMobileBox || modal.getBoundingClientRect());
+            return;
+        }
 
         if (modal.classList.contains('is-resized')) {
             const curRect = modal.getBoundingClientRect();
@@ -269,8 +308,10 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
     // Initialize desktop fixed anchoring & optional initial/saved box
     const initBounds = getBounds();
-    if (!initBounds.isMobile) {
-        if (modal.classList.contains('wbo-manager-modal') && _sessionManagerModalBox) {
+    if (initBounds.isMobile) {
+        if (isManager && _sessionManagerMobileBox) fitMobileBox(_sessionManagerMobileBox);
+    } else {
+        if (isManager && _sessionManagerModalBox) {
             const savedW = Math.max(initBounds.minW, Math.min(initBounds.maxW, _sessionManagerModalBox.width));
             const savedH = Math.max(initBounds.minH, Math.min(initBounds.maxH, _sessionManagerModalBox.height));
             modal.classList.add('is-resized');
@@ -303,11 +344,22 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         }
     }
 
+    fullScreen?.addEventListener('click', () => {
+        if (!getBounds().isMobile) return;
+        _sessionManagerMobileBox = null;
+        hasFixedPos = false;
+        modal.classList.remove('is-positioned', 'is-resized');
+        for (const property of ['left', 'top', 'width', 'height', 'max-height', 'transform']) {
+            modal.style.removeProperty(property);
+        }
+        modal.style.setProperty('--wbo-stable-h', stableHeight);
+    });
+
     handleEl.addEventListener('pointerdown', (ev) => {
-        if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+        if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
         const target = ev.target instanceof Element ? ev.target : null;
         if (target?.closest('button, input, select, textarea, a, label, .wbo-resize-edge')) return;
-        if (getBounds().isMobile) return;
+        if (getBounds().isMobile && !isMobileFloating()) return;
 
         pinToFixedPosition();
         dragging = true;
@@ -315,7 +367,9 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         startY = ev.clientY;
         baseLeft = posLeft;
         baseTop = posTop;
-        dragW = modal.getBoundingClientRect().width || 360;
+        const rect = modal.getBoundingClientRect();
+        dragW = rect.width || 360;
+        dragH = rect.height;
         modal.classList.add('is-dragging-modal');
         try { handleEl.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
         ev.preventDefault();
@@ -323,7 +377,17 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
     handleEl.addEventListener('pointermove', (ev) => {
         if (!dragging) return;
-        const { vw, vh } = getBounds();
+        const bounds = getBounds();
+        if (bounds.isMobile) {
+            if (!isMobileFloating()) return;
+            const area = getMobileArea(bounds);
+            applyFixedPosition(
+                Math.max(area.left, Math.min(area.right - dragW, baseLeft + ev.clientX - startX)),
+                Math.max(area.top, Math.min(area.bottom - dragH, baseTop + ev.clientY - startY)),
+            );
+            return;
+        }
+        const { vw, vh } = bounds;
         const visibleHeaderMin = Math.min(100, Math.max(56, Math.round(dragW * 0.35)));
         const minLeft = -(dragW - visibleHeaderMin);
         const maxLeft = vw - visibleHeaderMin;
@@ -344,7 +408,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     handleEl.addEventListener('pointerup', endDrag);
     handleEl.addEventListener('pointercancel', endDrag);
 
-    // 8 invisible natural edge & corner resize hotzones (hidden on mobile & prompt modals via CSS)
+    // Eight desktop resize edges, with the bottom-right edge also used by the touch grip.
     const resizeDirs = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
     if (!modal.classList.contains('wbo-prompt-modal')) {
         for (const dir of resizeDirs) {
@@ -352,11 +416,12 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
             const edge = document.createElement('div');
             edge.className = `wbo-resize-edge wbo-resize-${dir}`;
             edge.setAttribute('data-resize-dir', dir);
+            if (isManager && dir === 'se') edge.title = '拖动调整窗口大小';
             modal.appendChild(edge);
 
             edge.addEventListener('pointerdown', (ev) => {
-                if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-                if (getBounds().isMobile) return;
+                if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
+                if (getBounds().isMobile && (!isManager || dir !== 'se')) return;
                 ev.stopPropagation();
                 ev.preventDefault();
                 pinToFixedPosition();
@@ -379,9 +444,23 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
             edge.addEventListener('pointermove', (ev) => {
                 if (!resizing || resizeDir !== dir || !startRect) return;
-                const { vw, vh, minW, minH, maxW, maxH } = getBounds();
+                const bounds = getBounds();
                 const dxPtr = ev.clientX - startX;
                 const dyPtr = ev.clientY - startY;
+                if (bounds.isMobile) {
+                    if (!isManager || dir !== 'se' || (!isMobileFloating() && dxPtr >= -4 && dyPtr >= -4)) return;
+                    const area = getMobileArea(bounds);
+                    const left = Math.max(area.left, startRect.left);
+                    const top = Math.max(area.top, startRect.top);
+                    fitMobileBox({
+                        left,
+                        top,
+                        width: Math.min(area.right - left, startRect.width + dxPtr),
+                        height: Math.min(area.bottom - top, startRect.height + dyPtr),
+                    }, area);
+                    return;
+                }
+                const { vw, vh, minW, minH, maxW, maxH } = bounds;
 
                 let nextLeft = startRect.left;
                 let nextTop = startRect.top;
@@ -434,7 +513,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const onViewportChange = () => {
         if (!modal.isConnected) return;
         const { isMobile } = getBounds();
-        if (isMobile) {
+        if (isMobile && !isMobileFloating()) {
             hasFixedPos = false;
             modal.classList.remove('is-positioned');
             modal.style.left = '';
@@ -443,7 +522,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
             return;
         }
         pinToFixedPosition();
-        clampIntoViewport();
+        clampIntoViewport(isMobile && !dragging && !resizing ? _sessionManagerMobileBox : null);
     };
     globalThis.addEventListener('resize', onViewportChange);
     globalThis.addEventListener('orientationchange', onViewportChange);

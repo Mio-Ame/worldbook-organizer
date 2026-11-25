@@ -58,6 +58,46 @@ function renderModifiedEntriesTable(rows, leftLabel, rightLabel) {
         </div>`;
 }
 
+function renderWorldbookDiff(drawer, diff, leftLabel, rightLabel) {
+    const renderUnique = (label, entries) => `
+        <div class="wbo-diff-col">
+            <div class="wbo-diff-col-head">${esc(label)}独有（${entries.length} 条）</div>
+            <div class="wbo-diff-chips">
+                ${entries.length ? entries.map((entry, i) => `<span class="wbo-tag"${i >= 16 ? ' data-diff-extra hidden' : ''}>${esc(entry.title)}</span>`).join('') : '<span class="wbo-subtle-tip">无独有条目</span>'}
+                ${entries.length > 16 ? `<button type="button" class="wbo-link-btn wbo-diff-more-btn" data-expand-diff-chips>展开其余 ${entries.length - 16} 条</button>` : ''}
+            </div>
+        </div>
+    `;
+    drawer.innerHTML = `
+        <div class="wbo-preview-head wbo-cov-drawer-head">
+            <b>对比结果</b>
+            <button type="button" class="wbo-link-btn" data-close-cov-drawer>收起</button>
+        </div>
+        <div class="wbo-diff-summary">
+            <span>条目相同 ${diff.sameCount} 条</span>
+            <span>${esc(leftLabel)}独有 ${diff.onlyA.length} 条</span>
+            <span>${esc(rightLabel)}独有 ${diff.onlyB.length} 条</span>
+            <span>同名但内容不同 ${diff.modified.length} 条</span>
+        </div>
+        <div class="wbo-diff-grid">
+            ${renderUnique(leftLabel, diff.onlyA)}
+            ${renderUnique(rightLabel, diff.onlyB)}
+        </div>
+        ${renderModifiedEntriesTable(diff.modified, leftLabel, rightLabel)}
+    `;
+    drawer.querySelectorAll('[data-expand-diff-chips]').forEach((button) => {
+        button.addEventListener('click', () => {
+            button.closest('.wbo-diff-chips')?.querySelectorAll('[data-diff-extra]').forEach((entry) => { entry.hidden = false; });
+            button.remove();
+        });
+    });
+    drawer.querySelector('[data-close-cov-drawer]')?.addEventListener('click', () => {
+        drawer.hidden = true;
+        drawer.removeAttribute('data-drawer-key');
+    });
+    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
+}
+
 /**
  * Unified Character Worldbook Scan modal with complete accounting for BOTH
  * fewer books (unbound / missing / shared) AND extra books (multi-book chars / orphan extra books).
@@ -612,46 +652,12 @@ function openScanAndImportModal({ initialTab = '' } = {}) {
                     ]);
                     if (!drawer.isConnected || drawer.getAttribute('data-drawer-key') !== key) return;
                     const diff = compareWorldbookEntries(dataA?.entries || [], dataB?.entries || []);
-                    const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0 && diff.modified.length === 0;
-                    const renderTitleChips = (arr, emptyText) => {
-                        if (arr.length === 0) return `<span class="wbo-subtle-tip">${emptyText}</span>`;
-                        const visible = arr.slice(0, 16).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('');
-                        const rest = arr.slice(16).map((x) => `<span class="wbo-tag" data-diff-extra hidden>${esc(x.title)}</span>`).join('');
-                        const moreBtn = arr.length > 16
-                            ? `<button type="button" class="wbo-link-btn wbo-diff-more-btn" data-expand-diff-chips>展开其余 ${arr.length - 16} 条</button>`
-                            : '';
-                        return `${visible}${rest}${moreBtn}`;
-                    };
-
-                    drawer.innerHTML = `
-                        <div class="wbo-preview-head wbo-cov-drawer-head">
-                            <span><b>对比结果</b>：${identical ? '两本书的条目正文一致。' : `相同 ${diff.sameCount} 条 · 仅第 1 本有 ${diff.onlyA.length} 条 · 仅第 2 本有 ${diff.onlyB.length} 条${diff.modified.length > 0 ? ` · 同名但内容不同 ${diff.modified.length} 条` : ''}`}</span>
-                            <button type="button" class="wbo-link-btn" data-close-cov-drawer>收起</button>
-                        </div>
-                        <div class="wbo-diff-grid">
-                            <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅「${esc(bookA)}」有（${diff.onlyA.length} 条）</div>
-                                <div class="wbo-diff-chips">${renderTitleChips(diff.onlyA, '无独有条目')}</div>
-                            </div>
-                            <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅「${esc(bookB)}」有（${diff.onlyB.length} 条）</div>
-                                <div class="wbo-diff-chips">${renderTitleChips(diff.onlyB, '无独有条目')}</div>
-                            </div>
-                        </div>
-                        ${renderModifiedEntriesTable(diff.modified, sameNameComparison ? '角色卡绑定的世界书' : bookA, sameNameComparison ? '同名的世界书' : bookB)}
-                    `;
-                    drawer.querySelectorAll('[data-expand-diff-chips]').forEach((eb) => {
-                        eb.addEventListener('click', () => {
-                            const col = eb.closest('.wbo-diff-chips');
-                            col?.querySelectorAll('[data-diff-extra]').forEach((el) => { el.hidden = false; });
-                            eb.remove();
-                        });
-                    });
-                    drawer.querySelector('[data-close-cov-drawer]')?.addEventListener('click', () => {
-                        drawer.hidden = true;
-                        drawer.removeAttribute('data-drawer-key');
-                    });
-                    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
+                    renderWorldbookDiff(
+                        drawer,
+                        diff,
+                        sameNameComparison ? '角色卡绑定的世界书' : `「${bookA}」`,
+                        sameNameComparison ? '同名未绑定的世界书' : `「${bookB}」`,
+                    );
                 } catch (err) {
                     drawer.innerHTML = `<div class="wbo-preview-loading">对比失败：${esc(err?.message || err)}</div>`;
                 }
@@ -687,46 +693,7 @@ function openScanAndImportModal({ initialTab = '' } = {}) {
                         return;
                     }
                     const diff = compareWorldbookEntries(embPreview.entries || [], localData?.entries || []);
-                    const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0 && diff.modified.length === 0;
-                    const renderTitleChips = (arr, emptyText) => {
-                        if (arr.length === 0) return `<span class="wbo-subtle-tip">${emptyText}</span>`;
-                        const visible = arr.slice(0, 16).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('');
-                        const rest = arr.slice(16).map((x) => `<span class="wbo-tag" data-diff-extra hidden>${esc(x.title)}</span>`).join('');
-                        const moreBtn = arr.length > 16
-                            ? `<button type="button" class="wbo-link-btn wbo-diff-more-btn" data-expand-diff-chips>展开其余 ${arr.length - 16} 条</button>`
-                            : '';
-                        return `${visible}${rest}${moreBtn}`;
-                    };
-
-                    drawer.innerHTML = `
-                        <div class="wbo-preview-head wbo-cov-drawer-head">
-                            <span><b>对比结果</b>：${identical ? '两本书的条目正文一致。' : `内容有差异（相同 ${diff.sameCount} 条 · 仅角色卡自带 ${diff.onlyA.length} 条 · 仅本地这本有 ${diff.onlyB.length} 条${diff.modified.length > 0 ? ` · 同名但内容不同 ${diff.modified.length} 条` : ''}）`}</span>
-                            <button type="button" class="wbo-link-btn" data-close-cov-drawer>收起</button>
-                        </div>
-                        <div class="wbo-diff-grid">
-                            <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">角色卡自带独有（${diff.onlyA.length} 条）</div>
-                                <div class="wbo-diff-chips">${renderTitleChips(diff.onlyA, '无独有条目')}</div>
-                            </div>
-                            <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">本地这本独有（${diff.onlyB.length} 条）</div>
-                                <div class="wbo-diff-chips">${renderTitleChips(diff.onlyB, '无独有条目')}</div>
-                            </div>
-                        </div>
-                        ${renderModifiedEntriesTable(diff.modified, '角色卡内嵌世界书', '同名的世界书')}
-                    `;
-                    drawer.querySelectorAll('[data-expand-diff-chips]').forEach((eb) => {
-                        eb.addEventListener('click', () => {
-                            const col = eb.closest('.wbo-diff-chips');
-                            col?.querySelectorAll('[data-diff-extra]').forEach((el) => { el.hidden = false; });
-                            eb.remove();
-                        });
-                    });
-                    drawer.querySelector('[data-close-cov-drawer]')?.addEventListener('click', () => {
-                        drawer.hidden = true;
-                        drawer.removeAttribute('data-drawer-key');
-                    });
-                    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
+                    renderWorldbookDiff(drawer, diff, '角色卡内嵌世界书', '同名未绑定的世界书');
                 } catch (err) {
                     drawer.innerHTML = `<div class="wbo-preview-loading">对比失败：${esc(err?.message || err)}</div>`;
                 }

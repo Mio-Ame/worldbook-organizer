@@ -32,7 +32,7 @@ import {
     orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -309,7 +309,7 @@ function getEnhancedPopoverOptionText(el) {
 
 function detectEnhancedPopoverRole(containerEl) {
     if (!(containerEl instanceof HTMLElement)) return null;
-    if (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId) return 'global';
+    if (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || containerEl.closest('#WIMultiSelector')) return 'global';
 
     const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
     if (optionNodes.length === 0) {
@@ -536,6 +536,46 @@ export function setCurrentlyEditingWorld(worldName) {
     const clean = worldName ? String(worldName).trim() : null;
     _currentlyEditingWorld = clean;
     if (clean) _pendingClearedEditingWorld = false;
+    if (typeof document !== 'undefined') syncOpenEditingBadges();
+}
+
+function syncOpenEditingBadges() {
+    const active = getCurrentEditorWorldName() || _currentlyEditingWorld;
+    const updateBadge = (actions, current) => {
+        if (!actions) return;
+        const existing = actions.querySelector('[data-wbo-editing-badge]');
+        if (!current) existing?.remove();
+        else if (!existing) {
+            const badge = document.createElement('span');
+            badge.className = 'wbo-s2-badge is-editing';
+            badge.setAttribute('data-wbo-ui', '1');
+            badge.setAttribute('data-wbo-editing-badge', '1');
+            badge.textContent = '当前编辑';
+            actions.insertBefore(badge, actions.firstChild);
+        }
+    };
+    const $ = globalThis.jQuery;
+    const select = document.getElementById('world_editor_select');
+    const dropdown = $ && select ? $(select).data('select2')?.$dropdown?.[0] : null;
+    dropdown?.querySelectorAll('.wbo-s2-item[data-wbo-world]').forEach((row) => {
+        updateBadge(row.querySelector('.wbo-s2-right'), row.getAttribute('data-wbo-world') === active);
+    });
+    document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.querySelectorAll('.wbo-mp-row').forEach((row) => {
+        const current = row.querySelector('[data-mp-world]')?.getAttribute('data-mp-world') === active;
+        row.classList.toggle('is-selected', current);
+        const actions = row.querySelector('.wbo-mp-row-actions');
+        updateBadge(actions, current);
+        const check = actions?.querySelector('.wbo-mp-check');
+        if (!current) check?.remove();
+        else if (!check && actions) {
+            const marker = document.createElement('i');
+            marker.className = 'fa-solid fa-check wbo-mp-check';
+            actions.insertBefore(marker, actions.querySelector('.wbo-mp-pin-btn'));
+        }
+    });
+    document.querySelectorAll('[data-wbo-popover-role="editor"]').forEach((popover) => {
+        if (!popover.hidden && popover.style.display !== 'none') scheduleContainerReEnhance(popover);
+    });
 }
 
 /**
@@ -568,6 +608,17 @@ function customSelect2Matcher(params, data) {
     return tokens.every((tok) => haystack.includes(tok)) ? data : null;
 }
 
+function matchesGlobalDropdownGroup(meta, groupId) {
+    if (groupId === SPECIAL_GROUPS.ALL) return true;
+    if (groupId === SPECIAL_GROUPS.PINNED) return Boolean(meta?.isPinned);
+    return meta?.groupId === groupId;
+}
+
+function globalSelect2Matcher(params, data) {
+    const meta = _latestClassification?.byName?.get(String(data.text ?? '').trim());
+    return matchesGlobalDropdownGroup(meta, _activeGlobalPillId) ? customSelect2Matcher(params, data) : null;
+}
+
 /**
  * Build Select2 `templateResult` DOM node showing clean alias/character name,
  * optional muted original author title, group pill, and optional `当前编辑` badge.
@@ -584,13 +635,7 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
     if (!$) return state.text;
 
     const hasCustomGroups = (_latestClassification?.customGroups?.length || 0) > 0;
-    const isEditing = Boolean(
-        showEditingBadge &&
-        (state.selected ||
-            state.element?.selected ||
-            state.element?.dataset?.wboEditing === '1' ||
-            (_currentlyEditingWorld && realName === _currentlyEditingWorld)),
-    );
+    const isEditing = showEditingBadge && realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
     const editingBadge = isEditing
         ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>'
         : '';
@@ -986,7 +1031,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 
     if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
         const patched = patchExistingSelect2InPlace($select, {
-            matcher: customSelect2Matcher,
+            matcher: globalSelect2Matcher,
             templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
         });
         if (patched) {
@@ -1049,7 +1094,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         const isActiveEditing = prevSelectedName !== ''
             ? realName === prevSelectedName
             : Boolean(opt.selected || (prevValue !== '' && opt.value === prevValue) || (_currentlyEditingWorld && realName === _currentlyEditingWorld));
-        const isEditing = Boolean(isActiveEditing || (_currentlyEditingWorld && realName === _currentlyEditingWorld));
+        const isEditing = isActiveEditing;
         const isCurrentChatCharBook = Boolean(
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
@@ -1545,7 +1590,6 @@ function openMobileEditorPickerSheet() {
             : SPECIAL_GROUPS.ALL;
     _dropdownMemory.activePillGroupId = activePillId;
     let searchQuery = '';
-    let pillsExpanded = false;
 
     const overlay = document.createElement('div');
     overlay.id = MOBILE_PICKER_OVERLAY_ID;
@@ -1578,6 +1622,12 @@ function openMobileEditorPickerSheet() {
     document.body.appendChild(overlay);
     triggerEl.classList.add('is-open');
 
+    const scrollRestoreTimers = [];
+    let restoringScroll = true;
+    const cancelScrollRestore = () => {
+        restoringScroll = false;
+        while (scrollRestoreTimers.length) clearTimeout(scrollRestoreTimers.pop());
+    };
     let initialVw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     let lockedOpenAbove = null;
 
@@ -1668,6 +1718,7 @@ function openMobileEditorPickerSheet() {
     };
 
     const closePicker = () => {
+        cancelScrollRestore();
         if (_closeMobileEditorPicker === closePicker) {
             _closeMobileEditorPicker = null;
         }
@@ -1717,6 +1768,7 @@ function openMobileEditorPickerSheet() {
 
     const pillsEl = popover.querySelector('#wbo-mp-pills');
     const expandBtn = popover.querySelector('#wbo-mp-expand');
+    const syncExpand = bindDropdownPillsExpansion(pillsEl, expandBtn);
     const searchInput = popover.querySelector('#wbo-mp-search');
     const listEl = popover.querySelector('#wbo-mp-list');
 
@@ -1758,22 +1810,12 @@ function openMobileEditorPickerSheet() {
                 <span class="wbo-pill-count">${p.count}</span>
             </button>
         `).join('');
-        if (expandBtn instanceof HTMLElement) {
-            if (pillsExpanded) {
-                expandBtn.hidden = false;
-            } else {
-                expandBtn.hidden = true;
-                requestAnimationFrame(() => {
-                    if (!pillsEl.isConnected || pillsExpanded) return;
-                    expandBtn.hidden = !(pillsEl.scrollWidth > pillsEl.clientWidth + 2);
-                });
-            }
-        }
+        syncExpand();
     };
 
     const renderMpRowHtml = (b) => {
         const optVal = optValueByRealName.get(b.realName) || '';
-        const isCurrent = (optVal !== '' && optVal === currentSelectedVal) || (Boolean(activeEditName) && b.realName === activeEditName);
+        const isCurrent = b.realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
         const isPinned = Boolean(b.isPinned);
         return `
             <div class="wbo-mp-row${isCurrent ? ' is-selected' : ''}">
@@ -1858,12 +1900,6 @@ function openMobileEditorPickerSheet() {
     };
 
     popover.querySelector('#wbo-mp-clear')?.addEventListener('click', () => selectOptionValue(''));
-
-    expandBtn?.addEventListener('click', () => {
-        pillsExpanded = !pillsExpanded;
-        pillsEl?.classList.toggle('is-expanded', pillsExpanded);
-        expandBtn.innerHTML = `<i class="fa-solid ${pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
-    });
 
     pillsEl?.addEventListener('click', (ev) => {
         const btn = ev.target instanceof Element ? ev.target.closest('[data-mp-pill]') : null;
@@ -1972,6 +2008,7 @@ function openMobileEditorPickerSheet() {
                     }
                 }
             }
+            if (val !== '' && listEl) rememberEditorListAnchor(realName, rowBtn.closest('.wbo-mp-row'), listEl, activePillId);
             selectOptionValue(val);
         }
     });
@@ -1997,10 +2034,16 @@ function openMobileEditorPickerSheet() {
     renderPills();
     renderList();
     if (listEl) {
-        const savedTop = _dropdownMemory.scrollTopByGroup[activePillId];
-        if (typeof savedTop === 'number' && savedTop > 0) {
-            requestAnimationFrame(() => { listEl.scrollTop = savedTop; });
-        }
+        const restore = () => {
+            if (!restoringScroll) return;
+            restoreEditorListPosition(listEl, activePillId, (name) =>
+                listEl.querySelector(`[data-mp-world="${CSS.escape(name)}"]`)?.closest('.wbo-mp-row'));
+        };
+        popover.addEventListener('pointerdown', cancelScrollRestore, { capture: true, once: true });
+        popover.addEventListener('wheel', cancelScrollRestore, { passive: true, once: true });
+        searchInput?.addEventListener('input', cancelScrollRestore, { once: true });
+        requestAnimationFrame(restore);
+        for (const delay of [35, 110, 220]) scrollRestoreTimers.push(setTimeout(restore, delay));
     }
 }
 
@@ -2660,7 +2703,6 @@ function attachGroupedSelectControl(
         });
         let activePillId = SPECIAL_GROUPS.ALL;
         let searchQuery = '';
-        let pillsExpanded = false;
 
         // CRITICAL: mount inside `<dialog>` when inside SillyTavern's native Popup so we stay in top-layer!
         const mountRoot = selectEl.closest('dialog') || document.body;
@@ -2792,6 +2834,7 @@ function attachGroupedSelectControl(
 
         const pillsEl = popover.querySelector('#wbo-pop-pills');
         const expandBtn = popover.querySelector('#wbo-pop-expand');
+        const syncExpand = bindDropdownPillsExpansion(pillsEl, expandBtn);
         const clearBtn = popover.querySelector('#wbo-pop-clear');
         const searchInput = popover.querySelector('#wbo-pop-search');
         const listEl = popover.querySelector('#wbo-pop-list');
@@ -2834,17 +2877,7 @@ function attachGroupedSelectControl(
                     <span class="wbo-pill-count">${p.count}</span>
                 </button>
             `).join('');
-            if (expandBtn instanceof HTMLElement) {
-                if (pillsExpanded) {
-                    expandBtn.hidden = false;
-                } else {
-                    expandBtn.hidden = true;
-                    requestAnimationFrame(() => {
-                        if (!pillsEl.isConnected || pillsExpanded) return;
-                        expandBtn.hidden = !(pillsEl.scrollWidth > pillsEl.clientWidth + 2);
-                    });
-                }
-            }
+            syncExpand();
         };
 
         const renderPopRowHtml = (b, selectedSet) => {
@@ -2957,12 +2990,6 @@ function attachGroupedSelectControl(
                 fireSelectChange();
                 closePopover();
             }
-        });
-
-        expandBtn?.addEventListener('click', () => {
-            pillsExpanded = !pillsExpanded;
-            pillsEl?.classList.toggle('is-expanded', pillsExpanded);
-            expandBtn.innerHTML = `<i class="fa-solid ${pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
         });
 
         pillsEl?.addEventListener('click', (ev) => {
@@ -3427,7 +3454,37 @@ const _dropdownMemory = {
     pillsExpanded: false,
     /** @type {Record<string, number>} */
     scrollTopByGroup: {},
+    editorAnchor: null,
 };
+
+function rememberEditorListAnchor(name, row, host, groupId) {
+    if (!name || !row || !host.clientHeight) return;
+    const rowRect = row.getBoundingClientRect();
+    if (!rowRect.height) return;
+    const scrollHost = findScrollableListEl(row.parentElement, host);
+    _dropdownMemory.editorAnchor = {
+        name,
+        groupId,
+        outerTop: host.scrollTop,
+        offset: rowRect.top - scrollHost.getBoundingClientRect().top,
+    };
+}
+
+function restoreEditorListPosition(host, groupId, findRow) {
+    if (!host.isConnected || !host.clientHeight) return;
+    const anchor = _dropdownMemory.editorAnchor;
+    if (anchor?.groupId === groupId && anchor.name === getCurrentEditorWorldName()) {
+        const row = findRow(anchor.name);
+        if (row?.getBoundingClientRect().height) {
+            const scrollHost = findScrollableListEl(row.parentElement, host);
+            if (scrollHost !== host) host.scrollTop = anchor.outerTop;
+            scrollHost.scrollTop += row.getBoundingClientRect().top - scrollHost.getBoundingClientRect().top - anchor.offset;
+            return;
+        }
+    }
+    const savedTop = _dropdownMemory.scrollTopByGroup[groupId];
+    if (typeof savedTop === 'number') host.scrollTop = savedTop;
+}
 
 /**
  * Locate the actual vertically scrollable container starting at `startEl` up to `boundaryEl`.
@@ -3473,12 +3530,13 @@ function findScrollableListEl(startEl, boundaryEl) {
  */
 function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '') {
     const barEl = document.createElement('div');
-    barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}${_dropdownMemory.pillsExpanded ? ' is-expanded' : ''}`;
+    barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}`;
 
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
     allBtn.className = `wbo-dd-pill is-pinned-all${activePillGroupId === SPECIAL_GROUPS.ALL ? ' is-active' : ''}`;
     allBtn.setAttribute('data-wbo-pill', SPECIAL_GROUPS.ALL);
+    allBtn.setAttribute('aria-pressed', String(activePillGroupId === SPECIAL_GROUPS.ALL));
     allBtn.textContent = '全部';
 
     const divider = document.createElement('span');
@@ -3488,7 +3546,7 @@ function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '')
     const scrollEl = document.createElement('div');
     scrollEl.className = 'wbo-dd-pill-scroll';
     scrollEl.innerHTML = groupItems
-        .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
+        .map((p) => `<button type="button" class="wbo-dd-pill${p.id === activePillGroupId ? ' is-active' : ''}" aria-pressed="${p.id === activePillGroupId}" data-wbo-pill="${escHtml(p.id)}">${escHtml(p.label)}</button>`)
         .join('');
 
     scrollEl.addEventListener('wheel', (ev) => {
@@ -3501,23 +3559,61 @@ function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '')
     const expandBtn = document.createElement('button');
     expandBtn.type = 'button';
     expandBtn.className = 'wbo-dd-expand-btn';
-    expandBtn.title = _dropdownMemory.pillsExpanded ? '收起为单行' : '展开查看全部分组';
-    expandBtn.innerHTML = `<i class="fa-solid ${_dropdownMemory.pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
-    expandBtn.addEventListener('mousedown', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-    });
-    expandBtn.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        _dropdownMemory.pillsExpanded = !_dropdownMemory.pillsExpanded;
-        barEl.classList.toggle('is-expanded', _dropdownMemory.pillsExpanded);
-        expandBtn.title = _dropdownMemory.pillsExpanded ? '收起为单行' : '展开查看全部分组';
-        expandBtn.innerHTML = `<i class="fa-solid ${_dropdownMemory.pillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
-    });
-
+    expandBtn.hidden = true;
+    expandBtn.innerHTML = '<i class="fa-solid fa-chevron-down" aria-hidden="true"></i>';
     barEl.append(allBtn, divider, scrollEl, expandBtn);
+    bindDropdownPillsExpansion(scrollEl, expandBtn, { expandedEl: barEl, remember: true });
     return { barEl, scrollEl };
+}
+
+function bindDropdownPillsExpansion(pills, button, { expandedEl = pills, remember = false } = {}) {
+    if (!pills || !button) return () => {};
+    let preferExpanded = false;
+    button.hidden = true;
+    const sync = () => {
+        if (!pills.isConnected || !pills.clientWidth) return;
+        const { scrollLeft, scrollTop } = pills;
+        expandedEl.classList.remove('is-expanded');
+        button.style.position = 'absolute';
+        const overflows = pills.scrollWidth > pills.clientWidth;
+        button.style.removeProperty('position');
+        const expanded = overflows && (remember ? _dropdownMemory.pillsExpanded : preferExpanded);
+        button.hidden = !overflows;
+        button.title = expanded ? '收起为单行' : '展开查看所有分组';
+        button.setAttribute('aria-expanded', String(expanded));
+        const icon = button.querySelector('i');
+        if (icon) icon.className = expanded ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down';
+        expandedEl.classList.toggle('is-expanded', expanded);
+        if (expanded) pills.scrollTop = scrollTop;
+        else pills.scrollLeft = scrollLeft;
+    };
+    button.addEventListener('mousedown', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+    });
+    button.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (button.hidden) return;
+        preferExpanded = !expandedEl.classList.contains('is-expanded');
+        if (remember) _dropdownMemory.pillsExpanded = preferExpanded;
+        sync();
+    });
+    if (typeof globalThis.ResizeObserver === 'function') {
+        const pillsObserver = new MutationObserver(sync);
+        const sizeObserver = new globalThis.ResizeObserver(() => {
+            if (pills.isConnected) sync();
+            else {
+                sizeObserver.disconnect();
+                pillsObserver.disconnect();
+            }
+        });
+        pillsObserver.observe(pills, { childList: true });
+        sizeObserver.observe(pills);
+    } else {
+        requestAnimationFrame(sync);
+    }
+    return sync;
 }
 
 /**
@@ -3804,9 +3900,11 @@ function enhanceOpenEditorDropdown() {
     };
     const onOptionPointerDown = (ev) => {
         const t = ev.target instanceof Element ? ev.target : null;
-        if (t?.closest('.select2-results__option:not(.select2-results__option--group)')) {
+        const row = t?.closest('.select2-results__option:not(.select2-results__option--group)');
+        if (row && !t.closest('.wbo-s2-pin-btn')) {
             cancelRestore();
             saveCurrentScroll();
+            rememberEditorListAnchor(getDropdownOptionWorldName(row), row, getScrollHost(), activePillGroupId);
         }
     };
     scrollHost.addEventListener('scroll', onResultsScroll, { passive: true });
@@ -3836,13 +3934,8 @@ function enhanceOpenEditorDropdown() {
         if (pillScrollEl && pillScrollEl.clientWidth > 0) {
             pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
         }
-        const savedTop = _dropdownMemory.scrollTopByGroup[activePillGroupId];
-        if (typeof savedTop === 'number' && savedTop > 0) {
-            const host = getScrollHost();
-            if (host.clientHeight > 0) {
-                host.scrollTop = savedTop;
-            }
-        }
+        restoreEditorListPosition(getScrollHost(), activePillGroupId, (name) =>
+            resultsList.querySelector(`[data-wbo-world="${CSS.escape(name)}"]`)?.closest('.select2-results__option'));
     };
 
     restoreTimers.push(
@@ -3897,133 +3990,121 @@ function cleanupOpenGlobalDropdown() {
 }
 
 /**
- * Enhance `#world_info` (Global Worldbooks multiselect) Select2 dropdown with:
- * - Bubble guard so clicking inside never collapses ST's drawer
- * - In-place `☆/★` pin button interception without closing/selecting
- * - Compact `全部 | ★ 已置顶` filter bar when pinned books exist
+ * Decorate the open global Select2 dropdown without changing its options or search field.
  */
 function enhanceOpenGlobalDropdown() {
     cleanupOpenGlobalDropdown();
     const $ = globalThis.jQuery;
     const globalSel = document.getElementById('world_info');
-    if (!$ || !globalSel || !_latestSettings) return;
+    if (!$ || !globalSel || !_latestClassification) return;
 
     const inst = $(globalSel).data('select2');
     const dropdownEl = inst?.$dropdown?.[0];
     if (!(dropdownEl instanceof HTMLElement)) return;
+    const resultsList = dropdownEl.querySelector('.select2-results__options');
+    const resultsWrap = dropdownEl.querySelector('.select2-results');
+    if (!(resultsList instanceof HTMLElement) || !resultsWrap?.parentElement) return;
     bindDrawerSafeBubbleGuard(dropdownEl);
 
-    const resultsList = dropdownEl.querySelector('.select2-results__options');
-    if (!(resultsList instanceof HTMLElement)) return;
-
-    const getOptWorldName = (li) => {
-        const s2Item = li.querySelector('.wbo-s2-item');
-        return s2Item?.getAttribute('data-wbo-world')
-            || li.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
-            || (li.textContent || '').trim();
-    };
-
-    const getPinnedCount = () => {
-        let cnt = 0;
-        globalSel.querySelectorAll('option').forEach((opt) => {
-            const name = (opt.textContent || '').trim();
-            if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
-        });
-        return cnt;
-    };
-
-    if (_activeGlobalPillId === SPECIAL_GROUPS.PINNED && getPinnedCount() === 0) {
-        _activeGlobalPillId = SPECIAL_GROUPS.ALL;
-    }
-
-    const searchField = globalSel.parentElement?.querySelector('.select2-search__field');
-    const isSearching = () => searchField instanceof HTMLInputElement && searchField.value.trim().length > 0;
-
-    const syncPinFilter = () => {
-        const pinOnly = !isSearching() && _activeGlobalPillId === SPECIAL_GROUPS.PINNED;
-        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((optLi) => {
-            if (!pinOnly) {
-                optLi.classList.remove('wbo-dd-pin-hidden');
-                return;
-            }
-            const name = getOptWorldName(optLi);
-            const pinned = Boolean(name && _latestClassification?.byName?.get(name)?.isPinned);
-            optLi.classList.toggle('wbo-dd-pin-hidden', !pinned);
-        });
-    };
-
-    let barEl = null;
-    const syncBar = () => {
-        const cnt = getPinnedCount();
-        if (!barEl && (cnt > 0 || _activeGlobalPillId === SPECIAL_GROUPS.PINNED)) {
-            const built = createDropdownFilterBar(
-                [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${cnt}` }],
-                _activeGlobalPillId,
-                'wbo-global-dd-bar',
-            );
-            barEl = built.barEl;
-            barEl.addEventListener('mousedown', (ev) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-            });
-            barEl.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
-                if (!btn) return;
-                ev.preventDefault();
-                const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
-                _activeGlobalPillId = (gid === _activeGlobalPillId && gid !== SPECIAL_GROUPS.ALL)
-                    ? SPECIAL_GROUPS.ALL
-                    : gid;
-                barEl.querySelectorAll('.wbo-dd-pill').forEach((b) => {
-                    b.classList.toggle('is-active', b.getAttribute('data-wbo-pill') === _activeGlobalPillId);
-                });
-                syncPinFilter();
-            });
-            const resultsWrap = dropdownEl.querySelector('.select2-results');
-            if (resultsWrap && resultsWrap.parentElement) {
-                resultsWrap.parentElement.insertBefore(barEl, resultsWrap);
-            }
-        } else if (barEl) {
-            const pinPill = barEl.querySelector(`[data-wbo-pill="${SPECIAL_GROUPS.PINNED}"]`);
-            if (pinPill) pinPill.textContent = `★ 已置顶 ${cnt}`;
-            barEl.hidden = cnt === 0 && _activeGlobalPillId !== SPECIAL_GROUPS.PINNED;
+    const searchField = dropdownEl.querySelector('.select2-search__field')
+        || globalSel.parentElement?.querySelector('.select2-search__field');
+    const readGroups = () => {
+        const counts = new Map();
+        let favorites = 0;
+        for (const option of globalSel.querySelectorAll('option')) {
+            const meta = _latestClassification.byName.get((option.textContent || '').trim());
+            if (!meta) continue;
+            counts.set(meta.groupId, (counts.get(meta.groupId) || 0) + 1);
+            if (meta.isPinned) favorites++;
         }
+        const groups = orderSectionsForExternalDropdown(_latestClassification.orderedSections || [])
+            .filter((section) => counts.has(section.id))
+            .map((section) => ({ id: section.id, label: `${section.name} ${counts.get(section.id)}` }));
+        if (favorites) groups.unshift({ id: SPECIAL_GROUPS.PINNED, label: `收藏 ${favorites}` });
+        return groups;
+    };
+    _activeGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
+
+    const header = document.createElement('li');
+    header.className = 'wbo-global-favorites-heading wbo-dd-group-head is-isolated';
+    header.setAttribute('role', 'presentation');
+    header.textContent = '收藏';
+    const syncResults = () => {
+        ensureSelect2RowsHavePinBtn(resultsList);
+        const favorites = [];
+        for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
+            const name = row.querySelector('.wbo-s2-item')?.getAttribute('data-wbo-world')
+                || row.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
+                || (row.textContent || '').trim();
+            const meta = _latestClassification.byName.get(name);
+            row.classList.toggle('wbo-dd-pin-hidden', !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
+            if (meta?.isPinned) favorites.push(row);
+        }
+        if (_activeGlobalPillId === SPECIAL_GROUPS.ALL && favorites.length) {
+            resultsList.prepend(header, ...favorites);
+        } else {
+            header.remove();
+        }
+        observer.takeRecords();
+    };
+    const refreshResults = () => {
+        if (searchField) searchField.dispatchEvent(new Event('input', { bubbles: true }));
+        else inst.trigger?.('query', { term: '' });
+        syncResults();
     };
 
-    ensureSelect2RowsHavePinBtn(resultsList);
-    syncBar();
-    syncPinFilter();
+    let barEl;
+    let pillScrollEl;
+    const renderBar = () => {
+        const groups = readGroups();
+        if (!groups.some((group) => group.id === _activeGlobalPillId)) _activeGlobalPillId = SPECIAL_GROUPS.ALL;
+        const scrollLeft = pillScrollEl?.scrollLeft || 0;
+        barEl?.remove();
+        const built = createDropdownFilterBar(groups, _activeGlobalPillId, 'wbo-global-dd-bar');
+        barEl = built.barEl;
+        pillScrollEl = built.scrollEl;
+        barEl.hidden = groups.length === 0;
+        barEl.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        });
+        barEl.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const button = ev.target instanceof Element ? ev.target.closest('[data-wbo-pill]') : null;
+            if (!button) return;
+            ev.preventDefault();
+            const id = button.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+            _activeGlobalPillId = id === _activeGlobalPillId ? SPECIAL_GROUPS.ALL : id;
+            barEl.querySelectorAll('[data-wbo-pill]').forEach((pill) => {
+                const active = pill.getAttribute('data-wbo-pill') === _activeGlobalPillId;
+                pill.classList.toggle('is-active', active);
+                pill.setAttribute('aria-pressed', String(active));
+            });
+            refreshResults();
+        });
+        resultsWrap.parentElement.insertBefore(barEl, resultsWrap);
+        pillScrollEl.scrollLeft = scrollLeft;
+    };
 
+    const observer = new MutationObserver(syncResults);
+    observer.observe(resultsList, { childList: true });
     const unbindPin = bindSelect2PinHandlers(resultsList, () => {
-        syncBar();
-        syncPinFilter();
+        renderBar();
+        refreshResults();
     });
-
-    const onSearchInput = () => requestAnimationFrame(syncPinFilter);
-    if (searchField instanceof HTMLInputElement) {
-        searchField.addEventListener('input', onSearchInput);
-    }
-    const obs = new MutationObserver(() => {
-        ensureSelect2RowsHavePinBtn(resultsList);
-        syncPinFilter();
-    });
-    obs.observe(resultsList, { childList: true });
+    renderBar();
+    refreshResults();
 
     _openGlobalDropdownCleanup = () => {
-        obs.disconnect();
+        observer.disconnect();
         unbindPin();
-        if (searchField instanceof HTMLInputElement) {
-            searchField.removeEventListener('input', onSearchInput);
-        }
+        header.remove();
         barEl?.remove();
     };
 }
 
 /**
- * Synchronously assert our custom `<optgroup>`s on `#world_editor_select` right
- * before the dropdown opens — ONLY doing work when foreign `<optgroup>`s were
- * injected or the live signature changed (0ms no-op in hide-only & steady state!).
+ * Synchronously assert our custom optgroups on the worldbook editor before opening.
  */
 function syncEditorBeforeOpen() {
     if (_isApplying || !_latestClassification || !_latestSettings) return;
@@ -4093,6 +4174,7 @@ function isWboInjectedMutationNode(node) {
 function markIfPersistentPopover(el) {
     if (el instanceof HTMLElement && (el.hidden || el.style.display === 'none')) {
         el.dataset.wboPersistentPopover = '1';
+        delete el.dataset.wboGlobalOpen;
     }
 }
 
@@ -4135,7 +4217,10 @@ function scheduleContainerReEnhance(containerEl) {
 
 function handleEnhancedContainerMutations(containerEl, mutations) {
     if (!_observersActive || !containerEl.isConnected || containerEl.dataset.wboEnhancing === '1') return;
-    if (!hasNonWboMutation(mutations)) return;
+    const reopeningGlobal = !containerEl.hidden && containerEl.style.display !== 'none' &&
+        !containerEl.dataset.wboGlobalOpen &&
+        (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || containerEl.dataset.wboPopoverRole === 'global');
+    if (!reopeningGlobal && !hasNonWboMutation(mutations)) return;
     const nextRole = detectEnhancedPopoverRole(containerEl);
     const hasStaleState = Boolean(
         containerEl.dataset.wboPopoverRole ||
@@ -4150,7 +4235,7 @@ function handleEnhancedContainerMutations(containerEl, mutations) {
         return;
     }
     const curOpts = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
-    const needsEnhance =
+    const needsEnhance = reopeningGlobal ||
         containerEl.dataset.wboPopoverRole !== nextRole ||
         containerEl.dataset.wboPopoverReady !== '1' ||
         curOpts.some((o) => {
@@ -4219,6 +4304,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         delete containerEl.dataset.wboEditingWorld;
         delete containerEl.dataset.wboChatAvatar;
         containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+        containerEl.querySelectorAll('.wbo-pop-search').forEach((el) => el.remove());
         containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
         containerEl._wboOnPinChanged = undefined;
         delete containerEl._wboPopState;
@@ -4227,6 +4313,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     bindDrawerSafeBubbleGuard(containerEl);
     containerEl.dataset.wboPopoverRole = detectedRole;
     const isGlobalPopover = detectedRole === 'global';
+    const isGlobalOpening = isGlobalPopover && !containerEl.hidden && containerEl.style.display !== 'none' && !containerEl.dataset.wboGlobalOpen;
 
     if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
         return;
@@ -4240,7 +4327,19 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (!(optionsHost instanceof HTMLElement)) return;
     observedHost = optionsHost;
 
-    const getOptionText = getEnhancedPopoverOptionText;
+    const globalNamesByValue = new Map();
+    if (isGlobalPopover) {
+        for (const option of document.getElementById('world_info')?.querySelectorAll('option') || []) {
+            const name = (option.dataset.wboRealName || option.textContent || '').trim();
+            if (option.value && _latestClassification.byName.has(name)) globalNamesByValue.set(option.value, name);
+        }
+    }
+    const getOptionText = (option) => {
+        const text = getEnhancedPopoverOptionText(option);
+        if (!isGlobalPopover || _latestClassification.byName.has(text)) return text;
+        const value = option.getAttribute('data-value');
+        return globalNamesByValue.get(value) || (_latestClassification.byName.has(value) ? value : text);
+    };
 
     // Bind in-place pin click delegation ONCE per containerEl (survives host re-renders of option children!)
     if (containerEl.dataset.wboPinDelegated !== '1') {
@@ -4336,9 +4435,14 @@ function enhanceCustomDropdownPopover(containerEl) {
         !isGlobalPopover &&
         ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
             (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || ''));
-    if (alreadyHasPins && containerEl.dataset.wboPopoverReady === '1' && !stateChanged) return;
+    const hasGlobalControls = !isGlobalPopover || (
+        containerEl.querySelector('.wbo-pop-filter-bar') &&
+        containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector)
+    );
+    if (alreadyHasPins && containerEl.dataset.wboPopoverReady === '1' && !stateChanged && hasGlobalControls && !isGlobalOpening) return;
 
     containerEl.dataset.wboPopoverReady = '1';
+    if (isGlobalOpening) containerEl.dataset.wboGlobalOpen = '1';
     containerEl.dataset.wboEditingWorld = activeEditName;
     containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
     containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
@@ -4469,7 +4573,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     const initialPopPinned = getPopoverPinnedCount();
 
     // When only 1 section exists and 0 pinned books, keep DOM flat (zero headers) — pin buttons & bare top items are ALREADY mounted!
-    if (orderedSections.length < 2 && initialPopPinned === 0) {
+    if (!isGlobalPopover && orderedSections.length < 2 && initialPopPinned === 0) {
         if (bareEditorItems.length > 0) {
             for (const ph of placeholders) optionsHost.appendChild(ph);
             for (const optEl of bareEditorItems) optionsHost.appendChild(optEl);
@@ -4495,17 +4599,29 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
-    if (initialPopPinned > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
+    if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
-    let activePillGroupId =
-        _dropdownMemory.activePillGroupId !== SPECIAL_GROUPS.ALL && validGroupIds.has(_dropdownMemory.activePillGroupId)
-            ? _dropdownMemory.activePillGroupId
-            : SPECIAL_GROUPS.ALL;
-    _dropdownMemory.activePillGroupId = activePillGroupId;
+    const previousGroup = isGlobalPopover
+        ? (isGlobalOpening ? SPECIAL_GROUPS.PINNED : containerEl._wboPopState?.getActivePillId())
+        : _dropdownMemory.activePillGroupId;
+    let activePillGroupId = validGroupIds.has(previousGroup) ? previousGroup : SPECIAL_GROUPS.ALL;
+    if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
 
     let isRestoringScroll = true;
-    const searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
+    let searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
+    if (isGlobalPopover && !(searchInput instanceof HTMLInputElement)) {
+        searchInput = document.createElement('input');
+        searchInput.type = 'search';
+        searchInput.className = 'wbo-pop-search';
+        searchInput.placeholder = '搜索世界书…';
+        searchInput.setAttribute('aria-label', '搜索全局世界书');
+        searchInput.setAttribute('spellcheck', 'false');
+        searchInput.setAttribute('autocomplete', 'off');
+        searchInput.setAttribute('data-wbo-ui', '1');
+        containerEl.insertBefore(searchInput, containerEl.firstChild);
+    }
+    const filterGlobalSearch = isGlobalPopover && searchInput instanceof HTMLInputElement;
     const isSearching = () =>
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
@@ -4542,7 +4658,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             const headEl = document.createElement('div');
             headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
             headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
-            headEl.textContent = `★ 已置顶 (${pinnedGlobalItems.length})`;
+            headEl.textContent = `收藏 (${pinnedGlobalItems.length})`;
             headEl.title = '点击展开或折叠该分组';
 
             const bodyEl = document.createElement('div');
@@ -4597,7 +4713,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     const syncPillButtons = () => {
         if (!filterBar) return;
         filterBar.querySelectorAll('.wbo-dd-pill').forEach((btn) => {
-            btn.classList.toggle('is-active', btn.getAttribute('data-wbo-pill') === activePillGroupId);
+            const active = btn.getAttribute('data-wbo-pill') === activePillGroupId;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-pressed', String(active));
         });
     };
 
@@ -4605,8 +4723,10 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     const syncSections = () => {
         const searching = isSearching();
-        const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
-        const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
+        const applyGroupFilter = !searching || isGlobalPopover;
+        const isPinFilter = applyGroupFilter && activePillGroupId === SPECIAL_GROUPS.PINNED;
+        const isIsolated = applyGroupFilter && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
+        const searchTerms = filterGlobalSearch ? searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean) : [];
         for (const o of bareEditorItems) {
             if (searching) {
                 o.classList.remove('wbo-dd-pin-hidden');
@@ -4630,6 +4750,11 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
             const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
             for (const o of optsInSec) {
+                if (filterGlobalSearch) {
+                    const name = getOptionText(o);
+                    const text = _latestClassification.byName.get(name)?.searchableText || name.toLowerCase();
+                    o.classList.toggle('wbo-pop-search-hidden', !searchTerms.every((term) => text.includes(term)));
+                }
                 if (isIsolated && gid === SPECIAL_GROUPS.PINNED) {
                     o.classList.toggle('wbo-dd-pin-hidden', o.dataset.wboOrigGroup !== activePillGroupId);
                 } else if (!isPinFilter) {
@@ -4642,9 +4767,11 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
             if (searching) {
                 const hasVisibleChild = optsInSec.some(
-                    (o) => o instanceof HTMLElement && o.style.display !== 'none',
+                    (o) => o.style.display !== 'none' &&
+                        !o.classList.contains('wbo-pop-search-hidden') && !o.classList.contains('wbo-dd-pin-hidden'),
                 );
-                secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild);
+                const hiddenByPill = isIsolated && gid !== activePillGroupId && gid !== SPECIAL_GROUPS.PINNED;
+                secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild || hiddenByPill);
                 secEl.classList.remove('wbo-dd-collapsed');
             } else if (isPinFilter) {
                 const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
@@ -4726,11 +4853,15 @@ function enhanceCustomDropdownPopover(containerEl) {
         const onPopoverOptionPointerDown = (ev) => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
-            if (ev.target instanceof Element && ev.target.closest(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+            const row = ev.target instanceof Element ? ev.target.closest(ENHANCED_POPOVER_SELECTORS.optionSelector) : null;
+            if (row && !ev.target.closest('.wbo-gr-pin-btn')) {
                 const st = containerEl._wboPopState;
                 if (!st) return;
                 st.cancelRestore();
                 st.savePopoverScroll();
+                if (role === 'editor') {
+                    rememberEditorListAnchor(getEnhancedPopoverOptionText(row), row, getScrollHost(), st.getActivePillId());
+                }
             }
         };
         optionsHost.addEventListener('pointerdown', onPopoverOptionPointerDown, true);
@@ -4738,11 +4869,11 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const initialPopPinnedCount = initialPopPinned;
-    if (orderedSections.length >= 2 || initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
+    if (isGlobalPopover || orderedSections.length >= 2 || initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
         const built = createDropdownFilterBar(
             [
                 ...(initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
-                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${initialPopPinnedCount}` }]
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `${isGlobalPopover ? '收藏' : '★ 已置顶'} ${initialPopPinnedCount}` }]
                     : []),
                 ...orderedSections.map((sec) => ({
                     id: sec.id,
@@ -4773,7 +4904,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
-            _dropdownMemory.activePillGroupId = activePillGroupId;
+            if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
             syncPillButtons();
             syncSections();
             scrollHost.scrollTop = _dropdownMemory.scrollTopByGroup[activePillGroupId] ?? 0;
@@ -4785,7 +4916,11 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }, { passive: true });
 
-        optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
+        if (optionsHost === containerEl) {
+            containerEl.insertBefore(filterBar, sectionEls[0] || optionsHost.firstChild);
+        } else {
+            optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
+        }
     }
 
     // Listen on BOTH optionsHost and discovered scrollHost (and containerEl) in case popover layout settles lazily
@@ -4816,13 +4951,17 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     if (searchInput instanceof HTMLInputElement && searchInput.dataset.wboPopSearchBound !== '1') {
         searchInput.dataset.wboPopSearchBound = '1';
-        searchInput.addEventListener('input', () => {
+        const syncSearch = () => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             const pState = containerEl._wboPopState;
             if (!pState) return;
             pState.cancelRestore();
             requestAnimationFrame(pState.syncSections);
+        };
+        searchInput.addEventListener('compositionend', syncSearch);
+        searchInput.addEventListener('input', (ev) => {
+            if (!ev.isComposing) syncSearch();
         });
     }
 
@@ -4845,6 +4984,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     };
     containerEl._wboOnPinChanged = () => {
+        if (isGlobalPopover) {
+            delete containerEl.dataset.wboPopoverReady;
+            enhanceCustomDropdownPopover(containerEl);
+            return;
+        }
         syncPopoverPinnedPill();
         syncSections();
     };
@@ -4856,6 +5000,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (role !== 'global' && role !== 'editor') return;
         if (pillScrollEl && pillScrollEl.clientWidth > 0) {
             pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+        }
+        if (role === 'editor') {
+            restoreEditorListPosition(getScrollHost(), activePillGroupId, (name) =>
+                [...containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)].find((row) => getOptionText(row) === name));
+            return;
         }
         const savedTop = _dropdownMemory.scrollTopByGroup[activePillGroupId];
         if (typeof savedTop === 'number' && savedTop > 0) {

@@ -20,7 +20,13 @@ export function shouldOfferImportRules(state) {
     return currentSensitiveBooks(state, true).length > 0;
 }
 
-export function openImportRulesModal({ intro = false, stack = false } = {}) {
+export async function dismissImportRulesIntro() {
+    const current = _callbacks.getState().settings;
+    current.importOrganize = { ...current.importOrganize, sensitivePromptSeen: true };
+    await _callbacks.onMutation({ save: true });
+}
+
+export function openImportRulesModal({ intro = false, stack = false, onResolved } = {}) {
     if (!_callbacks) return;
     const state = _callbacks.getState();
     const { settings } = state;
@@ -114,9 +120,8 @@ export function openImportRulesModal({ intro = false, stack = false } = {}) {
     const close = () => { if (overlay.isConnected) closeSubModal({ overlay }); };
     const skipIntro = async () => {
         if (!intro || saving) return;
-        const current = _callbacks.getState().settings;
-        current.importOrganize = { ...current.importOrganize, sensitivePromptSeen: true };
-        await _callbacks.onMutation({ save: true });
+        await dismissImportRulesIntro();
+        onResolved?.();
     };
     modal.querySelector('[data-import-rules-cancel]').addEventListener('click', () => {
         if (saving) return;
@@ -197,6 +202,7 @@ export function openImportRulesModal({ intro = false, stack = false } = {}) {
         save.disabled = true;
         await _callbacks.onMutation({ save: true });
         close();
+        onResolved?.();
         showToast('success', moved ? `已保存规则，并归类 ${moved} 本世界书` : '已保存导入归类规则');
     });
 

@@ -3162,9 +3162,10 @@ test('R6.2 grouped enhanceCustomDropdownPopover works for global (★ 已置顶 
         const globalSections = globalOptionsHost.querySelectorAll('.wbo-pop-section');
         assert.ok(globalSections.length >= 2, 'global popover should render pinned + ungrouped sections');
         assert.equal(globalSections[0].getAttribute('data-wbo-dd-group'), '__pinned__');
-        assert.match(globalSections[0].querySelector('.wbo-dd-group-head')?.textContent || '', /★ 已置顶 \(1\)/);
+        assert.match(globalSections[0].querySelector('.wbo-dd-group-head')?.textContent || '', /收藏 \(1\)/);
         const globalFilterBar = globalEnhanced.querySelector('.wbo-pop-filter-bar');
         assert.ok(globalFilterBar, 'global popover should receive .wbo-pop-filter-bar');
+        assert.equal(globalFilterBar.querySelector('[data-wbo-pill="__pinned__"]')?.getAttribute('aria-pressed'), 'true');
         const g1Pill = Array.from(globalFilterBar.querySelectorAll('.wbo-dd-pill')).find((b) => b.getAttribute('data-wbo-pill') === 'g1');
         assert.equal(g1Pill?.textContent, '文风 1', 'global pill count must include hoisted pinned item from that group');
 

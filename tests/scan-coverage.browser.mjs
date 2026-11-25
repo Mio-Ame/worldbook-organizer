@@ -29,8 +29,12 @@ test('scan compares full text in three columns, confirms deletion, and links to 
             },
         ],
         worldbooks: {
-            [bound]: makeBook(entries(`${'文'.repeat(1700)}🙂`)),
-            [candidate]: makeBook(entries('测试')),
+            [bound]: makeBook([...entries(`${'文'.repeat(1700)}🙂`),
+                makeEntry(14, { comment: '相同示例', content: '相同正文' }),
+                makeEntry(15, { comment: '角色书独有示例', content: '示例' })]),
+            [candidate]: makeBook([...entries('测试'),
+                makeEntry(14, { comment: '相同示例', content: '相同正文' }),
+                makeEntry(15, { comment: '候选书独有示例', content: '示例' })]),
             [embedded]: makeBook([makeEntry(0, { comment: '示例', content: `${'文'.repeat(1600)}乙` })]),
         },
         selected_world_info: [],
@@ -70,14 +74,17 @@ test('scan compares full text in three columns, confirms deletion, and links to 
                 columns: [...t.querySelectorAll('thead th')].map((cell) => cell.textContent),
                 rowCount: t.querySelectorAll('tbody tr').length,
                 row: [...t.querySelector('tbody tr').children].map((cell) => cell.textContent),
+                summary: [...t.closest('.wbo-cov-drawer').querySelectorAll('.wbo-diff-summary span')].map((item) => item.textContent),
             };
         });
-        assert.deepEqual(diff.columns, ['条目名', '角色卡绑定的世界书', '同名的世界书']);
+        assert.deepEqual(diff.columns, ['条目名', '角色卡绑定的世界书', '同名未绑定的世界书']);
+        assert.deepEqual(diff.summary, ['条目相同 1 条', '角色卡绑定的世界书独有 1 条', '同名未绑定的世界书独有 1 条', '同名但内容不同 14 条']);
         assert.equal(diff.rowCount, 14);
         assert.deepEqual(diff.row, ['测试条目 0', '1701 字', '2 字']);
         await cdp.clickSelector('[data-cov-emb-diff]');
         await waitForCondition(cdp, () => !!document.querySelector('.wbo-cov-match-card:has([data-cov-emb-diff]) .wbo-diff-table'));
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cov-match-card:has([data-cov-emb-diff]) .wbo-diff-table tbody td').textContent), '1602 字');
+        assert.match(await cdp.evalFn(() => document.querySelector('.wbo-cov-match-card:has([data-cov-emb-diff]) .wbo-diff-summary').textContent), /角色卡内嵌世界书独有/);
 
         const remove = '[data-cov-delete-book="同名候选角色"]';
         await cdp.clickSelector(remove);
@@ -90,11 +97,77 @@ test('scan compares full text in three columns, confirms deletion, and links to 
         assert.deepEqual(afterDelete.metrics.worldDeleteCalls, [candidate]);
         assert.ok(afterDelete.worldbooks[bound]);
 
+        await cdp.clickSelector('[data-cov-delete-book="仅有内嵌书"]');
+        const confirmation = await cdp.evalFn(() => {
+            const dialog = document.querySelector('#wbo-confirm-del-btn').closest('.wbo-modal');
+            return {
+                file: dialog.querySelector('.wbo-cov-list li').textContent,
+                warned: Boolean(dialog.querySelector('.wbo-refusal-box')),
+                note: dialog.querySelector('[data-delete-embedded-note]')?.textContent,
+            };
+        });
+        assert.equal(confirmation.file, embedded);
+        assert.equal(confirmation.warned, false);
+        assert.match(confirmation.note, /卡内条目会保留在角色卡里/);
+        await cdp.clickSelector('#wbo-confirm-del-btn');
+        await waitForCondition(cdp, () => !document.querySelector('[data-cov-delete-book="仅有内嵌书"]'));
+        const afterEmbeddedDelete = await getServerState(baseUrl);
+        assert.deepEqual(afterEmbeddedDelete.metrics.worldDeleteCalls, [candidate, embedded]);
+        assert.ok(afterEmbeddedDelete.worldbooks[bound]);
+        assert.deepEqual(afterEmbeddedDelete.characters.find((item) => item.avatar === 'embedded.png').data.character_book, seed.characters[4].data.character_book);
+
         await cdp.clickSelector('[data-cov-open-unbound]');
         const listed = await cdp.evalFn(() => [...document.querySelectorAll('.wbo-cov-unbound-table [data-jump-char]')].map((button) => button.textContent));
         assert.deepEqual([...listed].sort(), ['内嵌测试角色', '未绑测试角色'].sort());
         await cdp.clickSelector('.wbo-cov-unbound-table [data-jump-char="unbound.png"]');
         await waitForCondition(cdp, () => window.SillyTavern.getContext().characterId === 2);
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});
+
+test('deletion warns on actual primary, auxiliary and persona bindings using the exact file name', async () => {
+    const book = '真实引用测试书';
+    const seed = createDefaultSeed({
+        characters: [
+            { avatar: 'primary.png', name: '主书测试角色', data: { extensions: { world: book } } },
+            { avatar: 'auxiliary.png', name: '附加测试角色', data: { extensions: {} } },
+        ],
+        worldbooks: { [book]: makeBook([]) },
+        selected_world_info: [],
+        pluginSettings: {
+            showCharBooks: true,
+            hideCharBooksByDefault: false,
+            charGroupCollapsed: false,
+            globalHiddenGroupIds: [],
+            editorHiddenGroupIds: [],
+            includeExtraCharBooks: false,
+            autoScanNewCharacters: false,
+        },
+    });
+    seed.world_info.charLore = [{ name: 'auxiliary', extraBooks: [book] }];
+    seed.power_user = {
+        personas: { fixture: '测试人设' },
+        persona_descriptions: { fixture: { lorebook: book } },
+    };
+    const server = createMockStServer();
+    const baseUrl = await server.start();
+    let cdp;
+    try {
+        cdp = await launchEdgeCdp();
+        await resetAndBoot(cdp, baseUrl, { seed, viewport: VIEWPORTS.desktop });
+        await openManager(cdp);
+        await cdp.clickSelector(`.wbo-book-item[data-book="${book}"] [data-action="delete-single-book"]`);
+        const warning = await cdp.evalFn(() => document.querySelector('.wbo-refusal-box')?.textContent);
+        assert.match(warning, /1 本正绑定/);
+        assert.match(warning, /真实引用测试书/);
+        assert.match(warning, /主世界书：主书测试角色/);
+        assert.match(warning, /附加世界书：附加测试角色/);
+        assert.match(warning, /人设：测试人设/);
+        await cdp.clickSelector('#wbo-cancel-btn');
+        assert.deepEqual((await getServerState(baseUrl)).metrics.worldDeleteCalls, []);
         assert.deepEqual(cdp.getErrors().runtimeErrors, []);
     } finally {
         await cdp?.close();

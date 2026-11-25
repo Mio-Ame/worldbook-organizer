@@ -26,9 +26,11 @@ import {
     applyTauriSurface,
     deleteWorldbooksFromHost,
     getActiveGlobalWorldSet,
+    getCharLoreEntries,
     getCharactersInMemory,
     getCurrentEditorWorldName,
     getHostContext,
+    getPowerUserSettings,
     realRenameWorldbook,
     showToast,
 } from './host.js';
@@ -44,6 +46,8 @@ import {
 } from './panel-quick.js';
 import {
     addCustomGroup,
+    buildCharacterBindingIndex,
+    buildPersonaBindingIndex,
     cleanupDeletedWorldSettings,
     computeScanPromptState,
     findUnscannedShallowCharacters,
@@ -76,12 +80,12 @@ import {
 } from './panel-search.js';
 import { openAiOrganizeModal } from './panel-organize.js';
 import { openCharacterBindingModal } from './panel-binding.js';
-import { openImportRulesModal, shouldOfferImportRules } from './panel-import-rules.js';
 import { openScanAndImportModal } from './panel-scan.js';
 import { openSettingsModal } from './panel-settings.js';
 import { isEntryGroupingAvailable } from './entry-groups/lifecycle.js';
 
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
+const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
 
 let _searchQuery = '';
 
@@ -211,6 +215,15 @@ function syncEmbeddedPanelIndicators() {
 
         if (_callbacks) {
             const { settings, classification } = _callbacks.getState();
+            const isAllView = settings.activeFilterGroupId === SPECIAL_GROUPS.ALL ||
+                (settings.activeFilterGroupId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
+            if (isAllView && listEl.dataset.wboActiveGlobals !== JSON.stringify([...activeGlobals])) {
+                if (_activePreviewControllers.size > 0) {
+                    _hasPendingDeferredListRender = true;
+                } else if (renderManagerGroupsListOnly({ skipIndicatorSync: true })) {
+                    return;
+                }
+            }
             const editingMeta = currentEditor ? classification?.byName?.get(currentEditor) : null;
             const q = _searchQuery.trim();
             const searchOpts = {
@@ -579,7 +592,7 @@ function renderGroupSectionHtml({
             : hiddenInEditor
                 ? '已在编辑下拉框默认隐藏，点击修改'
                 : '设置该分组在全局框 / 编辑框中的默认显隐';
-    const visActionBtn = id === SPECIAL_GROUPS.PINNED
+    const visActionBtn = id === SPECIAL_GROUPS.PINNED || id === ACTIVE_GLOBAL_SECTION_ID
         ? ''
         : visHiddenAny
             ? `
@@ -1204,17 +1217,32 @@ function openBatchMoveModal(bookNames) {
  */
 async function confirmAndDeleteWorldbooks(bookNames, { stack = false, onComplete } = {}) {
     if (!_callbacks || !Array.isArray(bookNames) || bookNames.length === 0) return;
-    const { settings, classification } = _callbacks.getState();
+    const { settings } = _callbacks.getState();
+    const bindings = buildCharacterBindingIndex({
+        characters: getCharactersInMemory(),
+        charLore: getCharLoreEntries(),
+        cachedCharBindings: settings.cachedCharBindings,
+        worldNamesSet: new Set(bookNames),
+    });
+    const personas = buildPersonaBindingIndex(getPowerUserSettings());
 
     const boundWarnings = [];
+    const embeddedMatches = [];
     for (const name of bookNames) {
-        const meta = classification.byName.get(name);
-        if (!meta) continue;
+        const owners = (bindings.get(name) || []).filter((owner) => !owner.orphan);
         const refs = [];
-        if (meta.charOwners?.length) refs.push(`角色：${meta.charOwners.map((o) => o.charName).join('、')}`);
-        if (meta.personaOwners?.length) refs.push(`人设：${meta.personaOwners.join('、')}`);
+        for (const [source, label] of [['primary', '主世界书'], ['extra', '附加世界书']]) {
+            const names = owners.filter((owner) => owner.source === source).map((owner) => owner.charName);
+            if (names.length) refs.push(`${label}：${names.join('、')}`);
+        }
+        const personaNames = personas.get(name);
+        if (personaNames?.length) refs.push(`人设：${personaNames.join('、')}`);
         if (refs.length > 0) {
-            boundWarnings.push(`${meta.primaryTitle}（${refs.join('；')}）`);
+            boundWarnings.push(`${name}（${refs.join('；')}）`);
+        }
+        const embeddedNames = owners.filter((owner) => owner.source === 'embedded').map((owner) => owner.charName);
+        if (embeddedNames.length) {
+            embeddedMatches.push(`${name}（角色：${embeddedNames.join('、')}）`);
         }
     }
 
@@ -1223,13 +1251,17 @@ async function confirmAndDeleteWorldbooks(bookNames, { stack = false, onComplete
     const warnHtml = boundWarnings.length > 0
         ? `<div class="wbo-refusal-box"><b>注意：其中 ${boundWarnings.length} 本正绑定在角色卡或人设上</b><br>${esc(boundWarnings.slice(0, 5).join('；'))}${boundWarnings.length > 5 ? ' 等' : ''}</div>`
         : '';
+    const embeddedHtml = embeddedMatches.length > 0
+        ? `<p class="wbo-subtle-tip" data-delete-embedded-note>以下文件与角色卡内嵌世界书同名。卡内条目会保留在角色卡里。<br>${esc(embeddedMatches.slice(0, 5).join('；'))}${embeddedMatches.length > 5 ? ' 等' : ''}</p>`
+        : '';
 
     const { modal, overlay } = createSubModal(
-        `确认清理 ${bookNames.length} 本世界书`,
+        `确认删除 ${bookNames.length} 本世界书`,
         `
-            <div class="wbo-label">以下世界书将从酒馆硬盘中永久删除（无法撤销）：</div>
-            ${warnHtml}
+            <div class="wbo-label">以下酒馆世界书文件将永久删除（无法撤销）：</div>
             <ul class="wbo-cov-list">${previewNames}${moreNames}</ul>
+            ${warnHtml}
+            ${embeddedHtml}
             <div class="wbo-ai-status" id="wbo-del-status"></div>
             <div class="wbo-modal-footer wbo-footer-pair">
                 <button type="button" class="wbo-btn wbo-btn-danger" id="wbo-confirm-del-btn">确认永久删除</button>
@@ -1316,6 +1348,9 @@ function openManagerModal() {
                     <button type="button" class="wbo-icon-btn wbo-modal-settings-btn" data-action="open-settings-modal" title="显示与行为设置" aria-label="设置">
                         <i class="fa-solid fa-gear"></i>
                     </button>
+                    <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn title="恢复全屏" aria-label="恢复全屏">
+                        <i class="fa-solid fa-expand" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-minimize-btn" data-wbo-minimize-btn title="最小化（保留草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus"></i>
                     </button>
@@ -1390,11 +1425,6 @@ function openManagerModal() {
             </div>
             <div class="wbo-es-history-row wbo-mgr-hist-row" id="wbo-mgr-hist-row" hidden></div>
             <div class="wbo-mgr-scan-prompt" id="wbo-mgr-scan-prompt" hidden></div>
-            <div class="wbo-mgr-scan-prompt" id="wbo-mgr-import-prompt" hidden>
-                <span class="wbo-mgr-scan-prompt-text">疑似敏感的世界书可以按标题自动归组。</span>
-                <button type="button" class="wbo-link-btn wbo-mgr-scan-prompt-btn" data-action="open-import-rules-intro">设置导入归类</button>
-                <button type="button" class="wbo-link-btn wbo-mgr-scan-prompt-btn" data-action="dismiss-import-rules-intro">跳过</button>
-            </div>
             <div class="wbo-mgr-drag-hint" title="拖动分组左侧 ⋮⋮ 可排序；拖动世界书可调序或拖入上方分组">拖动分组左侧 ⋮⋮ 可排序；拖动世界书可调序或拖入上方分组</div>
         </div>
         <div class="wbo-mgr-es-box" id="wbo-mgr-es-box" hidden></div>
@@ -1677,6 +1707,7 @@ function openManagerModal() {
             const targetBookItem = targetBookRow?.closest('.wbo-book-item[data-book]') || target.closest('.wbo-book-item[data-book]');
             const targetGroup = target.closest('.wbo-group[data-group-id]');
             const targetGid = targetGroup?.getAttribute('data-group-id') || '';
+            if (targetGid === ACTIVE_GLOBAL_SECTION_ID) return;
 
             if (
                 targetBookItem instanceof HTMLElement &&
@@ -1783,7 +1814,7 @@ function openManagerModal() {
                 return;
             }
 
-            const targetGroupId = validPillGid || (dropGroupId && dropGroupId !== SPECIAL_GROUPS.PINNED ? dropGroupId : null);
+            const targetGroupId = validPillGid || (dropGroupId && dropGroupId !== SPECIAL_GROUPS.PINNED && dropGroupId !== ACTIVE_GLOBAL_SECTION_ID ? dropGroupId : null);
             if (!targetGroupId) return;
 
             ev.preventDefault();
@@ -2295,15 +2326,6 @@ function openManagerModal() {
                 openSettingsModal();
                 break;
             }
-            case 'open-import-rules-intro': {
-                openImportRulesModal({ intro: true });
-                break;
-            }
-            case 'dismiss-import-rules-intro': {
-                settings.importOrganize = { ...settings.importOrganize, sensitivePromptSeen: true };
-                await _callbacks.onMutation({ save: true });
-                break;
-            }
             case 'cycle-char-title-mode': {
                 const order = ['char_with_sub', 'char_only', 'original'];
                 const curIdx = order.indexOf(settings.charBookTitleMode);
@@ -2354,8 +2376,6 @@ function refreshManagerModalContent({ backgroundCatchUp = false } = {}) {
     if (!overlay || !_callbacks) return;
 
     const { settings, classification, bindingMap } = _callbacks.getState();
-    const importPrompt = overlay.querySelector('#wbo-mgr-import-prompt');
-    if (importPrompt) importPrompt.hidden = !shouldOfferImportRules({ settings, classification });
     const hasCustomGroups = classification.customGroups.length > 0;
     const orderedSections = classification.orderedSections || [];
 
@@ -2506,11 +2526,16 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
     };
 
     const currentEditor = getCurrentEditorWorldName();
+    const activeGlobals = getActiveGlobalWorldSet();
+    const filterId = settings.activeFilterGroupId;
+    const isAllView = filterId === SPECIAL_GROUPS.ALL || (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
+    const activeGlobalKey = isAllView ? JSON.stringify([...activeGlobals]) : '';
     // Read LIVE collapse & hidden-group state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
         q,
         _batchMode,
         currentEditor || '',
+        activeGlobalKey,
         settings.activeFilterGroupId,
         settings.charBookTitleMode,
         settings.aliasTitleMode,
@@ -2540,21 +2565,24 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
         return false;
     }
     _lastModalListSig = structSig;
+    listEl.dataset.wboActiveGlobals = activeGlobalKey;
 
     const prevScroll = listEl.scrollTop;
     _renderedGroupBooksMap.clear();
-    const activeGlobals = getActiveGlobalWorldSet();
     const hasCustomGroups = classification.customGroups.length > 0;
-    const filterId = settings.activeFilterGroupId;
-    const isAllView = filterId === SPECIAL_GROUPS.ALL || (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
     const includeCharExplicitly = filterId === SPECIAL_GROUPS.CHARACTER || isAllView;
+    const activeGlobalBooks = isAllView
+        ? [...activeGlobals].map((name) => classification.byName.get(name)).filter((book) =>
+            book && !book.isInCharGroup && (!q || matchesSearch(book, q, searchOpts)))
+        : [];
+    const activeGlobalNames = new Set(activeGlobalBooks.map((book) => book.realName));
 
     /** @type {Array<{ type: 'raw', html: string, isMovable?: boolean } | { type: 'section', id: string, name: string, color: string, collapsed: boolean, isCustom: boolean, isSingleView: boolean, isMovable: boolean, charBookTitleMode?: string, hiddenInGlobal?: boolean, hiddenInEditor?: boolean, books: Array<any> }>} */
     const renderSpecs = [];
 
     const pushSectionSpec = (sec, { isSingleView = false, isMovable = true, forceOpen = false } = {}) => {
         if (sec.kind === 'custom') {
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            const books = sec.books.filter((b) => !activeGlobalNames.has(b.realName) && (!q || matchesSearch(b, q, searchOpts)));
             if (q && books.length === 0) return;
             const liveCollapsed = Boolean(liveGroupById.get(sec.id)?.collapsed);
             renderSpecs.push({
@@ -2573,7 +2601,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             return;
         }
         if (sec.kind === 'ungrouped') {
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            const books = sec.books.filter((b) => !activeGlobalNames.has(b.realName) && (!q || matchesSearch(b, q, searchOpts)));
             if ((q || !isSingleView) && books.length === 0) return;
             renderSpecs.push({
                 type: 'section',
@@ -2633,14 +2661,23 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             });
         }
     } else if (isAllView) {
-        const pinnedList = q
-            ? (classification.pinnedBooks || []).filter((b) => matchesSearch(b, q, searchOpts))
-            : (classification.pinnedBooks || []);
+        const charSec = orderedSections.find((section) => section.kind === 'character');
+        if (charSec) pushSectionSpec(charSec, { isMovable: false });
+        if (activeGlobalBooks.length > 0) {
+            renderSpecs.push({
+                type: 'section',
+                id: ACTIVE_GLOBAL_SECTION_ID,
+                name: '已开启的全局世界书',
+                color: '#6b8d85',
+                collapsed: false,
+                isSingleView: true,
+                isMovable: false,
+                books: activeGlobalBooks,
+            });
+        }
+        const pinnedList = (classification.pinnedBooks || []).filter((book) =>
+            !activeGlobalNames.has(book.realName) && (!q || matchesSearch(book, q, searchOpts)));
         if (pinnedList.length > 0) {
-            const charSec = orderedSections.find((s) => s.kind === 'character');
-            if (charSec) {
-                pushSectionSpec(charSec, { isSingleView: false, isMovable: false });
-            }
             renderSpecs.push({
                 type: 'section',
                 id: SPECIAL_GROUPS.PINNED,
@@ -2652,16 +2689,10 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
                 isMovable: false,
                 books: pinnedList,
             });
-            orderedSections.forEach((sec) => {
-                if (sec.kind !== 'character') {
-                    pushSectionSpec(sec, { isSingleView: false, isMovable: true });
-                }
-            });
-        } else {
-            orderedSections.forEach((sec) => {
-                pushSectionSpec(sec, { isSingleView: false, isMovable: true });
-            });
         }
+        orderedSections.forEach((section) => {
+            if (section.kind !== 'character') pushSectionSpec(section);
+        });
     } else {
         if (filterId === SPECIAL_GROUPS.DEFAULT && !settings.showCharBooks && currentEditor) {
             const editingMeta = classification.byName.get(currentEditor);

@@ -60,7 +60,7 @@ import {
 import { startEntryGrouping, stopEntryGrouping } from './src/entry-groups/lifecycle.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.2';
+export const STYLE_ASSET_VERSION = '2.35.3';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _initialAutoScanTimer = null;

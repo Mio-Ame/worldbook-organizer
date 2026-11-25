@@ -43,6 +43,9 @@ import {
     undoLastAiOrganize,
     upsertAiOrganizePreset,
 } from './core.js';
+import { dismissImportRulesIntro, openImportRulesModal, shouldOfferImportRules } from './panel-import-rules.js';
+
+const sensitiveSendWarning = '有疑似敏感世界书，发送可能会触发AI拒绝回答';
 
 /**
  * AI Smart Worldbook Organizer modal:
@@ -123,7 +126,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
     const initialSensState = analyzeSensitiveOrganizeState({ allBooks });
     let activeBookTab = initialSensState.normalBooks.length ? 'normal' : 'sensitive';
-    const bookGroupByTab = { normal: '', sensitive: '' };
+    const bookGroupByTab = { normal: SPECIAL_GROUPS.UNGROUPED, sensitive: SPECIAL_GROUPS.UNGROUPED };
     const renderAiBookListHtml = (checkedSet, { normalBooks, sensitiveBooks }) => {
         return `
             <div class="wbo-ai-pick-section" data-ai-section="normal"${activeBookTab === 'normal' ? '' : ' hidden'}>
@@ -268,7 +271,10 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <div class="wbo-step-scroll">
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
-                        <span>1. 选择世界书</span>
+                        <span class="wbo-ai-quick-picks">
+                            <span>1. 选择世界书</span>
+                            <span class="wbo-tag" id="wbo-ai-selected-count" role="status">已勾选 ${defaultChecked.size} 本世界书</span>
+                        </span>
                         <span class="wbo-ai-quick-picks">
                             <button type="button" class="wbo-link-btn" id="wbo-pick-ungrouped">仅未分组</button>
                             <button type="button" class="wbo-link-btn" id="wbo-pick-nonchar">全部非角色书</button>
@@ -281,12 +287,16 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </div>
                     <div class="wbo-sens-banner" id="wbo-sens-banner">
                         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-                        <span id="wbo-sens-banner-text">有疑似敏感世界书，发送可能会触发AI拒绝回答。</span>
+                        <span id="wbo-sens-banner-text" aria-live="polite">${sensitiveSendWarning}，因此已默认移除选中。</span>
                     </div>
+                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off" spellcheck="false">
+                    <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-ai-book-groups" role="group" aria-label="世界书分组" hidden></div>
                     <div class="wbo-sens-banner-actions" id="wbo-ai-sensitive-actions" hidden>
-                        <button type="button" class="wbo-btn" id="wbo-pick-toggle-sens">全选敏感书</button>
-                        <select class="wbo-select" id="wbo-sens-target-group" aria-label="归入的分组"></select>
-                        <button type="button" class="wbo-btn" id="wbo-sens-move-nsfw-btn" data-action-move-nsfw="1" disabled>归入分组</button>
+                        <button type="button" class="wbo-link-btn" id="wbo-pick-toggle-sens">全选敏感书</button>
+                        <div class="wbo-sens-assign">
+                            <select class="wbo-select" id="wbo-sens-target-group" aria-label="归入的分组"></select>
+                            <button type="button" class="wbo-link-btn" id="wbo-sens-move-nsfw-btn" data-action-move-nsfw="1" disabled>归入分组</button>
+                        </div>
                     </div>
                     <div class="wbo-sens-confirm-bar" id="wbo-sens-confirm-bar" hidden>
                         <span class="wbo-sens-confirm-text" id="wbo-sens-confirm-text"></span>
@@ -299,9 +309,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <span class="wbo-sens-result-text" id="wbo-sens-result-text"></span>
                         <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-sens-inline-undo">${UNDO_SVG}<span>撤回</span></button>
                     </div>
-                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off" spellcheck="false">
-                    <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-ai-book-groups" role="group" aria-label="世界书分组" hidden></div>
                     <div class="wbo-ai-book-list" id="wbo-ai-book-list">${bookChecksHtml}</div>
+                    <div class="wbo-ai-import-prompt" id="wbo-ai-import-prompt" hidden>
+                        <span>以后导入的疑似敏感世界书可以按标题自动归组。</span>
+                        <div class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" data-open-import-rules-intro>设置导入归类</button>
+                            <button type="button" class="wbo-link-btn" data-skip-import-rules-intro>跳过</button>
+                        </div>
+                    </div>
                 </div>
 
                 <div class="wbo-card wbo-ai-card">
@@ -1349,11 +1364,6 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
         const prevChecked = new Set(getSelectedBookNames());
         refreshAiBookPicker(prevChecked);
-        const ungroupedCntEl = modal.querySelector('[data-local-scope-count="ungrouped"]');
-        const noncharCntEl = modal.querySelector('[data-local-scope-count="nonchar"]');
-        if (ungroupedCntEl) ungroupedCntEl.textContent = `${classification.ungroupedBooks.length} 本`;
-        if (noncharCntEl) noncharCntEl.textContent = `${classification.nonCharCount} 本`;
-
         syncUndoButtons();
         setStatus('已撤销上一次整理，恢复为整理前的分组与显示名。', 'success');
         if (localStatusEl) {
@@ -1421,6 +1431,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const sensConfirmText = modal.querySelector('#wbo-sens-confirm-text');
     const sensResultBar = modal.querySelector('#wbo-sens-result-bar');
     const sensResultText = modal.querySelector('#wbo-sens-result-text');
+    const importPrompt = modal.querySelector('#wbo-ai-import-prompt');
+
+    const syncImportPrompt = () => {
+        if (importPrompt) importPrompt.hidden = activeBookTab !== 'sensitive' || !shouldOfferImportRules({ settings, classification });
+    };
 
     const targetSelect = modal.querySelector('#wbo-sens-target-group');
     const sensitiveChecks = () => Array.from(modal.querySelectorAll('[data-ai-section="sensitive"] .wbo-ai-book-check'));
@@ -1464,7 +1479,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (banner) {
             banner.hidden = sensChecks.length === 0;
             banner.classList.toggle('is-danger', selectedCount > 0);
+            const text = banner.querySelector('#wbo-sens-banner-text');
+            const message = selectedCount > 0 ? `${sensitiveSendWarning}。` : `${sensitiveSendWarning}，因此已默认移除选中。`;
+            if (text && text.textContent !== message) text.textContent = message;
         }
+        if (sensResultBar) sensResultBar.hidden = activeBookTab !== 'sensitive' || !sensResultText?.textContent;
         const actions = modal.querySelector('#wbo-ai-sensitive-actions');
         if (actions) actions.hidden = activeBookTab !== 'sensitive' || sensChecks.length === 0;
         const sensButton = modal.querySelector('#wbo-pick-toggle-sens');
@@ -1474,10 +1493,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             moveButton.disabled = selectedCount === 0 || !targetSelect?.value;
             moveButton.textContent = selectedCount ? '归入分组（' + selectedCount + ' 本）' : '归入分组';
         }
+        const boxes = allChecks();
+        const checkedCount = boxes.filter((box) => box.checked).length;
+        const countLabel = modal.querySelector('#wbo-ai-selected-count');
+        const countText = `已勾选 ${checkedCount} 本世界书`;
+        if (countLabel && countLabel.textContent !== countText) countLabel.textContent = countText;
         const toggleAllButton = modal.querySelector('#wbo-pick-none');
         if (toggleAllButton) {
-            const boxes = allChecks();
-            toggleAllButton.textContent = boxes.length && boxes.every((box) => box.checked) ? '取消全选' : '全选';
+            toggleAllButton.textContent = boxes.length && checkedCount === boxes.length ? '取消全选' : '全选';
             toggleAllButton.disabled = boxes.length === 0;
         }
     };
@@ -1487,8 +1510,13 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (list) list.innerHTML = renderAiBookListHtml(checked, analyzeSensitiveOrganizeState({ allBooks }));
         renderSensitiveTargets();
         syncSensBannerUi();
+        syncImportPrompt();
         renderBookGroupTabs();
         applyAiFilter();
+        const ungroupedCntEl = modal.querySelector('[data-local-scope-count="ungrouped"]');
+        const noncharCntEl = modal.querySelector('[data-local-scope-count="nonchar"]');
+        if (ungroupedCntEl) ungroupedCntEl.textContent = `${classification.ungroupedBooks.length} 本`;
+        if (noncharCntEl) noncharCntEl.textContent = `${classification.nonCharCount} 本`;
     };
 
     const showSensitiveMoveConfirmation = () => {
@@ -1553,8 +1581,25 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (!button) return;
         activeBookTab = button.getAttribute('data-ai-book-tab');
         handleSelectionChange();
+        syncImportPrompt();
         renderBookGroupTabs();
         applyAiFilter();
+    });
+    importPrompt?.querySelector('[data-open-import-rules-intro]')?.addEventListener('click', () => {
+        openImportRulesModal({
+            intro: true,
+            stack: true,
+            onResolved: () => {
+                if (!modal.isConnected) return;
+                ({ settings, classification } = _callbacks.getState());
+                ({ nonCharBooks, allBooks } = buildBookPool(classification));
+                refreshAiBookPicker(new Set(getSelectedBookNames()));
+            },
+        });
+    });
+    importPrompt?.querySelector('[data-skip-import-rules-intro]')?.addEventListener('click', () => {
+        void dismissImportRulesIntro();
+        syncImportPrompt();
     });
     modal.querySelector('#wbo-sens-move-nsfw-btn')?.addEventListener('click', showSensitiveMoveConfirmation);
     modal.querySelector('#wbo-sens-confirm-ok')?.addEventListener('click', () => { void applySensitiveMove(); });
@@ -1594,6 +1639,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     modal.querySelector('#wbo-pick-none')?.addEventListener('click', () => toggleChecks(allChecks()));
     renderSensitiveTargets();
     syncSensBannerUi();
+    syncImportPrompt();
     renderBookGroupTabs();
     applyAiFilter();
 

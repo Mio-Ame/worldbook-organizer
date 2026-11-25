@@ -28,32 +28,49 @@ async function withMockHost(seed, workflow, viewport = VIEWPORTS.desktop) {
 
 test('AI picks can be restored in bulk, switched by category, grouped explicitly and undone', async () => {
     const sensitive = '成人向测试书';
+    const warning = '有疑似敏感世界书，发送可能会触发AI拒绝回答。';
+    const defaultWarning = '有疑似敏感世界书，发送可能会触发AI拒绝回答，因此已默认移除选中。';
     const seed = createDefaultSeed({
         characters: [],
-        worldbooks: { 普通测试书: { entries: {} }, [sensitive]: { entries: {} } },
+        worldbooks: { 普通测试书: { entries: {} }, 已分组测试书: { entries: {} }, [sensitive]: { entries: {} } },
         selected_world_info: [],
         pluginSettings: {
             organizeLastTab: 'organize',
             autoScanNewCharacters: false,
             groups: [{ id: 'fixture-destination', name: '测试归档', color: '#6b7a8c' }],
-            assignments: {},
+            assignments: { 已分组测试书: 'fixture-destination' },
         },
     });
     await withMockHost(seed, async (cdp, baseUrl) => {
         await openManager(cdp);
         await cdp.clickSelector('[data-action="open-ai-organize"]');
-        const safetyText = await cdp.evalFn(() => document.querySelector('#wbo-sens-banner-text').textContent);
-        assert.equal(safetyText, '有疑似敏感世界书，发送可能会触发AI拒绝回答。');
+        const safetyText = () => cdp.evalFn(() => document.querySelector('#wbo-sens-banner-text').textContent);
+        const picks = () => cdp.evalFn(() => document.querySelector('#wbo-ai-selected-count').textContent);
+        assert.equal(await safetyText(), defaultWarning);
+        assert.equal(await picks(), '已勾选 1 本世界书');
+        assert.match(await cdp.evalFn(() => document.querySelector('#wbo-ai-book-groups [aria-pressed="true"]').textContent), /未分组/);
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-ai-section="sensitive"]').hidden), true);
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-sensitive-actions').hidden), true);
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-pick-none').textContent), '全选');
         await cdp.clickSelector('#wbo-pick-none');
-        assert.equal(await cdp.evalFn(() => document.querySelectorAll('.wbo-ai-book-check:checked').length), 2);
+        assert.equal(await picks(), '已勾选 3 本世界书');
+        assert.equal(await safetyText(), warning);
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-pick-none').textContent), '取消全选');
         await cdp.clickSelector('#wbo-pick-none');
-        assert.equal(await cdp.evalFn(() => document.querySelectorAll('.wbo-ai-book-check:checked').length), 0);
+        assert.equal(await picks(), '已勾选 0 本世界书');
+        assert.equal(await safetyText(), defaultWarning);
         await cdp.clickSelector('[data-ai-book-tab="sensitive"]');
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-ai-section="normal"]').hidden), true);
+        await cdp.setViewport(VIEWPORTS.mobile);
+        const layout = await cdp.evalFn(() => {
+            const select = document.querySelector('#wbo-sens-target-group').getBoundingClientRect();
+            const button = document.querySelector('#wbo-sens-move-nsfw-btn').getBoundingClientRect();
+            return { aligned: Math.abs(select.top + select.height / 2 - button.top - button.height / 2) < 1, adjacent: select.right <= button.left };
+        });
+        assert.deepEqual(layout, { aligned: true, adjacent: true });
         await cdp.clickSelector('#wbo-pick-toggle-sens');
+        assert.equal(await picks(), '已勾选 1 本世界书');
+        assert.equal(await safetyText(), warning);
         await cdp.evalFn(() => {
             const target = document.querySelector('#wbo-sens-target-group');
             target.value = 'fixture-destination';
@@ -64,6 +81,7 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
         assert.equal(before.extension_settings.worldbook_organizer.assignments[sensitive], undefined);
         await cdp.clickSelector('#wbo-sens-confirm-ok');
         await waitForCondition(cdp, () => document.querySelector('#wbo-sens-result-text')?.textContent.includes('测试归档'));
+        assert.equal(await picks(), '已勾选 0 本世界书');
         await waitForCondition(cdp, async () => {
             const state = await fetch('/__test/state').then((res) => res.json());
             return state.extension_settings.worldbook_organizer.assignments['成人向测试书'] === 'fixture-destination';

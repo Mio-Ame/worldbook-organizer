@@ -29,14 +29,25 @@ async function run(seed, action) {
 test('an existing user with no destination can create one, opt in and see the prompt only once', async () => {
     const seed = createDefaultSeed({
         characters: [],
-        worldbooks: { 成人向测试书: { entries: {} } },
+        worldbooks: { 成人向测试书: { entries: {} }, 普通测试书: { entries: {} } },
         selected_world_info: [],
-        pluginSettings: { groups: [], assignments: {}, autoScanNewCharacters: false },
+        pluginSettings: { groups: [], assignments: {}, autoScanNewCharacters: false, organizeLastTab: 'organize' },
     });
     await run(seed, async (cdp, baseUrl) => {
         await openManager(cdp);
         assert.deepEqual((await getServerState(baseUrl)).extension_settings.worldbook_organizer.assignments, {});
-        await cdp.clickSelector('[data-action="open-import-rules-intro"]');
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#wbo-mgr-import-prompt'))), false);
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-import-prompt').hidden), true);
+        await cdp.clickSelector('[data-ai-book-tab="sensitive"]');
+        const promptLayout = await cdp.evalFn(() => {
+            const list = document.querySelector('#wbo-ai-book-list').getBoundingClientRect();
+            const setup = document.querySelector('[data-open-import-rules-intro]').getBoundingClientRect();
+            const skip = document.querySelector('[data-skip-import-rules-intro]').getBoundingClientRect();
+            return { belowList: setup.top >= list.bottom, sameRow: setup.top === skip.top, gap: skip.left - setup.right };
+        });
+        assert.deepEqual(promptLayout, { belowList: true, sameRow: true, gap: 6 });
+        await cdp.clickSelector('[data-open-import-rules-intro]');
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-import-group-name]').value), 'NSFW');
         await cdp.clickSelector('[data-import-apply-existing]');
         await cdp.clickSelector('[data-import-rules-save]');
@@ -47,9 +58,36 @@ test('an existing user with no destination can create one, opt in and see the pr
         const { groups, assignments, importOrganize } = (await getServerState(baseUrl)).extension_settings.worldbook_organizer;
         assert.equal(groups.find((group) => group.id === importOrganize.sensitiveGroupId).name, 'NSFW');
         assert.equal(assignments['成人向测试书'], importOrganize.sensitiveGroupId);
+        await waitForCondition(cdp, () => document.querySelector('#wbo-ai-import-prompt').hidden && !document.querySelector('[data-import-rules-save]'));
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-sens-target-group option:checked').textContent), 'NSFW');
         await cdp.reload();
         await openManager(cdp);
-        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-mgr-import-prompt').hidden), true);
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        await cdp.clickSelector('[data-ai-book-tab="sensitive"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-import-prompt').hidden), true);
+    });
+});
+
+test('skipping the sensitive import prompt persists without applying a rule', async () => {
+    const seed = createDefaultSeed({
+        characters: [],
+        worldbooks: { 成人向测试书: { entries: {} } },
+        selected_world_info: [],
+        pluginSettings: { groups: [], assignments: {}, autoScanNewCharacters: false, organizeLastTab: 'organize' },
+    });
+    await run(seed, async (cdp, baseUrl) => {
+        await openManager(cdp);
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        await cdp.clickSelector('[data-skip-import-rules-intro]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-import-prompt').hidden), true);
+        await waitForCondition(cdp, async () => {
+            const config = (await fetch('/__test/state').then((res) => res.json())).extension_settings.worldbook_organizer;
+            return config.importOrganize?.sensitivePromptSeen;
+        });
+        const { groups, assignments, importOrganize } = (await getServerState(baseUrl)).extension_settings.worldbook_organizer;
+        assert.deepEqual(groups, []);
+        assert.deepEqual(assignments, {});
+        assert.equal(importOrganize.sensitiveGroupId, '');
     });
 });
 
