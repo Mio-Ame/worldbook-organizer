@@ -3563,7 +3563,7 @@ function openCreateOrRenameGroupModal(group, { initialBookName = null } = {}) {
                     ` : ''}
                 </div>
                 <div class="wbo-gp-toolbar">
-                    <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-group-pick-filter" placeholder="搜索书名/别名/角色..." autocomplete="off">
+                    <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-group-pick-filter" placeholder="搜索书名/别名/角色..." autocomplete="off" spellcheck="false">
                     ${ungroupedBooks.length > 0 ? '<button type="button" class="wbo-btn wbo-gp-quick-btn" id="wbo-gp-select-ungrouped-btn">全选当前可见未分组</button>' : ''}
                 </div>
                 <div class="wbo-ai-book-list wbo-group-pick-list" id="wbo-group-pick-list">
@@ -3869,7 +3869,7 @@ function openAliasNoteModal(bookMeta) {
             </div>
             <div class="wbo-field">
                 <label class="wbo-label">备注</label>
-                <input type="text" class="wbo-input" id="wbo-note-input" value="${esc(bookMeta.note || '')}" placeholder="用途或特点">
+                <input type="text" class="wbo-input" id="wbo-note-input" value="${esc(bookMeta.note || '')}" placeholder="用途或特点" spellcheck="false">
             </div>
             <div class="wbo-ai-status" id="wbo-rename-status"></div>
             <div class="wbo-modal-footer">
@@ -4275,11 +4275,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <div class="wbo-rule-builder-row">
                             <div class="wbo-rule-field">
                                 <span class="wbo-rule-field-label">书名关键词</span>
-                                <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="如：穿搭、现代">
+                                <input type="text" class="wbo-input" id="wbo-local-rule-kw" placeholder="如：穿搭、现代" spellcheck="false">
                             </div>
                             <div class="wbo-rule-field">
                                 <span class="wbo-rule-field-label">归入分组</span>
-                                <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="如：User 人设">
+                                <input type="text" class="wbo-input" id="wbo-local-rule-grp" list="wbo-existing-groups-datalist" placeholder="如：User 人设" spellcheck="false">
                             </div>
                             <button type="button" class="wbo-btn wbo-rule-add-btn" id="wbo-local-rule-add-btn">添加</button>
                         </div>
@@ -4337,7 +4337,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <span class="wbo-sens-result-text" id="wbo-sens-result-text"></span>
                         <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-sens-inline-undo">撤回</button>
                     </div>
-                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off">
+                    <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off" spellcheck="false">
                     <div class="wbo-ai-book-list" id="wbo-ai-book-list">${bookChecksHtml}</div>
                 </div>
 
@@ -4475,8 +4475,8 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                             <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ch-save-btn">保存</button>
                             <button type="button" class="wbo-btn" id="wbo-ch-del-btn">删除</button>
                         </div>
-                        <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：常用通道 1">
-                        <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1">
+                        <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：常用通道 1" spellcheck="false">
+                        <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1" spellcheck="false">
                         <div class="wbo-api-model-row">
                             <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off">
                             <button type="button" class="wbo-btn" id="wbo-toggle-key-btn" title="显示或隐藏密钥">
@@ -4484,7 +4484,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                             </button>
                         </div>
                         <div class="wbo-api-model-row">
-                            <input type="text" class="wbo-input" id="wbo-api-model" value="${esc(activeCh?.model || '')}" list="wbo-api-models-datalist" placeholder="模型名称">
+                            <input type="text" class="wbo-input" id="wbo-api-model" value="${esc(activeCh?.model || '')}" list="wbo-api-models-datalist" placeholder="模型名称" spellcheck="false">
                             <datalist id="wbo-api-models-datalist"></datalist>
                             <button type="button" class="wbo-btn" id="wbo-fetch-models-btn">拉取模型</button>
                         </div>
@@ -5534,11 +5534,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <div class="wbo-prop-edit-drawer">
                             <label class="wbo-prop-field">
                                 <span class="wbo-prop-label">新名称</span>
-                                <input type="text" class="wbo-input wbo-prop-alias" value="${esc(item.alias)}" placeholder="规范后的显示名">
+                                <input type="text" class="wbo-input wbo-prop-alias" value="${esc(item.alias)}" placeholder="规范后的显示名" spellcheck="false">
                             </label>
                             <label class="wbo-prop-field">
                                 <span class="wbo-prop-label">说明</span>
-                                <input type="text" class="wbo-input wbo-prop-note" value="${esc(item.note)}" placeholder="可选：一句话用途说明">
+                                <input type="text" class="wbo-input wbo-prop-note" value="${esc(item.note)}" placeholder="可选：一句话用途说明" spellcheck="false">
                             </label>
                         </div>
                     `

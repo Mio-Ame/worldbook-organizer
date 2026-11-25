@@ -235,11 +235,6 @@
     --wbo-track-on: var(--wbo-accent);
 }
 
-.wbo-mp-popover[data-wbo-palette="host"] {
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-}
-
 /* Keep sticky section headers & pills 100% opaque even when host `--SmartThemeBlurTintColor` is translucent */
 .wbo-mp-popover[data-wbo-palette="host"].wbo-theme-light .wbo-mp-sec-head {
     background-color: #f4f4f1 !important;
@@ -2297,8 +2292,6 @@
         color-mix(in srgb, var(--SmartThemeBlurTintColor, #1f2229) 94%, transparent),
         color-mix(in srgb, var(--SmartThemeBlurTintColor, #1f2229) 94%, transparent)
     );
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
     box-shadow: 0 1px 0 color-mix(in srgb, currentColor 12%, transparent);
     transition: background-color 0.12s ease;
 }
@@ -5262,9 +5255,13 @@ details[open] > summary .wbo-details-chev {
     .wbo-modal-overlay.wbo-floating-overlay {
         align-items: center;
         justify-content: center;
-        padding: 8px;
+        padding: 0;
         pointer-events: none;
         background: transparent !important;
+    }
+    .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-modal.is-mini-window),
+    .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-modal.is-resized) {
+        padding: 8px;
     }
     .wbo-modal:not(.wbo-mp-popover):not(.wbo-vis-popover):not(.wbo-prompt-modal):not(.is-mini-window):not(.is-resized),
     .wbo-modal.is-pinned-layout:not(.is-mini-window):not(.is-resized),
