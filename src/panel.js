@@ -9,6 +9,7 @@ import {
     GROUP_COLOR_PALETTE,
     LOCAL_ORGANIZE_CATEGORIES,
     SPECIAL_GROUPS,
+    WORLD_ENTRY_POSITIONS,
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
@@ -32,6 +33,7 @@ import {
     restoreOrganizeSnapshot,
     searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
+    togglePinnedBook,
     undoLastAiOrganize,
     updateCachedCharBindings,
 } from './core.js';
@@ -39,9 +41,12 @@ import {
     applyTauriSurface,
     callCustomApiForOrganize,
     callHostAiForOrganize,
+    createWorldbookEntryDirect,
     deleteWorldbooksFromHost,
     fetchCustomApiModels,
+    fetchSingleWorldbookEntry,
     fetchWorldbookCluesOnDemand,
+    fetchWorldbookEntryList,
     fetchWorldbookPreviewEntries,
     flushWorldInfoListRefresh,
     getActiveGlobalWorldSet,
@@ -53,6 +58,7 @@ import {
     openCharacterByAvatar,
     realRenameWorldbook,
     saveSettings,
+    saveWorldbookEntryPatch,
     scanShallowCharactersInBatches,
     searchWorldbookEntriesStream,
     showToast,
@@ -646,6 +652,16 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                 </button>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
+                    <button type="button"
+                        class="wbo-icon-btn wbo-star-btn${book.isPinned ? ' is-pinned' : ''}"
+                        data-action="toggle-pin-book"
+                        title="${book.isPinned ? '取消置顶收藏' : '置顶收藏'}"
+                        aria-pressed="${book.isPinned ? 'true' : 'false'}">
+                        <i class="${book.isPinned ? 'fa-solid' : 'fa-regular'} fa-star"></i>
+                    </button>
+                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="browse-entries" title="浏览与直编条目">
+                        <i class="fa-regular fa-file-lines"></i>
+                    </button>
                     <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="edit-book" title="在酒馆编辑器中打开">
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
@@ -694,6 +710,7 @@ async function toggleInlineBookPreview(itemEl, bookName) {
             : '';
         const footerLinks = `
             <span class="wbo-preview-head-actions">
+                <button type="button" class="wbo-link-btn" data-action="browse-entries">浏览/编辑条目</button>
                 ${entryGroupsBtn}
                 <button type="button" class="wbo-link-btn" data-action="edit-book">在酒馆编辑器打开</button>
                 <button type="button" class="wbo-link-btn is-danger" data-action="delete-single-book">删除此书</button>
@@ -850,18 +867,20 @@ function renderGroupSectionHtml({
             : hiddenInEditor
                 ? '已在编辑下拉框默认隐藏，点击修改'
                 : '设置该分组在全局框 / 编辑框中的默认显隐';
-    const visActionBtn = visHiddenAny
-        ? `
-            <button type="button" class="wbo-group-vis-pill" data-action="open-group-visibility" data-group-id="${esc(id)}" data-group-name="${esc(name)}" title="${esc(visTitle)}">
-                <i class="fa-solid fa-eye-slash"></i>
-                <span>${esc(visLabel)}</span>
-            </button>
-        `
-        : `
-            <button type="button" class="wbo-icon-btn wbo-group-vis-btn" data-action="open-group-visibility" data-group-id="${esc(id)}" data-group-name="${esc(name)}" title="${esc(visTitle)}">
-                <i class="fa-solid fa-eye"></i>
-            </button>
-        `;
+    const visActionBtn = id === SPECIAL_GROUPS.PINNED
+        ? ''
+        : visHiddenAny
+            ? `
+                <button type="button" class="wbo-group-vis-pill" data-action="open-group-visibility" data-group-id="${esc(id)}" data-group-name="${esc(name)}" title="${esc(visTitle)}">
+                    <i class="fa-solid fa-eye-slash"></i>
+                    <span>${esc(visLabel)}</span>
+                </button>
+            `
+            : `
+                <button type="button" class="wbo-icon-btn wbo-group-vis-btn" data-action="open-group-visibility" data-group-id="${esc(id)}" data-group-name="${esc(name)}" title="${esc(visTitle)}">
+                    <i class="fa-solid fa-eye"></i>
+                </button>
+            `;
     const orderActions = isSingleView
         ? ''
         : `
@@ -2114,6 +2133,23 @@ export function openManagerModal() {
                 }
                 break;
             }
+            case 'toggle-pin-book': {
+                const holder = target.closest('.wbo-book-item, .wbo-book-row');
+                const bookName = holder?.getAttribute('data-book');
+                if (bookName) {
+                    const nextPinned = togglePinnedBook(settings, bookName);
+                    await _callbacks.onMutation({ save: true });
+                    showToast('info', nextPinned ? `已置顶「${classification.byName.get(bookName)?.primaryTitle || bookName}」` : '已取消置顶');
+                }
+                break;
+            }
+            case 'browse-entries': {
+                const holder = target.closest('.wbo-book-item, .wbo-book-row');
+                const bookName = holder?.getAttribute('data-book');
+                const meta = bookName ? classification.byName.get(bookName) : null;
+                if (meta) openBookEntryBrowserModal(meta);
+                break;
+            }
             case 'open-entry-groups': {
                 const holder = target.closest('.wbo-book-item, .wbo-book-row');
                 const bookName = holder?.getAttribute('data-book');
@@ -2229,6 +2265,13 @@ function refreshManagerModalContent() {
             label: settings.showCharBooks ? '全部' : '非角色书',
             count: settings.showCharBooks ? classification.totalCount : classification.nonCharCount,
         },
+        ...(classification.pinnedCount > 0 || settings.activeFilterGroupId === SPECIAL_GROUPS.PINNED
+            ? [{
+                id: SPECIAL_GROUPS.PINNED,
+                label: '★ 已置顶',
+                count: classification.pinnedCount || 0,
+            }]
+            : []),
         ...orderedSections
             .filter((sec) => !(sec.kind === 'ungrouped' && !hasCustomGroups) && !(sec.kind === 'character' && !settings.showCharBooks))
             .map((sec) => ({
@@ -2616,7 +2659,7 @@ function renderManagerGroupsListOnly() {
             sec.name,
             sec.color,
             sec.kind === 'custom' ? Boolean(liveGroupById.get(sec.id)?.collapsed) : false,
-            sec.books.map((b) => `${b.realName}|${b.primaryTitle}|${b.subtitle}|${b.note}`).join(','),
+            sec.books.map((b) => `${b.realName}|${b.primaryTitle}|${b.subtitle}|${b.note}|${b.isPinned ? 1 : 0}`).join(','),
         ]),
     ]);
     if (structSig === _lastModalListSig && listEl.childElementCount > 0) {
@@ -2638,7 +2681,33 @@ function renderManagerGroupsListOnly() {
 
     const sections = [];
 
-    orderedSections.forEach((sec, idx) => {
+    if (filterId === SPECIAL_GROUPS.PINNED) {
+        const pinnedList = q
+            ? (classification.pinnedBooks || []).filter((b) => matchesSearch(b, q, searchOpts))
+            : (classification.pinnedBooks || []);
+        if (pinnedList.length > 0) {
+            sections.push(
+                renderGroupSectionHtml({
+                    id: SPECIAL_GROUPS.PINNED,
+                    name: '★ 已置顶收藏',
+                    color: '#e09f3e',
+                    collapsed: false,
+                    isCustom: false,
+                    isSingleView: true,
+                    canMoveUp: false,
+                    canMoveDown: false,
+                    books: pinnedList,
+                    activeGlobals,
+                    currentEditor,
+                }),
+            );
+        } else {
+            sections.push(
+                `<div class="wbo-empty-hint">${q ? '置顶收藏中无匹配世界书' : '暂无已置顶的世界书，点击书行右侧 ★ 即可置顶'}</div>`,
+            );
+        }
+    } else {
+        orderedSections.forEach((sec, idx) => {
         const canMoveUp = idx > 0;
         const canMoveDown = idx < orderedSections.length - 1;
 
@@ -2733,6 +2802,7 @@ function renderManagerGroupsListOnly() {
             }
         }
     });
+    }
 
     if (q && !settings.mgrSearchInEntries) {
         sections.push(`
@@ -6645,6 +6715,9 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         </button>`
         : '';
     pop.innerHTML = `
+        <button type="button" class="wbo-book-more-item" data-more-act="browse-entries">
+            <i class="fa-regular fa-file-lines"></i><span>浏览/编辑条目</span>
+        </button>
         <button type="button" class="wbo-book-more-item" data-more-act="edit-book">
             <i class="fa-solid fa-arrow-up-right-from-square"></i><span>在编辑器中打开</span>
         </button>
@@ -6668,7 +6741,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
     const popW = 164;
-    const minH = hasEntryGroups ? 216 : 184;
+    const minH = hasEntryGroups ? 248 : 216;
     const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
     const openAbove = vh - rect.bottom < minH && rect.top > minH;
     pop.style.width = `${popW}px`;
@@ -6704,7 +6777,9 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             ev.stopPropagation();
             const act = btn.getAttribute('data-more-act');
             cleanup();
-            if (act === 'edit-book') {
+            if (act === 'browse-entries') {
+                openBookEntryBrowserModal(bookMeta);
+            } else if (act === 'edit-book') {
                 openWorldInNativeEditor(bookMeta.realName);
                 closeManagerModal();
             } else if (act === 'open-entry-groups') {
@@ -6718,6 +6793,360 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             }
         });
     });
+}
+
+/**
+ * In-plugin lightweight entry browser & single-entry direct editor inside a fixed-dimension
+ * `pinnedLayout` submodal:
+ * - List view renders ONLY lightweight rows (title, keyword preview, blue/green dot, toggle switch)
+ * - Single-entry edit view mounts 1 `<textarea>` on demand and shallow-merges changes onto the
+ *   original raw entry JSON on save (zero native/unknown field loss, zero `worldInfoCache` bloat).
+ * @param {object} bookMeta
+ */
+function openBookEntryBrowserModal(bookMeta) {
+    if (!bookMeta?.realName) return;
+    const worldName = bookMeta.realName;
+    const displayTitle = bookMeta.primaryTitle || worldName;
+
+    const { modal } = createSubModal(
+        `条目浏览：${displayTitle}`,
+        `<div class="wbo-step-scroll"><div class="wbo-empty-hint">正在读取条目列表...</div></div>`,
+        { wide: true, pinnedLayout: true },
+    );
+    const bodyEl = modal.querySelector('.wbo-modal-body');
+    const titleEl = modal.querySelector('.wbo-modal-title');
+    if (!(bodyEl instanceof HTMLElement)) return;
+
+    let searchQuery = '';
+    let listState = { ok: false, total: 0, enabledCount: 0, items: [], error: '' };
+    let activeEntry = null;
+    let listScrollTop = 0;
+
+    const getPosLabel = (pos) => WORLD_ENTRY_POSITIONS.find((p) => p.value === pos)?.label || '角色定义前';
+
+    const renderListView = () => {
+        activeEntry = null;
+        if (titleEl) titleEl.textContent = `条目浏览：${displayTitle}`;
+
+        const q = searchQuery.trim().toLowerCase();
+        const visibleSet = new Set(
+            (q
+                ? listState.items.filter((it) => it.searchText.includes(q) || it.title.toLowerCase().includes(q))
+                : listState.items
+            ).map((x) => x.uid),
+        );
+
+        const rowsHtml = !listState.ok
+            ? `<div class="wbo-empty-hint">${esc(listState.error || '读取失败')}</div>`
+            : listState.items.length === 0
+                ? '<div class="wbo-empty-hint">该世界书暂无条目，可点右上角「新建条目」创建</div>'
+                : listState.items.map((item) => {
+                    const kwPreview = item.keys.slice(0, 4).join(' / ');
+                    const metaText = `${getPosLabel(item.position)}${item.position === 4 ? ` @D${item.depth}` : ''} · 顺序 ${item.order}`;
+                    const isHidden = !visibleSet.has(item.uid);
+                    return `
+                        <div class="wbo-eb-row${item.disable ? ' is-disabled' : ''}" data-eb-uid="${esc(item.uid)}"${isHidden ? ' hidden' : ''}>
+                            <button type="button" class="wbo-eb-row-main" data-eb-open="${esc(item.uid)}" title="点击编辑此条目">
+                                <span class="wbo-eb-dot ${item.constant ? 'is-const' : 'is-key'}" title="${item.constant ? '蓝灯（常驻）' : '绿灯（关键词触发）'}"></span>
+                                <span class="wbo-eb-row-text">
+                                    <span class="wbo-eb-row-title">${esc(item.title)}</span>
+                                    <span class="wbo-eb-row-meta">
+                                        ${kwPreview ? `<span class="wbo-eb-keys">${esc(kwPreview)}</span>` : '<span class="wbo-eb-keys is-empty">无触发词</span>'}
+                                        <span class="wbo-eb-pos">${esc(metaText)}</span>
+                                    </span>
+                                </span>
+                            </button>
+                            <label class="wbo-tool-switch wbo-eb-switch" title="${item.disable ? '点击启用' : '点击禁用'}">
+                                <input type="checkbox" class="wbo-eb-toggle" data-eb-toggle-uid="${esc(item.uid)}"${item.disable ? '' : ' checked'}>
+                                <span class="wbo-switch-track"></span>
+                            </label>
+                        </div>
+                    `;
+                }).join('') + `<div class="wbo-empty-hint" id="wbo-eb-empty-filter"${visibleSet.size > 0 ? ' hidden' : ''}>无匹配条目</div>`;
+
+        const enabledCount = listState.items.filter((x) => !x.disable).length;
+        bodyEl.innerHTML = `
+            <div class="wbo-pinned-top">
+                <div class="wbo-eb-topbar">
+                    <button type="button" class="wbo-btn" id="wbo-eb-back-btn">
+                        <i class="fa-solid fa-arrow-left"></i> 返回分组
+                    </button>
+                    <span class="wbo-spacer"></span>
+                    <button type="button" class="wbo-btn" id="wbo-eb-open-native-btn">
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i> 在酒馆编辑器打开
+                    </button>
+                </div>
+                <div class="wbo-eb-searchbar">
+                    <div class="wbo-search-wrap wbo-es-input-wrap">
+                        <i class="fa-solid fa-magnifying-glass"></i>
+                        <input type="search" class="wbo-search-input" id="wbo-eb-search" value="${esc(searchQuery)}" placeholder="筛选条目标题或触发词..." autocomplete="off" spellcheck="false">
+                    </div>
+                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-eb-new-btn">
+                        <i class="fa-solid fa-plus"></i> 新建条目
+                    </button>
+                </div>
+            </div>
+            <div class="wbo-step-scroll wbo-eb-list" id="wbo-eb-list">${rowsHtml}</div>
+            <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
+                <div class="wbo-ai-footer-left">
+                    <span class="wbo-subtle-tip" id="wbo-eb-summary">共 ${listState.items.length} 条 · 已启用 ${enabledCount} 条</span>
+                </div>
+                <div class="wbo-ai-footer-right">
+                    <button type="button" class="wbo-btn" id="wbo-eb-close-btn">关闭</button>
+                </div>
+            </div>
+        `;
+
+        const scrollEl = bodyEl.querySelector('#wbo-eb-list');
+        if (scrollEl instanceof HTMLElement && listScrollTop > 0) {
+            scrollEl.scrollTop = listScrollTop;
+        }
+
+        bodyEl.querySelector('#wbo-eb-back-btn')?.addEventListener('click', closeSubModal);
+        bodyEl.querySelector('#wbo-eb-close-btn')?.addEventListener('click', closeSubModal);
+        bodyEl.querySelector('#wbo-eb-open-native-btn')?.addEventListener('click', () => {
+            openWorldInNativeEditor(worldName);
+            closeSubModal();
+            closeManagerModal();
+        });
+
+        const searchInput = bodyEl.querySelector('#wbo-eb-search');
+        if (searchInput instanceof HTMLInputElement) {
+            let composing = false;
+            const filterListInPlace = () => {
+                searchQuery = searchInput.value;
+                const qNow = searchQuery.trim().toLowerCase();
+                const listNode = bodyEl.querySelector('#wbo-eb-list');
+                if (!listNode) return;
+                const visibleUids = new Set(
+                    (qNow
+                        ? listState.items.filter((it) => it.searchText.includes(qNow) || it.title.toLowerCase().includes(qNow))
+                        : listState.items
+                    ).map((x) => x.uid),
+                );
+                listNode.querySelectorAll('.wbo-eb-row[data-eb-uid]').forEach((row) => {
+                    if (!(row instanceof HTMLElement)) return;
+                    const uid = row.getAttribute('data-eb-uid');
+                    row.hidden = !visibleUids.has(uid);
+                });
+                const emptyFilterEl = listNode.querySelector('#wbo-eb-empty-filter');
+                if (emptyFilterEl instanceof HTMLElement) {
+                    emptyFilterEl.hidden = visibleUids.size > 0;
+                }
+            };
+            searchInput.addEventListener('compositionstart', () => { composing = true; });
+            searchInput.addEventListener('compositionend', () => {
+                composing = false;
+                filterListInPlace();
+            });
+            searchInput.addEventListener('input', () => {
+                if (!composing) filterListInPlace();
+            });
+            bindImeSafeEnter(searchInput, filterListInPlace);
+            if (isDesktopAutoFocusAllowed()) {
+                searchInput.focus();
+            }
+        }
+
+        bodyEl.querySelector('#wbo-eb-new-btn')?.addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            if (btn instanceof HTMLButtonElement) btn.disabled = true;
+            const created = await createWorldbookEntryDirect(worldName, { comment: '新条目' });
+            if (btn instanceof HTMLButtonElement) btn.disabled = false;
+            if (!created.ok || !created.entry) {
+                showToast('error', created.error || '创建条目失败');
+                return;
+            }
+            invalidatePreviewCache(worldName);
+            listState = await fetchWorldbookEntryList(worldName);
+            showToast('success', '已新建条目');
+            renderEditView(created.entry);
+        });
+
+        scrollEl?.addEventListener('change', async (ev) => {
+            const cb = ev.target;
+            if (!(cb instanceof HTMLInputElement) || !cb.classList.contains('wbo-eb-toggle')) return;
+            const uid = cb.getAttribute('data-eb-toggle-uid');
+            if (!uid) return;
+            const nextDisable = !cb.checked;
+            cb.disabled = true;
+            const res = await saveWorldbookEntryPatch(worldName, uid, { disable: nextDisable });
+            cb.disabled = false;
+            if (!res.ok) {
+                cb.checked = !cb.checked;
+                showToast('error', res.error || '保存开关状态失败');
+                return;
+            }
+            const item = listState.items.find((x) => x.uid === uid);
+            if (item) item.disable = nextDisable;
+            cb.closest('.wbo-eb-row')?.classList.toggle('is-disabled', nextDisable);
+            const sumEl = bodyEl.querySelector('#wbo-eb-summary');
+            if (sumEl) {
+                const onCount = listState.items.filter((x) => !x.disable).length;
+                sumEl.textContent = `共 ${listState.items.length} 条 · 已启用 ${onCount} 条`;
+            }
+            invalidatePreviewCache(worldName);
+        });
+
+        scrollEl?.addEventListener('click', async (ev) => {
+            const btn = ev.target instanceof Element ? ev.target.closest('[data-eb-open]') : null;
+            if (!btn) return;
+            const uid = btn.getAttribute('data-eb-open');
+            if (!uid) return;
+            listScrollTop = scrollEl.scrollTop;
+            const res = await fetchSingleWorldbookEntry(worldName, uid);
+            if (!res.ok || !res.entry) {
+                showToast('error', res.error || '读取条目失败');
+                return;
+            }
+            renderEditView(res.entry);
+        });
+    };
+
+    const renderEditView = (entry) => {
+        activeEntry = entry;
+        if (titleEl) titleEl.textContent = `编辑条目：${entry.comment?.trim() || `#${entry.uid}`}`;
+
+        const posOptsHtml = WORLD_ENTRY_POSITIONS.map(
+            (p) => `<option value="${p.value}"${Number(entry.position) === p.value ? ' selected' : ''}>${esc(p.label)}</option>`,
+        ).join('');
+
+        bodyEl.innerHTML = `
+            <div class="wbo-pinned-top">
+                <div class="wbo-eb-topbar">
+                    <button type="button" class="wbo-btn" id="wbo-ee-back-btn">
+                        <i class="fa-solid fa-arrow-left"></i> 返回条目列表
+                    </button>
+                    <span class="wbo-tag">UID ${esc(entry.uid)}</span>
+                    <span class="wbo-spacer"></span>
+                    <button type="button" class="wbo-btn" id="wbo-ee-open-native-btn">
+                        <i class="fa-solid fa-arrow-up-right-from-square"></i> 在酒馆编辑器打开
+                    </button>
+                </div>
+            </div>
+            <div class="wbo-step-scroll wbo-ee-scroll">
+                <div class="wbo-ee-row-2col">
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-comment">条目标题（注释）</label>
+                        <input type="text" class="wbo-input" id="wbo-ee-comment" value="${esc(entry.comment)}" placeholder="用于列表识别的条目标题">
+                    </div>
+                    <div class="wbo-field">
+                        <label class="wbo-label">状态与触发灯</label>
+                        <div class="wbo-ee-inline-flags">
+                            <label class="wbo-check-line">
+                                <input type="checkbox" id="wbo-ee-enabled"${entry.disable ? '' : ' checked'}>
+                                <span>启用</span>
+                            </label>
+                            <select class="wbo-select wbo-ee-mode-select" id="wbo-ee-mode">
+                                <option value="green"${!entry.constant ? ' selected' : ''}>绿灯 · 关键词触发</option>
+                                <option value="blue"${entry.constant ? ' selected' : ''}>蓝灯 · 常驻激活</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="wbo-ee-row-2col">
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-keys">主触发词（逗号或换行分隔）</label>
+                        <input type="text" class="wbo-input" id="wbo-ee-keys" value="${esc(entry.key.join(', '))}" placeholder="关键词1, 关键词2">
+                    </div>
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-keys2">次触发词（可选）</label>
+                        <input type="text" class="wbo-input" id="wbo-ee-keys2" value="${esc(entry.keysecondary.join(', '))}" placeholder="辅助过滤词1, 词2">
+                    </div>
+                </div>
+                <div class="wbo-ee-row-3col">
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-position">插入位置</label>
+                        <select class="wbo-select" id="wbo-ee-position">${posOptsHtml}</select>
+                    </div>
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-depth">深度 (@D)</label>
+                        <input type="number" class="wbo-input" id="wbo-ee-depth" min="0" step="1" value="${esc(String(entry.depth))}">
+                    </div>
+                    <div class="wbo-field">
+                        <label class="wbo-label" for="wbo-ee-order">插入顺序</label>
+                        <input type="number" class="wbo-input" id="wbo-ee-order" step="1" value="${esc(String(entry.order))}">
+                    </div>
+                </div>
+                <div class="wbo-field wbo-ee-content-field">
+                    <label class="wbo-label" for="wbo-ee-content">条目正文</label>
+                    <textarea class="wbo-textarea wbo-ee-textarea" id="wbo-ee-content" placeholder="输入世界书条目正文...">${esc(entry.content)}</textarea>
+                </div>
+                <div class="wbo-ai-status" id="wbo-ee-status"></div>
+            </div>
+            <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
+                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ee-save-btn">保存修改</button>
+                <button type="button" class="wbo-btn" id="wbo-ee-cancel-btn">取消返回</button>
+            </div>
+        `;
+
+        const commentInput = bodyEl.querySelector('#wbo-ee-comment');
+        const enabledCb = bodyEl.querySelector('#wbo-ee-enabled');
+        const modeSelect = bodyEl.querySelector('#wbo-ee-mode');
+        const keysInput = bodyEl.querySelector('#wbo-ee-keys');
+        const keys2Input = bodyEl.querySelector('#wbo-ee-keys2');
+        const posSelect = bodyEl.querySelector('#wbo-ee-position');
+        const depthInput = bodyEl.querySelector('#wbo-ee-depth');
+        const orderInput = bodyEl.querySelector('#wbo-ee-order');
+        const contentArea = bodyEl.querySelector('#wbo-ee-content');
+        const statusEl = bodyEl.querySelector('#wbo-ee-status');
+
+        if (commentInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
+            commentInput.focus();
+        }
+
+        bodyEl.querySelector('#wbo-ee-back-btn')?.addEventListener('click', renderListView);
+        bodyEl.querySelector('#wbo-ee-cancel-btn')?.addEventListener('click', renderListView);
+        bodyEl.querySelector('#wbo-ee-open-native-btn')?.addEventListener('click', () => {
+            openWorldInNativeEditor(worldName, { focusUid: entry.uid });
+            closeSubModal();
+            closeManagerModal();
+        });
+
+        bodyEl.querySelector('#wbo-ee-save-btn')?.addEventListener('click', async (ev) => {
+            const btn = ev.currentTarget;
+            if (btn instanceof HTMLButtonElement) btn.disabled = true;
+            if (statusEl) {
+                statusEl.textContent = '正在保存条目（保留全部高级原生字段）...';
+                statusEl.className = 'wbo-ai-status';
+            }
+
+            const isBlue = modeSelect instanceof HTMLSelectElement && modeSelect.value === 'blue';
+            const patch = {
+                comment: commentInput instanceof HTMLInputElement ? commentInput.value : entry.comment,
+                disable: !(enabledCb instanceof HTMLInputElement ? enabledCb.checked : !entry.disable),
+                constant: isBlue,
+                selective: !isBlue,
+                key: keysInput instanceof HTMLInputElement ? keysInput.value : entry.key,
+                keysecondary: keys2Input instanceof HTMLInputElement ? keys2Input.value : entry.keysecondary,
+                position: posSelect instanceof HTMLSelectElement ? Number(posSelect.value) : entry.position,
+                depth: depthInput instanceof HTMLInputElement ? Number(depthInput.value) : entry.depth,
+                order: orderInput instanceof HTMLInputElement ? Number(orderInput.value) : entry.order,
+                content: contentArea instanceof HTMLTextAreaElement ? contentArea.value : entry.content,
+            };
+
+            const res = await saveWorldbookEntryPatch(worldName, entry.uid, patch);
+            if (!res.ok) {
+                if (btn instanceof HTMLButtonElement) btn.disabled = false;
+                if (statusEl) {
+                    statusEl.textContent = res.error || '保存失败';
+                    statusEl.className = 'wbo-ai-status is-error';
+                }
+                return;
+            }
+
+            invalidatePreviewCache(worldName);
+            listState = await fetchWorldbookEntryList(worldName);
+            showToast('success', '条目已保存');
+            renderListView();
+        });
+    };
+
+    void (async () => {
+        listState = await fetchWorldbookEntryList(worldName);
+        if (!modal.isConnected) return;
+        renderListView();
+    })();
 }
 
 /**

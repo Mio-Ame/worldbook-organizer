@@ -15,6 +15,7 @@ export const MODULE_NAME = 'worldbook_organizer';
 export const SPECIAL_GROUPS = Object.freeze({
     DEFAULT: '__default__',
     ALL: '__all__',
+    PINNED: '__pinned__',
     UNGROUPED: '__ungrouped__',
     CHARACTER: '__char__',
 });
@@ -186,6 +187,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     notes: {},
     charBookOverrides: {},
     cachedCharBindings: {},
+    pinnedBooks: [],
     undoSnapshots: [],
     initialSnapshot: null,
 });
@@ -298,6 +300,14 @@ export function normalizeSettings(raw) {
         merged.entrySearchHistory = [...new Set(
             merged.entrySearchHistory.map((s) => String(s ?? '').trim()).filter(Boolean),
         )].slice(0, 10);
+    }
+
+    if (!Array.isArray(merged.pinnedBooks)) {
+        merged.pinnedBooks = [];
+    } else {
+        merged.pinnedBooks = [...new Set(
+            merged.pinnedBooks.map((s) => String(s ?? '').trim()).filter(Boolean),
+        )];
     }
 
     const validGroupIds = new Set(merged.groups.map((g) => g.id));
@@ -1004,6 +1014,7 @@ export function classifyWorldbooks({
     const cfg = normalizeSettings(settings);
     const validGroupMap = new Map(cfg.groups.map((g) => [g.id, g]));
     const perCharBooks = buildCharBooksCountMap(bindingMap);
+    const pinnedSet = new Set(cfg.pinnedBooks || []);
 
     /** @type {Map<string, any>} */
     const byName = new Map();
@@ -1013,6 +1024,8 @@ export function classifyWorldbooks({
     const ungroupedBooks = [];
     /** @type {any[]} */
     const characterBooks = [];
+    /** @type {any[]} */
+    const pinnedBooks = [];
 
     const seen = new Set();
     for (const rawName of worldNames) {
@@ -1089,6 +1102,7 @@ export function classifyWorldbooks({
             note,
             groupId,
             groupName,
+            isPinned: pinnedSet.has(realName),
             isCharBound,
             isInCharGroup,
             isExcludedFromChar,
@@ -1098,6 +1112,9 @@ export function classifyWorldbooks({
         };
 
         byName.set(realName, meta);
+        if (meta.isPinned) {
+            pinnedBooks.push(meta);
+        }
 
         if (groupId === SPECIAL_GROUPS.CHARACTER) {
             characterBooks.push(meta);
@@ -1108,10 +1125,14 @@ export function classifyWorldbooks({
         }
     }
 
-    const sortByTitle = (a, b) => compareZhCn(a.primaryTitle, b.primaryTitle);
-    for (const bucket of customBuckets.values()) bucket.sort(sortByTitle);
-    ungroupedBooks.sort(sortByTitle);
-    characterBooks.sort(sortByTitle);
+    const sortByPinnedAndTitle = (a, b) => {
+        if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
+        return compareZhCn(a.primaryTitle, b.primaryTitle);
+    };
+    for (const bucket of customBuckets.values()) bucket.sort(sortByPinnedAndTitle);
+    ungroupedBooks.sort(sortByPinnedAndTitle);
+    characterBooks.sort(sortByPinnedAndTitle);
+    pinnedBooks.sort((a, b) => compareZhCn(a.primaryTitle, b.primaryTitle));
 
     const customGroups = cfg.groups.map((g) => ({
         ...g,
@@ -1157,11 +1178,13 @@ export function classifyWorldbooks({
         customGroups,
         ungroupedBooks,
         characterBooks,
+        pinnedBooks,
         orderedSections,
         sectionOrder: cfg.sectionOrder,
         totalCount: byName.size,
         nonCharCount: byName.size - characterBooks.length,
         charCount: characterBooks.length,
+        pinnedCount: pinnedBooks.length,
     };
 }
 
@@ -1357,6 +1380,9 @@ export function cleanupDeletedWorldSettings(settings, deletedNames = []) {
             delete dict[name];
         }
     }
+    if (Array.isArray(settings.pinnedBooks)) {
+        settings.pinnedBooks = settings.pinnedBooks.filter((n) => !removed.has(String(n ?? '').trim()));
+    }
 }
 
 /**
@@ -1380,6 +1406,13 @@ export function pruneStaleWorldbookSettings(settings, liveWorldNamesSet) {
                 delete dict[name];
                 changed = true;
             }
+        }
+    }
+    if (Array.isArray(settings.pinnedBooks)) {
+        const nextPinned = settings.pinnedBooks.filter((name) => liveWorldNamesSet.has(String(name ?? '').trim()));
+        if (nextPinned.length !== settings.pinnedBooks.length) {
+            settings.pinnedBooks = nextPinned;
+            changed = true;
         }
     }
     return changed;
@@ -1854,6 +1887,17 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
             if (entry.embedded === cleanOld) entry.embedded = cleanNew;
         }
     }
+
+    if (Array.isArray(settings.pinnedBooks)) {
+        settings.pinnedBooks = [...new Set(
+            settings.pinnedBooks
+                .map((b) => {
+                    const clean = String(b ?? '').trim();
+                    return clean === cleanOld ? cleanNew : clean;
+                })
+                .filter(Boolean),
+        )];
+    }
 }
 
 /**
@@ -2108,6 +2152,7 @@ export function exportConfigData(settings) {
             aliases: cfg.aliases,
             notes: cfg.notes,
             charBookOverrides: cfg.charBookOverrides,
+            pinnedBooks: cfg.pinnedBooks,
         },
     };
 }
@@ -2142,4 +2187,281 @@ export function importConfigData(settings, rawPayload) {
             aliases: Object.keys(settings.aliases).length,
         },
     };
+}
+
+/**
+ * Check whether a worldbook is starred/pinned in settings.
+ * @param {Record<string, any>} settings
+ * @param {string} worldName
+ * @returns {boolean}
+ */
+export function isBookPinned(settings, worldName) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean || !Array.isArray(settings?.pinnedBooks)) return false;
+    return settings.pinnedBooks.includes(clean);
+}
+
+/**
+ * Toggle star/pin state for a worldbook in `settings.pinnedBooks`.
+ * @param {Record<string, any>} settings
+ * @param {string} worldName
+ * @returns {boolean} new pinned state
+ */
+export function togglePinnedBook(settings, worldName) {
+    const clean = String(worldName ?? '').trim();
+    if (!settings || !clean) return false;
+    if (!Array.isArray(settings.pinnedBooks)) settings.pinnedBooks = [];
+    const idx = settings.pinnedBooks.indexOf(clean);
+    if (idx >= 0) {
+        settings.pinnedBooks.splice(idx, 1);
+        return false;
+    }
+    settings.pinnedBooks.unshift(clean);
+    return true;
+}
+
+export const WORLD_ENTRY_POSITIONS = Object.freeze([
+    { value: 0, label: '角色定义前' },
+    { value: 1, label: '角色定义后' },
+    { value: 2, label: '作者注释前' },
+    { value: 3, label: '作者注释后' },
+    { value: 4, label: '按深度插入 (@D)' },
+    { value: 5, label: '示例消息前' },
+    { value: 6, label: '示例消息后' },
+    { value: 7, label: 'Outlet' },
+]);
+
+/**
+ * Normalize comma / Chinese-comma / newline separated entry keywords into a clean deduplicated array.
+ * @param {string | string[]} raw
+ * @returns {string[]}
+ */
+export function normalizeEntryKeywordsInput(raw) {
+    const parts = Array.isArray(raw)
+        ? raw.map((x) => String(x ?? '').trim())
+        : String(raw ?? '').split(/[,\n，、]+/).map((x) => x.trim());
+    const out = [];
+    const seen = new Set();
+    for (const p of parts) {
+        if (p && !seen.has(p)) {
+            seen.add(p);
+            out.push(p);
+        }
+    }
+    return out;
+}
+
+/**
+ * Project a worldbook JSON payload into lightweight entry rows for fast list rendering
+ * without retaining full large entry bodies or dozens of form controls in DOM.
+ * @param {any} payload
+ * @returns {{ total: number, enabledCount: number, items: Array<{ uid: string, title: string, keys: string[], keysecondary: string[], constant: boolean, disable: boolean, selective: boolean, position: number, depth: number, order: number, searchText: string }> }}
+ */
+export function extractEntryListItems(payload) {
+    const entriesObj = payload?.entries;
+    if (!entriesObj || typeof entriesObj !== 'object') {
+        return { total: 0, enabledCount: 0, items: [] };
+    }
+    const rawList = Object.entries(entriesObj)
+        .filter(([, e]) => e && typeof e === 'object')
+        .sort(([, a], [, b]) => (Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0)));
+
+    const items = rawList.map(([mapKey, e], idx) => {
+        const uid = String(e.uid ?? mapKey ?? idx);
+        const keys = Array.isArray(e.key) ? e.key.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
+        const keysecondary = Array.isArray(e.keysecondary) ? e.keysecondary.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
+        const comment = String(e.comment ?? '').trim();
+        const title = comment || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`;
+        const disable = Boolean(e.disable);
+        const constant = Boolean(e.constant);
+        const selective = e.selective !== undefined ? Boolean(e.selective) : !constant;
+        const position = Number.isInteger(Number(e.position)) ? Number(e.position) : 0;
+        const depth = Number.isFinite(Number(e.depth)) ? Number(e.depth) : 4;
+        const order = Number.isFinite(Number(e.order)) ? Number(e.order) : 100;
+        const searchText = [comment, ...keys, ...keysecondary].join('\n').toLowerCase();
+        return {
+            uid,
+            title,
+            keys: keys.slice(0, 6),
+            keysecondary: keysecondary.slice(0, 4),
+            constant,
+            disable,
+            selective,
+            position,
+            depth,
+            order,
+            searchText,
+        };
+    });
+    const enabledCount = items.filter((x) => !x.disable).length;
+    return { total: items.length, enabledCount, items };
+}
+
+/**
+ * Extract editable fields for a single entry by UID (loaded on demand when editing 1 entry).
+ * @param {any} payload
+ * @param {string | number} uid
+ */
+export function extractSingleEntryForEdit(payload, uid) {
+    const entriesObj = payload?.entries;
+    if (!entriesObj || typeof entriesObj !== 'object') return null;
+    const targetUid = String(uid);
+    let raw = null;
+    if (Object.hasOwn(entriesObj, targetUid) && entriesObj[targetUid] && typeof entriesObj[targetUid] === 'object') {
+        raw = entriesObj[targetUid];
+    } else {
+        for (const [k, e] of Object.entries(entriesObj)) {
+            if (e && typeof e === 'object' && String(e.uid ?? k) === targetUid) {
+                raw = e;
+                break;
+            }
+        }
+    }
+    if (!raw) return null;
+    const constant = Boolean(raw.constant);
+    return {
+        uid: String(raw.uid ?? targetUid),
+        comment: String(raw.comment ?? ''),
+        disable: Boolean(raw.disable),
+        constant,
+        selective: raw.selective !== undefined ? Boolean(raw.selective) : !constant,
+        key: Array.isArray(raw.key) ? raw.key.map((k) => String(k ?? '').trim()).filter(Boolean) : [],
+        keysecondary: Array.isArray(raw.keysecondary) ? raw.keysecondary.map((k) => String(k ?? '').trim()).filter(Boolean) : [],
+        position: Number.isInteger(Number(raw.position)) ? Number(raw.position) : 0,
+        depth: Number.isFinite(Number(raw.depth)) ? Number(raw.depth) : 4,
+        order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : 100,
+        content: String(raw.content ?? ''),
+    };
+}
+
+/**
+ * Shallow-merge edited core fields onto the original raw worldbook entry object,
+ * strictly preserving 100% of undisplayed native fields and any custom/unknown keys!
+ *
+ * @param {Record<string, any>} rawEntry
+ * @param {{
+ *   comment?: string,
+ *   disable?: boolean,
+ *   constant?: boolean,
+ *   selective?: boolean,
+ *   key?: string[] | string,
+ *   keysecondary?: string[] | string,
+ *   position?: number,
+ *   depth?: number,
+ *   order?: number,
+ *   content?: string,
+ * }} [patch={}]
+ * @returns {Record<string, any>}
+ */
+export function mergeEntryPatchOntoRaw(rawEntry, patch = {}) {
+    const base = rawEntry && typeof rawEntry === 'object' ? deepClone(rawEntry) : {};
+    const next = { ...base };
+
+    if (patch.comment !== undefined) {
+        next.comment = String(patch.comment);
+        if (Object.hasOwn(base, 'addMemo')) {
+            next.addMemo = Boolean(next.comment.trim());
+        }
+    }
+    if (patch.disable !== undefined) {
+        next.disable = Boolean(patch.disable);
+    }
+    if (patch.constant !== undefined) {
+        next.constant = Boolean(patch.constant);
+        if (patch.selective !== undefined) {
+            next.selective = Boolean(patch.selective);
+        } else if (next.constant) {
+            next.selective = false;
+        } else {
+            next.selective = true;
+        }
+    } else if (patch.selective !== undefined) {
+        next.selective = Boolean(patch.selective);
+    }
+    if (patch.key !== undefined) {
+        next.key = normalizeEntryKeywordsInput(patch.key);
+    }
+    if (patch.keysecondary !== undefined) {
+        next.keysecondary = normalizeEntryKeywordsInput(patch.keysecondary);
+    }
+    if (patch.position !== undefined) {
+        const pos = Number(patch.position);
+        next.position = Number.isInteger(pos) && pos >= 0 && pos <= 7 ? pos : (base.position ?? 0);
+    }
+    if (patch.depth !== undefined) {
+        const d = Number(patch.depth);
+        next.depth = Number.isFinite(d) && d >= 0 ? Math.round(d) : (base.depth ?? 4);
+    }
+    if (patch.order !== undefined) {
+        const ord = Number(patch.order);
+        next.order = Number.isFinite(ord) ? Math.round(ord) : (base.order ?? 100);
+    }
+    if (patch.content !== undefined) {
+        next.content = String(patch.content);
+    }
+    return next;
+}
+
+/**
+ * Create a new native-compatible worldbook entry object with the next free integer UID.
+ * @param {Record<string, any>} entriesObj
+ * @param {Record<string, any>} [initialFields={}]
+ * @returns {Record<string, any>}
+ */
+export function createNewRawWorldEntry(entriesObj = {}, initialFields = {}) {
+    const taken = new Set();
+    let maxDisplay = -1;
+    for (const [k, e] of Object.entries(entriesObj || {})) {
+        const uidNum = Number(e?.uid ?? k);
+        if (Number.isInteger(uidNum) && uidNum >= 0) taken.add(uidNum);
+        const disp = Number(e?.displayIndex);
+        if (Number.isFinite(disp) && disp > maxDisplay) maxDisplay = disp;
+    }
+    let freeUid = 0;
+    while (taken.has(freeUid)) freeUid += 1;
+
+    const template = {
+        uid: freeUid,
+        key: [],
+        keysecondary: [],
+        comment: '',
+        content: '',
+        constant: false,
+        vectorized: false,
+        selective: true,
+        selectiveLogic: 0,
+        addMemo: false,
+        order: 100,
+        position: 0,
+        disable: false,
+        ignoreBudget: false,
+        excludeRecursion: false,
+        preventRecursion: false,
+        matchPersonaDescription: false,
+        matchCharacterDescription: false,
+        matchCharacterPersonality: false,
+        matchCharacterDepthPrompt: false,
+        matchScenario: false,
+        matchCreatorNotes: false,
+        delayUntilRecursion: 0,
+        probability: 100,
+        useProbability: true,
+        depth: 4,
+        outletName: '',
+        group: '',
+        groupOverride: false,
+        groupWeight: 100,
+        scanDepth: null,
+        caseSensitive: null,
+        matchWholeWords: null,
+        useGroupScoring: null,
+        automationId: '',
+        role: 0,
+        sticky: null,
+        cooldown: null,
+        delay: null,
+        triggers: [],
+        displayIndex: maxDisplay + 1,
+    };
+    return mergeEntryPatchOntoRaw(template, initialFields);
 }

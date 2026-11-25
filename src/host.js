@@ -10,7 +10,18 @@
  *   or rename) without polluting SillyTavern's persistent `worldInfoCache`.
  */
 
-import { MODULE_NAME, charaFileName, isPotentiallySensitiveTitle, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
+import {
+    MODULE_NAME,
+    charaFileName,
+    createNewRawWorldEntry,
+    deepClone,
+    extractEntryListItems,
+    extractSingleEntryForEdit,
+    isPotentiallySensitiveTitle,
+    mergeEntryPatchOntoRaw,
+    migrateSettingsOnWorldRename,
+    normalizeSettings,
+} from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
 const PREVIEW_CONTENT_MAX_CHARS = 1600;
@@ -367,6 +378,178 @@ export async function fetchWorldbookPreviewEntries(worldName) {
         });
     const enabledCount = list.filter((x) => !x.disabled).length;
     return { total: list.length, enabledCount, entries: list };
+}
+
+/**
+ * Sync SillyTavern's `worldInfoCache` ONLY if `worldName` is already present in cache.
+ * Never populates `worldInfoCache` for uncached books (prevents TT iOS memory bloat).
+ * @param {string} worldName
+ * @param {any} updatedPayload
+ * @returns {Promise<boolean>}
+ */
+export async function syncWorldInfoCacheIfPresent(worldName, updatedPayload) {
+    await ensureWorldInfoModule();
+    const cache = _worldInfoModule?.worldInfoCache;
+    let updated = false;
+    if (cache && typeof cache.has === 'function' && typeof cache.set === 'function') {
+        if (cache.has(worldName)) {
+            cache.set(worldName, deepClone(updatedPayload));
+            updated = true;
+        }
+    } else if (cache && typeof cache === 'object' && !(cache instanceof Map) && Object.hasOwn(cache, worldName)) {
+        cache[worldName] = deepClone(updatedPayload);
+        updated = true;
+    }
+
+    if (updated && getCurrentEditorWorldName() === worldName && typeof _worldInfoModule?.reloadEditor === 'function') {
+        try {
+            _worldInfoModule.reloadEditor(worldName);
+        } catch {
+            // Non-fatal
+        }
+    }
+    return updated;
+}
+
+/**
+ * Load lightweight entry list metadata for a single worldbook via uncached `/api/worldinfo/get`.
+ * @param {string} worldName
+ */
+export async function fetchWorldbookEntryList(worldName) {
+    let data = await fetchWorldInfoUncached(worldName);
+    if (!data || typeof data !== 'object') {
+        return { ok: false, total: 0, enabledCount: 0, items: [], error: `无法读取世界书「${worldName}」` };
+    }
+    const projected = extractEntryListItems(data);
+    data = null;
+    return { ok: true, ...projected };
+}
+
+/**
+ * Load editable fields for a single entry on demand via uncached `/api/worldinfo/get`.
+ * @param {string} worldName
+ * @param {string | number} uid
+ */
+export async function fetchSingleWorldbookEntry(worldName, uid) {
+    let data = await fetchWorldInfoUncached(worldName);
+    if (!data || typeof data !== 'object') {
+        return { ok: false, entry: null, error: `无法读取世界书「${worldName}」` };
+    }
+    const entry = extractSingleEntryForEdit(data, uid);
+    data = null;
+    if (!entry) {
+        return { ok: false, entry: null, error: '未找到对应条目（可能已被外部删除）' };
+    }
+    return { ok: true, entry };
+}
+
+/**
+ * Save changes to a single worldbook entry cleanly:
+ * 1. Fetches full original JSON via uncached `/api/worldinfo/get`.
+ * 2. Locates original `rawEntry` by `uid` and shallow-merges edited fields onto it
+ *    (100% lossless for all undisplayed native/extension fields).
+ * 3. Writes via `/api/worldinfo/edit` and updates `worldInfoCache` ONLY if already cached.
+ *
+ * @param {string} worldName
+ * @param {string | number} uid
+ * @param {Record<string, any>} patch
+ */
+export async function saveWorldbookEntryPatch(worldName, uid, patch) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean) return { ok: false, error: '世界书名称为空' };
+
+    let data = await fetchWorldInfoUncached(clean);
+    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        return { ok: false, error: `无法读取世界书「${clean}」` };
+    }
+
+    const targetUid = String(uid);
+    let entryKey = null;
+    if (Object.hasOwn(data.entries, targetUid) && data.entries[targetUid] && typeof data.entries[targetUid] === 'object') {
+        entryKey = targetUid;
+    } else {
+        for (const [k, e] of Object.entries(data.entries)) {
+            if (e && typeof e === 'object' && String(e.uid ?? k) === targetUid) {
+                entryKey = k;
+                break;
+            }
+        }
+    }
+    if (entryKey === null) {
+        data = null;
+        return { ok: false, error: '未找到对应条目（可能已被删除）' };
+    }
+
+    const mergedEntry = mergeEntryPatchOntoRaw(data.entries[entryKey], patch);
+    data.entries[entryKey] = mergedEntry;
+
+    try {
+        const res = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: clean, data }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+        data = null;
+        return { ok: false, error: `保存条目失败：${err?.message || err}` };
+    }
+
+    await syncWorldInfoCacheIfPresent(clean, data);
+    const ctx = getHostContext();
+    const et = ctx?.eventTypes || ctx?.event_types || {};
+    if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
+        try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
+    }
+
+    const savedEntry = extractSingleEntryForEdit({ entries: { [entryKey]: mergedEntry } }, targetUid);
+    data = null;
+    return { ok: true, entry: savedEntry };
+}
+
+/**
+ * Create a new entry in a worldbook via uncached `/api/worldinfo/get` -> `/api/worldinfo/edit`.
+ * @param {string} worldName
+ * @param {Record<string, any>} [initialFields={}]
+ */
+export async function createWorldbookEntryDirect(worldName, initialFields = {}) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean) return { ok: false, error: '世界书名称为空' };
+
+    let data = await fetchWorldInfoUncached(clean);
+    if (!data || typeof data !== 'object') {
+        return { ok: false, error: `无法读取世界书「${clean}」` };
+    }
+    if (!data.entries || typeof data.entries !== 'object') {
+        data.entries = {};
+    }
+
+    const newEntry = createNewRawWorldEntry(data.entries, initialFields);
+    const uidKey = String(newEntry.uid);
+    data.entries[uidKey] = newEntry;
+
+    try {
+        const res = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: clean, data }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+        data = null;
+        return { ok: false, error: `创建条目失败：${err?.message || err}` };
+    }
+
+    await syncWorldInfoCacheIfPresent(clean, data);
+    const ctx = getHostContext();
+    const et = ctx?.eventTypes || ctx?.event_types || {};
+    if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
+        try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
+    }
+
+    const createdEntry = extractSingleEntryForEdit({ entries: { [uidKey]: newEntry } }, uidKey);
+    data = null;
+    return { ok: true, uid: uidKey, entry: createdEntry };
 }
 
 /**

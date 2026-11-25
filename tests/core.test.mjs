@@ -9,6 +9,7 @@ import {
     LOCAL_ORGANIZE_CATEGORIES,
     MODULE_NAME,
     SPECIAL_GROUPS,
+    WORLD_ENTRY_POSITIONS,
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
@@ -23,19 +24,25 @@ import {
     compareZhCn,
     createApiChannelId,
     createGroupId,
+    createNewRawWorldEntry,
     deepClone,
     detectAiRefusal,
     exportConfigData,
+    extractEntryListItems,
+    extractSingleEntryForEdit,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
     formatCharacterDisplayTitle,
     importConfigData,
+    isBookPinned,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
     isPotentiallySensitiveTitle,
     matchesSearch,
+    mergeEntryPatchOntoRaw,
     migrateSettingsOnWorldRename,
     moveSectionOrder,
+    normalizeEntryKeywordsInput,
     normalizeSettings,
     parseAiOrganizeResponse,
     promoteSectionToTop,
@@ -45,6 +52,7 @@ import {
     restoreOrganizeSnapshot,
     searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
+    togglePinnedBook,
     undoLastAiOrganize,
     updateCachedCharBindings,
 } from '../src/core.js';
@@ -1102,5 +1110,186 @@ test('manifest version strictly matches STYLE_ASSET_VERSION and host memory/brid
         if (prevFetch === undefined) delete globalThis.fetch; else globalThis.fetch = prevFetch;
         if (prevWin === undefined) delete globalThis.window; else globalThis.window = prevWin;
         if (prevCustomEvent === undefined) delete globalThis.CustomEvent; else globalThis.CustomEvent = prevCustomEvent;
+    }
+});
+
+test('pinnedBooks toggle, sorting, rename migration, delete cleanup, and export/import round-trip', () => {
+    const settings = normalizeSettings({
+        groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+        assignments: { '普通书A': 'g1', '收藏书Z': 'g1' },
+        pinnedBooks: ['收藏书Z', '收藏书Z', ''],
+    });
+    assert.deepEqual(settings.pinnedBooks, ['收藏书Z']);
+    assert.equal(isBookPinned(settings, '收藏书Z'), true);
+    assert.equal(isBookPinned(settings, '普通书A'), false);
+
+    // Pinned book sorts BEFORE unpinned book regardless of alphabetical order
+    const cls = classifyWorldbooks({
+        worldNames: ['普通书A', '收藏书Z', '未分组收藏'],
+        bindingMap: new Map(),
+        settings,
+    });
+    assert.equal(cls.customGroups[0].books.map((b) => b.realName)[0], '收藏书Z');
+    assert.equal(cls.pinnedCount, 1);
+
+    // Toggle pin on/off
+    assert.equal(togglePinnedBook(settings, '未分组收藏'), true);
+    assert.equal(isBookPinned(settings, '未分组收藏'), true);
+    assert.equal(togglePinnedBook(settings, '未分组收藏'), false);
+    assert.equal(isBookPinned(settings, '未分组收藏'), false);
+
+    // Rename migrates pinnedBooks
+    migrateSettingsOnWorldRename(settings, '收藏书Z', '收藏书Z_新名');
+    assert.equal(isBookPinned(settings, '收藏书Z'), false);
+    assert.equal(isBookPinned(settings, '收藏书Z_新名'), true);
+
+    // Export / import preserves pinnedBooks
+    const exported = exportConfigData(settings);
+    const dst = normalizeSettings(null);
+    assert.equal(importConfigData(dst, exported).ok, true);
+    assert.deepEqual(dst.pinnedBooks, ['收藏书Z_新名']);
+
+    // Cleanup & prune remove deleted pinned books
+    cleanupDeletedWorldSettings(settings, ['收藏书Z_新名']);
+    assert.deepEqual(settings.pinnedBooks, []);
+
+    settings.pinnedBooks = ['现存书', '已删书'];
+    assert.equal(pruneStaleWorldbookSettings(settings, new Set(['现存书'])), true);
+    assert.deepEqual(settings.pinnedBooks, ['现存书']);
+});
+
+test('single-entry direct edit patch preserves 100% of undisplayed native and unknown fields', async () => {
+    assert.ok(WORLD_ENTRY_POSITIONS.length >= 8);
+    assert.deepEqual(normalizeEntryKeywordsInput('词A, 词B，词C\n词A、 词D'), ['词A', '词B', '词C', '词D']);
+
+    const rawEntry = {
+        uid: 7,
+        comment: '原标题',
+        content: '原正文',
+        disable: false,
+        constant: false,
+        selective: true,
+        key: ['旧词'],
+        keysecondary: ['旧副词'],
+        position: 4,
+        depth: 3,
+        order: 90,
+        probability: 42,
+        useProbability: false,
+        selectiveLogic: 2,
+        excludeRecursion: true,
+        preventRecursion: true,
+        delayUntilRecursion: 3,
+        group: '互斥组A',
+        groupOverride: true,
+        groupWeight: 85,
+        role: 2,
+        scanDepth: 6,
+        caseSensitive: true,
+        matchWholeWords: true,
+        sticky: 2,
+        cooldown: 5,
+        delay: 1,
+        automationId: 'auto_1',
+        addMemo: true,
+        extensions: { custom_plugin: { keep: true, weight: 99 } },
+        unknownCustomField: 'preserve_me_intact',
+    };
+
+    const patched = mergeEntryPatchOntoRaw(rawEntry, {
+        comment: '新标题',
+        disable: true,
+        constant: true,
+        key: '新词1, 新词2',
+        keysecondary: '新副词1',
+        position: 1,
+        depth: 5,
+        order: 200,
+        content: '新正文内容',
+    });
+
+    // Edited fields updated
+    assert.equal(patched.comment, '新标题');
+    assert.equal(patched.disable, true);
+    assert.equal(patched.constant, true);
+    assert.equal(patched.selective, false);
+    assert.deepEqual(patched.key, ['新词1', '新词2']);
+    assert.deepEqual(patched.keysecondary, ['新副词1']);
+    assert.equal(patched.position, 1);
+    assert.equal(patched.depth, 5);
+    assert.equal(patched.order, 200);
+    assert.equal(patched.content, '新正文内容');
+
+    // ALL undisplayed native & custom/unknown fields preserved 100%
+    assert.equal(patched.uid, 7);
+    assert.equal(patched.probability, 42);
+    assert.equal(patched.useProbability, false);
+    assert.equal(patched.selectiveLogic, 2);
+    assert.equal(patched.excludeRecursion, true);
+    assert.equal(patched.preventRecursion, true);
+    assert.equal(patched.delayUntilRecursion, 3);
+    assert.equal(patched.group, '互斥组A');
+    assert.equal(patched.groupOverride, true);
+    assert.equal(patched.groupWeight, 85);
+    assert.equal(patched.role, 2);
+    assert.equal(patched.scanDepth, 6);
+    assert.equal(patched.caseSensitive, true);
+    assert.equal(patched.matchWholeWords, true);
+    assert.equal(patched.sticky, 2);
+    assert.equal(patched.cooldown, 5);
+    assert.equal(patched.delay, 1);
+    assert.equal(patched.automationId, 'auto_1');
+    assert.deepEqual(patched.extensions, { custom_plugin: { keep: true, weight: 99 } });
+    assert.equal(patched.unknownCustomField, 'preserve_me_intact');
+    // Original raw object is NOT mutated
+    assert.equal(rawEntry.comment, '原标题');
+
+    // Lightweight list projection & single-entry extraction
+    const bookPayload = { entries: { 7: rawEntry } };
+    const listProj = extractEntryListItems(bookPayload);
+    assert.equal(listProj.total, 1);
+    assert.equal(listProj.items[0].uid, '7');
+    assert.equal(listProj.items[0].content, undefined);
+    const single = extractSingleEntryForEdit(bookPayload, '7');
+    assert.equal(single?.content, '原正文');
+
+    // createNewRawWorldEntry finds free UID cleanly
+    const created = createNewRawWorldEntry({ 0: { uid: 0, displayIndex: 0 }, 7: rawEntry }, { comment: '新条' });
+    assert.equal(created.uid, 1);
+    assert.equal(created.displayIndex, 1);
+    assert.equal(created.comment, '新条');
+
+    // End-to-end host saveWorldbookEntryPatch preserves unknown fields & never pollutes worldInfoCache
+    const hostMod = await import('../src/host.js');
+    const prevST = globalThis.SillyTavern;
+    const prevFetch = globalThis.fetch;
+    let savedBody = null;
+    globalThis.SillyTavern = {
+        getContext: () => ({
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+            extensionSettings: {},
+        }),
+    };
+    globalThis.fetch = async (url, opts) => {
+        if (url === '/api/worldinfo/get') {
+            return { ok: true, json: async () => deepClone(bookPayload) };
+        }
+        if (url === '/api/worldinfo/edit') {
+            savedBody = JSON.parse(opts.body);
+            return { ok: true, json: async () => ({}) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+    };
+    try {
+        const res = await hostMod.saveWorldbookEntryPatch('TestBook', '7', { comment: '直编新名', content: '直编正文' });
+        assert.equal(res.ok, true);
+        assert.equal(savedBody.name, 'TestBook');
+        assert.equal(savedBody.data.entries['7'].comment, '直编新名');
+        assert.equal(savedBody.data.entries['7'].content, '直编正文');
+        assert.equal(savedBody.data.entries['7'].unknownCustomField, 'preserve_me_intact');
+        assert.equal(savedBody.data.entries['7'].probability, 42);
+    } finally {
+        if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
+        if (prevFetch === undefined) delete globalThis.fetch; else globalThis.fetch = prevFetch;
     }
 });
