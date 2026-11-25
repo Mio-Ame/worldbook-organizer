@@ -601,6 +601,7 @@
 .wbo-mp-popover {
     position: fixed !important;
     width: 300px;
+    min-width: 0 !important;
     max-width: calc(100vw - 20px) !important;
     height: auto !important;
     min-height: 0 !important;
@@ -1224,6 +1225,16 @@
     pointer-events: auto;
 }
 
+.wbo-modal-overlay.wbo-gm-floating-overlay {
+    z-index: 10005;
+}
+
+.wbo-gm-floating-panel {
+    width: min(400px, calc(100vw - 24px));
+    max-width: 100vw;
+    box-shadow: 0 20px 54px rgba(15, 23, 42, 0.34), 0 6px 18px rgba(15, 23, 42, 0.18);
+}
+
 .wbo-submodal-overlay,
 .wbo-prompt-overlay {
     pointer-events: auto;
@@ -1262,6 +1273,12 @@
     container-name: plugin-win;
 }
 
+.wbo-modal.is-positioned {
+    position: fixed;
+    margin: 0;
+    transform: none;
+}
+
 .wbo-modal.is-pinned-layout {
     width: min(520px, 100%);
     height: var(--wbo-stable-h, min(78vh, 600px));
@@ -1281,9 +1298,11 @@
 }
 
 .wbo-modal.is-resized,
-.wbo-modal.is-mini-window {
-    max-width: 96vw;
-    max-height: 92dvh;
+.wbo-modal.is-pinned-layout.is-resized,
+.wbo-modal.is-wide.is-resized,
+.wbo-modal.wbo-manager-modal.is-resized {
+    max-width: 100vw;
+    max-height: 100dvh;
 }
 
 .wbo-modal-header {
@@ -1330,7 +1349,6 @@
 }
 
 .wbo-modal-header .wbo-modal-close,
-.wbo-modal-header .wbo-modal-mini-btn,
 .wbo-modal-header .wbo-modal-minimize-btn {
     flex-shrink: 0;
     width: 28px !important;
@@ -1345,43 +1363,92 @@
 }
 
 .wbo-modal-header .wbo-modal-close:hover,
-.wbo-modal-header .wbo-modal-mini-btn:hover,
 .wbo-modal-header .wbo-modal-minimize-btn:hover {
     border-color: var(--wbo-border-strong) !important;
     background: var(--wbo-surface-hover) !important;
 }
 
-.wbo-modal-header .wbo-modal-mini-btn.is-active {
-    background: var(--wbo-accent-soft) !important;
-    border-color: var(--wbo-accent) !important;
-    color: var(--wbo-accent) !important;
-}
-
-.wbo-modal-resize-handle {
+.wbo-resize-edge {
     position: absolute;
-    right: 0;
-    bottom: 0;
-    width: 24px;
-    height: 24px;
-    z-index: 15;
-    cursor: nwse-resize;
+    z-index: 16;
     touch-action: none;
-    background:
-        linear-gradient(135deg, transparent 50%, var(--wbo-border-strong) 50%, var(--wbo-border-strong) 57%, transparent 57%),
-        linear-gradient(135deg, transparent 70%, var(--wbo-border-strong) 70%, var(--wbo-border-strong) 77%, transparent 77%);
-    opacity: 0.65;
-    border-bottom-right-radius: 12px;
+    background: transparent;
 }
 
-.wbo-modal-resize-handle:hover,
-.wbo-modal.is-resizing-modal .wbo-modal-resize-handle {
-    opacity: 1;
+.wbo-resize-n {
+    top: 0;
+    left: 14px;
+    right: 14px;
+    height: 6px;
+    cursor: ns-resize;
 }
 
-.wbo-mp-popover .wbo-modal-resize-handle,
-.wbo-vis-popover .wbo-modal-resize-handle,
-.wbo-prompt-modal .wbo-modal-resize-handle {
+.wbo-resize-s {
+    bottom: 0;
+    left: 14px;
+    right: 14px;
+    height: 6px;
+    cursor: ns-resize;
+}
+
+.wbo-resize-e {
+    right: 0;
+    top: 14px;
+    bottom: 14px;
+    width: 6px;
+    cursor: ew-resize;
+}
+
+.wbo-resize-w {
+    left: 0;
+    top: 14px;
+    bottom: 14px;
+    width: 6px;
+    cursor: ew-resize;
+}
+
+.wbo-resize-nw {
+    top: 0;
+    left: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+}
+
+.wbo-resize-ne {
+    top: 0;
+    right: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nesw-resize;
+}
+
+.wbo-resize-sw {
+    bottom: 0;
+    left: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nesw-resize;
+}
+
+.wbo-resize-se {
+    bottom: 0;
+    right: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+}
+
+.wbo-mp-popover .wbo-resize-edge,
+.wbo-vis-popover .wbo-resize-edge,
+.wbo-prompt-modal .wbo-resize-edge {
     display: none;
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-resize-edge {
+        display: none !important;
+    }
 }
 
 .wbo-restore-pill {
@@ -1690,7 +1757,7 @@
 
 .wbo-group {
     flex: 0 0 auto;
-    border: 1px solid var(--wbo-border);
+    border: 1px solid var(--wbo-border-strong);
     border-radius: 10px;
     background: var(--wbo-surface);
     transition: border-color 0.14s ease, box-shadow 0.14s ease, opacity 0.14s ease;
@@ -1721,10 +1788,11 @@
     align-items: center;
     justify-content: space-between;
     gap: 4px;
-    padding: 5px 10px;
+    padding: 7px 11px;
     background: var(--wbo-bg-elevated);
+    border-left: 3px solid var(--wbo-group-accent, var(--wbo-accent));
     border-radius: 10px 10px 0 0;
-    box-shadow: 0 1px 0 var(--wbo-border);
+    box-shadow: 0 1px 0 var(--wbo-border-strong);
 }
 
 .wbo-group.is-collapsed .wbo-group-header {
@@ -1739,7 +1807,7 @@
     justify-content: center;
     width: 16px;
     color: var(--wbo-fg-muted);
-    opacity: 0.45;
+    opacity: 0.72;
     cursor: grab;
     flex-shrink: 0;
     font-size: 11px;
@@ -1748,7 +1816,7 @@
 
 .wbo-group-header:hover .wbo-group-drag-handle,
 .wbo-book-row:hover .wbo-drag-handle {
-    opacity: 0.9;
+    opacity: 1;
 }
 
 .wbo-group-drag-handle:active,
@@ -1758,6 +1826,26 @@
 
 .wbo-book-row.is-dragging {
     opacity: 0.45;
+}
+
+.wbo-book-item.wbo-drop-before {
+    box-shadow: inset 0 2px 0 0 var(--wbo-accent);
+}
+
+.wbo-book-item.wbo-drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--wbo-accent);
+}
+
+.wbo-mgr-drag-hint {
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--wbo-fg-muted);
+    opacity: 0.86;
+}
+
+.wbo-modal.is-book-dragging #wbo-mgr-pills .wbo-pill:not([data-group-id="__default__"]):not([data-group-id="__pinned__"]) {
+    border-style: dashed !important;
+    border-color: var(--wbo-accent) !important;
 }
 
 .wbo-group-toggle {
@@ -1773,8 +1861,9 @@
     text-align: left;
     padding: 4px 0 !important;
     margin: 0 !important;
-    font-size: 13px !important;
-    font-weight: 600 !important;
+    font-size: 14px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.01em;
     box-shadow: none !important;
 }
 
@@ -1813,7 +1902,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 10px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 6px 10px 6px 14px;
+    background: var(--wbo-surface);
     border-bottom: 1px solid var(--wbo-border);
     transition: background-color 0.12s ease;
     content-visibility: auto;
@@ -1844,6 +1936,7 @@
 .wbo-book-main {
     flex: 1;
     min-width: 0;
+    overflow: hidden;
     display: flex !important;
     align-items: center !important;
     gap: 6px !important;
@@ -1874,13 +1967,16 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    min-width: 0;
     line-height: 1.35;
 }
 
 .wbo-book-title {
-    font-weight: 500;
+    min-width: 0;
+    font-weight: 600;
     font-size: 13px;
     word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .wbo-book-sub {
@@ -1918,7 +2014,7 @@
     flex-shrink: 0;
 }
 
-.wbo-book-more-btn {
+.wbo-book-actions .wbo-book-more-btn {
     display: none !important;
 }
 
@@ -2005,7 +2101,7 @@
     height: 24px !important;
     min-width: 54px !important;
     padding: 0 8px !important;
-    margin: 0 2px 0 0 !important;
+    margin: 0 !important;
     border-radius: 5px !important;
     border: 1px solid var(--wbo-border) !important;
     background: var(--wbo-bg) !important;
@@ -2100,12 +2196,20 @@
 
 /* Native Select2 visual enhancements (non-intrusive inline layout) */
 .wbo-s2-item {
-    display: inline-flex;
+    display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    max-width: calc(100% - 24px);
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
     vertical-align: middle;
+}
+
+#select2-world_info-results .wbo-s2-item {
+    width: calc(100% - 24px);
+    max-width: calc(100% - 24px);
+    flex: 1 1 auto;
 }
 
 .wbo-s2-main {
@@ -2649,9 +2753,12 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-book-preview {
-    padding: 8px 12px 10px 30px;
+    padding: 8px 12px 10px 16px;
+    margin: 0 8px 6px 22px;
     background: var(--wbo-bg);
     border-top: 1px dashed var(--wbo-border);
+    border-left: 2px solid var(--wbo-border-strong);
+    border-radius: 0 0 8px 8px;
     display: flex;
     flex-direction: column;
     gap: 6px;
@@ -3368,14 +3475,23 @@ details[open] > summary .wbo-details-chev {
     top: 0;
     z-index: 2;
     display: grid;
-    grid-template-columns: minmax(135px, 210px) 1fr;
-    gap: 12px;
-    padding: 6px 10px;
+    grid-template-columns: minmax(150px, 38%) minmax(0, 1fr);
+    gap: 0;
+    padding: 0;
     font-size: 11.5px;
     font-weight: 600;
     color: var(--wbo-fg-muted);
     background: var(--wbo-bg-elevated);
     border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-cov-table-head > span {
+    padding: 7px 11px;
+    min-width: 0;
+}
+
+.wbo-cov-table-head > span:first-child {
+    border-right: 1px solid var(--wbo-border);
 }
 
 .wbo-preview-toolbar {
@@ -3476,10 +3592,10 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-cov-row {
     display: grid;
-    grid-template-columns: minmax(140px, 210px) 1fr;
-    align-items: start;
-    gap: 8px 12px;
-    padding: 8px 10px;
+    grid-template-columns: minmax(150px, 38%) minmax(0, 1fr);
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
     border-bottom: 1px solid var(--wbo-border);
 }
 
@@ -3489,18 +3605,31 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-cov-subject {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
+    align-content: flex-start;
     flex-wrap: wrap;
-    gap: 5px;
+    gap: 6px;
     min-width: 0;
+    padding: 8px 11px;
+    border-right: 1px solid var(--wbo-border);
+}
+
+.wbo-cov-subject .wbo-jump-link {
+    max-width: 100%;
+    white-space: normal;
+    text-align: left;
+    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .wbo-cov-targets {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
+    align-content: flex-start;
     gap: 5px;
     min-width: 0;
+    padding: 8px 11px;
 }
 
 .wbo-cov-chip-cloud {
@@ -3676,6 +3805,16 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-jump-link.is-world {
     color: var(--wbo-accent) !important;
+}
+
+.wbo-cov-targets .wbo-jump-link.is-world {
+    flex: 0 1 auto;
+    max-width: 100%;
+    min-width: 0;
+    white-space: normal;
+    text-align: left;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .wbo-jump-link small {
@@ -4050,6 +4189,10 @@ details[open] > summary .wbo-details-chev {
     display: inline-flex;
     align-items: center;
     gap: 2px;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
 }
 
 .wbo-cov-mini-btn {
@@ -4571,13 +4714,27 @@ details[open] > summary .wbo-details-chev {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    justify-content: space-between;
-    gap: 8px 10px;
+    justify-content: flex-start;
+    gap: 8px 14px;
     font-size: 12.5px;
 }
 
 .wbo-setting-inline-row > span {
+    min-width: 150px;
     flex-shrink: 0;
+}
+
+.wbo-setting-theme-mode-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+}
+
+.wbo-setting-subhead {
+    min-width: 0 !important;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
 }
 
 .wbo-setting-inline-row > .wbo-select,
@@ -4594,7 +4751,7 @@ details[open] > summary .wbo-details-chev {
     gap: 4px !important;
     height: 22px !important;
     padding: 0 8px !important;
-    margin: 0 2px 0 0 !important;
+    margin: 0 !important;
     border-radius: 999px !important;
     border: 1px solid var(--wbo-border) !important;
     background: var(--wbo-bg) !important;
@@ -4649,7 +4806,7 @@ details[open] > summary .wbo-details-chev {
     gap: 4px !important;
     height: 22px !important;
     padding: 0 7px !important;
-    margin: 0 2px 0 0 !important;
+    margin: 0 !important;
     border-radius: 999px !important;
     border: 1px solid var(--wbo-border-strong) !important;
     background: var(--wbo-accent-soft) !important;
@@ -4680,6 +4837,7 @@ details[open] > summary .wbo-details-chev {
 .wbo-vis-popover {
     position: fixed !important;
     width: 196px;
+    min-width: 0 !important;
     max-width: calc(100vw - 20px) !important;
     height: auto !important;
     min-height: 0 !important;
@@ -5063,7 +5221,7 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-eb-row-title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 500;
     color: var(--wbo-fg);
     overflow: hidden;
@@ -5076,7 +5234,7 @@ details[open] > summary .wbo-details-chev {
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--wbo-fg-muted);
 }
 
@@ -5259,20 +5417,21 @@ details[open] > summary .wbo-details-chev {
         pointer-events: none;
         background: transparent !important;
     }
-    .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-modal.is-mini-window),
     .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-modal.is-resized) {
         padding: 8px;
     }
-    .wbo-modal:not(.wbo-mp-popover):not(.wbo-vis-popover):not(.wbo-prompt-modal):not(.is-mini-window):not(.is-resized),
-    .wbo-modal.is-pinned-layout:not(.is-mini-window):not(.is-resized),
-    .wbo-modal.is-wide:not(.is-mini-window):not(.is-resized),
-    .wbo-modal.wbo-manager-modal:not(.is-mini-window):not(.is-resized) {
+    .wbo-modal:not(.wbo-mp-popover):not(.wbo-vis-popover):not(.wbo-prompt-modal):not(.is-resized),
+    .wbo-modal.is-pinned-layout:not(.is-resized),
+    .wbo-modal.is-wide:not(.is-resized),
+    .wbo-modal.wbo-manager-modal:not(.is-resized) {
         width: 100%;
         max-width: 100%;
         height: 100svh;
         height: 100dvh;
         min-height: 100%;
         max-height: 100dvh;
+        left: 0 !important;
+        top: 0 !important;
         border-radius: 0;
         border: none;
         box-shadow: none;
@@ -5282,7 +5441,6 @@ details[open] > summary .wbo-details-chev {
         padding-left: var(--tt-inset-left, env(safe-area-inset-left, 0px));
         padding-right: var(--tt-inset-right, env(safe-area-inset-right, 0px));
     }
-    .wbo-modal.is-mini-window,
     .wbo-modal.is-resized {
         min-width: min(310px, calc(100vw - 16px));
         min-height: 250px;
@@ -5315,7 +5473,6 @@ details[open] > summary .wbo-details-chev {
         order: unset;
     }
     .wbo-modal-header .wbo-modal-close,
-    .wbo-modal-header .wbo-modal-mini-btn,
     .wbo-modal-header .wbo-modal-minimize-btn {
         width: 30px !important;
         height: 30px !important;
@@ -5334,7 +5491,7 @@ details[open] > summary .wbo-details-chev {
     .wbo-mgr-header-tools {
         order: unset;
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 6px;
         width: 100%;
     }
@@ -5422,11 +5579,30 @@ details[open] > summary .wbo-details-chev {
         padding-left: 0;
         gap: 4px;
     }
-    .wbo-book-action-secondary {
+    .wbo-book-actions .wbo-book-action-secondary {
         display: none !important;
     }
-    .wbo-book-more-btn {
+    .wbo-book-actions .wbo-book-more-btn {
         display: inline-flex !important;
+    }
+    .wbo-book-preview {
+        margin: 0 4px 6px 10px;
+        padding: 8px 8px 10px 10px;
+    }
+    .wbo-acc-editor-toolbar,
+    .wbo-acc-content-tools {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-acc-toolbar-right,
+    .wbo-acc-content-btns {
+        gap: 4px;
+    }
+    .wbo-acc-mini-btn,
+    .wbo-acc-tool-btn {
+        min-width: 0 !important;
+        padding: 0 6px !important;
     }
     .wbo-book-actions .wbo-global-pill {
         height: 26px !important;
@@ -5448,6 +5624,12 @@ details[open] > summary .wbo-details-chev {
     .wbo-cov-row {
         grid-template-columns: 1fr;
         gap: 6px;
+        padding: 8px 10px;
+    }
+    .wbo-cov-subject,
+    .wbo-cov-targets {
+        padding: 0;
+        border-right: none;
     }
     .wbo-icon-btn {
         width: 30px !important;
@@ -5649,7 +5831,8 @@ details[open] > summary .wbo-details-chev {
 
 @media (max-width: 680px), (pointer: coarse) {
     .wbo-drag-handle,
-    .wbo-group-drag-handle {
+    .wbo-group-drag-handle,
+    .wbo-mgr-drag-hint {
         display: none !important;
     }
 }
@@ -6080,8 +6263,44 @@ details[open] > summary .wbo-details-chev {
     font-size: 12px;
 }
 
+.wbo-ee-textarea.wbo-acc-textarea.is-tall,
 .wbo-acc-textarea.is-tall {
-    min-height: 300px;
+    min-height: clamp(380px, 58dvh, 560px) !important;
+}
+
+.wbo-acc-meta-details {
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    background: var(--wbo-surface);
+}
+
+.wbo-acc-meta-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.wbo-acc-meta-brief {
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--wbo-fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-acc-meta-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--wbo-border);
 }
 
 .wbo-acc-stats {
@@ -6125,7 +6344,7 @@ details[open] > summary .wbo-details-chev {
 }
 
 /* Container Queries (`@container plugin-win`) so desktop narrowed/resized windows adapt cleanly */
-@container plugin-win (max-width: 560px) {
+@container plugin-win (max-width: 600px) {
     .wbo-modal-header {
         flex-direction: column;
         align-items: stretch;
@@ -6149,7 +6368,7 @@ details[open] > summary .wbo-details-chev {
     .wbo-mgr-header-tools {
         order: unset;
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 6px;
         width: 100%;
     }
@@ -6181,11 +6400,30 @@ details[open] > summary .wbo-details-chev {
         flex: 1 1 auto;
         max-width: none;
     }
-    .wbo-book-action-secondary {
+    .wbo-book-actions .wbo-book-action-secondary {
         display: none !important;
     }
-    .wbo-book-more-btn {
+    .wbo-book-actions .wbo-book-more-btn {
         display: inline-flex !important;
+    }
+    .wbo-book-preview {
+        margin: 0 4px 6px 10px;
+        padding: 8px 8px 10px 10px;
+    }
+    .wbo-acc-editor-toolbar,
+    .wbo-acc-content-tools {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-acc-toolbar-right,
+    .wbo-acc-content-btns {
+        gap: 4px;
+    }
+    .wbo-acc-mini-btn,
+    .wbo-acc-tool-btn {
+        min-width: 0 !important;
+        padding: 0 6px !important;
     }
     .wbo-preset-group {
         grid-template-columns: 1fr;
@@ -6208,6 +6446,12 @@ details[open] > summary .wbo-details-chev {
     .wbo-cov-row {
         grid-template-columns: 1fr;
         gap: 6px;
+        padding: 8px 10px;
+    }
+    .wbo-cov-subject,
+    .wbo-cov-targets {
+        padding: 0;
+        border-right: none;
     }
     .wbo-batch-bar {
         flex-direction: column;
@@ -6259,6 +6503,9 @@ details[open] > summary .wbo-details-chev {
 }
 
 @container plugin-win (max-width: 420px) {
+    .wbo-mgr-header-tools {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
     .wbo-mgr-subbar {
         padding: 8px 10px;
     }
@@ -6273,5 +6520,439 @@ details[open] > summary .wbo-details-chev {
     }
     .wbo-clue-subrow {
         padding-left: 0;
+    }
+}
+
+/* Native Quick Actions Active Highlight & Narrow Mobile Compact Mode */
+.wbo-wi-quick-btn.is-active {
+    border-color: var(--SmartThemeQuoteColor, #4c6ef5) !important;
+}
+
+@media (max-width: 410px) {
+    .wbo-wi-quick-actions {
+        gap: 4px;
+    }
+    .wbo-wi-quick-btn {
+        padding: 0 6px !important;
+        font-size: 11.5px !important;
+    }
+}
+
+/* 3-in-1 Quick Hub Popover (`全局组合 | 排除分组` + pinned footer) */
+.wbo-qhub-head {
+    padding: 7px 10px !important;
+}
+
+.wbo-qhub-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--wbo-surface);
+    border: 1px solid var(--wbo-border);
+}
+
+.wbo-qhub-tab {
+    height: 24px !important;
+    min-height: 24px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border-radius: 5px !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-qhub-tab.is-active {
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
+    font-weight: 600 !important;
+}
+
+.wbo-qhub-body {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.wbo-qhub-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-qhub-pane[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-qhub-top-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wbo-qhub-save-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+}
+
+.wbo-qhub-save-row[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-save-row > .wbo-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 26px !important;
+    min-height: 26px !important;
+    font-size: 12px !important;
+}
+
+.wbo-qhub-undo-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 7px;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    background: rgba(34, 197, 94, 0.08);
+    font-size: 11.5px;
+}
+
+.wbo-qhub-undo-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-combo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-qhub-empty {
+    padding: 16px 10px !important;
+    font-size: 12px !important;
+}
+
+.wbo-qhub-combo-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg);
+}
+
+.wbo-qhub-combo-row.is-active {
+    border-color: var(--wbo-accent);
+    background: var(--wbo-accent-soft);
+}
+
+.wbo-qhub-combo-main {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 2px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-qhub-combo-title {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.wbo-qhub-combo-sub {
+    font-size: 11px;
+    color: var(--wbo-fg-muted);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-qhub-combo-acts {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+.wbo-qhub-mini-btn {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    padding: 0 7px !important;
+    font-size: 11.5px !important;
+}
+
+.wbo-qhub-sub-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+/* Group Manager 1-Row Quick Combo Strip & Full Global Combos Modal */
+.wbo-mgr-combo-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
+}
+
+.wbo-mgr-combo-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-combo-pills-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.wbo-combo-pills-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.wbo-combo-quick-pill {
+    flex-shrink: 0;
+}
+
+.wbo-combo-undo-btn,
+.wbo-combo-manage-link {
+    flex-shrink: 0;
+}
+
+.wbo-tag.is-on-tag {
+    background: var(--wbo-accent-soft) !important;
+    border-color: var(--wbo-accent) !important;
+    color: var(--wbo-accent) !important;
+    font-weight: 600;
+}
+
+.wbo-cmb-topbar,
+.wbo-cmb-edit-top {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-cmb-live-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+    font-size: 12.5px;
+}
+
+.wbo-cmb-live-actions,
+.wbo-cmb-create-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.wbo-cmb-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.wbo-cmb-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-cmb-card.is-active-combo {
+    border-color: var(--wbo-accent) !important;
+}
+
+.wbo-cmb-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wbo-cmb-card-title-wrap {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wbo-cmb-card-name {
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.wbo-cmb-card-order {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wbo-cmb-card-books {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.wbo-cmb-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-cmb-name-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-cmb-name-bar > .wbo-input {
+    flex: 1 1 200px;
+    min-width: 140px;
+}
+
+/* Customizable AI Organize Presets Bar & Manager Cards */
+.wbo-ai-save-preset-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+}
+
+.wbo-ai-save-preset-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-ai-save-preset-bar > .wbo-input {
+    flex: 1 1 160px;
+    min-width: 120px;
+}
+
+.wbo-ai-presets-mgr-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-preset-mgr-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-preset-mgr-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-preset-mgr-top > .wbo-pm-label {
+    flex: 1 1 140px;
+    min-width: 110px;
+}
+
+.wbo-split-quick-checks {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 4px;
+}
+
+.wbo-split-quick-checks[hidden] {
+    display: none !important;
+}
+
+@container plugin-win (max-width: 560px) {
+    .wbo-cmb-create-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+    }
+    .wbo-cmb-create-row > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+}
+
+/* Prevent iOS WebKit auto-zoom & viewport shift when focusing search/text inputs on mobile/touch */
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-mp-popover .wbo-search-input,
+    .wbo-mp-popover input,
+    .wbo-modal .wbo-input,
+    .wbo-modal .wbo-search-input,
+    .wbo-modal .wbo-textarea {
+        font-size: 16px !important;
+    }
+    .wbo-mp-popover .wbo-search-input {
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+    .wbo-mp-popover .wbo-mp-clear-btn,
+    .wbo-mp-popover .wbo-mp-done-btn {
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+    .wbo-modal .wbo-input,
+    .wbo-modal .wbo-search-input {
+        min-height: 34px !important;
     }
 }

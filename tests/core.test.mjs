@@ -26,9 +26,12 @@ import {
     compareWorldbookEntries,
     compareZhCn,
     createApiChannelId,
+    createGlobalPresetId,
     createGroupId,
     createNewRawWorldEntry,
     deepClone,
+    deleteAiOrganizePreset,
+    deleteGlobalPreset,
     detectAiRefusal,
     estimateEntryTokens,
     exportConfigData,
@@ -36,9 +39,11 @@ import {
     extractEntryListItems,
     extractSingleEntryForEdit,
     findCardsWithUnimportedBooks,
+    findMatchingGlobalPreset,
     findSensitiveTargetGroup,
     findUnscannedShallowCharacters,
     formatCharacterDisplayTitle,
+    getEffectiveAiOrganizePresets,
     importConfigData,
     isBookPinned,
     isBookVisibleInCharBindPopup,
@@ -48,6 +53,7 @@ import {
     mergeEntryPatchOntoRaw,
     migrateSettingsOnWorldRename,
     moveBooksToNamedGroup,
+    moveGlobalPreset,
     moveSectionOrder,
     normalizeEntryKeywordsInput,
     normalizeSettings,
@@ -57,7 +63,9 @@ import {
     promoteSectionToTop,
     pruneStaleWorldbookSettings,
     pushUndoSnapshot,
+    reorderBookInGroup,
     reorderSection,
+    resetAiOrganizePresets,
     restoreOrganizeSnapshot,
     searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
@@ -65,6 +73,8 @@ import {
     togglePinnedBook,
     undoLastAiOrganize,
     updateCachedCharBindings,
+    upsertAiOrganizePreset,
+    upsertGlobalPreset,
 } from '../src/core.js';
 
 test('character binding detection covers primary, extra charLore, embedded, and shallow lazy-load cache', () => {
@@ -302,8 +312,8 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
             acceptedGroups: ['缝合'],
         },
     });
-    assert.match(redoPrompt.systemPrompt, /缝合/);
-    assert.match(redoPrompt.systemPrompt, /场景与互动/);
+    assert.match(redoPrompt.systemPrompt, /规则补丁/);
+    assert.match(redoPrompt.systemPrompt, /剧情、事件与玩法/);
     assert.match(redoPrompt.userPrompt, /重新分组反馈/);
     assert.match(redoPrompt.userPrompt, /previousGroup/);
     assert.match(redoPrompt.userPrompt, /世界观与角色/);
@@ -328,7 +338,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     assert.equal(localProps[0].note, '');
     assert.equal(localProps[1].group, 'User 人设');
     assert.equal(localProps[1].note, '');
-    assert.equal(localProps[2].group, '场景与互动');
+    assert.equal(localProps[2].group, '剧情与互动');
     assert.equal(localProps[3].group, 'NSFW');
     assert.equal(localProps[4].group, '同人专区');
     assert.equal(localProps[4].alias, '我的咒回设定集');
@@ -1697,5 +1707,1582 @@ test('Iteration 3 UX helpers: 6+6 presets, sensitive synonym match, picker parti
         assert.equal(pu.persona_description_lorebook, '');
     } finally {
         if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
+    }
+});
+
+test('Global Worldbook Combos (globalPresets) CRUD, exact-set match, rename/delete sync, and backup round-trip', () => {
+    const settings = normalizeSettings(null);
+    assert.deepEqual(settings.globalPresets, []);
+
+    const genId = createGlobalPresetId([{ id: 'cmb_taken' }]);
+    assert.match(genId, /^cmb_/);
+    assert.notEqual(genId, 'cmb_taken');
+
+    // Validation guards
+    assert.equal(upsertGlobalPreset(settings, { name: '   ', books: ['书A'] }).ok, false);
+    assert.equal(upsertGlobalPreset(settings, { name: '空组合', books: [] }).ok, false);
+
+    const c1 = upsertGlobalPreset(settings, { name: '现代日常套', books: ['现代常识', '去AI味文风', '现代常识'] });
+    assert.equal(c1.ok, true);
+    assert.equal(c1.created, true);
+    assert.deepEqual(c1.preset.books, ['现代常识', '去AI味文风']);
+
+    // Case-insensitive duplicate name guard
+    assert.equal(upsertGlobalPreset(settings, { name: '现代日常套', books: ['书X'] }).ok, false);
+
+    const c2 = upsertGlobalPreset(settings, { name: '跑团检定套', books: ['CoC检定补丁', '状态栏面板'] });
+    assert.equal(c2.ok, true);
+    assert.equal(settings.globalPresets.length, 2);
+
+    // Exact-set matching (order-independent, rejects partial/superset/empty)
+    assert.equal(findMatchingGlobalPreset(settings.globalPresets, [])?.id, undefined);
+    assert.equal(findMatchingGlobalPreset(settings.globalPresets, ['去AI味文风', '现代常识'])?.id, c1.preset.id);
+    assert.equal(findMatchingGlobalPreset(settings.globalPresets, ['去AI味文风'])?.id, undefined);
+    assert.equal(findMatchingGlobalPreset(settings.globalPresets, ['去AI味文风', '现代常识', '额外书'])?.id, undefined);
+
+    // Reorder up/down
+    assert.equal(moveGlobalPreset(settings, c2.preset.id, -1), true);
+    assert.deepEqual(settings.globalPresets.map((p) => p.name), ['跑团检定套', '现代日常套']);
+    assert.equal(moveGlobalPreset(settings, c2.preset.id, -1), false);
+
+    // Update existing combo in place
+    const upd = upsertGlobalPreset(settings, {
+        id: c1.preset.id,
+        name: '现代通用套',
+        books: ['现代常识', '去AI味文风', '防抢话补丁'],
+    });
+    assert.equal(upd.ok, true);
+    assert.equal(upd.created, false);
+    assert.equal(upd.preset.name, '现代通用套');
+    assert.equal(upd.preset.books.length, 3);
+
+    // Rename migration updates books inside globalPresets
+    migrateSettingsOnWorldRename(settings, '去AI味文风', '叙事文风v2');
+    const afterRename = settings.globalPresets.find((p) => p.id === c1.preset.id);
+    assert.deepEqual(afterRename.books, ['现代常识', '叙事文风v2', '防抢话补丁']);
+
+    // Delete & stale prune remove deleted worldbooks from globalPresets cleanly
+    cleanupDeletedWorldSettings(settings, ['防抢话补丁']);
+    assert.deepEqual(afterRename.books, ['现代常识', '叙事文风v2']);
+
+    assert.equal(
+        pruneStaleWorldbookSettings(settings, new Set(['现代常识', 'CoC检定补丁', '状态栏面板'])),
+        true,
+    );
+    assert.deepEqual(afterRename.books, ['现代常识']);
+
+    // Export / import round-trip (including standalone globalPresets payload)
+    const exported = exportConfigData(settings);
+    const dst = normalizeSettings(null);
+    const imp = importConfigData(dst, exported);
+    assert.equal(imp.ok, true);
+    assert.equal(imp.stats.globalPresets, 2);
+    assert.equal(dst.globalPresets[1].name, '现代通用套');
+
+    const onlyCombosDst = normalizeSettings(null);
+    assert.equal(importConfigData(onlyCombosDst, { globalPresets: dst.globalPresets }).ok, true);
+    assert.equal(onlyCombosDst.globalPresets.length, 2);
+
+    // Delete combo
+    assert.equal(deleteGlobalPreset(settings, c2.preset.id), true);
+    assert.equal(settings.globalPresets.length, 1);
+});
+
+test('Universal AI Organize prompts & user-customizable AI presets CRUD + reset', () => {
+    // Built-in presets and systemPrompt must be universal across all ST player types (no romance-only dating bias)
+    for (const p of AI_ORGANIZE_CATEGORY_PRESETS) {
+        assert.equal(p.text.includes('约会'), false, `Preset ${p.id} should not hardcode dating bias`);
+    }
+    const basePrompt = buildAiOrganizePrompt({
+        books: [{ realName: '克苏鲁跑团检定规则' }],
+        existingGroups: ['跑团规则'],
+    });
+    assert.equal(basePrompt.systemPrompt.includes('约会'), false);
+
+    const settings = normalizeSettings({
+        aiOrganizePresetIds: ['smart_free'],
+    });
+    const defEff = getEffectiveAiOrganizePresets(settings);
+    assert.equal(defEff.isCustomized, false);
+    assert.equal(defEff.categoryPresets.length, 6);
+    assert.equal(defEff.namingPresets.length, 6);
+
+    // Edit a built-in preset & add a user custom preset
+    const editBuiltin = upsertAiOrganizePreset(settings, {
+        id: 'by_st_purpose',
+        label: '我的跑团与设定分类',
+        cat: 'group',
+        text: '按跑团规则、模组地图、怪物图鉴、通用文风四类归纳。',
+    });
+    assert.equal(editBuiltin.ok, true);
+    assert.equal(editBuiltin.created, false);
+
+    const addCustom = upsertAiOrganizePreset(settings, {
+        label: '极简双字组名',
+        cat: 'custom',
+        text: '所有分组名尽量控制在 2~4 个汉字。',
+    });
+    assert.equal(addCustom.ok, true);
+    assert.equal(addCustom.created, true);
+
+    // Duplicate label rejected
+    assert.equal(
+        upsertAiOrganizePreset(settings, { label: '极简双字组名', cat: 'group', text: '重复' }).ok,
+        false,
+    );
+
+    const custEff = getEffectiveAiOrganizePresets(settings);
+    assert.equal(custEff.isCustomized, true);
+    const customPrompt = buildAiOrganizePrompt({
+        books: [{ realName: '奈亚子模组' }],
+        existingGroups: [],
+        categoryPreset: 'by_st_purpose',
+        presetsPool: custEff.all,
+    });
+    assert.ok(customPrompt.userPrompt.includes('跑团规则、模组地图'));
+
+    // Delete cleans aiOrganizePresetIds; reset restores built-in defaults
+    settings.aiOrganizePresetIds = ['smart_free', addCustom.preset.id];
+    assert.equal(deleteAiOrganizePreset(settings, addCustom.preset.id), true);
+    assert.deepEqual(settings.aiOrganizePresetIds, ['smart_free']);
+
+    resetAiOrganizePresets(settings);
+    assert.equal(settings.aiOrganizePresets, null);
+    assert.equal(getEffectiveAiOrganizePresets(settings).isCustomized, false);
+});
+
+test('Persistent UI preferences, legacy quick-action migration, and static CSS/spellcheck guardrails', () => {
+    // Legacy user who disabled both top-bar buttons auto-migrates to nativeQuickActionsMode: 'off'
+    const migratedOff = normalizeSettings({
+        showNativeExcludeBtn: false,
+        showNativeEntrySearchBtn: false,
+    });
+    assert.equal(migratedOff.nativeQuickActionsMode, 'off');
+
+    // Fresh default uses 3-in-1 'merged' button
+    const fresh = normalizeSettings(null);
+    assert.equal(fresh.nativeQuickActionsMode, 'merged');
+    assert.equal(fresh.entrySearchScope, '__nonchar__');
+    assert.equal(fresh.entryEditorTall, false);
+
+    // Full preference persistence & export/import round-trip
+    const customPrefs = normalizeSettings({
+        nativeQuickActionsMode: 'split',
+        showNativeComboBtn: true,
+        quickHubLastTab: 'exclude',
+        settingsLastTab: 'display',
+        entryEditorTall: true,
+        groupPanelExpanded: true,
+        entrySearchScope: 'grp_style',
+        entrySearchInTitle: false,
+        entrySearchInContent: true,
+        entrySearchIncludeDisabled: false,
+        organizeLastTab: 'organize',
+        localOrganizeScope: 'nonchar',
+        localOrganizeUseAnyPrefix: true,
+        localOrganizeCleanTitles: true,
+        localOrganizeCustomRules: [{ kw: '跑团', group: '规则模组' }],
+        aiOrganizeScope: 'nonchar',
+        aiOrganizePresetIds: ['by_genre'],
+        aiOrganizeCustomRule: '按朝代细分',
+        aiOrganizeIncludeClues: true,
+        aiOrganizeClueCount: 9,
+        aiOrganizeSnippetLen: 120,
+    });
+    const exported = exportConfigData(customPrefs);
+    const restored = normalizeSettings(null);
+    assert.equal(importConfigData(restored, exported).ok, true);
+    assert.equal(restored.nativeQuickActionsMode, 'split');
+    assert.equal(restored.entryEditorTall, true);
+    assert.equal(restored.groupPanelExpanded, true);
+    assert.equal(restored.entrySearchScope, 'grp_style');
+    assert.equal(restored.entrySearchInTitle, false);
+    assert.equal(restored.entrySearchIncludeDisabled, false);
+    assert.equal(restored.organizeLastTab, 'organize');
+    assert.equal(restored.localOrganizeScope, 'nonchar');
+    assert.equal(restored.localOrganizeUseAnyPrefix, true);
+    assert.equal(restored.localOrganizeCleanTitles, true);
+    assert.deepEqual(restored.localOrganizeCustomRules, [{ kw: '跑团', group: '规则模组' }]);
+    assert.equal(restored.aiOrganizeScope, 'nonchar');
+    assert.deepEqual(restored.aiOrganizePresetIds, ['by_genre']);
+    assert.equal(restored.aiOrganizeCustomRule, '按朝代细分');
+    assert.equal(restored.aiOrganizeIncludeClues, true);
+    assert.equal(restored.aiOrganizeClueCount, 9);
+    assert.equal(restored.aiOrganizeSnippetLen, 120);
+
+    // Static guardrails: zero backdrop-filter/blur( in style.css, zero 3rd-party names,
+    // spellcheck="false" on all text/search inputs and textareas, and zero unguarded .focus()
+    const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    assert.equal(/backdrop-filter\s*:/i.test(cssSrc), false, 'style.css must not use backdrop-filter');
+    assert.equal(/\bblur\s*\(/i.test(cssSrc), false, 'style.css must not use blur()');
+    assert.equal(/wbo-modal-mini-btn|is-mini-window|wbo-modal-resize-handle/.test(cssSrc), false, 'style.css must not contain removed mini-window or corner-badge rules');
+    assert.match(cssSrc, /\.wbo-book-actions\s+\.wbo-book-more-btn\s*\{\s*display:\s*none\s*!important;/, 'wide desktop .wbo-book-more-btn hide rule must out-specify .wbo-icon-btn');
+    assert.match(cssSrc, /\.wbo-book-actions\s+\.wbo-book-action-secondary\s*\{\s*display:\s*none\s*!important;/, 'responsive .wbo-book-action-secondary hide rule must out-specify .wbo-icon-btn');
+
+    const forbiddenThirdPartyRe = /(?:baibai|st-baibai-tools|柏宝箱)/i;
+    for (const relPath of ['../style.css', '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', '../src/panel.js', '../src/entry-accordion.js', '../src/native-filter.js']) {
+        const txt = readFileSync(new URL(relPath, import.meta.url), 'utf8');
+        assert.equal(forbiddenThirdPartyRe.test(txt), false, `Forbidden third-party reference found in ${relPath}`);
+    }
+
+    for (const relPath of ['../src/panel.js', '../src/entry-accordion.js', '../src/native-filter.js']) {
+        const jsSrc = readFileSync(new URL(relPath, import.meta.url), 'utf8');
+        const noBlockComments = jsSrc.replace(/\/\*[\s\S]*?\*\//g, '');
+        const tags = noBlockComments.match(/<(?:textarea\b(?:\$\{[^}]*\}|[^>])*|input\b(?:\$\{[^}]*\}|[^>])*type=["'](?:text|search)["'](?:\$\{[^}]*\}|[^>])*)>/gi) || [];
+        for (const tag of tags) {
+            assert.match(tag, /spellcheck=["']false["']/i, `Missing spellcheck="false" in ${relPath}: ${tag}`);
+        }
+    }
+
+    for (const relPath of ['../src/panel.js', '../src/entry-accordion.js']) {
+        const rawSrc = readFileSync(new URL(relPath, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+        const lines = rawSrc.split(/\r?\n/);
+        for (let i = 0; i < lines.length; i += 1) {
+            const lineCode = lines[i].replace(/\/\/.*$/, '');
+            if (!/\.focus\s*\(/.test(lineCode)) continue;
+            const windowText = lines.slice(Math.max(0, i - 4), i + 1).join('\n');
+            const isGuarded = /isDesktopAutoFocusAllowed\s*\(\)|vw\s*>\s*680\s*&&\s*!coarse/.test(windowText);
+            assert.ok(isGuarded, `Unguarded .focus() at ${relPath}:${i + 1}: ${lines[i].trim()}`);
+        }
+    }
+});
+
+test('Intra-group worldbook drag-reorder (bookOrders) persists, sorts, and syncs across rename/delete/prune/backup', () => {
+    const settings = normalizeSettings(null);
+    const grp = addCustomGroup(settings, { name: '设定组' });
+    settings.assignments = {
+        书A: grp.id,
+        书B: grp.id,
+        书C: grp.id,
+    };
+
+    // Initial classification sorts alphabetically: 书A, 书B, 书C
+    const initial = classifyWorldbooks({
+        worldNames: ['书C', '书A', '书B', '未分组书1', '未分组书2'],
+        bindingMap: new Map(),
+        settings,
+    });
+    assert.deepEqual(initial.customGroups[0].books.map((b) => b.realName), ['书A', '书B', '书C']);
+
+    // Drag 书C before 书A
+    assert.equal(reorderBookInGroup(settings, grp.id, '书C', '书A', 'before', ['书A', '书B', '书C']), true);
+    assert.deepEqual(settings.bookOrders[grp.id], ['书C', '书A', '书B']);
+    // No-op reorder returns false
+    assert.equal(reorderBookInGroup(settings, grp.id, '书C', '书A', 'before'), false);
+
+    // Drag 书A after 书B
+    assert.equal(reorderBookInGroup(settings, grp.id, '书A', '书B', 'after'), true);
+    assert.deepEqual(settings.bookOrders[grp.id], ['书C', '书B', '书A']);
+
+    const afterOrder = classifyWorldbooks({
+        worldNames: ['书C', '书A', '书B'],
+        bindingMap: new Map(),
+        settings,
+    });
+    assert.deepEqual(afterOrder.customGroups[0].books.map((b) => b.realName), ['书C', '书B', '书A']);
+
+    // Rename, delete, and stale prune sync bookOrders
+    migrateSettingsOnWorldRename(settings, '书B', '书B_新');
+    assert.deepEqual(settings.bookOrders[grp.id], ['书C', '书B_新', '书A']);
+
+    cleanupDeletedWorldSettings(settings, ['书A']);
+    assert.deepEqual(settings.bookOrders[grp.id], ['书C', '书B_新']);
+
+    assert.equal(pruneStaleWorldbookSettings(settings, new Set(['书C'])), true);
+    assert.deepEqual(settings.bookOrders[grp.id], ['书C']);
+
+    // Moving/reordering a book into a different group prunes stale entries from other bookOrders[otherGid]
+    const grp2 = addCustomGroup(settings, { name: '规则组' });
+    settings.assignments['书C'] = grp2.id;
+    settings.assignments['书D'] = grp2.id;
+    assert.equal(reorderBookInGroup(settings, grp2.id, '书C', '书D', 'before', ['书D', '书C']), true);
+    assert.deepEqual(settings.bookOrders[grp2.id], ['书C', '书D']);
+    assert.equal(settings.bookOrders[grp.id], undefined);
+
+    // Export / import round-trip preserves bookOrders
+    const exported = exportConfigData(settings);
+    const restored = normalizeSettings(null);
+    assert.equal(importConfigData(restored, exported).ok, true);
+    assert.deepEqual(restored.bookOrders[grp2.id], ['书C', '书D']);
+    assert.equal(restored.bookOrders[grp.id], undefined);
+});
+
+function installMockNativeFilterDom({ innerWidth = 390, innerHeight = 844 } = {}) {
+    const saved = {
+        window: globalThis.window,
+        document: globalThis.document,
+        Element: globalThis.Element,
+        HTMLElement: globalThis.HTMLElement,
+        HTMLInputElement: globalThis.HTMLInputElement,
+        HTMLSelectElement: globalThis.HTMLSelectElement,
+        HTMLOptionElement: globalThis.HTMLOptionElement,
+        HTMLOptGroupElement: globalThis.HTMLOptGroupElement,
+        Event: globalThis.Event,
+        CustomEvent: globalThis.CustomEvent,
+        KeyboardEvent: globalThis.KeyboardEvent,
+        MutationObserver: globalThis.MutationObserver,
+        CSS: globalThis.CSS,
+        jQuery: globalThis.jQuery,
+        SillyTavern: globalThis.SillyTavern,
+        requestAnimationFrame: globalThis.requestAnimationFrame,
+        getComputedStyle: globalThis.getComputedStyle,
+        visualViewport: globalThis.visualViewport,
+        innerWidth: globalThis.innerWidth,
+        innerHeight: globalThis.innerHeight,
+        addEventListener: globalThis.addEventListener,
+        removeEventListener: globalThis.removeEventListener,
+        dispatchEvent: globalThis.dispatchEvent,
+    };
+
+    const winListeners = new Map();
+    const vvListeners = new Map();
+    const observerInstances = [];
+
+    class MockEvent {
+        constructor(type, init = {}) {
+            this.type = type;
+            this.bubbles = Boolean(init.bubbles);
+            this.cancelable = Boolean(init.cancelable);
+            this.defaultPrevented = false;
+            this.cancelBubble = false;
+            this.target = init.target || null;
+            this.currentTarget = null;
+            this.key = init.key || '';
+            this.code = init.code || '';
+            this.keyCode = init.keyCode || 0;
+            this.clientX = init.clientX ?? 0;
+            this.clientY = init.clientY ?? 0;
+        }
+        preventDefault() {
+            this.defaultPrevented = true;
+        }
+        stopPropagation() {
+            this.cancelBubble = true;
+        }
+        stopImmediatePropagation() {
+            this.cancelBubble = true;
+            this._stopImmediate = true;
+        }
+    }
+
+    class MockClassList {
+        constructor(el) {
+            this._el = el;
+            this._set = new Set();
+        }
+        _syncFromString(str) {
+            this._set = new Set(String(str || '').split(/\s+/).filter(Boolean));
+        }
+        _syncToAttr() {
+            this._el._attrs.set('class', [...this._set].join(' '));
+        }
+        add(...names) {
+            for (const n of names) if (n) this._set.add(n);
+            this._syncToAttr();
+        }
+        remove(...names) {
+            for (const n of names) this._set.delete(n);
+            this._syncToAttr();
+        }
+        toggle(name, force) {
+            if (force === undefined) {
+                if (this._set.has(name)) this._set.delete(name);
+                else this._set.add(name);
+            } else if (force) {
+                this._set.add(name);
+            } else {
+                this._set.delete(name);
+            }
+            this._syncToAttr();
+            return this._set.has(name);
+        }
+        contains(name) {
+            return this._set.has(name);
+        }
+    }
+
+    function parseAttrs(rawAttrs) {
+        const attrs = new Map();
+        const re = /([a-zA-Z0-9_:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g;
+        let m;
+        while ((m = re.exec(rawAttrs)) !== null) {
+            attrs.set(m[1], m[2] ?? m[3] ?? m[4] ?? '');
+        }
+        return attrs;
+    }
+
+    function matchesCompound(el, compound) {
+        if (!(el instanceof MockElement)) return false;
+        let clean = compound.replace(/^:scope\s*>\s*/, '').trim();
+        if (!clean) return false;
+        const notClauses = [];
+        clean = clean.replace(/:not\(([^)]+)\)/g, (_, inner) => {
+            notClauses.push(inner.trim());
+            return '';
+        });
+        if (clean) {
+            const tokens = clean.match(/([#.][^\s#.[\]:]+|\[[^\]]+\]|^[a-zA-Z0-9_-]+)/g);
+            if (!tokens || tokens.join('') !== clean) return false;
+            for (const tok of tokens) {
+                if (tok.startsWith('#')) {
+                    if (el.id !== tok.slice(1)) return false;
+                } else if (tok.startsWith('.')) {
+                    if (!el.classList.contains(tok.slice(1))) return false;
+                } else if (tok.startsWith('[')) {
+                    const m = tok.match(/^\[([a-zA-Z0-9_:-]+)(?:=(?:"([^"]*)"|'([^']*)'|([^\]]*)))?\]$/);
+                    if (!m) return false;
+                    const attrName = m[1];
+                    if (!el.hasAttribute(attrName)) return false;
+                    const expected = m[2] ?? m[3] ?? m[4];
+                    if (expected !== undefined && el.getAttribute(attrName) !== expected) return false;
+                } else if (el.tagName !== tok.toUpperCase()) {
+                    return false;
+                }
+            }
+        }
+        for (const inner of notClauses) {
+            if (matchesCompound(el, inner)) return false;
+        }
+        return true;
+    }
+
+    function matchesSelector(el, selector, scopeEl = null) {
+        if (!(el instanceof MockElement)) return false;
+        const groups = String(selector || '').split(',').map((s) => s.trim()).filter(Boolean);
+        return groups.some((grp) => {
+            if (scopeEl && grp.startsWith(':scope')) {
+                const rest = grp.replace(/^:scope\s*>\s*/, '').trim();
+                if (grp.includes('>')) {
+                    return el.parentElement === scopeEl && matchesCompound(el, rest);
+                }
+            }
+            const parts = grp.replace(/>/g, ' ').trim().split(/\s+/).filter(Boolean);
+            if (parts.length === 0) return false;
+            if (!matchesCompound(el, parts[parts.length - 1])) return false;
+            let cur = el.parentElement;
+            for (let i = parts.length - 2; i >= 0; i -= 1) {
+                while (cur && !matchesCompound(cur, parts[i])) {
+                    cur = cur.parentElement;
+                }
+                if (!cur) return false;
+                cur = cur.parentElement;
+            }
+            return true;
+        });
+    }
+
+    class MockNode {
+        constructor(nodeType, textContent = '') {
+            this.nodeType = nodeType;
+            this.parentNode = null;
+            this._textContent = textContent;
+        }
+        get parentElement() {
+            return this.parentNode instanceof MockElement ? this.parentNode : null;
+        }
+        get textContent() {
+            return this._textContent;
+        }
+        set textContent(v) {
+            this._textContent = String(v ?? '');
+        }
+        remove() {
+            if (this.parentNode) {
+                const idx = this.parentNode.childNodes.indexOf(this);
+                if (idx >= 0) this.parentNode.childNodes.splice(idx, 1);
+                this.parentNode = null;
+            }
+        }
+    }
+
+    class MockElement extends MockNode {
+        constructor(tagName) {
+            super(1, '');
+            this.tagName = String(tagName || 'div').toUpperCase();
+            this.childNodes = [];
+            this._attrs = new Map();
+            this.classList = new MockClassList(this);
+            this.style = {};
+            this._listeners = new Map();
+            this._rect = { left: 10, top: 100, right: 250, bottom: 136, width: 240, height: 36 };
+            this.scrollTop = 0;
+            this.scrollLeft = 0;
+            this.scrollWidth = 200;
+            this.clientWidth = 200;
+            this.scrollHeight = 200;
+            this.clientHeight = 200;
+            this.hidden = false;
+            this.dataset = new Proxy({}, {
+                get: (_, prop) => {
+                    const attr = `data-${String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`;
+                    return this._attrs.has(attr) ? this._attrs.get(attr) : undefined;
+                },
+                set: (_, prop, val) => {
+                    const attr = `data-${String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`;
+                    this._attrs.set(attr, String(val));
+                    return true;
+                },
+                deleteProperty: (_, prop) => {
+                    const attr = `data-${String(prop).replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`)}`;
+                    this._attrs.delete(attr);
+                    return true;
+                },
+            });
+        }
+        get isConnected() {
+            let cur = this;
+            while (cur) {
+                if (cur === doc.documentElement || cur === doc.body) return true;
+                cur = cur.parentNode;
+            }
+            return false;
+        }
+        get id() {
+            return this._attrs.get('id') || '';
+        }
+        set id(val) {
+            this._attrs.set('id', String(val ?? ''));
+        }
+        get className() {
+            return this._attrs.get('class') || '';
+        }
+        set className(val) {
+            this._attrs.set('class', String(val ?? ''));
+            this.classList._syncFromString(val);
+        }
+        get children() {
+            return this.childNodes.filter((c) => c instanceof MockElement);
+        }
+        get firstChild() {
+            return this.childNodes[0] || null;
+        }
+        get textContent() {
+            if (this.childNodes.length === 0) return this._textContent;
+            return this.childNodes.map((c) => c.textContent).join('');
+        }
+        set textContent(val) {
+            this.childNodes = [];
+            this._textContent = String(val ?? '');
+            if (this._textContent) {
+                const tn = new MockNode(3, this._textContent);
+                tn.parentNode = this;
+                this.childNodes.push(tn);
+            }
+        }
+        setAttribute(name, value) {
+            const val = String(value ?? '');
+            this._attrs.set(name, val);
+            if (name === 'class') this.classList._syncFromString(val);
+            if (name === 'hidden') this.hidden = true;
+        }
+        getAttribute(name) {
+            return this._attrs.has(name) ? this._attrs.get(name) : null;
+        }
+        hasAttribute(name) {
+            return this._attrs.has(name);
+        }
+        appendChild(node) {
+            if (node instanceof MockFragment) {
+                for (const c of [...node.childNodes]) this.appendChild(c);
+                return node;
+            }
+            node.remove();
+            node.parentNode = this;
+            this.childNodes.push(node);
+            return node;
+        }
+        append(...nodes) {
+            for (const n of nodes) {
+                if (typeof n === 'string') {
+                    const tn = new MockNode(3, n);
+                    tn.parentNode = this;
+                    this.childNodes.push(tn);
+                } else if (n) {
+                    this.appendChild(n);
+                }
+            }
+        }
+        insertBefore(newNode, refNode) {
+            if (!refNode) return this.appendChild(newNode);
+            newNode.remove();
+            newNode.parentNode = this;
+            const idx = this.childNodes.indexOf(refNode);
+            if (idx >= 0) {
+                this.childNodes.splice(idx, 0, newNode);
+            } else {
+                this.childNodes.push(newNode);
+            }
+            return newNode;
+        }
+        insertAdjacentElement(pos, node) {
+            if (pos === 'afterend' && this.parentNode) {
+                node.remove();
+                node.parentNode = this.parentNode;
+                const idx = this.parentNode.childNodes.indexOf(this);
+                this.parentNode.childNodes.splice(idx + 1, 0, node);
+            }
+            return node;
+        }
+        set innerHTML(html) {
+            this.childNodes = [];
+            const voidTags = new Set(['input', 'br', 'hr', 'img', 'meta', 'link']);
+            const stack = [this];
+            const tokenRe = /<\/?([a-zA-Z0-9_-]+)([^>]*)>|([^<]+)/g;
+            let m;
+            while ((m = tokenRe.exec(String(html || ''))) !== null) {
+                const parent = stack[stack.length - 1];
+                if (m[3] !== undefined) {
+                    if (m[3]) {
+                        const tn = new MockNode(3, m[3]);
+                        tn.parentNode = parent;
+                        parent.childNodes.push(tn);
+                    }
+                    continue;
+                }
+                const full = m[0];
+                const tag = m[1].toLowerCase();
+                if (full.startsWith('</')) {
+                    while (stack.length > 1 && stack[stack.length - 1].tagName.toLowerCase() !== tag) {
+                        stack.pop();
+                    }
+                    if (stack.length > 1) stack.pop();
+                } else {
+                    const child = doc.createElement(tag);
+                    const attrs = parseAttrs(m[2] || '');
+                    for (const [k, v] of attrs.entries()) child.setAttribute(k, v);
+                    parent.appendChild(child);
+                    if (!voidTags.has(tag) && !full.endsWith('/>')) {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        contains(other) {
+            let cur = other;
+            while (cur) {
+                if (cur === this) return true;
+                cur = cur.parentNode;
+            }
+            return false;
+        }
+        matches(sel) {
+            return matchesSelector(this, sel);
+        }
+        closest(sel) {
+            let cur = this;
+            while (cur) {
+                if (cur instanceof MockElement && matchesSelector(cur, sel)) return cur;
+                cur = cur.parentElement;
+            }
+            return null;
+        }
+        querySelectorAll(sel) {
+            const out = [];
+            const walk = (node) => {
+                for (const c of node.children || []) {
+                    if (matchesSelector(c, sel, this)) out.push(c);
+                    walk(c);
+                }
+            };
+            walk(this);
+            return out;
+        }
+        querySelector(sel) {
+            return this.querySelectorAll(sel)[0] || null;
+        }
+        getBoundingClientRect() {
+            return { ...this._rect };
+        }
+        addEventListener(type, fn, opts) {
+            const capture = typeof opts === 'boolean' ? opts : Boolean(opts?.capture);
+            if (!this._listeners.has(type)) this._listeners.set(type, []);
+            this._listeners.get(type).push({ fn, capture });
+        }
+        removeEventListener(type, fn, opts) {
+            const capture = typeof opts === 'boolean' ? opts : Boolean(opts?.capture);
+            const arr = this._listeners.get(type);
+            if (!arr) return;
+            this._listeners.set(
+                type,
+                arr.filter((entry) => entry.fn !== fn || entry.capture !== capture),
+            );
+        }
+        dispatchEvent(ev) {
+            if (!ev.target) ev.target = this;
+            const path = [];
+            let cur = this;
+            while (cur) {
+                path.push(cur);
+                cur = cur.parentNode;
+            }
+            for (let i = path.length - 1; i >= 0; i -= 1) {
+                if (ev.cancelBubble) break;
+                const node = path[i];
+                const list = [...(node._listeners?.get(ev.type) || [])].filter((e) => e.capture);
+                ev.currentTarget = node;
+                for (const entry of list) {
+                    entry.fn(ev);
+                    if (ev._stopImmediate) break;
+                }
+            }
+            for (let i = 0; i < path.length; i += 1) {
+                if (ev.cancelBubble && (ev.bubbles || i > 0)) break;
+                if (!ev.bubbles && i > 0) break;
+                const node = path[i];
+                const list = [...(node._listeners?.get(ev.type) || [])].filter((e) => !e.capture);
+                ev.currentTarget = node;
+                for (const entry of list) {
+                    entry.fn(ev);
+                    if (ev._stopImmediate) break;
+                }
+            }
+            return !ev.defaultPrevented;
+        }
+        focus() {
+            doc.activeElement = this;
+        }
+        blur() {
+            if (doc.activeElement === this) doc.activeElement = doc.body;
+        }
+    }
+
+    class MockInputElement extends MockElement {
+        constructor() {
+            super('input');
+            this.value = '';
+        }
+    }
+    class MockOptionElement extends MockElement {
+        constructor() {
+            super('option');
+            this.selected = false;
+        }
+        get value() {
+            return this._attrs.has('value') ? this._attrs.get('value') : this.textContent;
+        }
+        set value(v) {
+            this._attrs.set('value', String(v ?? ''));
+        }
+    }
+    class MockOptGroupElement extends MockElement {
+        constructor() {
+            super('optgroup');
+        }
+        get label() {
+            return this._attrs.get('label') || '';
+        }
+        set label(v) {
+            this._attrs.set('label', String(v ?? ''));
+        }
+    }
+    class MockSelectElement extends MockElement {
+        constructor() {
+            super('select');
+            this.multiple = false;
+        }
+        get options() {
+            return this.querySelectorAll('option');
+        }
+        get selectedOptions() {
+            return this.options.filter((o) => o.selected);
+        }
+        get value() {
+            return this.selectedOptions[0]?.value ?? '';
+        }
+        set value(v) {
+            const s = String(v ?? '');
+            for (const o of this.options) {
+                o.selected = o.value === s;
+            }
+        }
+    }
+    class MockFragment {
+        constructor() {
+            this.childNodes = [];
+        }
+        appendChild(node) {
+            node.remove?.();
+            node.parentNode = null;
+            this.childNodes.push(node);
+            return node;
+        }
+    }
+
+    const doc = {
+        readyState: 'complete',
+        _listeners: new Map(),
+        documentElement: null,
+        body: null,
+        activeElement: null,
+        createElement(tag) {
+            const t = String(tag).toLowerCase();
+            if (t === 'input') return new MockInputElement();
+            if (t === 'select') return new MockSelectElement();
+            if (t === 'option') return new MockOptionElement();
+            if (t === 'optgroup') return new MockOptGroupElement();
+            return new MockElement(t);
+        },
+        createDocumentFragment() {
+            return new MockFragment();
+        },
+        getElementById(id) {
+            return this.documentElement.querySelector(`#${id}`);
+        },
+        querySelector(sel) {
+            return this.documentElement.querySelector(sel);
+        },
+        querySelectorAll(sel) {
+            return this.documentElement.querySelectorAll(sel);
+        },
+        addEventListener(type, fn, opts) {
+            this.documentElement.addEventListener(type, fn, opts);
+        },
+        removeEventListener(type, fn, opts) {
+            this.documentElement.removeEventListener(type, fn, opts);
+        },
+    };
+    doc.documentElement = new MockElement('html');
+    doc.body = new MockElement('body');
+    doc.documentElement.appendChild(doc.body);
+    doc.activeElement = doc.body;
+
+    const vv = {
+        height: innerHeight,
+        offsetTop: 0,
+        addEventListener(type, fn) {
+            if (!vvListeners.has(type)) vvListeners.set(type, new Set());
+            vvListeners.get(type).add(fn);
+        },
+        removeEventListener(type, fn) {
+            vvListeners.get(type)?.delete(fn);
+        },
+        dispatchEvent(ev) {
+            for (const fn of [...(vvListeners.get(ev.type) || [])]) fn(ev);
+            return true;
+        },
+    };
+
+    globalThis.Element = MockElement;
+    globalThis.HTMLElement = MockElement;
+    globalThis.HTMLInputElement = MockInputElement;
+    globalThis.HTMLSelectElement = MockSelectElement;
+    globalThis.HTMLOptionElement = MockOptionElement;
+    globalThis.HTMLOptGroupElement = MockOptGroupElement;
+    globalThis.Event = MockEvent;
+    globalThis.CustomEvent = class MockCustomEvent extends MockEvent {
+        constructor(type, init = {}) {
+            super(type, init);
+            this.detail = init.detail;
+        }
+    };
+    globalThis.KeyboardEvent = MockEvent;
+    globalThis.document = doc;
+    globalThis.innerWidth = innerWidth;
+    globalThis.innerHeight = innerHeight;
+    globalThis.visualViewport = vv;
+    globalThis.addEventListener = (type, fn) => {
+        if (!winListeners.has(type)) winListeners.set(type, new Set());
+        winListeners.get(type).add(fn);
+    };
+    globalThis.removeEventListener = (type, fn) => {
+        winListeners.get(type)?.delete(fn);
+    };
+    globalThis.dispatchEvent = (ev) => {
+        for (const fn of [...(winListeners.get(ev.type) || [])]) fn(ev);
+        return true;
+    };
+    globalThis.window = {
+        dispatchEvent: globalThis.dispatchEvent,
+        addEventListener: globalThis.addEventListener,
+        removeEventListener: globalThis.removeEventListener,
+    };
+    globalThis.CSS = { escape: (s) => String(s) };
+    globalThis.requestAnimationFrame = (cb) => {
+        cb();
+        return 1;
+    };
+    globalThis.getComputedStyle = () => ({
+        color: 'rgb(220, 220, 220)',
+        height: '32px',
+        paddingLeft: '10px',
+        borderRadius: '6px',
+        borderTopWidth: '1px',
+        borderTopStyle: 'solid',
+        borderTopColor: 'rgb(80, 80, 80)',
+        backgroundColor: 'rgb(30, 30, 30)',
+        fontSize: '13px',
+        fontFamily: 'sans-serif',
+        fontWeight: '400',
+        boxShadow: 'none',
+        marginTop: '0px',
+        marginRight: '0px',
+        marginBottom: '0px',
+        marginLeft: '0px',
+        alignSelf: 'auto',
+        verticalAlign: 'middle',
+    });
+    globalThis.MutationObserver = class MockMutationObserver {
+        constructor(cb) {
+            this.cb = cb;
+            this.target = null;
+            observerInstances.push(this);
+        }
+        observe(target) {
+            this.target = target;
+        }
+        disconnect() {
+            this.target = null;
+        }
+        takeRecords() {
+            return [];
+        }
+    };
+    delete globalThis.jQuery;
+    globalThis.SillyTavern = {
+        getContext: () => ({
+            characters: [],
+            extensionSettings: {},
+            saveSettingsDebounced: () => {},
+        }),
+    };
+
+    const restore = () => {
+        for (const [k, v] of Object.entries(saved)) {
+            if (v === undefined) delete globalThis[k];
+            else globalThis[k] = v;
+        }
+    };
+
+    return { doc, vv, MockEvent, observerInstances, winListeners, vvListeners, restore };
+}
+
+test('R6.1 mobile editor picker keeps #wbo-mp-search open & focused during soft-keyboard resize/scroll and closes on unfocused width change', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        const wiDrawer = dom.doc.createElement('div');
+        wiDrawer.id = 'WorldInfo';
+        const multiSel = dom.doc.createElement('div');
+        multiSel.id = 'WIMultiSelector';
+        const globalSel = dom.doc.createElement('select');
+        globalSel.id = 'world_info';
+        globalSel.multiple = true;
+        multiSel.appendChild(globalSel);
+
+        const worldPopup = dom.doc.createElement('div');
+        worldPopup.id = 'world_popup';
+        const editorSel = dom.doc.createElement('select');
+        editorSel.id = 'world_editor_select';
+        for (const [val, txt] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B'], ['2', '书C']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            editorSel.appendChild(opt);
+        }
+        worldPopup.appendChild(editorSel);
+        wiDrawer.appendChild(multiSel);
+        wiDrawer.appendChild(worldPopup);
+        dom.doc.body.appendChild(wiDrawer);
+
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+            assignments: { 书A: 'g1' },
+            showNativeOptgroups: true,
+        });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B', '书C'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        const trigger = dom.doc.getElementById('wbo-mobile-editor-trigger');
+        assert.ok(trigger, 'mobile editor trigger should mount when Select2 is absent and >=2 sections exist');
+
+        trigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        const overlay = dom.doc.getElementById('wbo-mobile-picker-overlay');
+        assert.ok(overlay && overlay.isConnected, 'mobile picker overlay should open');
+        const popover = overlay.querySelector('.wbo-mp-popover');
+        const searchInput = overlay.querySelector('#wbo-mp-search');
+        assert.ok(popover && searchInput, 'popover and #wbo-mp-search must exist');
+
+        // Focus search input to raise soft keyboard
+        searchInput.focus();
+        assert.equal(dom.doc.activeElement, searchInput);
+
+        // Simulate iOS WKWebView keyboard opening: innerHeight & visualViewport.height shrink 844 -> 460 while innerWidth stays 390
+        globalThis.innerHeight = 460;
+        dom.vv.height = 460;
+        globalThis.dispatchEvent(new dom.MockEvent('resize'));
+        dom.vv.dispatchEvent(new dom.MockEvent('resize'));
+        dom.vv.dispatchEvent(new dom.MockEvent('scroll'));
+
+        assert.equal(overlay.isConnected, true, 'overlay must stay open when soft keyboard triggers resize/scroll');
+        assert.equal(dom.doc.activeElement, searchInput, '#wbo-mp-search must retain focus');
+        assert.equal(overlay.querySelector('#wbo-mp-search'), searchInput, '#wbo-mp-search DOM identity must not be rebuilt');
+        const clampedMaxH = parseInt(popover.style.maxHeight, 10);
+        assert.ok(Number.isFinite(clampedMaxH) && clampedMaxH >= 120 && clampedMaxH <= 320, `maxHeight should clamp inside 460px viewport, got ${popover.style.maxHeight}`);
+
+        // Orientation change while #wbo-mp-search is focused updates initialVw and repositions without closing
+        globalThis.innerWidth = 844;
+        globalThis.innerHeight = 390;
+        dom.vv.height = 390;
+        globalThis.dispatchEvent(new dom.MockEvent('orientationchange'));
+        assert.equal(overlay.isConnected, true, 'focused orientationchange must keep picker open');
+        assert.equal(dom.doc.activeElement, searchInput);
+
+        // Unfocused orientation/width change (844 -> 390) should close cleanly
+        searchInput.blur();
+        assert.equal(dom.doc.activeElement, dom.doc.body);
+        globalThis.innerWidth = 390;
+        globalThis.innerHeight = 844;
+        dom.vv.height = 844;
+        globalThis.dispatchEvent(new dom.MockEvent('resize'));
+        assert.equal(overlay.isConnected, false, 'unfocused width change should close the mobile picker');
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
+    }
+});
+
+test('R6.1 grouped popup picker (#wbo-pop-search) clamps to visualViewport without closing or rebuilding input', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        const dialog = dom.doc.createElement('dialog');
+        const personaPopup = dom.doc.createElement('div');
+        personaPopup.className = 'persona_world';
+        const personaSel = dom.doc.createElement('select');
+        personaSel.className = 'persona_world_info_selector';
+        for (const [val, txt] of [['', '--- None ---'], ['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            personaSel.appendChild(opt);
+        }
+        personaPopup.appendChild(personaSel);
+        dialog.appendChild(personaPopup);
+        dom.doc.body.appendChild(dialog);
+
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+            assignments: { 书A: 'g1' },
+            adaptPersonaBindPopup: true,
+        });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        nativeMod.startNativeObservers(() => {});
+
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        assert.ok(bodyObserver, 'body MutationObserver should be registered');
+        bodyObserver.cb([{ addedNodes: [dialog] }]);
+
+        const trigger = personaPopup.querySelector('.wbo-popup-select-trigger');
+        assert.ok(trigger, 'grouped popup select trigger should mount');
+        trigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+
+        const backdrop = dialog.querySelector('.wbo-mp-backdrop');
+        const popover = backdrop?.querySelector('.wbo-mp-popover');
+        const popSearch = popover?.querySelector('#wbo-pop-search');
+        assert.ok(backdrop && popover && popSearch, '#wbo-pop-search grouped popover should open');
+
+        popSearch.focus();
+        globalThis.innerHeight = 460;
+        dom.vv.height = 460;
+        globalThis.dispatchEvent(new dom.MockEvent('resize'));
+        dom.vv.dispatchEvent(new dom.MockEvent('resize'));
+        dom.vv.dispatchEvent(new dom.MockEvent('scroll'));
+
+        assert.equal(backdrop.isConnected, true, '#wbo-pop-search popover must stay open on keyboard resize/scroll');
+        assert.equal(dom.doc.activeElement, popSearch);
+        assert.equal(popover.querySelector('#wbo-pop-search'), popSearch);
+        const maxH = parseInt(popover.style.maxHeight, 10);
+        assert.ok(Number.isFinite(maxH) && maxH >= 120 && maxH <= 320, `expected clamped maxHeight, got ${popover.style.maxHeight}`);
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
+    }
+});
+
+test('R6.2 .gr-container-enhanced & #world_popup .gr-select2-display isolation + ungrouped bubble guard', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        const wiDrawer = dom.doc.createElement('div');
+        wiDrawer.id = 'WorldInfo';
+        const multiSel = dom.doc.createElement('div');
+        multiSel.id = 'WIMultiSelector';
+        const globalSel = dom.doc.createElement('select');
+        globalSel.id = 'world_info';
+        globalSel.multiple = true;
+        const globalGrDisplay = dom.doc.createElement('div');
+        globalGrDisplay.className = 'gr-select2-display';
+        multiSel.appendChild(globalSel);
+        multiSel.appendChild(globalGrDisplay);
+
+        const worldPopup = dom.doc.createElement('div');
+        worldPopup.id = 'world_popup';
+        const editorSel = dom.doc.createElement('select');
+        editorSel.id = 'world_editor_select';
+        for (const [val, txt] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            editorSel.appendChild(opt);
+        }
+        const editorGrDisplay = dom.doc.createElement('div');
+        editorGrDisplay.className = 'gr-select2-display';
+        worldPopup.appendChild(editorSel);
+        worldPopup.appendChild(editorGrDisplay);
+        wiDrawer.appendChild(multiSel);
+        wiDrawer.appendChild(worldPopup);
+        dom.doc.body.appendChild(wiDrawer);
+
+        // Zero custom groups, zero pinned, showCharBooks: false -> needsPopoverGrouping is FALSE!
+        const settings = normalizeSettings({ groups: [], showCharBooks: false });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        nativeMod.startNativeObservers(() => {});
+
+        // Simulate host mounting an ungrouped editor `.gr-container-enhanced` AND a global `#gr-global-dropdown-container`
+        const editorEnhanced = dom.doc.createElement('div');
+        editorEnhanced.className = 'gr-container-enhanced';
+        for (const [v, t] of [['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('div');
+            opt.className = 'gr-option';
+            opt.dataset.value = v;
+            opt.textContent = t;
+            editorEnhanced.appendChild(opt);
+        }
+        const globalEnhanced = dom.doc.createElement('div');
+        globalEnhanced.id = 'gr-global-dropdown-container';
+        globalEnhanced.className = 'gr-container-enhanced';
+        dom.doc.body.appendChild(editorEnhanced);
+        dom.doc.body.appendChild(globalEnhanced);
+
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        assert.ok(bodyObserver, 'body MutationObserver should be registered');
+        bodyObserver.cb([{ addedNodes: [editorEnhanced, globalEnhanced] }]);
+
+        assert.equal(editorEnhanced.dataset.wboPopoverRole, 'editor', 'ungrouped editor .gr-container-enhanced must still receive role=editor');
+        assert.equal(editorEnhanced.dataset.wboBubbleGuarded, '1', 'ungrouped editor .gr-container-enhanced must receive bubble guard');
+        assert.equal(globalEnhanced.dataset.wboPopoverRole, 'global');
+        assert.equal(globalEnhanced.dataset.wboBubbleGuarded, '1');
+
+        // Clicking #world_popup .gr-select2-display must preserve editorEnhanced while closing globalEnhanced!
+        editorGrDisplay.dispatchEvent(new dom.MockEvent('pointerdown', { bubbles: true, cancelable: true }));
+        assert.equal(editorEnhanced.isConnected, true, 'clicking #world_popup .gr-select2-display must NOT close editor .gr-container-enhanced');
+        assert.notEqual(editorEnhanced.style.display, 'none');
+        assert.equal(globalEnhanced.isConnected, false, 'clicking editor trigger must close global dropdown');
+
+        // Direct closeAllOpenWorldDropdowns({ except: 'editor' }) must also keep editorEnhanced intact
+        nativeMod.closeAllOpenWorldDropdowns({ except: 'editor' });
+        assert.equal(editorEnhanced.isConnected, true);
+        assert.notEqual(editorEnhanced.style.display, 'none');
+
+        // Clicking #WIMultiSelector .gr-select2-display closes editorEnhanced
+        globalGrDisplay.dispatchEvent(new dom.MockEvent('pointerdown', { bubbles: true, cancelable: true }));
+        assert.equal(editorEnhanced.isConnected, false, 'clicking global .gr-select2-display should close editor dropdown');
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
+    }
+});
+
+test('R6.3 & Challenger R2 static CSS/JS guardrails (.wbo-vis-popover min-width, mobile >=16px inputs, no resize closePicker)', () => {
+    const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const nativeSrc = readFileSync(new URL('../src/native-filter.js', import.meta.url), 'utf8');
+
+    const visBlock = cssSrc.match(/\.wbo-vis-popover\s*\{[\s\S]*?\}/);
+    assert.ok(visBlock, '.wbo-vis-popover block must exist in style.css');
+    assert.match(visBlock[0], /min-width:\s*0\s*!important\s*;/, '.wbo-vis-popover must reset .wbo-modal min-width: 340px with min-width: 0 !important;');
+
+    const mobileInputBlock = cssSrc.match(/@media\s*\(max-width:\s*680px\),\s*\(pointer:\s*coarse\)\s*\{[\s\S]*?\.wbo-mp-popover\s+\.wbo-search-input[\s\S]*?\}\s*\}/);
+    assert.ok(mobileInputBlock, 'mobile/coarse >=16px input media block must exist in style.css');
+    assert.match(mobileInputBlock[0], /font-size:\s*16px\s*!important\s*;/);
+    assert.match(mobileInputBlock[0], /height:\s*34px\s*!important\s*;/);
+    assert.match(mobileInputBlock[0], /min-height:\s*34px\s*!important\s*;/);
+
+    assert.equal(/const\s+onViewportChange\s*=\s*\(\)\s*=>\s*closePicker\s*\(\)/.test(nativeSrc), false, 'native-filter.js must never unconditionally close mobile picker on resize');
+    assert.match(nativeSrc, /displaySelector:\s*'#WIMultiSelector \.gr-select2-display'/);
+});
+
+test('R6.2 grouped enhanceCustomDropdownPopover works for global (★ 已置顶 hoisting) and editor popovers + placeholder-only isolation', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        const wiDrawer = dom.doc.createElement('div');
+        wiDrawer.id = 'WorldInfo';
+        const multiSel = dom.doc.createElement('div');
+        multiSel.id = 'WIMultiSelector';
+        const globalSel = dom.doc.createElement('select');
+        globalSel.id = 'world_info';
+        globalSel.multiple = true;
+        const globalGrDisplay = dom.doc.createElement('div');
+        globalGrDisplay.className = 'gr-select2-display';
+        multiSel.appendChild(globalSel);
+        multiSel.appendChild(globalGrDisplay);
+
+        const worldPopup = dom.doc.createElement('div');
+        worldPopup.id = 'world_popup';
+        const editorSel = dom.doc.createElement('select');
+        editorSel.id = 'world_editor_select';
+        for (const [val, txt] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B'], ['2', '书C']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            editorSel.appendChild(opt);
+        }
+        const editorGrDisplay = dom.doc.createElement('div');
+        editorGrDisplay.className = 'gr-select2-display';
+        worldPopup.appendChild(editorSel);
+        worldPopup.appendChild(editorGrDisplay);
+        wiDrawer.appendChild(multiSel);
+        wiDrawer.appendChild(worldPopup);
+        dom.doc.body.appendChild(wiDrawer);
+
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+            assignments: { 书A: 'g1' },
+            pinnedBooks: ['书A'],
+            showNativeOptgroups: true,
+        });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B', '书C'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        nativeMod.startNativeObservers(() => {});
+
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        assert.ok(bodyObserver, 'body MutationObserver should be registered');
+
+        // 1) Grouped #gr-global-dropdown-container (exercises isGlobalPopover === true, orderedSections >= 2, initialPopPinned > 0)
+        const globalEnhanced = dom.doc.createElement('div');
+        globalEnhanced.id = 'gr-global-dropdown-container';
+        globalEnhanced.className = 'gr-container-enhanced';
+        const globalSearch = dom.doc.createElement('input');
+        globalSearch.className = 'gr-search-input';
+        const globalOptionsHost = dom.doc.createElement('div');
+        globalOptionsHost.className = 'gr-options-list';
+        for (const [v, t] of [['0', '书A'], ['1', '书B'], ['2', '书C']]) {
+            const opt = dom.doc.createElement('div');
+            opt.className = 'gr-option';
+            opt.dataset.value = v;
+            opt.textContent = t;
+            globalOptionsHost.appendChild(opt);
+        }
+        globalEnhanced.appendChild(globalSearch);
+        globalEnhanced.appendChild(globalOptionsHost);
+        dom.doc.body.appendChild(globalEnhanced);
+
+        bodyObserver.cb([{ addedNodes: [globalEnhanced] }]);
+
+        assert.equal(globalEnhanced.dataset.wboPopoverRole, 'global');
+        assert.equal(globalEnhanced.dataset.wboPopoverReady, '1');
+        const globalSections = globalOptionsHost.querySelectorAll('.wbo-pop-section');
+        assert.ok(globalSections.length >= 2, 'global popover should render pinned + ungrouped sections');
+        assert.equal(globalSections[0].getAttribute('data-wbo-dd-group'), '__pinned__');
+        assert.match(globalSections[0].querySelector('.wbo-dd-group-head')?.textContent || '', /★ 已置顶 \(1\)/);
+        const globalFilterBar = globalEnhanced.querySelector('.wbo-pop-filter-bar');
+        assert.ok(globalFilterBar, 'global popover should receive .wbo-pop-filter-bar');
+        const g1Pill = Array.from(globalFilterBar.querySelectorAll('.wbo-dd-pill')).find((b) => b.getAttribute('data-wbo-pill') === 'g1');
+        assert.equal(g1Pill?.textContent, '文风 1', 'global pill count must include hoisted pinned item from that group');
+
+        // 2) Grouped editor .gr-container-enhanced (exercises isGlobalPopover === false, orderedSections >= 2)
+        const editorEnhanced = dom.doc.createElement('div');
+        editorEnhanced.className = 'gr-container-enhanced';
+        const editorSearch = dom.doc.createElement('input');
+        editorSearch.className = 'gr-search-input';
+        const editorOptionsHost = dom.doc.createElement('div');
+        editorOptionsHost.className = 'gr-options-list';
+        for (const [v, t] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B'], ['2', '书C']]) {
+            const opt = dom.doc.createElement('div');
+            opt.className = 'gr-option';
+            opt.dataset.value = v;
+            opt.textContent = t;
+            editorOptionsHost.appendChild(opt);
+        }
+        editorEnhanced.appendChild(editorSearch);
+        editorEnhanced.appendChild(editorOptionsHost);
+        dom.doc.body.appendChild(editorEnhanced);
+
+        bodyObserver.cb([{ addedNodes: [editorEnhanced] }]);
+
+        assert.equal(editorEnhanced.dataset.wboPopoverRole, 'editor');
+        assert.equal(editorEnhanced.dataset.wboPopoverReady, '1');
+        assert.equal(editorEnhanced.querySelector('[data-wbo-dd-group="__pinned__"]'), null, 'editor popover must not hoist separate pinned section');
+        const editorSections = editorOptionsHost.querySelectorAll('.wbo-pop-section');
+        assert.equal(editorSections.length, 2, 'editor popover should render g1 and ungrouped sections');
+        assert.equal(editorSections[0].getAttribute('data-wbo-dd-group'), 'g1');
+
+        // 3) Challenge 2: placeholder-only .gr-container-enhanced preserved when except='editor', unrelated non-world popover closed
+        const placeholderEditorEnhanced = dom.doc.createElement('div');
+        placeholderEditorEnhanced.className = 'gr-container-enhanced';
+        const phOpt = dom.doc.createElement('div');
+        phOpt.className = 'gr-option';
+        phOpt.dataset.value = '';
+        phOpt.textContent = '--- Pick to Edit ---';
+        placeholderEditorEnhanced.appendChild(phOpt);
+        dom.doc.body.appendChild(placeholderEditorEnhanced);
+
+        const unrelatedEnhanced = dom.doc.createElement('div');
+        unrelatedEnhanced.className = 'gr-container-enhanced';
+        const unOpt = dom.doc.createElement('div');
+        unOpt.className = 'gr-option';
+        unOpt.dataset.value = '0';
+        unOpt.textContent = '非世界书预设A';
+        unrelatedEnhanced.appendChild(unOpt);
+        dom.doc.body.appendChild(unrelatedEnhanced);
+
+        nativeMod.closeAllOpenWorldDropdowns({ except: 'editor' });
+        assert.equal(placeholderEditorEnhanced.isConnected, true, 'placeholder-only editor popover should be exempted when except="editor"');
+        assert.equal(unrelatedEnhanced.isConnected, false, 'unrelated .gr-container-enhanced must still be closed');
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
+    }
+});
+
+test('R6.1 toggle-closing #wbo-mobile-editor-trigger cleans up window/visualViewport/document listeners and wiDrawerObserver', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        const wiDrawer = dom.doc.createElement('div');
+        wiDrawer.id = 'WorldInfo';
+        const multiSel = dom.doc.createElement('div');
+        multiSel.id = 'WIMultiSelector';
+        const globalSel = dom.doc.createElement('select');
+        globalSel.id = 'world_info';
+        globalSel.multiple = true;
+        multiSel.appendChild(globalSel);
+
+        const worldPopup = dom.doc.createElement('div');
+        worldPopup.id = 'world_popup';
+        const editorSel = dom.doc.createElement('select');
+        editorSel.id = 'world_editor_select';
+        for (const [val, txt] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            editorSel.appendChild(opt);
+        }
+        worldPopup.appendChild(editorSel);
+        wiDrawer.appendChild(multiSel);
+        wiDrawer.appendChild(worldPopup);
+        dom.doc.body.appendChild(wiDrawer);
+
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+            assignments: { 书A: 'g1' },
+            showNativeOptgroups: true,
+        });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        nativeMod.startNativeObservers(() => {});
+        const trigger = dom.doc.getElementById('wbo-mobile-editor-trigger');
+        assert.ok(trigger);
+
+        const basePointerDownCount = (dom.doc.documentElement._listeners.get('pointerdown') || []).length;
+        const baseObserverCount = dom.observerInstances.length;
+
+        // First click opens mobile picker
+        trigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        const overlay = dom.doc.getElementById('wbo-mobile-picker-overlay');
+        assert.ok(overlay && overlay.isConnected);
+        assert.equal(trigger.classList.contains('is-open'), true);
+        assert.equal(dom.winListeners.get('resize')?.size || 0, 1);
+        assert.equal(dom.winListeners.get('orientationchange')?.size || 0, 1);
+        assert.equal(dom.vvListeners.get('resize')?.size || 0, 1);
+        assert.equal(dom.vvListeners.get('scroll')?.size || 0, 1);
+        assert.equal((dom.doc.documentElement._listeners.get('pointerdown') || []).length, basePointerDownCount + 1);
+        const wiObs = dom.observerInstances[baseObserverCount];
+        assert.equal(wiObs?.target, wiDrawer);
+
+        // Second click toggle-closes via _closeMobileEditorPicker
+        trigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        assert.equal(overlay.isConnected, false, 'toggle click must remove overlay');
+        assert.equal(trigger.classList.contains('is-open'), false, 'toggle click must clear is-open');
+        assert.equal(dom.winListeners.get('resize')?.size || 0, 0, 'window resize listener must be removed on toggle close');
+        assert.equal(dom.winListeners.get('orientationchange')?.size || 0, 0, 'window orientationchange listener must be removed on toggle close');
+        assert.equal(dom.vvListeners.get('resize')?.size || 0, 0, 'visualViewport resize listener must be removed on toggle close');
+        assert.equal(dom.vvListeners.get('scroll')?.size || 0, 0, 'visualViewport scroll listener must be removed on toggle close');
+        assert.equal((dom.doc.documentElement._listeners.get('pointerdown') || []).length, basePointerDownCount, 'document pointerdown listener must be removed on toggle close');
+        assert.equal(wiObs?.target, null, 'wiDrawerObserver must be disconnected on toggle close');
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
+    }
+});
+
+test('R6.2 .wbo-mp-backdrop pointerdown over trigger rect suppresses trailing click reopen on both #wbo-mobile-editor-trigger and .wbo-popup-select-trigger', async () => {
+    const dom = installMockNativeFilterDom({ innerWidth: 390, innerHeight: 844 });
+    const nativeMod = await import('../src/native-filter.js');
+    try {
+        // 1. Setup #wbo-mobile-editor-trigger
+        const wiDrawer = dom.doc.createElement('div');
+        wiDrawer.id = 'WorldInfo';
+        const multiSel = dom.doc.createElement('div');
+        multiSel.id = 'WIMultiSelector';
+        const globalSel = dom.doc.createElement('select');
+        globalSel.id = 'world_info';
+        globalSel.multiple = true;
+        multiSel.appendChild(globalSel);
+
+        const worldPopup = dom.doc.createElement('div');
+        worldPopup.id = 'world_popup';
+        const editorSel = dom.doc.createElement('select');
+        editorSel.id = 'world_editor_select';
+        for (const [val, txt] of [['', '--- Pick to Edit ---'], ['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            editorSel.appendChild(opt);
+        }
+        worldPopup.appendChild(editorSel);
+        wiDrawer.appendChild(multiSel);
+        wiDrawer.appendChild(worldPopup);
+        dom.doc.body.appendChild(wiDrawer);
+
+        // 2. Setup <dialog> with .persona_world_info_selector for attachGroupedSelectControl
+        const dialog = dom.doc.createElement('dialog');
+        const personaPopup = dom.doc.createElement('div');
+        personaPopup.className = 'persona_world';
+        const personaSel = dom.doc.createElement('select');
+        personaSel.className = 'persona_world_info_selector';
+        for (const [val, txt] of [['', '--- None ---'], ['0', '书A'], ['1', '书B']]) {
+            const opt = dom.doc.createElement('option');
+            opt.value = val;
+            opt.textContent = txt;
+            personaSel.appendChild(opt);
+        }
+        personaPopup.appendChild(personaSel);
+        dialog.appendChild(personaPopup);
+        dom.doc.body.appendChild(dialog);
+
+        const settings = normalizeSettings({
+            groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+            assignments: { 书A: 'g1' },
+            showNativeOptgroups: true,
+            adaptPersonaBindPopup: true,
+        });
+        const cls = classifyWorldbooks({
+            worldNames: ['书A', '书B'],
+            bindingMap: new Map(),
+            settings,
+        });
+
+        nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
+        nativeMod.startNativeObservers(() => {});
+
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        assert.ok(bodyObserver);
+        bodyObserver.cb([{ addedNodes: [dialog] }]);
+
+        // --- Part A: #wbo-mobile-editor-trigger ---
+        const editorTrigger = dom.doc.getElementById('wbo-mobile-editor-trigger');
+        assert.ok(editorTrigger);
+        editorTrigger._rect = { left: 20, top: 120, right: 260, bottom: 156, width: 240, height: 36 };
+
+        // Tap #1: opens picker
+        editorTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        let editorOverlay = dom.doc.getElementById('wbo-mobile-picker-overlay');
+        assert.ok(editorOverlay && editorOverlay.isConnected, 'Tap #1 should open #wbo-mobile-picker-overlay');
+        assert.equal(editorTrigger.classList.contains('is-open'), true);
+
+        // Tap #2: real-browser hit-testing sends pointerdown onto .wbo-mp-backdrop inside trigger rect,
+        // which removes overlay, then synthesized click lands on uncovered triggerEl underneath.
+        editorOverlay.dispatchEvent(new dom.MockEvent('pointerdown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 100,
+            clientY: 138,
+        }));
+        assert.equal(editorOverlay.isConnected, false, 'pointerdown on backdrop must remove #wbo-mobile-picker-overlay');
+        editorTrigger.dispatchEvent(new dom.MockEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 100,
+            clientY: 138,
+        }));
+        assert.equal(dom.doc.getElementById('wbo-mobile-picker-overlay'), null, 'trailing click after backdrop pointerdown over trigger must NOT reopen #wbo-mobile-picker-overlay');
+        assert.equal(editorTrigger.classList.contains('is-open'), false, 'editor trigger must stay closed (is-open: false)');
+        assert.equal(editorTrigger.dataset.wboDismissedTapAt, undefined, 'dismiss stamp must be consumed and deleted');
+
+        // Tap #3 (immediate): opens cleanly again
+        editorTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        editorOverlay = dom.doc.getElementById('wbo-mobile-picker-overlay');
+        assert.ok(editorOverlay && editorOverlay.isConnected, 'Tap #3 must reopen #wbo-mobile-picker-overlay cleanly');
+        assert.equal(editorTrigger.classList.contains('is-open'), true);
+
+        // Dismiss outside trigger rect leaves no stamp and allows immediate next click on trigger
+        editorOverlay.dispatchEvent(new dom.MockEvent('pointerdown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 5,
+            clientY: 5,
+        }));
+        assert.equal(editorOverlay.isConnected, false);
+        assert.equal(editorTrigger.dataset.wboDismissedTapAt, undefined);
+        editorTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        assert.ok(dom.doc.getElementById('wbo-mobile-picker-overlay')?.isConnected, 'clicking trigger after outside-rect dismiss must open immediately');
+        // Clean close before Part B
+        editorTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        assert.equal(dom.doc.getElementById('wbo-mobile-picker-overlay'), null);
+
+        // --- Part B: attachGroupedSelectControl .wbo-popup-select-trigger ---
+        const popTrigger = personaPopup.querySelector('.wbo-popup-select-trigger');
+        assert.ok(popTrigger);
+        popTrigger._rect = { left: 40, top: 200, right: 280, bottom: 236, width: 240, height: 36 };
+
+        // Tap #1: opens grouped popup popover
+        popTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        let popOverlay = dialog.querySelector('.wbo-mp-backdrop');
+        assert.ok(popOverlay && popOverlay.isConnected, 'Tap #1 should open .wbo-mp-backdrop inside dialog');
+        assert.equal(popTrigger.classList.contains('is-open'), true);
+
+        // Tap #2: pointerdown on .wbo-mp-backdrop over trigger rect -> click on trigger
+        popOverlay.dispatchEvent(new dom.MockEvent('pointerdown', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 150,
+            clientY: 218,
+        }));
+        assert.equal(popOverlay.isConnected, false, 'pointerdown on backdrop must remove popup .wbo-mp-backdrop');
+        popTrigger.dispatchEvent(new dom.MockEvent('click', {
+            bubbles: true,
+            cancelable: true,
+            clientX: 150,
+            clientY: 218,
+        }));
+        assert.equal(dialog.querySelector('.wbo-mp-backdrop'), null, 'trailing click after backdrop pointerdown over popup trigger must NOT reopen popover');
+        assert.equal(popTrigger.classList.contains('is-open'), false, 'popup trigger must stay closed (is-open: false)');
+        assert.equal(popTrigger.dataset.wboDismissedTapAt, undefined, 'popup dismiss stamp must be consumed and deleted');
+
+        // Tap #3 (immediate): opens cleanly again
+        popTrigger.dispatchEvent(new dom.MockEvent('click', { bubbles: true, cancelable: true }));
+        popOverlay = dialog.querySelector('.wbo-mp-backdrop');
+        assert.ok(popOverlay && popOverlay.isConnected, 'Tap #3 must reopen popup .wbo-mp-backdrop cleanly');
+        assert.equal(popTrigger.classList.contains('is-open'), true);
+    } finally {
+        nativeMod.teardownNativeFilters();
+        dom.restore();
     }
 });

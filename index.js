@@ -57,7 +57,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-export const STYLE_ASSET_VERSION = '2.34.6';
+export const STYLE_ASSET_VERSION = '2.35.0';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;

@@ -1,43 +1,50 @@
-# `worldbook-organizer` 精修交接说明（dev 分支 · v2.34.6）
+# `worldbook-organizer` 精修交接说明（dev 分支 · v2.35.0）
 
 ## 1. 当前目标与范围
-- 分支：`dev`（跟踪 `origin/dev`，`main` 保持 `f61a20b` 不动），版本号同步至 `2.34.6`。
-- 完成 M3 Iteration 3（第 3 轮用户体验与大规模世界书交互精修）、实测反馈 5 项体验修复、Windows 真机卡顿/截断 4 项根因修复，以及三件套统一的浮动窗口化（`PointerEvent` 拖拽 / 缩放 / 小窗对照 / `—` 最小化恢复 / 零遮挡点击穿透 / `@container plugin-win` 响应 / `.openDrawer` 防误关冒泡守卫）。
+- 分支：`dev`（跟踪 `origin/dev`，`main` 保持 `f61a20b` 不动），版本号同步至 `2.35.0`。
+- 完整保留 `v2.35.0` 既有新特性（全局世界书组合 `globalPresets`、`#wbo-wi-merged-btn` 快捷中心与回退、全题材通用 AI 整理提示词与 `aiOrganizePresets`、持久化 UI 偏好记忆等），并落地窗口缩放与防回弹、非阻塞浮动分组管理、面板容器级响应式按钮与 `★` 右对齐、条目正文优先与展开态拖拽、扫描覆盖两列分割表与零变动反馈、宽屏设置紧凑对齐等全部体验优化与缺陷修复。
 
 ## 2. 已完成与改动文件
-- `src/entry-accordion.js`（新增）：共享多开手风琴条目浏览器与内联直编器（`mountEntryAccordion`）：
-  - 折叠行零表单 DOM，按需懒加载单条，支持同时展开 2~N 条对比编辑（脏改收起弹窗守卫）；
-  - >60 条渐进加载（`继续加载 60 条` / `展开全部`），搜索覆盖标题、触发词及**全书完整正文**（已展开条目保持挂载），`spellcheck="false"`，不主动手机端 `.focus()`；
-  - 单编辑器轻量撤销/重做栈（`↶ 撤回` / `↷ 取消撤回`、`Ctrl+Z` / `Ctrl+Y` / `Ctrl+Shift+Z`，`Tab` / `Shift+Tab` 缩进前后保留历史），框内查找（`上一个 / 下一个` 选中高亮）、`复制正文`、等宽代码字体切换（`entryEditorMonoFont`）、编辑区`加高`与实时字数/Token 估算（`estimateEntryTokens`）。
-- `src/core.js` & `src/host.js`：
-  - **零截断**：彻底移除 `fetchWorldbookPreviewEntries` 的 1600 字截断与 `searchEntriesInPayload` 的 2400 字截断；新增 `fetchWorldbookEntryContentMatchedUids` 无缓存直连全书正文搜索（仅保留匹配 UID 集合，不滞留大 JSON）。
-  - `findSensitiveTargetGroup(groups)` 自动识别 `nsfw / 成人 / 18+ / R18 / 涩 / 色 / 肉 / 车 / h向 / h文` 同义分组且避免误伤 `History` / `Character` / `角色`；`moveBooksToNamedGroup` 支持 `targetGroupId`。
-  - `AI_ORGANIZE_CATEGORY_PRESETS`（含 `按题材背景`、`按挂载方式`）与 `AI_ORGANIZE_NAMING_PRESETS` 扩展为 6+6；`isBookVisibleInSelector` / `isBookVisibleInCharBindPopup` 支持 `SPECIAL_GROUPS.PINNED`；`partitionGroupPickerBooks` 拆分本组/未分组/其他已分组；`unbindWorldbookFromPersona` 增加激活人设与交叉绑定保护。
-- `src/panel.js`：
-  - 将「行内展开预览」与「条目浏览/编辑」融合为同一 `mountEntryAccordion`（移除书行与 `···` 菜单中重复的 `browse-entries` 按钮）；
-  - 星标置顶改为原地亮灭更新，切换筛选胶囊或重开主窗时重排；新建/编辑分组支持 `未分组 / 已选 / 全部 / 其他已分组` 胶囊筛选、`全选当前可见未分组` 与默认折叠的「已在其他分组的世界书」；
-  - 排除分组（设置页与快捷排除浮层）新增 `全选`、`反选` 与 `隐藏 X / 显示 Y 组` 计数；AI 整理样式 6+6 等宽网格、两行高级选项、`外部 AI 整理` 独立子视图、敏感书同义分组就近确认与顶部 `[撤回]`；扫描弹窗去重摘要并增加顶部状态条与 `HH:mm 扫描完成：...` 汇总；
-  - 主列表移除常驻 `draggable="true"`，仅在拖拽抓手 `pointerdown` 时动态开启；
-  - 统一 `PointerEvent` 标题栏拖拽 + 右下角 `24×24px` 缩放（桌面 `≥340×280`，移动 `≥min(310px, calc(100vw - 16px))×250px`，上限 `96vw×92dvh`），关窗自动卸载 `resize` / `orientationchange` 监听；
-  - 标题栏新增「小窗对照 / 还原尺寸」与 **`—` 最小化**（隐藏面板完整保留 DOM/草稿/滚动位置，右下角显示 `世界书管理 · 点击恢复` 安全区胶囊）；默认主遮罩全程 `pointer-events: none; background: transparent;` 点击穿透外部宿主按钮且点击外部永不关闭，所有浮层根节点统一挂载冒泡阶段 `bindDrawerSafeBubbleGuard`（`mousedown` / `touchstart` / `click`）防止收起 SillyTavern 未固定抽屉。
+- `manifest.json` & `index.js`：版本号与 `STYLE_ASSET_VERSION` 升至 `2.35.0`。
+- `src/core.js`：
+  - 新增 `bookOrders`（组内手动拖拽排序持久化）与 `reorderBookInGroup`（跨组移动自动清理原分组 `bookOrders` 残留键），同步接入 `normalizeSettings`、`classifyWorldbooks`、`migrateSettingsOnWorldRename`、`cleanupDeletedWorldSettings`、`pruneStaleWorldbookSettings`、`exportConfigData` 与 `importConfigData`。
+  - 保留并完善 `globalPresets`、`aiOrganizePresets` 与通用 AI 提示词预设。
+- `src/entry-accordion.js`：
+  - 展开条目默认优先展示核心正文编辑区，将触发词、蓝绿灯/位置/深度等低频配置默认折叠进 `<details class="wbo-acc-meta-details">`（附一行状态摘要）；
+  - 修复 `applyTallTextareaHeight`：测量前先置 `height: auto` 读取自然 `scrollHeight` 再按 `Math.max(380, Math.min(560, naturalScrollH + 12))` 设定高度（关闭时清回 `''`），使「加高编辑区」对长内容提升明显且多次触发完全幂等。
 - `src/native-filter.js`：
-  - 原生 `#world_info`、#world_editor_select、附加书 Select2、手机端选择弹窗与自定义浮层统一接入置顶星标 `☆/★`（Select2 捕获阶段拦截点击不选中/不关闭，手机/弹窗改用 `<div>` 行容器零嵌套 `<button>`）、`★ 已置顶` 筛选胶囊、置顶排序与冒泡防误关守卫。
-- `style.css` & `manifest.json` & `index.js`：
-  - 版本号与 `STYLE_ASSET_VERSION` 统一升至 `2.34.6`；
-  - `.wbo-link-btn` 改为 Ghost 次级按钮；`.wbo-groups-list` 与折叠项启用 `contain: layout style`；弹窗全量引入 `container-type: inline-size; container-name: plugin-win` + `@container plugin-win (max-width: 560px / 420px)` 响应规则，全遮罩零 `backdrop-filter: blur()`。
-- `tests/core.test.mjs`：更新零截断断言并新增 Iteration 3 单元覆盖（26 项全部通过）。
+  - 置顶/收藏世界书同步在 `#world_info`、`#world_editor_select`、Select2（`.wbo-s2-item` 右侧对齐 `★`）与自定义浮层顶部排序；
+  - 增强 `enhanceCustomDropdownPopover` 显式声明 `isGlobalPopover` 并标记 `dataset.wboPopoverRole`（`'global'` / `'editor'`），修复多分组自定义弹层（含全局 `★ 已置顶` 置顶与编辑区隔离）识别，即使在未分组或单分组下也可靠识别编辑器 `.gr-container-enhanced` 并绑定 `bindDrawerSafeBubbleGuard`；将 `displaySelector` 收敛至 `#WIMultiSelector .gr-select2-display` 并把 `#world_popup .gr-select2-display`、`#wbo-mobile-picker-overlay`、`.wbo-mp-backdrop`、`.wbo-mp-popover` 纳入拦截白名单；
+  - 修复 iOS WKWebView 软键盘弹出秒关问题：`openMobileEditorPickerSheet`（`#wbo-mp-search`）与 `attachGroupedSelectControl`（`#wbo-pop-search`）改为基于 `visualViewport` 与焦点/宽度阈值的原地高度/位置夹紧，软键盘触发 `resize` / `scroll` 时绝不销毁或重建输入框，仅在失焦且真实转屏或宽度大幅变化时关闭，同时在 toggle 关闭时完整清理 `window`/`visualViewport`/`document`/观察器监听；
+  - 新增 `isPointInsideElementRect` / `consumeRecentDismissedTap` 修复触控场景下 `.wbo-mp-backdrop` `pointerdown` 关闭浮层后紧随的合成 `click` 穿透 `#wbo-mobile-editor-trigger` 或 `.wbo-popup-select-trigger` 立即重开的闪跳问题；
+  - 与 `closeAllOpenWorldDropdowns` 联动，打开全局世界书控件或弹窗快捷入口时自动收起已展开的编辑区/分组下拉浮层；所有 `body` 挂载弹层保持冒泡阶段 `bindDrawerSafeBubbleGuard`。
+- `src/panel.js`：
+  - 移除「缩小尺寸 / 小窗对照」按钮及相关状态，保留四边 + 四角共 8 条无文字角标的隐藏拖拽缩放热区；桌面端支持纵向拉伸至 `100dvh`，拖拽底边/右边/右下角缩放时锁定 `top`/`left` 锚点不向顶部/中央回弹；
+  - 将「管理分组」改造为不锁死底层列表的非阻塞浮动面板，支持边整理分组边滚动、点开底层主面板条目内容；
+  - 世界书行移除标题中冗长括号后缀，改以旁侧简洁 `本地同名` 红标提示；展开世界书行后仍可在标题/握把区正常发起同组拖拽排序与拖入顶部分组胶囊；
+  - 扫描覆盖区域重构为左「角色名」、右「世界书」的两列分割表（去掉每行重复「角色卡绑定」标注）；点击「重新扫描角色卡」在零新增变动时亦返回时间戳状态栏、按钮即时态与 Toast 提示；
+  - 统一所有文本/搜索 `<input>` 与 `<textarea>` 的 `spellcheck="false"`，移动端（`<= 680px` 或粗指针）保持禁用自动 `.focus()`。
+- `style.css`：
+  - 修复 `.wbo-book-actions .wbo-book-more-btn` 与 `.wbo-icon-btn` 优先级冲突：桌面宽面板（`> 600px` 容器且 `> 680px` 视口）下彻底隐藏 `···`、平铺操作按钮并将 `★` 右对齐在行尾；窄容器（`@container plugin-win (max-width: 600px)`）及移动端（`@media (max-width: 680px)`）下隐藏 `.wbo-book-action-secondary` 并显示 `[全局]` + `★` + `···`；
+  - 为 `.wbo-vis-popover`（及 `.wbo-mp-popover`）补齐 `min-width: 0 !important;` 覆盖 `.wbo-modal` 的 `340px` 最小宽度，确保窄屏与移动端 `···` 菜单及可见性弹层严格留在视口内不右溢；
+  - 在 `@media (max-width: 680px), (pointer: coarse)` 下将 `.wbo-mp-popover` 与 `.wbo-modal` 内文本/搜索输入框字号提升至 `16px !important`（`.wbo-mp-popover .wbo-search-input` 高度 `34px`），避免 iOS WebKit 自动放大与视口抖动；
+  - 拉开分组（L1）> 世界书（L2）> 条目（L3）三层视觉层级；补全 `.wbo-cov-chip-group` 与 `.wbo-cov-targets .wbo-jump-link.is-world` 长世界书名自动换行防溢出；宽屏设置页「明暗模式」紧凑贴近标题；零 `backdrop-filter` / `blur()`。
+- `tests/core.test.mjs`：通过全部 `37/37` 单测与 DOM 回归测试（含 `bookOrders` 跨组清理、iOS 软键盘 `resize`/`visualViewport` 回归、`.gr-container-enhanced` 分组隔离与 `isGlobalPopover`、触控 toggle-close 监听清理、`isPointInsideElementRect`/`consumeRecentDismissedTap` 防误重开及静态 CSS/安全护栏），另经无头 Edge CDP 多视口校验（`1440×900`、`480×720`、`390×844` 触控）`20/20` 项全部通过。
 
 ## 3. 绝对不能碰的红线 / 已确认偏好
-- 仅在 `dev` 分支迭代交付，严禁修改 `main`（`f61a20b`）、`INTEGRATION.md`、`user-persona-picker`、`worldbook-entry-groups`、`F:\SillyTavern`、`F:\TauriTavern`；不得读取 `F:\SillyTavern\data` 或 `OpenAI Settings`；所有示例与测试使用虚构脱敏数据。
-- 默认浮层外层遮罩保持透明与 `pointer-events: none`，仅 `.wbo-modal` 本体响应事件且不向 `<html>` 冒泡 `mousedown` / `touchstart` / `click`；仅显式点击 `×` 关闭主面板，点外部不关闭。
+- 仅在 `dev` 分支迭代交付，严禁修改或推送 `main`（`f61a20b`）；严禁触碰 `user-persona-studio`、`F:\SillyTavern`、`F:\TauriTavern`、`OpenAI Settings` 或 `F:\SillyTavern\data`。
+- 源码、CSS、注释、`README.md` 与 `NEXT.md` 中严禁出现任何第三方插件或作者名称。
+- 禁用 `backdrop-filter` / `blur()`；文本/搜索 `<input>` 与 `<textarea>` 强制 `spellcheck="false"`；移动端禁止自动 `.focus()`；所有 `body` 挂载浮层绑定冒泡防穿透守卫。
 
-## 4. 已知坑与验证结论
-- 语法检查与单测：`node --check` 全部 6 个模块通过；`node --test tests/core.test.mjs` 26/26 通过。
-- 4 状态无头 Edge CDP 验证（均通过且零横向溢出、`<html>` 冒泡计数为 `0`）：
-  1. 桌面 `1280×800` 标准窗：外部宿主按钮在面板开启下可直接点击且不关窗；手风琴 60 条分页增量、双条同开、3615 字零截断全量搜索、`Tab` 缩进后撤回/重做、框内查找、等宽/加高、原地置顶不回滚、Select2 置顶不关闭、分组选择器折叠、6+6 网格、敏感书同义归组与撤回、排除组反选/全选全部通过；
-  2. 桌面 `1280×800` 拖拽右下角缩窄至 `360×420`：`@container plugin-win` 自动切换紧凑三列工具栏，零溢出错位；
-  3. 移动 `390×844` 触控标准窗：手机端选书抽屉零嵌套 `<button>`、星标置顶与 `★ 已置顶` 胶囊正常；
-  4. 移动 `390×844` 半屏小窗对照 + `—` 最小化/恢复：小窗占比约 `48%`，上方外部宿主按钮可正常点击；输入未保存草稿 `E2E未保存草稿-123` 并滚动后点 `—`，点击 `世界书管理 · 点击恢复` 胶囊后草稿与 `scrollTop` 完整保留。
+## 4. 已知坑与未解决阻塞 / 真机待核验要点
+- 已知环境限制：无头测试采用独立隔离 DOM 模拟宿主 `#WorldInfo` / Select2 与 `/api/*` 接口；真实 SillyTavern / TauriTavern 运行时的原生 Select2 v4 事件与 iOS/Android 触控拖放需在真机复核。
+- 真机待核验要点：
+  1. 桌面端拖拽主面板底边/右边/右下角拉伸至贴近视口全高（`100dvh`）时，确认窗口不向上回弹、右下角无文字角标；
+  2. 宽屏下世界书行无 `···` 且 `★` 靠最右对齐，拉窄至 `<= 600px` 或切换移动端时收敛为 `[全局]` + `★` + `···`；
+  3. 展开长条目点击「加高编辑区」观察高度显著提升且可复原，展开态仍可拖拽排序及拖入分组；
+  4. 打开「管理分组」后直接滚动、展开底层面板条目；在编辑区打开下拉后点击全局世界书入口确认旧下拉立即收起；
+  5. 扫描弹窗查看两列分割表长名称换行与无变动重扫即时提示；
+  6. iOS TauriTavern 真机点击世界书编辑下拉搜索框「搜索世界书...」弹出输入法时浮层保持展开不秒关、不缩放抖动；窄屏与手机端点击 `···` 弹出的 `.wbo-book-more-popover` 菜单完整留在视口内不右溢。
 
 ## 5. 下一步最小动作
-- 若需在真实酒馆（SillyTavern / TauriTavern）实机核对，直接切至 `dev` 分支刷新浏览器缓存（`v=2.34.6`），在桌面端与 390px 移动端快速抽检小窗拖拽/缩放、展开超长条目及三件套联动即可准备合入 `main`。
+- `v2.35.0` 与全部 R1–R6 体验精修、缺陷修复已提交并推送至 `origin/dev`，可直接交由用户在真实 SillyTavern 与 iOS TauriTavern 环境按 `§4` 要点实机验证；确认无误后再由用户决定合入 `main`。

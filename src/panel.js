@@ -21,22 +21,29 @@ import {
     compareWorldbookEntries,
     createApiChannelId,
     deepClone,
+    deleteAiOrganizePreset,
+    deleteGlobalPreset,
     exportConfigData,
     extractEmbeddedCharacterBookPreview,
     findCardsWithUnimportedBooks,
+    findMatchingGlobalPreset,
     findSensitiveTargetGroup,
     findUnscannedShallowCharacters,
+    getEffectiveAiOrganizePresets,
     importConfigData,
     isPotentiallySensitiveTitle,
     matchesSearch,
     migrateSettingsOnWorldRename,
     moveBooksToNamedGroup,
+    moveGlobalPreset,
     moveSectionOrder,
     parseAiOrganizeResponse,
     partitionGroupPickerBooks,
     promoteSectionToTop,
     pushUndoSnapshot,
+    reorderBookInGroup,
     reorderSection,
+    resetAiOrganizePresets,
     restoreOrganizeSnapshot,
     searchEntriesInPayload,
     summarizeCharacterWorldCoverage,
@@ -44,6 +51,8 @@ import {
     togglePinnedBook,
     undoLastAiOrganize,
     updateCachedCharBindings,
+    upsertAiOrganizePreset,
+    upsertGlobalPreset,
 } from './core.js';
 import {
     applyTauriSurface,
@@ -75,8 +84,10 @@ import {
 } from './host.js';
 import { mountEntryAccordion } from './entry-accordion.js';
 import {
+    closeAllOpenWorldDropdowns,
     openWorldInNativeEditor,
     setGlobalWorldActive,
+    setGlobalWorldsBatch,
 } from './native-filter.js';
 
 const CHAR_TOGGLE_BTN_ID = 'wbo-hdr-show-char';
@@ -84,16 +95,24 @@ const WI_QUICK_ACTIONS_ID = 'wbo-wi-quick-actions';
 const WAND_ENTRY_ID = 'wbo-wand-entry';
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const MANAGER_OVERLAY_ID = 'wbo-manager-overlay';
+const GROUP_MGR_OVERLAY_ID = 'wbo-gm-floating-overlay';
 const SUBMODAL_OVERLAY_ID = 'wbo-submodal-overlay';
 const PROMPT_OVERLAY_ID = 'wbo-prompt-overlay';
 
 let _searchQuery = '';
+let _lastEntrySearchQuery = '';
 let _isComposing = false;
 let _callbacks = null;
 let _lastModalListSig = null;
 let _batchMode = false;
 let _mgrPillsExpanded = false;
 let _mgrSearchTimer = null;
+/** @type {{ left?: number, top?: number, width: number, height: number } | null} */
+let _sessionManagerModalBox = null;
+/** @type {(() => void) | null} */
+let _syncFloatingGroupManager = null;
+/** @type {{ prevBooks: string[], label: string } | null} */
+let _lastGlobalSwitchUndo = null;
 /** @type {{ cancelled: boolean } | null} */
 let _mgrInlineEntrySignal = null;
 /** @type {MutationObserver | null} */
@@ -361,8 +380,10 @@ function scheduleNativeCharBtnWidthSync(btn) {
 }
 
 /**
- * Mount two ultra-clean, theme-native shortcut buttons (`排除` + `搜条目`) on the empty
- * right side of `#WorldInfo`'s top title row (`世界/知识书`), zero extra rows & zero crowding!
+ * Mount clean, theme-native shortcut buttons on the right side of `#WorldInfo`'s top title row:
+ * - Default `'merged'` mode: 1 compact `快捷` button opening the fixed-size Quick Hub (`全局组合 | 排除分组` + `搜条目 / 分组管理`)
+ * - Optional `'split'` mode: user-selectable `组合` / `排除` / `搜条目` buttons
+ * - Optional `'off'` mode: zero top-bar buttons
  */
 function ensureWorldInfoQuickActions() {
     let box = document.getElementById(WI_QUICK_ACTIONS_ID);
@@ -377,27 +398,55 @@ function ensureWorldInfoQuickActions() {
     box.id = WI_QUICK_ACTIONS_ID;
     box.className = 'wbo-wi-quick-actions';
     box.innerHTML = `
-        <div id="wbo-wi-exclude-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="快速设置全局框与编辑框默认排除的分组">
+        <div id="wbo-wi-merged-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="切换全局世界书组合、设置排除分组或搜条目">
+            <i class="fa-solid fa-sliders"></i>
+            <span>快捷</span>
+        </div>
+        <div id="wbo-wi-combo-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="快速切换或保存全局世界书组合" hidden>
+            <i class="fa-solid fa-bookmark"></i>
+            <span>组合</span>
+        </div>
+        <div id="wbo-wi-exclude-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="快速设置全局框与编辑框默认排除的分组" hidden>
             <i class="fa-solid fa-filter"></i>
             <span>排除</span>
         </div>
-        <div id="wbo-wi-entry-search-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="跨世界书按需搜索条目内容">
+        <div id="wbo-wi-entry-search-btn" class="menu_button wbo-wi-quick-btn" role="button" tabindex="0" title="跨世界书按需搜索条目内容" hidden>
             <i class="fa-solid fa-magnifying-glass"></i>
             <span>搜条目</span>
         </div>
     `;
     headerRow.appendChild(box);
 
+    const mergedBtn = box.querySelector('#wbo-wi-merged-btn');
+    mergedBtn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeAllOpenWorldDropdowns();
+        if (mergedBtn instanceof HTMLElement) {
+            openQuickHubPopover(mergedBtn);
+        }
+    });
+
+    const comboBtn = box.querySelector('#wbo-wi-combo-btn');
+    comboBtn?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeAllOpenWorldDropdowns();
+        if (comboBtn instanceof HTMLElement) {
+            openQuickHubPopover(comboBtn, { forceTab: 'presets' });
+        }
+    });
+
     const excludeBtn = box.querySelector('#wbo-wi-exclude-btn');
     excludeBtn?.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        closeAllOpenWorldDropdowns();
         if (excludeBtn instanceof HTMLElement) {
-            openQuickExcludePopover(excludeBtn);
+            openQuickHubPopover(excludeBtn, { forceTab: 'exclude' });
         }
     });
 
     box.querySelector('#wbo-wi-entry-search-btn')?.addEventListener('click', (ev) => {
         ev.stopPropagation();
+        closeAllOpenWorldDropdowns();
         openEntrySearchModal('');
     });
 
@@ -504,16 +553,26 @@ export function renderEmbeddedPanel() {
 
     const { settings, classification } = _callbacks.getState();
 
-    // Sync native WorldInfo title-bar shortcut buttons (`排除` / `搜条目`) visibility
+    // Sync native WorldInfo title-bar shortcut buttons (`快捷`三合一 or `组合` / `排除` / `搜条目`分开显示)
     const quickBox = document.getElementById(WI_QUICK_ACTIONS_ID);
     if (quickBox) {
-        const showExclude = settings.showNativeExcludeBtn !== false;
-        const showEntrySearch = settings.showNativeEntrySearchBtn !== false;
+        const mode = settings.nativeQuickActionsMode || 'merged';
+        const showMerged = mode === 'merged';
+        const showCombo = mode === 'split' && settings.showNativeComboBtn !== false;
+        const showExclude = mode === 'split' && settings.showNativeExcludeBtn !== false;
+        const showEntrySearch = mode === 'split' && settings.showNativeEntrySearchBtn !== false;
+
+        const mgBtn = quickBox.querySelector('#wbo-wi-merged-btn');
+        const cbBtn = quickBox.querySelector('#wbo-wi-combo-btn');
         const exBtn = quickBox.querySelector('#wbo-wi-exclude-btn');
         const esBtn = quickBox.querySelector('#wbo-wi-entry-search-btn');
+
+        if (mgBtn instanceof HTMLElement) mgBtn.hidden = !showMerged;
+        if (cbBtn instanceof HTMLElement) cbBtn.hidden = !showCombo;
         if (exBtn instanceof HTMLElement) exBtn.hidden = !showExclude;
         if (esBtn instanceof HTMLElement) esBtn.hidden = !showEntrySearch;
-        quickBox.hidden = !showExclude && !showEntrySearch;
+        quickBox.hidden = !(showMerged || showCombo || showExclude || showEntrySearch);
+        syncNativeQuickComboTitles();
     }
 
     if (showCharBtn) {
@@ -547,11 +606,111 @@ export function renderEmbeddedPanel() {
     }
 }
 
+function syncNativeQuickComboTitles() {
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+    const activeGlobals = getActiveGlobalWorldSet();
+    const matched = findMatchingGlobalPreset(settings.globalPresets, activeGlobals);
+    const mergedBtn = document.getElementById('wbo-wi-merged-btn');
+    const comboBtn = document.getElementById('wbo-wi-combo-btn');
+    const comboSuffix = matched
+        ? `（当前组合：${matched.name} · 已开 ${activeGlobals.size} 本）`
+        : (activeGlobals.size > 0 ? `（当前已开 ${activeGlobals.size} 本全局书）` : '');
+    if (mergedBtn instanceof HTMLElement) {
+        mergedBtn.title = `快捷面板${comboSuffix}：全局组合 / 排除分组 / 搜条目`;
+        mergedBtn.classList.toggle('is-active', Boolean(matched));
+    }
+    if (comboBtn instanceof HTMLElement) {
+        comboBtn.title = `全局世界书组合${comboSuffix}`;
+        comboBtn.classList.toggle('is-active', Boolean(matched));
+    }
+}
+
+/**
+ * Sync the Group Manager's top `组合` button badge and optional 1-row quick combo bar.
+ */
+function syncManagerComboStripUi() {
+    const overlay = document.getElementById(MANAGER_OVERLAY_ID);
+    if (!overlay || !_callbacks) return;
+    const { settings } = _callbacks.getState();
+    const presets = Array.isArray(settings.globalPresets) ? settings.globalPresets : [];
+    const activeGlobals = getActiveGlobalWorldSet();
+    const matched = findMatchingGlobalPreset(presets, activeGlobals);
+
+    const comboBtn = overlay.querySelector('#wbo-mgr-combo-btn');
+    const comboLbl = overlay.querySelector('#wbo-mgr-combo-label');
+    if (comboBtn instanceof HTMLElement) {
+        comboBtn.classList.toggle('is-active', Boolean(matched));
+        comboBtn.title = matched
+            ? `全局组合（当前生效：${matched.name}）`
+            : '自由组合全局世界书并保存方案';
+    }
+    if (comboLbl) {
+        comboLbl.textContent = presets.length > 0 ? `组合 ${presets.length}` : '组合';
+    }
+
+    const barEl = overlay.querySelector('#wbo-mgr-combo-bar');
+    if (!(barEl instanceof HTMLElement)) return;
+    if (presets.length === 0 && !_lastGlobalSwitchUndo) {
+        barEl.hidden = true;
+        barEl.innerHTML = '';
+        return;
+    }
+    barEl.hidden = false;
+    const pillsHtml = presets.map((p) => {
+        const isCurrent = matched?.id === p.id;
+        return `
+            <button type="button"
+                class="wbo-pill wbo-combo-quick-pill${isCurrent ? ' is-active' : ''}"
+                data-action="apply-global-combo"
+                data-combo-id="${esc(p.id)}"
+                title="${esc(`${p.name}（${p.books.length} 本）：点击一键切换`)}">
+                ${isCurrent ? '<i class="fa-solid fa-check"></i>' : ''}
+                <span>${esc(p.name)}</span>
+                <span class="wbo-pill-count">${p.books.length}</span>
+            </button>
+        `;
+    }).join('');
+    const undoBtnHtml = _lastGlobalSwitchUndo
+        ? `<button type="button" class="wbo-link-btn wbo-combo-undo-btn" data-action="undo-global-combo" title="恢复切换前的全局激活状态">↶ 撤回</button>`
+        : '';
+    barEl.innerHTML = `
+        <span class="wbo-es-history-label">组合</span>
+        <div class="wbo-combo-pills-scroll">${pillsHtml}</div>
+        ${undoBtnHtml}
+        <button type="button" class="wbo-link-btn wbo-combo-manage-link" data-action="open-combos-modal">管理</button>
+    `;
+}
+
+/**
+ * Apply a Global Worldbook Combo (or clear/undo) in one batch and update all indicators.
+ * @param {Iterable<string>} targetBooks
+ * @param {{ mode?: 'replace' | 'add', label?: string, recordUndo?: boolean }} [opts]
+ */
+function executeGlobalBooksSwitch(targetBooks, { mode = 'replace', label = '切换组合', recordUndo = true } = {}) {
+    const res = setGlobalWorldsBatch(targetBooks, { mode });
+    if (!res.ok) {
+        showToast('warning', '未找到原生全局世界书选择框 (#world_info)');
+        return res;
+    }
+    if (res.changed && recordUndo) {
+        _lastGlobalSwitchUndo = {
+            prevBooks: res.prevActive,
+            label,
+        };
+    }
+    syncNativeQuickComboTitles();
+    syncEmbeddedPanelIndicators();
+    return res;
+}
+
 /**
  * Lightweight in-place sync when native `#world_info` or `#world_editor_select` changes.
  * Updates both per-row global pills AND group header active counts with zero DOM rebuild!
  */
 export function syncEmbeddedPanelIndicators() {
+    syncNativeQuickComboTitles();
+    syncManagerComboStripUi();
     const listEl = document.getElementById('wbo-mgr-groups-list');
     if (!listEl) return;
 
@@ -600,12 +759,15 @@ export function syncEmbeddedPanelIndicators() {
  * - Character worldbooks have NO global activation toggle (prevents accidental global enabling!)
  * - Non-character worldbooks use an explicit right-side `全局 / 已全局` button instead of a misclick-prone left checkbox
  */
-function renderBookRowHtml(book, activeGlobals, currentEditor) {
+function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet = null) {
     const isActive = activeGlobals.has(book.realName);
     const isEditing = currentEditor === book.realName;
     const isExtraChar = book.isInCharGroup && book.charOwners?.every((o) => o.source === 'extra');
 
     const extraTag = isExtraChar ? '<span class="wbo-tag">附加</span>' : '';
+    const localSameNameTag = embeddedMatchSet?.has(book.realName)
+        ? '<span class="wbo-tag is-warn" title="本地同名文件，未绑定到当前角色卡，多为旧版残留">本地同名</span>'
+        : '';
     const ownerHint = book.isCharBound && !book.isInCharGroup
         ? `<span class="wbo-tag" title="绑定角色：${esc(book.charOwners.map((o) => o.charName).join('、'))}">${esc(book.charOwners[0]?.charName || '')}</span>`
         : '';
@@ -641,19 +803,20 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
         : '';
 
     const mainAction = _batchMode ? 'toggle-batch-row' : 'toggle-book-preview';
-    const mainTitle = _batchMode ? '点击勾选或取消勾选' : '点击展开条目列表与直编';
+    const mainTitle = _batchMode ? '点击勾选或取消勾选' : '点击展开条目列表与直编；可拖动调序或拖入分组';
 
     return `
         <div class="wbo-book-item" data-book="${esc(book.realName)}">
             <div class="wbo-book-row${isActive && !book.isInCharGroup ? ' is-active' : ''}${isEditing ? ' is-editing' : ''}${_batchMode && batchChecked ? ' is-batch-selected' : ''}" data-book="${esc(book.realName)}">
-                <span class="wbo-drag-handle" title="${_batchMode ? '拖动移动当前项或全部已勾选项' : '拖动移动到分组'}"><i class="fa-solid fa-grip-vertical"></i></span>
+                <span class="wbo-drag-handle" title="${_batchMode ? '拖动移动当前项或全部已勾选项' : '拖动调序或移入分组'}"><i class="fa-solid fa-grip-vertical"></i></span>
                 ${batchCheckHtml}
-                <button type="button" class="wbo-book-main" data-action="${mainAction}" title="${mainTitle}">
+                <div role="button" tabindex="0" class="wbo-book-main" data-action="${mainAction}" title="${mainTitle}">
                     <i class="fa-solid fa-chevron-right wbo-book-chev"></i>
                     <span class="wbo-book-text-col">
                         <span class="wbo-book-title-line">
                             <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
                             ${subHtml}
+                            ${localSameNameTag}
                             ${extraTag}
                             ${ownerHint}
                             ${personaHint}
@@ -661,16 +824,9 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                         </span>
                         ${noteHtml}
                     </span>
-                </button>
+                </div>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
-                    <button type="button"
-                        class="wbo-icon-btn wbo-star-btn${book.isPinned ? ' is-pinned' : ''}"
-                        data-action="toggle-pin-book"
-                        title="${book.isPinned ? '取消置顶' : '置顶'}"
-                        aria-pressed="${book.isPinned ? 'true' : 'false'}">
-                        <i class="${book.isPinned ? 'fa-solid' : 'fa-regular'} fa-star"></i>
-                    </button>
                     <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="edit-book" title="在酒馆编辑器中打开">
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
@@ -682,6 +838,13 @@ function renderBookRowHtml(book, activeGlobals, currentEditor) {
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-icon-danger wbo-book-action-secondary" data-action="delete-single-book" title="删除世界书">
                         <i class="fa-regular fa-trash-can"></i>
+                    </button>
+                    <button type="button"
+                        class="wbo-icon-btn wbo-star-btn${book.isPinned ? ' is-pinned' : ''}"
+                        data-action="toggle-pin-book"
+                        title="${book.isPinned ? '取消置顶' : '置顶'}"
+                        aria-pressed="${book.isPinned ? 'true' : 'false'}">
+                        <i class="${book.isPinned ? 'fa-solid' : 'fa-regular'} fa-star"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作">
                         <i class="fa-solid fa-ellipsis"></i>
@@ -745,6 +908,13 @@ async function toggleInlineBookPreview(itemEl, bookName) {
             const curSettings = _callbacks?.getState?.()?.settings;
             if (!curSettings) return;
             curSettings.entryEditorMonoFont = Boolean(nextMono);
+            void _callbacks.onMutation({ save: true, uiOnly: true });
+        },
+        getTallMode: () => Boolean(_callbacks?.getState?.()?.settings?.entryEditorTall),
+        onToggleTallMode: (nextTall) => {
+            const curSettings = _callbacks?.getState?.()?.settings;
+            if (!curSettings) return;
+            curSettings.entryEditorTall = Boolean(nextTall);
             void _callbacks.onMutation({ save: true, uiOnly: true });
         },
         onExtraAction: (act) => {
@@ -830,6 +1000,7 @@ function renderGroupSectionHtml({
     books,
     activeGlobals,
     currentEditor,
+    embeddedMatchSet = null,
 }) {
     const activeCount = books.filter((b) => activeGlobals.has(b.realName)).length;
     const countLabel = activeCount > 0 ? `${activeCount}/${books.length}` : `${books.length}`;
@@ -894,7 +1065,7 @@ function renderGroupSectionHtml({
     const rowsHtml = collapsed
         ? ''
         : (books.length > 0
-            ? `<div class="wbo-group-body">${books.map((b) => renderBookRowHtml(b, activeGlobals, currentEditor)).join('')}</div>`
+            ? `<div class="wbo-group-body">${books.map((b) => renderBookRowHtml(b, activeGlobals, currentEditor, embeddedMatchSet)).join('')}</div>`
             : `<div class="wbo-group-body wbo-empty-hint">暂无世界书，可直接拖动世界书到此处</div>`);
 
     const batchGroupCheckHtml = _batchMode
@@ -923,7 +1094,7 @@ function renderGroupSectionHtml({
 
     _renderedGroupBooksMap.set(id, books.map((b) => b.realName));
     return `
-        <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}">
+        <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}" style="--wbo-group-accent:${esc(color)}">
             <div class="wbo-group-header"${isSingleView ? '' : ` data-drag-group-id="${esc(id)}"`}>
                 ${titleNode}
                 <div class="wbo-group-actions">
@@ -978,9 +1149,23 @@ function removeRestorePill() {
     _minimizedScrollSnapshots = [];
 }
 
+function closeFloatingGroupManager() {
+    _syncFloatingGroupManager = null;
+    const gmOverlay = document.getElementById(GROUP_MGR_OVERLAY_ID);
+    if (gmOverlay instanceof HTMLElement) {
+        cleanupOverlayWindowControls(gmOverlay);
+        gmOverlay.remove();
+    }
+}
+
 function restoreManagerModal() {
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
     document.getElementById(RESTORE_PILL_ID)?.remove();
+    const gmOverlay = document.getElementById(GROUP_MGR_OVERLAY_ID);
+    if (gmOverlay instanceof HTMLElement) {
+        gmOverlay.hidden = false;
+        gmOverlay.style.display = '';
+    }
     if (!(overlay instanceof HTMLElement)) return;
     overlay.hidden = false;
     overlay.style.display = '';
@@ -1008,6 +1193,11 @@ function minimizeManagerModal() {
 
     overlay.hidden = true;
     overlay.style.display = 'none';
+    const gmOverlay = document.getElementById(GROUP_MGR_OVERLAY_ID);
+    if (gmOverlay instanceof HTMLElement) {
+        gmOverlay.hidden = true;
+        gmOverlay.style.display = 'none';
+    }
 
     document.getElementById(RESTORE_PILL_ID)?.remove();
     const pill = document.createElement('button');
@@ -1026,6 +1216,7 @@ function minimizeManagerModal() {
 
 function closeManagerModal() {
     removeRestorePill();
+    closeFloatingGroupManager();
     destroyAllPreviewControllers();
     closeSubModal({ all: true });
     cancelManagerInlineEntrySearch();
@@ -1102,16 +1293,65 @@ function syncBatchBarUi() {
 }
 
 /**
- * Dedicated Group Management modal: view all custom groups in one clean list,
- * batch-select groups to dissolve/delete at once, reorder, or rename.
+ * Non-blocking floating / side-docked Group Management panel: view all custom groups,
+ * batch-select groups to dissolve/delete, reorder, merge, or rename while keeping the
+ * main Worldbook list & entry accordions underneath 100% scrollable and interactive!
  */
 function openManageGroupsModal() {
     if (!_callbacks) return;
+    const existingOverlay = document.getElementById(GROUP_MGR_OVERLAY_ID);
+    if (existingOverlay instanceof HTMLElement) {
+        existingOverlay.hidden = false;
+        existingOverlay.style.display = '';
+        _syncFloatingGroupManager?.();
+        return;
+    }
+
     const selectedGroupIds = new Set();
 
-    const { modal } = createSubModal(
-        '管理分组',
-        `
+    const overlay = document.createElement('div');
+    overlay.id = GROUP_MGR_OVERLAY_ID;
+    overlay.className = 'wbo-modal-overlay wbo-floating-overlay wbo-gm-floating-overlay';
+    applyTauriSurface(overlay, 'backdrop');
+
+    const modal = document.createElement('div');
+    modal.className = 'wbo-modal is-pinned-layout wbo-gm-floating-panel';
+    applyThemeClass(modal);
+    applyTauriSurface(modal, 'fullscreen-window');
+
+    const vw = Math.max(globalThis.innerWidth || document.documentElement?.clientWidth || 1200, 280);
+    const vh = Math.max(globalThis.innerHeight || document.documentElement?.clientHeight || 800, 320);
+    let initialBox = null;
+    if (vw > 680) {
+        const mgrModal = document.querySelector(`#${MANAGER_OVERLAY_ID} .wbo-modal`);
+        const mgrRect = mgrModal instanceof HTMLElement ? mgrModal.getBoundingClientRect() : null;
+        const panelW = Math.min(400, Math.max(340, Math.round(vw * 0.28)));
+        const panelH = Math.min(Math.max(420, Math.round(mgrRect?.height || 560)), vh - 24);
+        let panelLeft = Math.max(12, vw - panelW - 16);
+        let panelTop = Math.max(12, Math.round((vh - panelH) / 2));
+        if (vw >= 1080 && mgrRect && mgrRect.width > 0) {
+            panelTop = Math.max(12, Math.min(vh - panelH - 12, Math.round(mgrRect.top)));
+            if (mgrRect.right + 12 + panelW <= vw - 12) {
+                panelLeft = Math.round(mgrRect.right + 12);
+            } else if (mgrRect.left - 12 - panelW >= 12) {
+                panelLeft = Math.round(mgrRect.left - 12 - panelW);
+            }
+        }
+        initialBox = { left: panelLeft, top: panelTop, width: panelW, height: panelH };
+    }
+
+    modal.innerHTML = `
+        <div class="wbo-modal-header wbo-draggable-header">
+            <div class="wbo-modal-header-top">
+                <span class="wbo-modal-title">管理分组</span>
+                <div class="wbo-modal-header-actions">
+                    <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+        <div class="wbo-modal-body wbo-pinned-body">
             <div class="wbo-pinned-top">
                 <div class="wbo-gm-toolbar">
                     <span class="wbo-batch-count" id="wbo-gm-sel-count">已选 0 个分组</span>
@@ -1124,7 +1364,7 @@ function openManageGroupsModal() {
             </div>
             <div class="wbo-step-scroll">
                 <div class="wbo-gm-list" id="wbo-gm-list"></div>
-                <div class="wbo-subtle-tip">删除或解除分组仅取消归类，世界书本体不会被删除，相关世界书将回到「未分组」。</div>
+                <div class="wbo-subtle-tip">删除或解除分组仅取消归类，世界书本体不会被删除，相关世界书将回到「未分组」。可一边浏览底层世界书与条目，一边在此调整分组。</div>
             </div>
             <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
                 <div class="wbo-ai-footer-left">
@@ -1136,9 +1376,14 @@ function openManageGroupsModal() {
                     <button type="button" class="wbo-btn" id="wbo-gm-close-btn">完成</button>
                 </div>
             </div>
-        `,
-        { wide: true, pinnedLayout: true },
-    );
+        </div>
+    `;
+
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    bindDrawerSafeBubbleGuard(modal);
+    const gmWinCleanup = attachModalWindowControls(modal, modal.querySelector('.wbo-modal-header'), { initialBox });
+    _modalWindowCleanupMap.set(modal, gmWinCleanup);
 
     const listEl = modal.querySelector('#wbo-gm-list');
     const selCountEl = modal.querySelector('#wbo-gm-sel-count');
@@ -1146,6 +1391,7 @@ function openManageGroupsModal() {
     const delSelBtn = modal.querySelector('#wbo-gm-del-selected');
 
     const syncSelectionUi = () => {
+        if (!modal.isConnected || !_callbacks) return;
         const { settings } = _callbacks.getState();
         const total = (settings.groups || []).length;
         const validIds = new Set((settings.groups || []).map((g) => g.id));
@@ -1167,6 +1413,7 @@ function openManageGroupsModal() {
     };
 
     const renderList = () => {
+        if (!modal.isConnected || !_callbacks) return;
         const { settings, classification } = _callbacks.getState();
         const countByGroupId = new Map(
             (classification.customGroups || []).map((g) => [g.id, g.books.length]),
@@ -1211,6 +1458,7 @@ function openManageGroupsModal() {
         }).join('');
         syncSelectionUi();
     };
+    _syncFloatingGroupManager = renderList;
 
     const deleteGroupsByIds = async (ids) => {
         if (!ids.length) return;
@@ -1224,6 +1472,9 @@ function openManageGroupsModal() {
         settings.groups = settings.groups.filter((g) => !idSet.has(g.id));
         for (const [book, assigned] of Object.entries(settings.assignments || {})) {
             if (idSet.has(assigned)) delete settings.assignments[book];
+        }
+        if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+            for (const id of idSet) delete settings.bookOrders[id];
         }
         if (idSet.has(settings.activeFilterGroupId)) {
             settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
@@ -1300,15 +1551,19 @@ function openManageGroupsModal() {
                         }
                     }
                     settings.groups = settings.groups.filter((g) => g.id !== gid);
+                    if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+                        delete settings.bookOrders[gid];
+                    }
                     if (settings.activeFilterGroupId === gid) {
                         settings.activeFilterGroupId = targetId;
                     }
+                    closeSubModal();
                     await _callbacks.onMutation({ save: true });
                     showToast('success', `已将「${srcGrp.name}」的 ${moved} 本世界书归入「${targetGrp.name}」`);
-                    openManageGroupsModal();
+                    renderList();
                 });
             });
-            mergeModal.querySelector('#wbo-merge-cancel-btn')?.addEventListener('click', () => openManageGroupsModal());
+            mergeModal.querySelector('#wbo-merge-cancel-btn')?.addEventListener('click', () => closeSubModal());
             return;
         }
         if (act === 'delete') {
@@ -1329,7 +1584,14 @@ function openManageGroupsModal() {
 
     delSelBtn?.addEventListener('click', () => deleteGroupsByIds([...selectedGroupIds]));
     modal.querySelector('#wbo-gm-new-btn')?.addEventListener('click', () => openCreateOrRenameGroupModal(null));
-    modal.querySelector('#wbo-gm-close-btn')?.addEventListener('click', closeSubModal);
+    modal.querySelector('#wbo-gm-close-btn')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeFloatingGroupManager();
+    });
+    modal.querySelector('.wbo-modal-close')?.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeFloatingGroupManager();
+    });
 
     renderList();
 }
@@ -1476,29 +1738,28 @@ async function confirmAndDeleteWorldbooks(bookNames) {
 }
 
 /**
- * Enable unified desktop + mobile `PointerEvent` header dragging, bottom-right corner
- * resizing, and 1-click "小窗对照 / 还原尺寸" toggle with clean listener disposal.
+ * Enable unified desktop `PointerEvent` header dragging and 8-direction invisible edge/corner
+ * resizing with fixed top/left anchoring (zero flex-center rebound!) and session box memory.
  * @param {HTMLElement} modal
  * @param {HTMLElement | null} handleEl
+ * @param {{ initialBox?: { left?: number, top?: number, width?: number, height?: number } | null }} [opts]
  * @returns {() => void}
  */
-function attachModalWindowControls(modal, handleEl) {
+function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) {
     if (!modal || !handleEl) return () => {};
 
-    let dx = 0;
-    let dy = 0;
+    let posLeft = 0;
+    let posTop = 0;
+    let hasFixedPos = false;
     let dragging = false;
     let resizing = false;
+    let resizeDir = '';
     let startX = 0;
     let startY = 0;
-    let baseDx = 0;
-    let baseDy = 0;
-    let baseRect = null;
-    let startW = 0;
-    let startH = 0;
-    let isMiniWindow = false;
-    /** @type {{ width: string, height: string, maxHeight: string, stableH: string, isResized: boolean, dx: number, dy: number } | null} */
-    let preMiniState = null;
+    let baseLeft = 0;
+    let baseTop = 0;
+    let dragW = 0;
+    let startRect = null;
 
     const getBounds = () => {
         const vw = Math.max(globalThis.innerWidth || document.documentElement?.clientWidth || 1200, 280);
@@ -1506,22 +1767,47 @@ function attachModalWindowControls(modal, handleEl) {
         const isMobile = vw <= 680;
         const minW = isMobile ? Math.min(310, Math.max(240, vw - 16)) : 340;
         const minH = isMobile ? 250 : 280;
-        const maxW = Math.max(minW, Math.round(vw * 0.96));
-        const maxH = Math.max(minH, Math.round(vh * 0.92));
+        const maxW = isMobile ? Math.max(minW, Math.round(vw - 16)) : Math.max(minW, vw);
+        const maxH = isMobile ? Math.max(minH, Math.round(vh - 16)) : Math.max(minH, vh);
         return { vw, vh, isMobile, minW, minH, maxW, maxH };
     };
 
-    const applyTransform = () => {
-        if (dx === 0 && dy === 0) {
-            modal.style.transform = '';
-        } else {
-            modal.style.transform = `translate3d(${Math.round(dx)}px, ${Math.round(dy)}px, 0)`;
+    const applyFixedPosition = (left, top) => {
+        posLeft = Math.round(left);
+        posTop = Math.round(top);
+        hasFixedPos = true;
+        modal.classList.add('is-positioned');
+        modal.style.left = `${posLeft}px`;
+        modal.style.top = `${posTop}px`;
+        modal.style.transform = 'none';
+    };
+
+    const pinToFixedPosition = () => {
+        const { isMobile } = getBounds();
+        if (isMobile || hasFixedPos) return;
+        const rect = modal.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
+        applyFixedPosition(rect.left, rect.top);
+    };
+
+    const saveManagerBoxSession = () => {
+        if (!modal.classList.contains('wbo-manager-modal') || getBounds().isMobile) return;
+        const r = modal.getBoundingClientRect();
+        if (r.width >= 300 && r.height >= 260) {
+            _sessionManagerModalBox = {
+                left: hasFixedPos ? posLeft : Math.round(r.left),
+                top: hasFixedPos ? posTop : Math.round(r.top),
+                width: Math.round(r.width),
+                height: Math.round(r.height),
+            };
         }
     };
 
     const clampIntoViewport = () => {
-        const { vw, vh, minW, minH, maxW, maxH } = getBounds();
-        if (modal.classList.contains('is-resized') || modal.classList.contains('is-mini-window')) {
+        const { vw, vh, isMobile, minW, minH, maxW, maxH } = getBounds();
+        if (isMobile) return;
+
+        if (modal.classList.contains('is-resized')) {
             const curRect = modal.getBoundingClientRect();
             const clampedW = Math.max(minW, Math.min(maxW, Math.round(curRect.width || minW)));
             const clampedH = Math.max(minH, Math.min(maxH, Math.round(curRect.height || minH)));
@@ -1530,126 +1816,98 @@ function attachModalWindowControls(modal, handleEl) {
             modal.style.maxHeight = `${clampedH}px`;
             modal.style.setProperty('--wbo-stable-h', `${clampedH}px`);
         }
+
         const rect = modal.getBoundingClientRect();
         if (rect.width <= 0 || rect.height <= 0) return;
-        let adjustX = 0;
-        let adjustY = 0;
         const visibleHeaderMin = Math.min(100, Math.max(56, Math.round(rect.width * 0.35)));
-        if (rect.right < visibleHeaderMin) adjustX = visibleHeaderMin - rect.right;
-        else if (rect.left > vw - visibleHeaderMin) adjustX = (vw - visibleHeaderMin) - rect.left;
-        if (rect.top < 6) adjustY = 6 - rect.top;
-        else if (rect.top > vh - 48) adjustY = (vh - 48) - rect.top;
-        if (adjustX !== 0 || adjustY !== 0) {
-            dx += adjustX;
-            dy += adjustY;
-            applyTransform();
+        let nextLeft = hasFixedPos ? posLeft : Math.round(rect.left);
+        let nextTop = hasFixedPos ? posTop : Math.round(rect.top);
+        let changed = false;
+
+        if (nextLeft + rect.width < visibleHeaderMin) {
+            nextLeft = visibleHeaderMin - rect.width;
+            changed = true;
+        } else if (nextLeft > vw - visibleHeaderMin) {
+            nextLeft = vw - visibleHeaderMin;
+            changed = true;
+        }
+        if (nextTop < 0) {
+            nextTop = 0;
+            changed = true;
+        } else if (nextTop > vh - 48) {
+            nextTop = Math.max(0, vh - 48);
+            changed = true;
+        }
+        if (changed && hasFixedPos) {
+            applyFixedPosition(nextLeft, nextTop);
         }
     };
 
-    const miniBtn = modal.querySelector('[data-wbo-mini-toggle]');
-    const syncMiniBtnUi = () => {
-        if (!(miniBtn instanceof HTMLElement)) return;
-        miniBtn.classList.toggle('is-active', isMiniWindow);
-        miniBtn.setAttribute('aria-pressed', isMiniWindow ? 'true' : 'false');
-        miniBtn.title = isMiniWindow ? '还原尺寸' : '小窗对照';
-        miniBtn.setAttribute('aria-label', isMiniWindow ? '还原尺寸' : '小窗对照');
-        const icon = miniBtn.querySelector('i');
-        if (icon) icon.className = isMiniWindow ? 'fa-solid fa-up-right-and-down-left-from-center' : 'fa-solid fa-down-left-and-up-right-to-center';
-    };
-
-    miniBtn?.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        const { vw, vh, isMobile, minW, minH, maxW, maxH } = getBounds();
-        if (!isMiniWindow) {
-            preMiniState = {
-                width: modal.style.width || '',
-                height: modal.style.height || '',
-                maxHeight: modal.style.maxHeight || '',
-                stableH: modal.style.getPropertyValue('--wbo-stable-h') || '',
-                isResized: modal.classList.contains('is-resized'),
-                dx,
-                dy,
-            };
-            isMiniWindow = true;
-            modal.classList.remove('is-resized');
-            modal.classList.add('is-mini-window');
-            const targetW = isMobile
-                ? Math.max(minW, Math.min(maxW, vw - 16))
-                : Math.max(Math.max(minW, 360), Math.min(540, maxW));
-            const targetH = Math.max(minH, Math.min(maxH, Math.round(vh * 0.48)));
-            modal.style.width = `${Math.round(targetW)}px`;
-            modal.style.height = `${Math.round(targetH)}px`;
-            modal.style.maxHeight = `${Math.round(targetH)}px`;
-            modal.style.setProperty('--wbo-stable-h', `${Math.round(targetH)}px`);
-            // Reset transform first so we can shift smoothly into lower half
-            dx = 0;
-            dy = 0;
-            applyTransform();
-            const r = modal.getBoundingClientRect();
-            const targetTop = Math.max(8, Math.round(vh - targetH - (isMobile ? 16 : 24)));
-            dy = Math.round(targetTop - r.top);
-            applyTransform();
+    // Initialize desktop fixed anchoring & optional initial/saved box
+    const initBounds = getBounds();
+    if (!initBounds.isMobile) {
+        if (modal.classList.contains('wbo-manager-modal') && _sessionManagerModalBox) {
+            const savedW = Math.max(initBounds.minW, Math.min(initBounds.maxW, _sessionManagerModalBox.width));
+            const savedH = Math.max(initBounds.minH, Math.min(initBounds.maxH, _sessionManagerModalBox.height));
+            modal.classList.add('is-resized');
+            modal.style.width = `${savedW}px`;
+            modal.style.height = `${savedH}px`;
+            modal.style.maxHeight = `${savedH}px`;
+            modal.style.setProperty('--wbo-stable-h', `${savedH}px`);
+            if (Number.isFinite(_sessionManagerModalBox.left) && Number.isFinite(_sessionManagerModalBox.top)) {
+                applyFixedPosition(_sessionManagerModalBox.left, _sessionManagerModalBox.top);
+            } else {
+                pinToFixedPosition();
+            }
+            clampIntoViewport();
+        } else if (initialBox && Number.isFinite(initialBox.width) && Number.isFinite(initialBox.height)) {
+            const w = Math.max(initBounds.minW, Math.min(initBounds.maxW, Math.round(initialBox.width)));
+            const h = Math.max(initBounds.minH, Math.min(initBounds.maxH, Math.round(initialBox.height)));
+            modal.classList.add('is-resized');
+            modal.style.width = `${w}px`;
+            modal.style.height = `${h}px`;
+            modal.style.maxHeight = `${h}px`;
+            modal.style.setProperty('--wbo-stable-h', `${h}px`);
+            if (Number.isFinite(initialBox.left) && Number.isFinite(initialBox.top)) {
+                applyFixedPosition(initialBox.left, initialBox.top);
+            } else {
+                pinToFixedPosition();
+            }
             clampIntoViewport();
         } else {
-            isMiniWindow = false;
-            modal.classList.remove('is-mini-window');
-            if (preMiniState) {
-                modal.classList.toggle('is-resized', preMiniState.isResized);
-                modal.style.width = preMiniState.width;
-                modal.style.height = preMiniState.height;
-                modal.style.maxHeight = preMiniState.maxHeight;
-                if (preMiniState.stableH) modal.style.setProperty('--wbo-stable-h', preMiniState.stableH);
-                else modal.style.removeProperty('--wbo-stable-h');
-                dx = preMiniState.dx;
-                dy = preMiniState.dy;
-            } else {
-                modal.style.width = '';
-                modal.style.height = '';
-                modal.style.maxHeight = '';
-                dx = 0;
-                dy = 0;
-            }
-            applyTransform();
-            clampIntoViewport();
-            preMiniState = null;
+            pinToFixedPosition();
         }
-        syncMiniBtnUi();
-    });
+    }
 
     handleEl.addEventListener('pointerdown', (ev) => {
         if (ev.pointerType === 'mouse' && ev.button !== 0) return;
         const target = ev.target instanceof Element ? ev.target : null;
-        if (target?.closest('button, input, select, textarea, a, label, .wbo-modal-resize-handle')) return;
+        if (target?.closest('button, input, select, textarea, a, label, .wbo-resize-edge')) return;
+        if (getBounds().isMobile) return;
 
+        pinToFixedPosition();
         dragging = true;
         startX = ev.clientX;
         startY = ev.clientY;
-        baseDx = dx;
-        baseDy = dy;
-        baseRect = modal.getBoundingClientRect();
+        baseLeft = posLeft;
+        baseTop = posTop;
+        dragW = modal.getBoundingClientRect().width || 360;
         modal.classList.add('is-dragging-modal');
         try { handleEl.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
         ev.preventDefault();
     });
 
     handleEl.addEventListener('pointermove', (ev) => {
-        if (!dragging || !baseRect) return;
+        if (!dragging) return;
         const { vw, vh } = getBounds();
-        const rawDeltaX = ev.clientX - startX;
-        const rawDeltaY = ev.clientY - startY;
+        const visibleHeaderMin = Math.min(100, Math.max(56, Math.round(dragW * 0.35)));
+        const minLeft = -(dragW - visibleHeaderMin);
+        const maxLeft = vw - visibleHeaderMin;
+        const maxTop = Math.max(0, vh - 48);
 
-        const visibleHeaderMin = Math.min(100, Math.max(56, Math.round(baseRect.width * 0.35)));
-        const minDeltaX = -(baseRect.right - visibleHeaderMin);
-        const maxDeltaX = vw - baseRect.left - visibleHeaderMin;
-        const minDeltaY = -(baseRect.top - 6);
-        const maxDeltaY = vh - baseRect.top - 48;
-
-        const clampedX = Math.max(minDeltaX, Math.min(maxDeltaX, rawDeltaX));
-        const clampedY = Math.max(minDeltaY, Math.min(maxDeltaY, rawDeltaY));
-
-        dx = baseDx + clampedX;
-        dy = baseDy + clampedY;
-        applyTransform();
+        const nextLeft = Math.max(minLeft, Math.min(maxLeft, baseLeft + (ev.clientX - startX)));
+        const nextTop = Math.max(0, Math.min(maxTop, baseTop + (ev.clientY - startY)));
+        applyFixedPosition(nextLeft, nextTop);
     });
 
     const endDrag = (ev) => {
@@ -1657,69 +1915,115 @@ function attachModalWindowControls(modal, handleEl) {
         dragging = false;
         modal.classList.remove('is-dragging-modal');
         try { handleEl.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+        saveManagerBoxSession();
     };
     handleEl.addEventListener('pointerup', endDrag);
     handleEl.addEventListener('pointercancel', endDrag);
 
-    // Bottom-right 24x24px corner resize handle
-    let resizeHandle = modal.querySelector('.wbo-modal-resize-handle');
-    if (!(resizeHandle instanceof HTMLElement)) {
-        resizeHandle = document.createElement('div');
-        resizeHandle.className = 'wbo-modal-resize-handle';
-        resizeHandle.setAttribute('aria-label', '拖拽调整窗口大小');
-        resizeHandle.title = '拖拽调整窗口大小';
-        modal.appendChild(resizeHandle);
-    }
+    // 8 invisible natural edge & corner resize hotzones (hidden on mobile & prompt modals via CSS)
+    const resizeDirs = ['n', 's', 'e', 'w', 'nw', 'ne', 'sw', 'se'];
+    if (!modal.classList.contains('wbo-prompt-modal')) {
+        for (const dir of resizeDirs) {
+            if (modal.querySelector(`.wbo-resize-edge[data-resize-dir="${dir}"]`)) continue;
+            const edge = document.createElement('div');
+            edge.className = `wbo-resize-edge wbo-resize-${dir}`;
+            edge.setAttribute('data-resize-dir', dir);
+            modal.appendChild(edge);
 
-    resizeHandle.addEventListener('pointerdown', (ev) => {
-        if (ev.pointerType === 'mouse' && ev.button !== 0) return;
-        ev.stopPropagation();
-        ev.preventDefault();
-        const rect = modal.getBoundingClientRect();
-        resizing = true;
-        startX = ev.clientX;
-        startY = ev.clientY;
-        startW = rect.width;
-        startH = rect.height;
-        modal.classList.add('is-resizing-modal');
-        try { resizeHandle.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
-    });
+            edge.addEventListener('pointerdown', (ev) => {
+                if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+                if (getBounds().isMobile) return;
+                ev.stopPropagation();
+                ev.preventDefault();
+                pinToFixedPosition();
+                const rect = modal.getBoundingClientRect();
+                resizing = true;
+                resizeDir = dir;
+                startX = ev.clientX;
+                startY = ev.clientY;
+                startRect = {
+                    left: hasFixedPos ? posLeft : Math.round(rect.left),
+                    top: hasFixedPos ? posTop : Math.round(rect.top),
+                    right: Math.round((hasFixedPos ? posLeft : rect.left) + rect.width),
+                    bottom: Math.round((hasFixedPos ? posTop : rect.top) + rect.height),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height),
+                };
+                modal.classList.add('is-resizing-modal');
+                try { edge.setPointerCapture(ev.pointerId); } catch { /* ignore */ }
+            });
 
-    resizeHandle.addEventListener('pointermove', (ev) => {
-        if (!resizing) return;
-        const { minW, minH, maxW, maxH } = getBounds();
-        const nextW = Math.round(Math.max(minW, Math.min(maxW, startW + (ev.clientX - startX))));
-        const nextH = Math.round(Math.max(minH, Math.min(maxH, startH + (ev.clientY - startY))));
-        if (isMiniWindow) {
-            isMiniWindow = false;
-            modal.classList.remove('is-mini-window');
-            syncMiniBtnUi();
+            edge.addEventListener('pointermove', (ev) => {
+                if (!resizing || resizeDir !== dir || !startRect) return;
+                const { vw, vh, minW, minH, maxW, maxH } = getBounds();
+                const dxPtr = ev.clientX - startX;
+                const dyPtr = ev.clientY - startY;
+
+                let nextLeft = startRect.left;
+                let nextTop = startRect.top;
+                let nextW = startRect.width;
+                let nextH = startRect.height;
+
+                if (dir.includes('e')) {
+                    const availW = startRect.left >= 0 ? Math.min(maxW, vw - startRect.left) : maxW;
+                    nextW = Math.round(Math.max(minW, Math.min(Math.max(minW, availW), startRect.width + dxPtr)));
+                } else if (dir.includes('w')) {
+                    const availW = Math.min(maxW, startRect.right);
+                    nextW = Math.round(Math.max(minW, Math.min(Math.max(minW, availW), startRect.width - dxPtr)));
+                    nextLeft = startRect.right - nextW;
+                }
+
+                if (dir.includes('s')) {
+                    const availH = Math.min(maxH, vh - startRect.top);
+                    nextH = Math.round(Math.max(minH, Math.min(Math.max(minH, availH), startRect.height + dyPtr)));
+                } else if (dir.includes('n')) {
+                    const availH = Math.min(maxH, startRect.bottom);
+                    nextH = Math.round(Math.max(minH, Math.min(Math.max(minH, availH), startRect.height - dyPtr)));
+                    nextTop = startRect.bottom - nextH;
+                }
+
+                modal.classList.add('is-resized');
+                modal.style.width = `${nextW}px`;
+                modal.style.height = `${nextH}px`;
+                modal.style.maxHeight = `${nextH}px`;
+                modal.style.setProperty('--wbo-stable-h', `${nextH}px`);
+                if (dir.includes('w') || dir.includes('n')) {
+                    applyFixedPosition(nextLeft, nextTop);
+                }
+            });
+
+            const endResize = (ev) => {
+                if (!resizing || resizeDir !== dir) return;
+                resizing = false;
+                resizeDir = '';
+                startRect = null;
+                modal.classList.remove('is-resizing-modal');
+                try { edge.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
+                clampIntoViewport();
+                saveManagerBoxSession();
+            };
+            edge.addEventListener('pointerup', endResize);
+            edge.addEventListener('pointercancel', endResize);
         }
-        modal.classList.add('is-resized');
-        modal.style.width = `${nextW}px`;
-        modal.style.height = `${nextH}px`;
-        modal.style.maxHeight = `${nextH}px`;
-        modal.style.setProperty('--wbo-stable-h', `${nextH}px`);
-    });
-
-    const endResize = (ev) => {
-        if (!resizing) return;
-        resizing = false;
-        modal.classList.remove('is-resizing-modal');
-        try { resizeHandle.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
-        clampIntoViewport();
-    };
-    resizeHandle.addEventListener('pointerup', endResize);
-    resizeHandle.addEventListener('pointercancel', endResize);
+    }
 
     const onViewportChange = () => {
         if (!modal.isConnected) return;
+        const { isMobile } = getBounds();
+        if (isMobile) {
+            hasFixedPos = false;
+            modal.classList.remove('is-positioned');
+            modal.style.left = '';
+            modal.style.top = '';
+            modal.style.transform = '';
+            return;
+        }
+        pinToFixedPosition();
         clampIntoViewport();
     };
     globalThis.addEventListener('resize', onViewportChange);
     globalThis.addEventListener('orientationchange', onViewportChange);
 
-    syncMiniBtnUi();
     return () => {
         globalThis.removeEventListener('resize', onViewportChange);
         globalThis.removeEventListener('orientationchange', onViewportChange);
@@ -1744,6 +2048,7 @@ export function openManagerModal() {
 
     _lastModalListSig = null;
     _hasPendingPinResort = false;
+    _mgrPillsExpanded = Boolean(_callbacks.getState()?.settings?.groupPanelExpanded);
 
     const overlay = document.createElement('div');
     overlay.id = MANAGER_OVERLAY_ID;
@@ -1764,9 +2069,6 @@ export function openManagerModal() {
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">世界书分组管理</span>
                 <div class="wbo-modal-header-actions">
-                    <button type="button" class="wbo-icon-btn wbo-modal-mini-btn" data-wbo-mini-toggle title="小窗对照" aria-label="小窗对照" aria-pressed="false">
-                        <i class="fa-solid fa-down-left-and-up-right-to-center"></i>
-                    </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-minimize-btn" data-wbo-minimize-btn title="最小化（保留草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus"></i>
                     </button>
@@ -1776,6 +2078,10 @@ export function openManagerModal() {
                 </div>
             </div>
             <div class="wbo-mgr-header-tools">
+                <button type="button" class="wbo-tool-btn" id="wbo-mgr-combo-btn" data-action="open-combos-modal" title="自由组合全局世界书并保存方案">
+                    <i class="fa-solid fa-bookmark"></i>
+                    <span id="wbo-mgr-combo-label">组合</span>
+                </button>
                 <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="本地一键整理 / AI 智能整理">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>整理</span>
@@ -1839,7 +2145,9 @@ export function openManagerModal() {
                     </button>
                 </div>
             </div>
+            <div class="wbo-es-history-row wbo-mgr-combo-bar" id="wbo-mgr-combo-bar" hidden></div>
             <div class="wbo-es-history-row wbo-mgr-hist-row" id="wbo-mgr-hist-row" hidden></div>
+            <div class="wbo-mgr-drag-hint">提示：拖动分组左侧 ⋮⋮ 可上下排序；拖动世界书（展开态亦可）可组内调序或直接拖入上方分组</div>
         </div>
         <div class="wbo-mgr-es-box" id="wbo-mgr-es-box" hidden></div>
         <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
@@ -1993,13 +2301,15 @@ export function openManagerModal() {
     }
 
     // Drag & Drop inside Group Manager:
-    // 1. Drag any `.wbo-book-row` onto any `.wbo-group` or `.wbo-pill` to move that book
+    // 1. Drag any `.wbo-book-row` (collapsed OR with expanded `.wbo-book-preview`!) onto another `.wbo-book-row`
+    //    in the same group to reorder (`bookOrders`), or onto any `.wbo-group` / `.wbo-pill` to move groups
     //    (in batch mode, dragging a checked book moves ALL checked books together!).
     // 2. Drag any `.wbo-group-header` onto another `.wbo-group` to reorder sections!
-    /** @type {{ type: 'book', bookNames: string[] } | { type: 'group', groupId: string } | null} */
+    /** @type {{ type: 'book', bookNames: string[], sourceGroupId: string } | { type: 'group', groupId: string } | null} */
     let dragState = null;
 
     const clearDropHighlights = () => {
+        modal.classList.remove('is-book-dragging');
         modal.querySelectorAll('.wbo-drop-target, .wbo-drop-before, .wbo-drop-after, .is-dragging').forEach((el) => {
             el.classList.remove('wbo-drop-target', 'wbo-drop-before', 'wbo-drop-after', 'is-dragging');
         });
@@ -2014,9 +2324,16 @@ export function openManagerModal() {
     const enableHandleDraggable = (ev) => {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
+        if (target.closest('.wbo-book-preview')) return;
         const bookHandle = target.closest('.wbo-drag-handle');
         if (bookHandle) {
             const bookRow = bookHandle.closest('.wbo-book-row[data-book]');
+            if (bookRow) bookRow.setAttribute('draggable', 'true');
+            return;
+        }
+        const bookRowMain = target.closest('.wbo-book-main');
+        if (bookRowMain && !target.closest('button, input, select, textarea, a, label, .wbo-book-actions')) {
+            const bookRow = bookRowMain.closest('.wbo-book-row[data-book]');
             if (bookRow) bookRow.setAttribute('draggable', 'true');
             return;
         }
@@ -2034,18 +2351,27 @@ export function openManagerModal() {
     modal.addEventListener('dragstart', (ev) => {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
+        if (target.closest('.wbo-book-preview')) {
+            ev.preventDefault();
+            return;
+        }
 
         const bookRow = target.closest('.wbo-book-row[data-book]');
         if (bookRow instanceof HTMLElement) {
             const bookName = bookRow.getAttribute('data-book');
             if (!bookName) return;
+            const sourceGroupId = bookRow.closest('.wbo-group[data-group-id]')?.getAttribute('data-group-id') || '';
             const bookNames = (_batchMode && _batchSelected.has(bookName) && _batchSelected.size > 1)
                 ? [..._batchSelected]
                 : [bookName];
-            dragState = { type: 'book', bookNames };
+            dragState = { type: 'book', bookNames, sourceGroupId };
+            modal.classList.add('is-book-dragging');
             if (ev.dataTransfer) {
                 ev.dataTransfer.effectAllowed = 'move';
                 ev.dataTransfer.setData('text/plain', bookNames.join('\n'));
+                try {
+                    ev.dataTransfer.setDragImage?.(bookRow, 20, 16);
+                } catch { /* ignore */ }
             }
             if (bookNames.length > 1) {
                 const nameSet = new Set(bookNames);
@@ -2077,20 +2403,56 @@ export function openManagerModal() {
         if (!target) return;
 
         if (dragState.type === 'book') {
-            const dropGroup = target.closest('.wbo-group[data-group-id]');
             const dropPill = target.closest('.wbo-pill[data-group-id]');
             const pillGid = dropPill?.getAttribute('data-group-id');
-            const validPill = dropPill && pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL
+            const validPill = dropPill && pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL && pillGid !== SPECIAL_GROUPS.PINNED
                 ? dropPill
                 : null;
-            const dropEl = dropGroup || validPill;
-            if (!dropEl) return;
+            if (validPill) {
+                ev.preventDefault();
+                if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+                modal.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => el.classList.remove('wbo-drop-before', 'wbo-drop-after'));
+                if (!validPill.classList.contains('wbo-drop-target')) {
+                    modal.querySelectorAll('.wbo-drop-target').forEach((el) => el.classList.remove('wbo-drop-target'));
+                    validPill.classList.add('wbo-drop-target');
+                }
+                return;
+            }
 
-            ev.preventDefault();
-            if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
-            if (!dropEl.classList.contains('wbo-drop-target')) {
+            const targetBookRow = target.closest('.wbo-book-row[data-book]');
+            const targetBookItem = targetBookRow?.closest('.wbo-book-item[data-book]') || target.closest('.wbo-book-item[data-book]');
+            const targetGroup = target.closest('.wbo-group[data-group-id]');
+            const targetGid = targetGroup?.getAttribute('data-group-id') || '';
+
+            if (
+                targetBookItem instanceof HTMLElement &&
+                targetGid &&
+                targetGid === dragState.sourceGroupId &&
+                targetGid !== SPECIAL_GROUPS.PINNED &&
+                dragState.bookNames.length === 1 &&
+                targetBookItem.getAttribute('data-book') !== dragState.bookNames[0]
+            ) {
+                ev.preventDefault();
+                if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
                 modal.querySelectorAll('.wbo-drop-target').forEach((el) => el.classList.remove('wbo-drop-target'));
-                dropEl.classList.add('wbo-drop-target');
+                const rowRect = (targetBookRow || targetBookItem).getBoundingClientRect();
+                const isBefore = ev.clientY < rowRect.top + rowRect.height / 2;
+                modal.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => {
+                    if (el !== targetBookItem) el.classList.remove('wbo-drop-before', 'wbo-drop-after');
+                });
+                targetBookItem.classList.toggle('wbo-drop-before', isBefore);
+                targetBookItem.classList.toggle('wbo-drop-after', !isBefore);
+                return;
+            }
+
+            if (targetGroup && targetGid && targetGid !== SPECIAL_GROUPS.PINNED) {
+                ev.preventDefault();
+                if (ev.dataTransfer) ev.dataTransfer.dropEffect = 'move';
+                modal.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => el.classList.remove('wbo-drop-before', 'wbo-drop-after'));
+                if (!targetGroup.classList.contains('wbo-drop-target')) {
+                    modal.querySelectorAll('.wbo-drop-target').forEach((el) => el.classList.remove('wbo-drop-target'));
+                    targetGroup.classList.add('wbo-drop-target');
+                }
             }
             return;
         }
@@ -2120,14 +2482,53 @@ export function openManagerModal() {
         const { settings, classification } = _callbacks.getState();
 
         if (activeDrag.type === 'book' && target) {
-            const dropGroup = target.closest('.wbo-group[data-group-id]');
             const dropPill = target.closest('.wbo-pill[data-group-id]');
             const pillGid = dropPill?.getAttribute('data-group-id');
-            const targetGroupId = dropGroup?.getAttribute('data-group-id') ||
-                (pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL ? pillGid : null);
+            const validPillGid = pillGid && pillGid !== SPECIAL_GROUPS.DEFAULT && pillGid !== SPECIAL_GROUPS.ALL && pillGid !== SPECIAL_GROUPS.PINNED ? pillGid : null;
+            const dropGroup = target.closest('.wbo-group[data-group-id]');
+            const dropGroupId = dropGroup?.getAttribute('data-group-id') || null;
+            const targetBookItem = target.closest('.wbo-book-item[data-book]');
+            const targetBookName = targetBookItem?.getAttribute('data-book') || '';
+            const isSameGroupReorder = Boolean(
+                !validPillGid &&
+                targetBookItem instanceof HTMLElement &&
+                dropGroupId &&
+                dropGroupId === activeDrag.sourceGroupId &&
+                dropGroupId !== SPECIAL_GROUPS.PINNED &&
+                activeDrag.bookNames.length === 1 &&
+                targetBookName &&
+                targetBookName !== activeDrag.bookNames[0] &&
+                (targetBookItem.classList.contains('wbo-drop-before') || targetBookItem.classList.contains('wbo-drop-after')),
+            );
+            const reorderPos = targetBookItem?.classList.contains('wbo-drop-after') ? 'after' : 'before';
 
             clearDropHighlights();
             dragState = null;
+
+            if (isSameGroupReorder) {
+                ev.preventDefault();
+                const draggedBook = activeDrag.bookNames[0];
+                const currentOrder = _renderedGroupBooksMap.get(dropGroupId) || [];
+                if (reorderBookInGroup(settings, dropGroupId, draggedBook, targetBookName, reorderPos, currentOrder)) {
+                    const sec = (classification.orderedSections || []).find((s) => s.id === dropGroupId);
+                    if (sec && Array.isArray(sec.books)) {
+                        const orderIdx = new Map((settings.bookOrders?.[dropGroupId] || []).map((n, i) => [n, i]));
+                        sec.books.sort((a, b) => (orderIdx.get(a.realName) ?? 999999) - (orderIdx.get(b.realName) ?? 999999));
+                        _renderedGroupBooksMap.set(dropGroupId, sec.books.map((b) => b.realName));
+                    }
+                    const bodyEl = dropGroup?.querySelector('.wbo-group-body');
+                    const draggedItem = bodyEl?.querySelector(`.wbo-book-item[data-book="${CSS.escape(draggedBook)}"]`);
+                    if (bodyEl && draggedItem instanceof HTMLElement && targetBookItem instanceof HTMLElement) {
+                        bodyEl.insertBefore(draggedItem, reorderPos === 'after' ? targetBookItem.nextSibling : targetBookItem);
+                    }
+                    _lastModalListSig = null;
+                    await _callbacks.onMutation({ save: true, pinInPlaceOnly: true });
+                    showToast('success', '已调整组内顺序');
+                }
+                return;
+            }
+
+            const targetGroupId = validPillGid || (dropGroupId && dropGroupId !== SPECIAL_GROUPS.PINNED ? dropGroupId : null);
             if (!targetGroupId) return;
 
             ev.preventDefault();
@@ -2179,6 +2580,17 @@ export function openManagerModal() {
         clearTempDraggable();
         clearDropHighlights();
         dragState = null;
+    });
+
+    modal.addEventListener('keydown', (ev) => {
+        if (ev.key !== 'Enter' && ev.key !== ' ') return;
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target || target.tagName === 'BUTTON' || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+        const mainBtn = target.closest('.wbo-book-main[data-action]');
+        if (mainBtn instanceof HTMLElement) {
+            ev.preventDefault();
+            mainBtn.click();
+        }
     });
 
     modal.addEventListener('click', async (ev) => {
@@ -2311,6 +2723,9 @@ export function openManagerModal() {
                 for (const [book, assigned] of Object.entries(settings.assignments)) {
                     if (assigned === gid) delete settings.assignments[book];
                 }
+                if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+                    delete settings.bookOrders[gid];
+                }
                 if (settings.activeFilterGroupId === gid) {
                     settings.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
                 }
@@ -2375,6 +2790,7 @@ export function openManagerModal() {
             }
             case 'toggle-pills-expand': {
                 _mgrPillsExpanded = !_mgrPillsExpanded;
+                settings.groupPanelExpanded = _mgrPillsExpanded;
                 const subbar = modal.querySelector('.wbo-mgr-subbar');
                 const pills = modal.querySelector('#wbo-mgr-pills');
                 const expBtn = modal.querySelector('#wbo-mgr-pills-expand');
@@ -2383,6 +2799,40 @@ export function openManagerModal() {
                 if (expBtn instanceof HTMLElement) {
                     expBtn.title = _mgrPillsExpanded ? '收起为单行' : '展开查看全部分组';
                     expBtn.innerHTML = `<i class="fa-solid ${_mgrPillsExpanded ? 'fa-chevron-up' : 'fa-chevron-down'}"></i>`;
+                }
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                break;
+            }
+            case 'open-combos-modal': {
+                openGlobalCombosModal();
+                break;
+            }
+            case 'apply-global-combo': {
+                const cid = target.getAttribute('data-combo-id') || '';
+                const preset = (settings.globalPresets || []).find((p) => p.id === cid);
+                if (preset) {
+                    const res = executeGlobalBooksSwitch(preset.books, {
+                        mode: 'replace',
+                        label: `启用「${preset.name}」`,
+                    });
+                    if (res.ok) {
+                        const missHint = res.missing.length > 0 ? `（跳过 ${res.missing.length} 本不存在项）` : '';
+                        showToast('success', `已切换至全局组合「${preset.name}」（共开启 ${res.nextActive.length} 本）${missHint}`);
+                    }
+                }
+                break;
+            }
+            case 'undo-global-combo': {
+                if (_lastGlobalSwitchUndo) {
+                    const snap = _lastGlobalSwitchUndo;
+                    _lastGlobalSwitchUndo = null;
+                    const res = executeGlobalBooksSwitch(snap.prevBooks, {
+                        mode: 'replace',
+                        recordUndo: false,
+                    });
+                    if (res.ok) {
+                        showToast('info', `已撤回，恢复切换前的 ${res.nextActive.length} 本全局世界书`);
+                    }
                 }
                 break;
             }
@@ -2688,8 +3138,10 @@ function refreshManagerModalContent() {
         }
     }
 
+    syncManagerComboStripUi();
     syncManagerSearchBarUi();
     renderManagerGroupsListOnly();
+    _syncFloatingGroupManager?.();
 }
 
 /**
@@ -2855,7 +3307,7 @@ async function runManagerInlineEntrySearch() {
     if (!q) {
         showToast('info', '请先在搜索框输入关键词');
         const input = document.getElementById('wbo-mgr-search-input');
-        if (input instanceof HTMLInputElement) input.focus();
+        if (input instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) input.focus();
         return;
     }
 
@@ -2996,7 +3448,25 @@ function renderManagerGroupsListOnly() {
     const listEl = document.getElementById('wbo-mgr-groups-list');
     if (!listEl) return;
 
-    const { settings, classification } = _callbacks.getState();
+    const { settings, classification, bindingMap } = _callbacks.getState();
+    const embeddedMatchSet = new Set();
+    if (bindingMap instanceof Map) {
+        const realBoundAvatars = new Set();
+        for (const owners of bindingMap.values()) {
+            for (const o of owners || []) {
+                if (o && !o.orphan && o.source !== 'embedded' && o.avatar) {
+                    realBoundAvatars.add(o.avatar);
+                }
+            }
+        }
+        for (const [worldName, owners] of bindingMap.entries()) {
+            for (const o of owners || []) {
+                if (o && !o.orphan && o.source === 'embedded' && realBoundAvatars.has(o.avatar)) {
+                    embeddedMatchSet.add(worldName);
+                }
+            }
+        }
+    }
     const q = _searchQuery.trim();
     const orderedSections = classification.orderedSections || [];
     const liveGroupById = new Map((settings.groups || []).map((g) => [g.id, g]));
@@ -3025,6 +3495,7 @@ function renderManagerGroupsListOnly() {
         searchOpts.splitSpaces,
         [...globalHiddenSet].sort().join(','),
         [...editorHiddenSet].sort().join(','),
+        [...embeddedMatchSet].sort().join(','),
         orderedSections.map((sec) => [
             sec.id,
             sec.name,
@@ -3070,6 +3541,7 @@ function renderManagerGroupsListOnly() {
                     books: pinnedList,
                     activeGlobals,
                     currentEditor,
+                    embeddedMatchSet,
                 }),
             );
         } else {
@@ -3104,6 +3576,7 @@ function renderManagerGroupsListOnly() {
                     books,
                     activeGlobals,
                     currentEditor,
+                    embeddedMatchSet,
                 }),
             );
             return;
@@ -3134,6 +3607,7 @@ function renderManagerGroupsListOnly() {
                     books,
                     activeGlobals,
                     currentEditor,
+                    embeddedMatchSet,
                 }),
             );
             return;
@@ -3161,6 +3635,7 @@ function renderManagerGroupsListOnly() {
                         books: matchedCharBooks,
                         activeGlobals,
                         currentEditor,
+                        embeddedMatchSet,
                     }),
                 );
             } else if (filterId === SPECIAL_GROUPS.DEFAULT && q && matchedCharBooks.length > 0) {
@@ -3419,9 +3894,6 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">${esc(title)}</span>
                 <div class="wbo-modal-header-actions">
-                    <button type="button" class="wbo-icon-btn wbo-modal-mini-btn" data-wbo-mini-toggle title="小窗对照" aria-label="小窗对照" aria-pressed="false">
-                        <i class="fa-solid fa-down-left-and-up-right-to-center"></i>
-                    </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
@@ -4079,6 +4551,584 @@ function openMoveGroupModal(bookMeta) {
 }
 
 /**
+ * Global Worldbook Combos Manager & Free-Pick Builder Modal:
+ * - View 1 (`list`): manage saved combos, 1-click apply (replace) / overlay (+add), overwrite with current active,
+ *   clear all active globals, 1-click undo, reorder, or delete.
+ * - View 2 (`edit`): freely combine ANY worldbooks across collapsible groups (or seed from current active globals),
+ *   save, or save & immediately activate!
+ */
+function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCurrentActive = false } = {}) {
+    if (!_callbacks) return;
+    let { settings, classification } = _callbacks.getState();
+
+    const startInEdit = Boolean(
+        editPresetId ||
+        initialMode === 'create' ||
+        seedCurrentActive,
+    );
+
+    const { modal } = createSubModal(
+        '全局世界书组合',
+        `
+            <div class="wbo-ai-step wbo-cmb-step" id="wbo-cmb-step-list"${startInEdit ? ' hidden' : ''}>
+                <div class="wbo-pinned-top wbo-cmb-topbar">
+                    <div class="wbo-cmb-live-row">
+                        <span class="wbo-cmb-live-info" id="wbo-cmb-live-info"></span>
+                        <span class="wbo-cmb-live-actions">
+                            <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-cmb-undo-btn" hidden>↶ 撤回切换</button>
+                            <button type="button" class="wbo-btn" id="wbo-cmb-clear-global-btn">全关当前全局</button>
+                        </span>
+                    </div>
+                    <div class="wbo-cmb-create-row">
+                        <button type="button" class="wbo-btn" id="wbo-cmb-save-current-btn">
+                            <i class="fa-solid fa-floppy-disk"></i> 存当前全局为组合
+                        </button>
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-free-new-btn">
+                            <i class="fa-solid fa-plus"></i> 自由勾选新建组合
+                        </button>
+                    </div>
+                </div>
+                <div class="wbo-step-scroll">
+                    <div class="wbo-cmb-list" id="wbo-cmb-list"></div>
+                </div>
+                <div class="wbo-modal-footer wbo-pinned-footer">
+                    <span class="wbo-subtle-tip">切换组合只会开关全局激活状态，不会改动世界书内容或分组。</span>
+                    <span class="wbo-spacer"></span>
+                    <button type="button" class="wbo-btn" id="wbo-cmb-close-btn">完成</button>
+                </div>
+            </div>
+
+            <div class="wbo-ai-step wbo-cmb-step" id="wbo-cmb-step-edit"${startInEdit ? '' : ' hidden'}>
+                <div class="wbo-pinned-top wbo-cmb-edit-top">
+                    <div class="wbo-eb-topbar">
+                        <button type="button" class="wbo-btn" id="wbo-cmb-back-list-btn">
+                            <i class="fa-solid fa-arrow-left"></i> 返回组合列表
+                        </button>
+                        <span class="wbo-ai-subview-title" id="wbo-cmb-edit-heading">新建全局组合</span>
+                        <span class="wbo-spacer"></span>
+                        <span class="wbo-tag" id="wbo-cmb-picked-badge">已选 0 本</span>
+                    </div>
+                    <div class="wbo-cmb-name-bar">
+                        <input type="text" class="wbo-input" id="wbo-cmb-name-input" placeholder="输入组合名称，例如：现代日常套、古风通用套、跑团检定套" spellcheck="false">
+                        <button type="button" class="wbo-btn" id="wbo-cmb-seed-active-btn" title="把当前全局已开启的世界书勾选进来">填入当前已开</button>
+                        <button type="button" class="wbo-btn" id="wbo-cmb-clear-pick-btn">清空勾选</button>
+                    </div>
+                    <div class="wbo-gp-pills" id="wbo-cmb-pills"></div>
+                    <div class="wbo-gp-toolbar">
+                        <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-cmb-book-filter" placeholder="搜索世界书名 / 显示名 / 分组..." autocomplete="off" spellcheck="false">
+                        <button type="button" class="wbo-btn wbo-gp-quick-btn" id="wbo-cmb-toggle-visible-btn">全选当前可见</button>
+                    </div>
+                </div>
+                <div class="wbo-step-scroll">
+                    <div class="wbo-ai-book-list wbo-cmb-pick-list" id="wbo-cmb-pick-list"></div>
+                    <div class="wbo-ai-status" id="wbo-cmb-edit-status"></div>
+                </div>
+                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
+                    <div class="wbo-ai-footer-left">
+                        <button type="button" class="wbo-btn" id="wbo-cmb-cancel-edit-btn">取消</button>
+                    </div>
+                    <div class="wbo-ai-footer-right">
+                        <button type="button" class="wbo-btn" id="wbo-cmb-save-only-btn">仅保存</button>
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-save-apply-btn">保存并立即启用</button>
+                    </div>
+                </div>
+            </div>
+        `,
+        { wide: true, pinnedLayout: true },
+    );
+
+    const stepList = modal.querySelector('#wbo-cmb-step-list');
+    const stepEdit = modal.querySelector('#wbo-cmb-step-edit');
+    const liveInfoEl = modal.querySelector('#wbo-cmb-live-info');
+    const undoBtn = modal.querySelector('#wbo-cmb-undo-btn');
+    const clearGlobalBtn = modal.querySelector('#wbo-cmb-clear-global-btn');
+    const saveCurrentBtn = modal.querySelector('#wbo-cmb-save-current-btn');
+    const listEl = modal.querySelector('#wbo-cmb-list');
+
+    const editHeadingEl = modal.querySelector('#wbo-cmb-edit-heading');
+    const pickedBadgeEl = modal.querySelector('#wbo-cmb-picked-badge');
+    const nameInput = modal.querySelector('#wbo-cmb-name-input');
+    const seedActiveBtn = modal.querySelector('#wbo-cmb-seed-active-btn');
+    const pillsEl = modal.querySelector('#wbo-cmb-pills');
+    const filterInput = modal.querySelector('#wbo-cmb-book-filter');
+    const toggleVisBtn = modal.querySelector('#wbo-cmb-toggle-visible-btn');
+    const pickListEl = modal.querySelector('#wbo-cmb-pick-list');
+    const editStatusEl = modal.querySelector('#wbo-cmb-edit-status');
+
+    let currentEditId = editPresetId || null;
+    /** @type {Set<string>} */
+    const pickedSet = new Set();
+    let activeEditPill = '__nonchar__';
+
+    const setEditStatus = (msg, isErr = false) => {
+        if (!editStatusEl) return;
+        editStatusEl.textContent = msg;
+        editStatusEl.className = `wbo-ai-status${isErr ? ' is-error' : ''}`;
+    };
+
+    const renderListView = () => {
+        ({ settings, classification } = _callbacks.getState());
+        const presets = Array.isArray(settings.globalPresets) ? settings.globalPresets : [];
+        const activeGlobals = getActiveGlobalWorldSet();
+        const matched = findMatchingGlobalPreset(presets, activeGlobals);
+
+        if (liveInfoEl) {
+            liveInfoEl.innerHTML = matched
+                ? `当前已开 <b>${activeGlobals.size}</b> 本全局世界书 · 生效组合：<b>「${esc(matched.name)}」</b>`
+                : `当前已开 <b>${activeGlobals.size}</b> 本全局世界书`;
+        }
+        if (undoBtn instanceof HTMLElement) {
+            undoBtn.hidden = !_lastGlobalSwitchUndo;
+            if (_lastGlobalSwitchUndo) {
+                undoBtn.title = `撤回「${_lastGlobalSwitchUndo.label}」`;
+            }
+        }
+        if (clearGlobalBtn instanceof HTMLButtonElement) {
+            clearGlobalBtn.disabled = activeGlobals.size === 0;
+        }
+        if (saveCurrentBtn instanceof HTMLButtonElement) {
+            saveCurrentBtn.disabled = activeGlobals.size === 0;
+        }
+
+        if (!listEl) return;
+        if (presets.length === 0) {
+            listEl.innerHTML = `
+                <div class="wbo-empty-hint">
+                    还没有保存过全局组合。<br>
+                    点上方「自由勾选新建组合」可跨分组任意搭配世界书，或点「存当前全局为组合」保存当前已开的全局书。
+                </div>
+            `;
+            return;
+        }
+
+        listEl.innerHTML = presets.map((p, idx) => {
+            const isMatched = matched?.id === p.id;
+            const bookTags = p.books.map((realName) => {
+                const meta = classification.byName.get(realName);
+                const label = meta?.primaryTitle || realName;
+                const isOn = activeGlobals.has(realName);
+                return `<span class="wbo-tag${isOn ? ' is-on-tag' : ''}" title="${esc(realName)}">${esc(label)}</span>`;
+            }).join('');
+
+            return `
+                <div class="wbo-card wbo-cmb-card${isMatched ? ' is-active-combo' : ''}" data-cmb-id="${esc(p.id)}">
+                    <div class="wbo-cmb-card-head">
+                        <div class="wbo-cmb-card-title-wrap">
+                            <span class="wbo-cmb-card-name">${esc(p.name)}</span>
+                            <span class="wbo-tag">${p.books.length} 本</span>
+                            ${isMatched ? '<span class="wbo-tag is-on-tag">当前生效</span>' : ''}
+                        </div>
+                        <div class="wbo-cmb-card-order">
+                            <button type="button" class="wbo-icon-btn" data-cmb-act="up" data-cmb-id="${esc(p.id)}" ${idx === 0 ? 'disabled' : ''} title="上移">
+                                <i class="fa-solid fa-arrow-up"></i>
+                            </button>
+                            <button type="button" class="wbo-icon-btn" data-cmb-act="down" data-cmb-id="${esc(p.id)}" ${idx === presets.length - 1 ? 'disabled' : ''} title="下移">
+                                <i class="fa-solid fa-arrow-down"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="wbo-cmb-card-books">${bookTags}</div>
+                    <div class="wbo-cmb-card-actions">
+                        <button type="button" class="wbo-btn wbo-btn-primary" data-cmb-act="apply" data-cmb-id="${esc(p.id)}">
+                            <i class="fa-solid fa-bolt"></i> ${isMatched ? '重新应用' : '一键切换'}
+                        </button>
+                        <button type="button" class="wbo-btn" data-cmb-act="add" data-cmb-id="${esc(p.id)}" title="保留当前已开启的世界书，额外开启本组合中的世界书">
+                            + 叠加开启
+                        </button>
+                        <button type="button" class="wbo-btn" data-cmb-act="overwrite-current" data-cmb-id="${esc(p.id)}" ${activeGlobals.size === 0 ? 'disabled' : ''} title="用当前全局已开启的世界书更新此组合">
+                            更新为当前
+                        </button>
+                        <button type="button" class="wbo-btn" data-cmb-act="edit" data-cmb-id="${esc(p.id)}">
+                            <i class="fa-solid fa-pen"></i> 编辑
+                        </button>
+                        <button type="button" class="wbo-btn wbo-btn-danger" data-cmb-act="delete" data-cmb-id="${esc(p.id)}">
+                            <i class="fa-regular fa-trash-can"></i> 删除
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    };
+
+    const syncEditPickedBadge = () => {
+        if (pickedBadgeEl) pickedBadgeEl.textContent = `已选 ${pickedSet.size} 本`;
+        const selPillCnt = pillsEl?.querySelector('#wbo-cmb-sel-pill-cnt');
+        if (selPillCnt) selPillCnt.textContent = String(pickedSet.size);
+    };
+
+    const syncToggleVisibleBtn = () => {
+        if (!(toggleVisBtn instanceof HTMLButtonElement) || !pickListEl) return;
+        const visRows = Array.from(pickListEl.querySelectorAll('.wbo-cmb-pick-row')).filter(
+            (r) => r instanceof HTMLElement && !r.hidden,
+        );
+        if (visRows.length === 0) {
+            toggleVisBtn.disabled = true;
+            toggleVisBtn.textContent = '全选当前可见';
+            return;
+        }
+        toggleVisBtn.disabled = false;
+        const allChecked = visRows.every((r) => {
+            const cb = r.querySelector('.wbo-cmb-book-check');
+            return cb instanceof HTMLInputElement && pickedSet.has(cb.value);
+        });
+        toggleVisBtn.textContent = allChecked ? '取消当前可见' : '全选当前可见';
+    };
+
+    const applyEditFilters = () => {
+        if (!pickListEl) return;
+        const q = filterInput instanceof HTMLInputElement ? filterInput.value.trim().toLowerCase() : '';
+        let visibleCount = 0;
+
+        pickListEl.querySelectorAll('.wbo-cmb-pick-row').forEach((row) => {
+            if (!(row instanceof HTMLElement)) return;
+            const gid = row.getAttribute('data-cmb-gid') || '';
+            const isChar = row.getAttribute('data-cmb-char') === '1';
+            const cb = row.querySelector('.wbo-cmb-book-check');
+            const bookName = cb instanceof HTMLInputElement ? cb.value : '';
+            const hay = row.getAttribute('data-pick-search') || '';
+
+            let matchPill = true;
+            if (activeEditPill === '__nonchar__') {
+                matchPill = !isChar || pickedSet.has(bookName);
+            } else if (activeEditPill === '__selected__') {
+                matchPill = Boolean(bookName && pickedSet.has(bookName));
+            } else if (activeEditPill === '__all__') {
+                matchPill = true;
+            } else {
+                matchPill = gid === activeEditPill;
+            }
+
+            const matchSearch = !q || hay.includes(q);
+            const show = matchPill && matchSearch;
+            row.hidden = !show;
+            if (show) visibleCount += 1;
+        });
+
+        pickListEl.querySelectorAll('.wbo-gp-sec').forEach((sec) => {
+            if (!(sec instanceof HTMLElement)) return;
+            const hasVis = Array.from(sec.querySelectorAll('.wbo-cmb-pick-row')).some(
+                (r) => r instanceof HTMLElement && !r.hidden,
+            );
+            sec.hidden = !hasVis;
+        });
+
+        const emptyEl = pickListEl.querySelector('#wbo-cmb-pick-empty');
+        if (emptyEl instanceof HTMLElement) emptyEl.hidden = visibleCount > 0;
+        syncToggleVisibleBtn();
+    };
+
+    const openEditView = ({ preset = null, seedActive = false } = {}) => {
+        ({ settings, classification } = _callbacks.getState());
+        currentEditId = preset?.id || null;
+        pickedSet.clear();
+        const activeGlobals = getActiveGlobalWorldSet();
+
+        if (preset) {
+            for (const b of preset.books || []) pickedSet.add(b);
+        } else if (seedActive) {
+            for (const b of activeGlobals) pickedSet.add(b);
+        }
+
+        if (editHeadingEl) {
+            editHeadingEl.textContent = preset ? `编辑组合：${preset.name}` : '新建全局组合';
+        }
+        if (nameInput instanceof HTMLInputElement) {
+            nameInput.value = preset?.name || '';
+        }
+        if (seedActiveBtn instanceof HTMLButtonElement) {
+            seedActiveBtn.textContent = `填入当前已开 (${activeGlobals.size})`;
+            seedActiveBtn.disabled = activeGlobals.size === 0;
+        }
+        if (filterInput instanceof HTMLInputElement) {
+            filterInput.value = '';
+        }
+        activeEditPill = '__nonchar__';
+        setEditStatus('');
+
+        const orderedSections = classification.orderedSections || [];
+        if (pillsEl) {
+            const sectionPills = orderedSections
+                .filter((s) => (s.books?.length || 0) > 0 && s.kind !== 'character')
+                .map((s) => `
+                    <button type="button" class="wbo-pill" data-cmb-pill="${esc(s.id)}">
+                        ${s.kind === 'custom' ? `<span class="wbo-pill-dot" style="background:${esc(s.color)}"></span>` : ''}
+                        <span>${esc(s.name)}</span>
+                        <span class="wbo-pill-count">${s.books.length}</span>
+                    </button>
+                `).join('');
+            pillsEl.innerHTML = `
+                <button type="button" class="wbo-pill is-active" data-cmb-pill="__nonchar__">
+                    <span>非角色书</span><span class="wbo-pill-count">${classification.nonCharCount}</span>
+                </button>
+                <button type="button" class="wbo-pill" data-cmb-pill="__selected__">
+                    <span>已选</span><span class="wbo-pill-count" id="wbo-cmb-sel-pill-cnt">${pickedSet.size}</span>
+                </button>
+                ${sectionPills}
+                ${classification.charCount > 0 ? `
+                    <button type="button" class="wbo-pill" data-cmb-pill="__all__">
+                        <span>含角色书</span><span class="wbo-pill-count">${classification.totalCount}</span>
+                    </button>
+                ` : ''}
+            `;
+        }
+
+        if (pickListEl) {
+            const sectionsHtml = orderedSections
+                .filter((sec) => (sec.books?.length || 0) > 0)
+                .map((sec) => {
+                    const rows = sec.books.map((b) => {
+                        const checked = pickedSet.has(b.realName) ? ' checked' : '';
+                        const isLiveGlobal = activeGlobals.has(b.realName);
+                        return `
+                            <label class="wbo-ai-pick-row wbo-cmb-pick-row"
+                                data-cmb-gid="${esc(sec.id)}"
+                                data-cmb-char="${sec.kind === 'character' ? '1' : '0'}"
+                                data-pick-search="${esc(b.searchableText || b.realName.toLowerCase())}">
+                                <input type="checkbox" class="wbo-cmb-book-check" value="${esc(b.realName)}"${checked}>
+                                <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
+                                ${isLiveGlobal ? '<span class="wbo-tag is-on-tag">已全局</span>' : ''}
+                                <span class="wbo-tag">${esc(b.groupName)}</span>
+                            </label>
+                        `;
+                    }).join('');
+                    return `
+                        <div class="wbo-gp-sec" data-cmb-sec="${esc(sec.id)}">
+                            <div class="wbo-gp-sec-head">
+                                <span>${esc(sec.name)} <small>(${sec.books.length})</small></span>
+                            </div>
+                            <div class="wbo-gp-sec-body">${rows}</div>
+                        </div>
+                    `;
+                }).join('');
+            pickListEl.innerHTML = `${sectionsHtml}<div class="wbo-empty-hint" id="wbo-cmb-pick-empty" hidden>无匹配世界书</div>`;
+        }
+
+        syncEditPickedBadge();
+        applyEditFilters();
+
+        if (stepList instanceof HTMLElement) stepList.hidden = true;
+        if (stepEdit instanceof HTMLElement) stepEdit.hidden = false;
+        if (nameInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
+            nameInput.focus();
+        }
+    };
+
+    const showListView = () => {
+        renderListView();
+        if (stepEdit instanceof HTMLElement) stepEdit.hidden = true;
+        if (stepList instanceof HTMLElement) stepList.hidden = false;
+    };
+
+    const saveEditedCombo = async ({ applyAfterSave = false } = {}) => {
+        const name = nameInput instanceof HTMLInputElement ? nameInput.value.trim() : '';
+        const res = upsertGlobalPreset(settings, {
+            id: currentEditId,
+            name,
+            books: pickedSet,
+        });
+        if (!res.ok) {
+            setEditStatus(res.error || '保存失败', true);
+            if (!name && nameInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
+                nameInput.focus();
+            }
+            return;
+        }
+        await _callbacks.onMutation({ save: true, uiOnly: true });
+        if (applyAfterSave && res.preset) {
+            const sw = executeGlobalBooksSwitch(res.preset.books, {
+                mode: 'replace',
+                label: `启用「${res.preset.name}」`,
+            });
+            if (sw.ok) {
+                showToast('success', `已保存并启用组合「${res.preset.name}」（共 ${sw.nextActive.length} 本）`);
+            }
+        } else if (res.preset) {
+            showToast('success', res.created ? `已保存全局组合「${res.preset.name}」` : `已更新组合「${res.preset.name}」`);
+        }
+        syncManagerComboStripUi();
+        syncNativeQuickComboTitles();
+        showListView();
+    };
+
+    // Wire List View actions
+    modal.querySelector('#wbo-cmb-free-new-btn')?.addEventListener('click', () => {
+        openEditView({ preset: null, seedActive: false });
+    });
+    saveCurrentBtn?.addEventListener('click', () => {
+        openEditView({ preset: null, seedActive: true });
+    });
+    clearGlobalBtn?.addEventListener('click', () => {
+        const activeGlobals = getActiveGlobalWorldSet();
+        if (activeGlobals.size === 0) return;
+        const sw = executeGlobalBooksSwitch([], {
+            mode: 'replace',
+            label: `全关全局 (${activeGlobals.size}本)`,
+        });
+        if (sw.ok) {
+            renderListView();
+            showToast('info', `已关闭全部 ${sw.prevActive.length} 本全局世界书（可点「撤回切换」恢复）`);
+        }
+    });
+    undoBtn?.addEventListener('click', () => {
+        if (!_lastGlobalSwitchUndo) return;
+        const snap = _lastGlobalSwitchUndo;
+        _lastGlobalSwitchUndo = null;
+        const sw = executeGlobalBooksSwitch(snap.prevBooks, { mode: 'replace', recordUndo: false });
+        if (sw.ok) {
+            renderListView();
+            showToast('info', `已撤回，恢复 ${sw.nextActive.length} 本全局世界书`);
+        }
+    });
+
+    listEl?.addEventListener('click', async (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-cmb-act]') : null;
+        if (!btn) return;
+        const act = btn.getAttribute('data-cmb-act') || '';
+        const id = btn.getAttribute('data-cmb-id') || '';
+        const preset = (settings.globalPresets || []).find((p) => p.id === id);
+        if (!preset) return;
+
+        if (act === 'apply') {
+            const sw = executeGlobalBooksSwitch(preset.books, {
+                mode: 'replace',
+                label: `启用「${preset.name}」`,
+            });
+            if (sw.ok) {
+                renderListView();
+                showToast('success', `已切换至「${preset.name}」（共开启 ${sw.nextActive.length} 本）`);
+            }
+        } else if (act === 'add') {
+            const sw = executeGlobalBooksSwitch(preset.books, {
+                mode: 'add',
+                label: `叠加「${preset.name}」`,
+            });
+            if (sw.ok) {
+                renderListView();
+                showToast('success', `已叠加开启「${preset.name}」（当前共开启 ${sw.nextActive.length} 本）`);
+            }
+        } else if (act === 'overwrite-current') {
+            const activeGlobals = getActiveGlobalWorldSet();
+            if (activeGlobals.size === 0) return;
+            if (!globalThis.confirm(`确认将组合「${preset.name}」的内容更新为当前已开的 ${activeGlobals.size} 本全局世界书？`)) return;
+            upsertGlobalPreset(settings, { id: preset.id, name: preset.name, books: activeGlobals });
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+            syncManagerComboStripUi();
+            renderListView();
+            showToast('success', `已将「${preset.name}」更新为当前全局开启的 ${activeGlobals.size} 本`);
+        } else if (act === 'edit') {
+            openEditView({ preset });
+        } else if (act === 'delete') {
+            if (!globalThis.confirm(`确认删除全局组合「${preset.name}」？\n（仅删除保存的组合方案，不会关闭或删除世界书本身）`)) return;
+            if (deleteGlobalPreset(settings, preset.id)) {
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                syncManagerComboStripUi();
+                syncNativeQuickComboTitles();
+                renderListView();
+                showToast('info', `已删除组合「${preset.name}」`);
+            }
+        } else if (act === 'up' || act === 'down') {
+            if (moveGlobalPreset(settings, preset.id, act === 'up' ? -1 : 1)) {
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                syncManagerComboStripUi();
+                renderListView();
+            }
+        }
+    });
+
+    // Wire Edit View actions
+    modal.querySelector('#wbo-cmb-back-list-btn')?.addEventListener('click', showListView);
+    modal.querySelector('#wbo-cmb-cancel-edit-btn')?.addEventListener('click', () => {
+        if ((settings.globalPresets || []).length === 0 && startInEdit) {
+            closeSubModal();
+        } else {
+            showListView();
+        }
+    });
+    seedActiveBtn?.addEventListener('click', () => {
+        const activeGlobals = getActiveGlobalWorldSet();
+        for (const name of activeGlobals) pickedSet.add(name);
+        pickListEl?.querySelectorAll('.wbo-cmb-book-check').forEach((cb) => {
+            if (cb instanceof HTMLInputElement) cb.checked = pickedSet.has(cb.value);
+        });
+        syncEditPickedBadge();
+        applyEditFilters();
+    });
+    modal.querySelector('#wbo-cmb-clear-pick-btn')?.addEventListener('click', () => {
+        pickedSet.clear();
+        pickListEl?.querySelectorAll('.wbo-cmb-book-check').forEach((cb) => {
+            if (cb instanceof HTMLInputElement) cb.checked = false;
+        });
+        syncEditPickedBadge();
+        applyEditFilters();
+    });
+    pillsEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-cmb-pill]') : null;
+        if (!btn) return;
+        activeEditPill = btn.getAttribute('data-cmb-pill') || '__nonchar__';
+        pillsEl.querySelectorAll('[data-cmb-pill]').forEach((b) => {
+            b.classList.toggle('is-active', b.getAttribute('data-cmb-pill') === activeEditPill);
+        });
+        applyEditFilters();
+    });
+    pickListEl?.addEventListener('change', (ev) => {
+        const cb = ev.target;
+        if (!(cb instanceof HTMLInputElement) || !cb.classList.contains('wbo-cmb-book-check')) return;
+        if (cb.checked) pickedSet.add(cb.value);
+        else pickedSet.delete(cb.value);
+        setEditStatus('');
+        syncEditPickedBadge();
+        if (activeEditPill === '__selected__') applyEditFilters();
+        else syncToggleVisibleBtn();
+    });
+    toggleVisBtn?.addEventListener('click', () => {
+        if (!pickListEl) return;
+        const visRows = Array.from(pickListEl.querySelectorAll('.wbo-cmb-pick-row')).filter(
+            (r) => r instanceof HTMLElement && !r.hidden,
+        );
+        if (visRows.length === 0) return;
+        const allChecked = visRows.every((r) => {
+            const cb = r.querySelector('.wbo-cmb-book-check');
+            return cb instanceof HTMLInputElement && pickedSet.has(cb.value);
+        });
+        for (const r of visRows) {
+            const cb = r.querySelector('.wbo-cmb-book-check');
+            if (!(cb instanceof HTMLInputElement)) continue;
+            cb.checked = !allChecked;
+            if (!allChecked) pickedSet.add(cb.value);
+            else pickedSet.delete(cb.value);
+        }
+        syncEditPickedBadge();
+        syncToggleVisibleBtn();
+    });
+    if (filterInput instanceof HTMLInputElement) {
+        let composing = false;
+        filterInput.addEventListener('compositionstart', () => { composing = true; });
+        filterInput.addEventListener('compositionend', () => { composing = false; applyEditFilters(); });
+        filterInput.addEventListener('input', () => { if (!composing) applyEditFilters(); });
+    }
+
+    modal.querySelector('#wbo-cmb-save-only-btn')?.addEventListener('click', () => {
+        void saveEditedCombo({ applyAfterSave: false });
+    });
+    modal.querySelector('#wbo-cmb-save-apply-btn')?.addEventListener('click', () => {
+        void saveEditedCombo({ applyAfterSave: true });
+    });
+    bindImeSafeEnter(nameInput, () => {
+        void saveEditedCombo({ applyAfterSave: false });
+    });
+    modal.querySelector('#wbo-cmb-close-btn')?.addEventListener('click', closeSubModal);
+
+    if (startInEdit) {
+        const targetPreset = editPresetId
+            ? (settings.globalPresets || []).find((p) => p.id === editPresetId) || null
+            : null;
+        openEditView({ preset: targetPreset, seedActive: seedCurrentActive });
+    } else {
+        renderListView();
+    }
+}
+
+/**
  * AI Smart Worldbook Organizer modal:
  * - Collapsible saved multi-channel API config (cross-device via extensionSettings)
  * - Supports optional real filename normalization when user allows it
@@ -4104,9 +5154,11 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         return;
     }
 
-    let activeOrganizeScope = classification.ungroupedBooks.length > 0 ? 'ungrouped' : 'nonchar';
+    let activeOrganizeScope = classification.ungroupedBooks.length === 0
+        ? 'nonchar'
+        : (settings.aiOrganizeScope === 'nonchar' ? 'nonchar' : 'ungrouped');
     const defaultChecked = new Set(
-        (classification.ungroupedBooks.length > 0 ? classification.ungroupedBooks : nonCharBooks).map((b) => b.realName),
+        (activeOrganizeScope === 'ungrouped' ? classification.ungroupedBooks : nonCharBooks).map((b) => b.realName),
     );
 
     const getUndoHistoryCount = () =>
@@ -4194,7 +5246,19 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const bookChecksHtml = renderAiBookListHtml(defaultChecked, initialSensState);
 
     const activeCh = getActiveChannel();
-    const startTab = initialTab || 'local';
+    const startTab = initialTab || (settings.organizeLastTab === 'organize' ? 'organize' : 'local');
+    const initialLocalScope = classification.ungroupedBooks.length === 0
+        ? 'nonchar'
+        : (settings.localOrganizeScope === 'nonchar' ? 'nonchar' : 'ungrouped');
+    const initialSavedRules = Array.isArray(settings.localOrganizeCustomRules)
+        ? settings.localOrganizeCustomRules
+        : [];
+    const effectiveAiPresets = getEffectiveAiOrganizePresets(settings);
+    const savedPresetIdSet = new Set(Array.isArray(settings.aiOrganizePresetIds) ? settings.aiOrganizePresetIds : []);
+    const renderAiPresetChipsGroupHtml = (list) => list.map((p) => {
+        const active = savedPresetIdSet.has(p.id);
+        return `<button type="button" class="wbo-preset-chip${active ? ' is-active' : ''}" data-preset-cat="${esc(p.cat)}" data-preset-id="${esc(p.id)}" data-preset-text="${esc(p.text)}">${esc(p.label)}</button>`;
+    }).join('');
     const selectedLocalCatSet = new Set(
         Array.isArray(settings.localOrganizeCategories)
             ? settings.localOrganizeCategories
@@ -4228,14 +5292,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </div>
                     <div class="wbo-scope-grid">
                         <label class="wbo-scope-card">
-                            <input type="radio" name="wbo-local-scope" value="ungrouped"${classification.ungroupedBooks.length > 0 ? ' checked' : ''}>
+                            <input type="radio" name="wbo-local-scope" value="ungrouped"${initialLocalScope === 'ungrouped' ? ' checked' : ''}>
                             <span class="wbo-scope-body">
                                 <span class="wbo-scope-title">仅整理未分组 <span class="wbo-tag" data-local-scope-count="ungrouped">${classification.ungroupedBooks.length} 本</span></span>
                                 <span class="wbo-scope-desc">保持已有分组不变</span>
                             </span>
                         </label>
                         <label class="wbo-scope-card">
-                            <input type="radio" name="wbo-local-scope" value="nonchar"${classification.ungroupedBooks.length === 0 ? ' checked' : ''}>
+                            <input type="radio" name="wbo-local-scope" value="nonchar"${initialLocalScope === 'nonchar' ? ' checked' : ''}>
                             <span class="wbo-scope-body">
                                 <span class="wbo-scope-title">全部非角色书 <span class="wbo-tag" data-local-scope-count="nonchar">${classification.nonCharCount} 本</span></span>
                                 <span class="wbo-scope-desc">按所选规则重新归类</span>
@@ -4257,16 +5321,16 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     <div class="wbo-subtle-tip">点击选中要自动归纳的分组，按书名前缀与关键词匹配，不修改原文件。</div>
                     <div class="wbo-local-divider"></div>
                     <label class="wbo-check-line">
-                        <input type="checkbox" id="wbo-local-any-prefix">
+                        <input type="checkbox" id="wbo-local-any-prefix"${settings.localOrganizeUseAnyPrefix ? ' checked' : ''}>
                         <span>同时按书名开头的 [分类] / 【分类】 前缀自动建组</span>
                     </label>
                     <label class="wbo-check-line">
-                        <input type="checkbox" id="wbo-local-clean-titles">
+                        <input type="checkbox" id="wbo-local-clean-titles"${settings.localOrganizeCleanTitles ? ' checked' : ''}>
                         <span>顺手清理显示名末尾的 (1)、副本、作者署名</span>
                     </label>
                 </div>
 
-                <details class="wbo-collapse-box" id="wbo-local-rules-details">
+                <details class="wbo-collapse-box" id="wbo-local-rules-details"${initialSavedRules.length > 0 ? ' open' : ''}>
                     <summary class="wbo-collapse-summary">
                         <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>自定义归类关键词</span></span>
                         <span class="wbo-collapse-hint" id="wbo-local-rules-count">可选</span>
@@ -4344,46 +5408,59 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <div class="wbo-card wbo-ai-card">
                     <div class="wbo-ai-section-head">
                         <span>2. 选择风格</span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" id="wbo-ai-save-as-preset-btn">+ 存为预设</button>
+                            <button type="button" class="wbo-link-btn" id="wbo-ai-manage-presets-btn">修改/管理预设</button>
+                        </span>
                     </div>
                     <div class="wbo-ai-options">
-                        <div class="wbo-preset-rows">
+                        <div class="wbo-preset-rows" id="wbo-ai-preset-rows">
                             <div class="wbo-preset-group">
                                 <span class="wbo-preset-label">分类方式</span>
-                                <div class="wbo-preset-chips-grid">
-                                    ${AI_ORGANIZE_CATEGORY_PRESETS.map((p) => `<button type="button" class="wbo-preset-chip" data-preset-cat="${esc(p.cat)}" data-preset-id="${esc(p.id)}" data-preset-text="${esc(p.text)}">${esc(p.label)}</button>`).join('')}
+                                <div class="wbo-preset-chips-grid" id="wbo-ai-cat-presets-grid">
+                                    ${renderAiPresetChipsGroupHtml(effectiveAiPresets.categoryPresets)}
                                 </div>
                             </div>
                             <div class="wbo-preset-group">
-                                <span class="wbo-preset-label">命名风格</span>
-                                <div class="wbo-preset-chips-grid">
-                                    ${AI_ORGANIZE_NAMING_PRESETS.map((p) => `<button type="button" class="wbo-preset-chip" data-preset-cat="${esc(p.cat)}" data-preset-id="${esc(p.id)}" data-preset-text="${esc(p.text)}">${esc(p.label)}</button>`).join('')}
+                                <span class="wbo-preset-label">命名与自定义</span>
+                                <div class="wbo-preset-chips-grid" id="wbo-ai-name-presets-grid">
+                                    ${renderAiPresetChipsGroupHtml(effectiveAiPresets.namingPresets)}
                                 </div>
                             </div>
                         </div>
-                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-custom-rule" rows="2" placeholder="可选：点上方预设自动填入，或直接写下你的分类和命名要求..." spellcheck="false"></textarea>
+                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-custom-rule" rows="2" placeholder="可选：点上方预设自动填入，也可直接修改文案并点右上角「+ 存为预设」..." spellcheck="false">${esc(settings.aiOrganizeCustomRule || '')}</textarea>
+                        <div class="wbo-ai-save-preset-bar" id="wbo-ai-save-preset-bar" hidden>
+                            <input type="text" class="wbo-input" id="wbo-ai-new-preset-label" placeholder="预设名称，例如：我的跑团分类法" spellcheck="false">
+                            <select class="wbo-select wbo-inline-select" id="wbo-ai-new-preset-cat">
+                                <option value="group">归入「分类方式」</option>
+                                <option value="custom">归入「命名与自定义」</option>
+                            </select>
+                            <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-confirm-save-preset">保存预设</button>
+                            <button type="button" class="wbo-btn" id="wbo-ai-cancel-save-preset">取消</button>
+                        </div>
 
-                        <details class="wbo-collapse-box">
+                        <details class="wbo-collapse-box"${settings.aiOrganizeIncludeClues ? ' open' : ''}>
                             <summary class="wbo-collapse-summary">
                                 <span class="wbo-summary-left"><i class="fa-solid fa-chevron-right wbo-details-chev"></i><span>高级选项（读取条目摘要 / 修改真实文件名）</span></span>
                             </summary>
                             <div class="wbo-collapse-body">
                                 <div class="wbo-clue-block">
                                     <label class="wbo-check-line">
-                                        <input type="checkbox" id="wbo-ai-include-clues">
+                                        <input type="checkbox" id="wbo-ai-include-clues"${settings.aiOrganizeIncludeClues ? ' checked' : ''}>
                                         <span>附带书内条目摘要辅助归类</span>
                                     </label>
-                                    <div class="wbo-clue-subrow is-disabled" id="wbo-ai-clue-subrow">
+                                    <div class="wbo-clue-subrow${settings.aiOrganizeIncludeClues ? '' : ' is-disabled'}" id="wbo-ai-clue-subrow">
                                         <span class="wbo-clue-field">
                                             <span>读取条数</span>
-                                            <input type="number" class="wbo-input wbo-inline-num" id="wbo-ai-clue-count" value="5" min="1" max="15" disabled>
+                                            <input type="number" class="wbo-input wbo-inline-num" id="wbo-ai-clue-count" value="${Number(settings.aiOrganizeClueCount || 5)}" min="1" max="15"${settings.aiOrganizeIncludeClues ? '' : ' disabled'}>
                                             <span>条</span>
                                         </span>
                                         <span class="wbo-clue-field">
                                             <span>摘要内容</span>
-                                            <select class="wbo-select wbo-inline-select" id="wbo-ai-snippet-len" disabled>
-                                                <option value="50" selected>标题 + 50字摘要</option>
-                                                <option value="120">标题 + 120字摘要</option>
-                                                <option value="0">仅标题与关键词</option>
+                                            <select class="wbo-select wbo-inline-select" id="wbo-ai-snippet-len"${settings.aiOrganizeIncludeClues ? '' : ' disabled'}>
+                                                <option value="50"${Number(settings.aiOrganizeSnippetLen ?? 50) === 50 ? ' selected' : ''}>标题 + 50字摘要</option>
+                                                <option value="120"${Number(settings.aiOrganizeSnippetLen) === 120 ? ' selected' : ''}>标题 + 120字摘要</option>
+                                                <option value="0"${Number(settings.aiOrganizeSnippetLen) === 0 ? ' selected' : ''}>仅标题与关键词</option>
                                             </select>
                                         </span>
                                     </div>
@@ -4497,6 +5574,36 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 </div>
             </div>
 
+            <div class="wbo-ai-step" id="wbo-ai-step-presets" hidden>
+                <div class="wbo-pinned-top">
+                    <div class="wbo-eb-topbar">
+                        <button type="button" class="wbo-btn" id="wbo-presets-back-btn">
+                            <i class="fa-solid fa-arrow-left"></i> 返回 AI 整理
+                        </button>
+                        <span class="wbo-ai-subview-title">管理与自定义 AI 整理预设</span>
+                        <span class="wbo-spacer"></span>
+                        <button type="button" class="wbo-btn" id="wbo-presets-add-blank-btn">
+                            <i class="fa-solid fa-plus"></i> 新增预设
+                        </button>
+                    </div>
+                </div>
+                <div class="wbo-step-scroll">
+                    <div class="wbo-subtle-tip">可直接修改任意预设的按钮名称与提示词，保存后永久生效；不满意随时可恢复默认预设。</div>
+                    <div class="wbo-ai-presets-mgr-list" id="wbo-ai-presets-mgr-list"></div>
+                    <div class="wbo-ai-status" id="wbo-ai-presets-status"></div>
+                </div>
+                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
+                    <div class="wbo-ai-footer-left">
+                        <button type="button" class="wbo-btn" id="wbo-presets-reset-btn">
+                            <i class="fa-solid fa-rotate-left"></i> 恢复默认预设
+                        </button>
+                    </div>
+                    <div class="wbo-ai-footer-right">
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-presets-done-btn">完成返回</button>
+                    </div>
+                </div>
+            </div>
+
             <div class="wbo-ai-step" id="wbo-ai-step-preview" hidden>
                 <div class="wbo-step-scroll">
                 <div class="wbo-ai-section-head">
@@ -4534,7 +5641,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </summary>
                     <div class="wbo-collapse-body">
                         <div class="wbo-redo-group-chips" id="wbo-redo-group-chips"></div>
-                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-redo-reason" rows="2" placeholder="可选：说明不满意的原因或期望（例如：约会指南不要放进世界观，请归入「场景与互动」）" spellcheck="false"></textarea>
+                        <textarea class="wbo-textarea wbo-rule-textarea" id="wbo-ai-redo-reason" rows="2" placeholder="可选：说明调整期望（例如：把规则补丁单独建组，或合并相近的小分组）" spellcheck="false"></textarea>
                         <div class="wbo-ai-actions-row">
                             <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-redo-run-btn" disabled>
                                 <i class="fa-solid fa-rotate"></i> 重新发送给 AI
@@ -4574,6 +5681,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const stepSelect = modal.querySelector('#wbo-ai-step-select');
     const stepExternal = modal.querySelector('#wbo-ai-step-external');
     const stepApi = modal.querySelector('#wbo-ai-step-api');
+    const stepPresets = modal.querySelector('#wbo-ai-step-presets');
     const stepPreview = modal.querySelector('#wbo-ai-step-preview');
     const localStatusEl = modal.querySelector('#wbo-local-status');
     const tabsBar = modal.querySelector('#wbo-ai-tabs');
@@ -4593,14 +5701,19 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const switchAiTab = (tabName) => {
         if (tabName === 'local' || tabName === 'organize') {
             lastOrganizeSourceTab = tabName;
+            if (settings.organizeLastTab !== tabName) {
+                settings.organizeLastTab = tabName;
+                void _callbacks?.onMutation({ save: true, uiOnly: true });
+            }
         }
         if (stepLocal instanceof HTMLElement) stepLocal.hidden = tabName !== 'local';
         if (stepSelect instanceof HTMLElement) stepSelect.hidden = tabName !== 'organize';
         if (stepExternal instanceof HTMLElement) stepExternal.hidden = tabName !== 'external';
         if (stepApi instanceof HTMLElement) stepApi.hidden = tabName !== 'api';
+        if (stepPresets instanceof HTMLElement) stepPresets.hidden = tabName !== 'presets';
         if (stepPreview instanceof HTMLElement) stepPreview.hidden = true;
-        // Hide the 2-way top bar while inside dedicated sub-views (`api` / `external`)
-        if (tabsBar instanceof HTMLElement) tabsBar.hidden = tabName === 'api' || tabName === 'external';
+        // Hide the 2-way top bar while inside dedicated sub-views (`api` / `external` / `presets`)
+        if (tabsBar instanceof HTMLElement) tabsBar.hidden = tabName === 'api' || tabName === 'external' || tabName === 'presets';
         modal.querySelectorAll('.wbo-tab').forEach((t) => {
             t.classList.toggle('is-active', t.getAttribute('data-ai-tab') === tabName);
         });
@@ -4668,9 +5781,36 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         syncLocalCatChips();
     });
 
-    // Visual 2-box custom rule builder for 免 AI 整理 (zero special symbols needed!)
+    // Persist Local Organize scope & checkboxes across restarts
+    modal.querySelectorAll('input[name="wbo-local-scope"]').forEach((radio) => {
+        radio.addEventListener('change', () => {
+            const val = modal.querySelector('input[name="wbo-local-scope"]:checked')?.value;
+            if (val === 'ungrouped' || val === 'nonchar') {
+                settings.localOrganizeScope = val;
+                void _callbacks?.onMutation({ save: true, uiOnly: true });
+            }
+        });
+    });
+    modal.querySelector('#wbo-local-any-prefix')?.addEventListener('change', (ev) => {
+        if (ev.currentTarget instanceof HTMLInputElement) {
+            settings.localOrganizeUseAnyPrefix = ev.currentTarget.checked;
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+    modal.querySelector('#wbo-local-clean-titles')?.addEventListener('change', (ev) => {
+        if (ev.currentTarget instanceof HTMLInputElement) {
+            settings.localOrganizeCleanTitles = ev.currentTarget.checked;
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+
+    // Visual 2-box custom rule builder for 免 AI 整理 (persisted in settings.localOrganizeCustomRules!)
     /** @type {Array<{ kw: string, group: string }>} */
-    const localCustomRules = [];
+    const localCustomRules = deepClone(initialSavedRules);
+    const persistLocalCustomRules = () => {
+        settings.localOrganizeCustomRules = deepClone(localCustomRules);
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
+    };
     const ruleKwInput = modal.querySelector('#wbo-local-rule-kw');
     const ruleGrpInput = modal.querySelector('#wbo-local-rule-grp');
     const ruleChipsEl = modal.querySelector('#wbo-local-rule-chips');
@@ -4678,7 +5818,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
     const renderLocalRuleChips = () => {
         if (ruleCountEl) {
-            ruleCountEl.textContent = localCustomRules.length > 0 ? `已添加 ${localCustomRules.length} 条` : '点击展开';
+            ruleCountEl.textContent = localCustomRules.length > 0 ? `已保存 ${localCustomRules.length} 条` : '点击展开';
         }
         if (!ruleChipsEl) return;
         if (localCustomRules.length === 0) {
@@ -4709,6 +5849,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (ruleGrpInput instanceof HTMLInputElement) ruleGrpInput.value = '';
         if (localStatusEl) localStatusEl.textContent = '';
         renderLocalRuleChips();
+        persistLocalCustomRules();
     };
     modal.querySelector('#wbo-local-rule-add-btn')?.addEventListener('click', addLocalRuleFromInputs);
     bindImeSafeEnter(ruleGrpInput, addLocalRuleFromInputs);
@@ -4719,6 +5860,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (Number.isInteger(idx) && idx >= 0 && idx < localCustomRules.length) {
             localCustomRules.splice(idx, 1);
             renderLocalRuleChips();
+            persistLocalCustomRules();
         }
     });
 
@@ -4731,6 +5873,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             if (ruleKwInput instanceof HTMLInputElement) ruleKwInput.value = '';
             if (ruleGrpInput instanceof HTMLInputElement) ruleGrpInput.value = '';
             renderLocalRuleChips();
+            persistLocalCustomRules();
         }
 
         const scope = modal.querySelector('input[name="wbo-local-scope"]:checked')?.value || 'ungrouped';
@@ -4776,40 +5919,255 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     const clueSubrowEl = modal.querySelector('#wbo-ai-clue-subrow');
     const clueCountInput = modal.querySelector('#wbo-ai-clue-count');
     const snippetLenSelect = modal.querySelector('#wbo-ai-snippet-len');
-    const syncClueControlsState = () => {
+    const syncClueControlsState = (shouldSave = false) => {
         const enabled = Boolean(includeCluesCb instanceof HTMLInputElement && includeCluesCb.checked);
         if (clueSubrowEl instanceof HTMLElement) clueSubrowEl.classList.toggle('is-disabled', !enabled);
         if (clueCountInput instanceof HTMLInputElement) clueCountInput.disabled = !enabled;
         if (snippetLenSelect instanceof HTMLSelectElement) snippetLenSelect.disabled = !enabled;
+        if (shouldSave) {
+            settings.aiOrganizeIncludeClues = enabled;
+            if (clueCountInput instanceof HTMLInputElement) {
+                const rawN = Number(clueCountInput.value);
+                if (Number.isFinite(rawN)) {
+                    settings.aiOrganizeClueCount = Math.max(1, Math.min(15, Math.round(rawN)));
+                }
+            }
+            if (snippetLenSelect instanceof HTMLSelectElement) {
+                const rawLen = Number(snippetLenSelect.value);
+                if ([0, 50, 120].includes(rawLen)) settings.aiOrganizeSnippetLen = rawLen;
+            }
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
     };
-    includeCluesCb?.addEventListener('change', syncClueControlsState);
-    syncClueControlsState();
+    includeCluesCb?.addEventListener('change', () => syncClueControlsState(true));
+    clueCountInput?.addEventListener('change', () => syncClueControlsState(true));
+    snippetLenSelect?.addEventListener('change', () => syncClueControlsState(true));
+    syncClueControlsState(false);
 
     modal.querySelector('#wbo-toggle-external-ai-btn')?.addEventListener('click', () => {
         switchAiTab('external');
     });
 
-    // One-tap prompt preset chips: toggle mutually-exclusive group/name presets & compose multi-line rule text
+    // Interactive & customizable AI Organize Preset chips + persistent rule text
     const customRuleInput = modal.querySelector('#wbo-ai-custom-rule');
-    const syncPresetRuleText = () => {
-        if (!(customRuleInput instanceof HTMLTextAreaElement || customRuleInput instanceof HTMLInputElement)) return;
-        const activeTexts = Array.from(modal.querySelectorAll('.wbo-preset-chip.is-active'))
-            .map((btn) => btn.getAttribute('data-preset-text') || '')
+    const presetRowsEl = modal.querySelector('#wbo-ai-preset-rows');
+    const catPresetsGridEl = modal.querySelector('#wbo-ai-cat-presets-grid');
+    const namePresetsGridEl = modal.querySelector('#wbo-ai-name-presets-grid');
+    const savePresetBar = modal.querySelector('#wbo-ai-save-preset-bar');
+    const newPresetLabelInput = modal.querySelector('#wbo-ai-new-preset-label');
+    const newPresetCatSelect = modal.querySelector('#wbo-ai-new-preset-cat');
+    const presetsMgrListEl = modal.querySelector('#wbo-ai-presets-mgr-list');
+    const presetsStatusEl = modal.querySelector('#wbo-ai-presets-status');
+    let ruleSaveTimer = null;
+
+    const persistAiStyleSettings = () => {
+        settings.aiOrganizePresetIds = Array.from(modal.querySelectorAll('.wbo-preset-chip.is-active'))
+            .map((btn) => btn.getAttribute('data-preset-id') || '')
             .filter(Boolean);
-        customRuleInput.value = activeTexts.join('\n');
+        settings.aiOrganizeCustomRule = customRuleInput instanceof HTMLTextAreaElement ? customRuleInput.value : '';
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
     };
-    modal.querySelectorAll('.wbo-preset-chip').forEach((chip) => {
-        chip.addEventListener('click', () => {
-            const cat = chip.getAttribute('data-preset-cat');
-            const willActivate = !chip.classList.contains('is-active');
-            if (cat && (cat === 'group' || cat === 'name') && willActivate) {
-                modal.querySelectorAll(`.wbo-preset-chip[data-preset-cat="${cat}"]`).forEach((other) => {
-                    other.classList.remove('is-active');
-                });
+
+    const rebuildAiPresetChipsDom = () => {
+        const eff = getEffectiveAiOrganizePresets(settings);
+        const activeIds = new Set(Array.isArray(settings.aiOrganizePresetIds) ? settings.aiOrganizePresetIds : []);
+        const buildHtml = (list) => list.map((p) => {
+            const active = activeIds.has(p.id);
+            return `<button type="button" class="wbo-preset-chip${active ? ' is-active' : ''}" data-preset-cat="${esc(p.cat)}" data-preset-id="${esc(p.id)}" data-preset-text="${esc(p.text)}">${esc(p.label)}</button>`;
+        }).join('');
+        if (catPresetsGridEl) catPresetsGridEl.innerHTML = buildHtml(eff.categoryPresets);
+        if (namePresetsGridEl) namePresetsGridEl.innerHTML = buildHtml(eff.namingPresets);
+    };
+
+    const syncPresetRuleTextPreservingExtra = () => {
+        if (!(customRuleInput instanceof HTMLTextAreaElement)) return;
+        const allKnownTexts = new Set(
+            getEffectiveAiOrganizePresets(settings).all.map((p) => p.text.trim()).filter(Boolean),
+        );
+        const manualLines = customRuleInput.value
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter((l) => l && !allKnownTexts.has(l));
+        const activeTexts = Array.from(modal.querySelectorAll('.wbo-preset-chip.is-active'))
+            .map((btn) => (btn.getAttribute('data-preset-text') || '').trim())
+            .filter(Boolean);
+        customRuleInput.value = [...activeTexts, ...manualLines].join('\n');
+        persistAiStyleSettings();
+    };
+
+    presetRowsEl?.addEventListener('click', (ev) => {
+        const chip = ev.target instanceof Element ? ev.target.closest('.wbo-preset-chip') : null;
+        if (!chip) return;
+        const cat = chip.getAttribute('data-preset-cat');
+        const willActivate = !chip.classList.contains('is-active');
+        if (cat && (cat === 'group' || cat === 'name') && willActivate) {
+            modal.querySelectorAll(`.wbo-preset-chip[data-preset-cat="${cat}"]`).forEach((other) => {
+                other.classList.remove('is-active');
+            });
+        }
+        chip.classList.toggle('is-active', willActivate);
+        syncPresetRuleTextPreservingExtra();
+    });
+
+    customRuleInput?.addEventListener('input', () => {
+        clearTimeout(ruleSaveTimer);
+        ruleSaveTimer = setTimeout(() => { persistAiStyleSettings(); }, 180);
+    });
+
+    // Quick "+ 存为预设" inline bar
+    modal.querySelector('#wbo-ai-save-as-preset-btn')?.addEventListener('click', () => {
+        if (!(savePresetBar instanceof HTMLElement)) return;
+        const willShow = savePresetBar.hidden;
+        savePresetBar.hidden = !willShow;
+        if (willShow && newPresetLabelInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
+            newPresetLabelInput.focus();
+        }
+    });
+    modal.querySelector('#wbo-ai-cancel-save-preset')?.addEventListener('click', () => {
+        if (savePresetBar instanceof HTMLElement) savePresetBar.hidden = true;
+    });
+    const confirmSaveQuickPreset = () => {
+        const label = newPresetLabelInput instanceof HTMLInputElement ? newPresetLabelInput.value.trim() : '';
+        const cat = newPresetCatSelect instanceof HTMLSelectElement ? newPresetCatSelect.value : 'group';
+        const text = customRuleInput instanceof HTMLTextAreaElement ? customRuleInput.value.trim() : '';
+        if (!text) {
+            setStatus('请先在文本框中填写或编辑要保存为预设的提示词', true);
+            return;
+        }
+        const res = upsertAiOrganizePreset(settings, { label, cat, text });
+        if (!res.ok) {
+            setStatus(res.error || '保存预设失败', true);
+            return;
+        }
+        if (res.preset) {
+            if (cat === 'group') {
+                const effAll = getEffectiveAiOrganizePresets(settings).all;
+                const groupIds = new Set(effAll.filter((p) => p.cat === 'group').map((p) => p.id));
+                settings.aiOrganizePresetIds = [
+                    ...(settings.aiOrganizePresetIds || []).filter((id) => !groupIds.has(id)),
+                    res.preset.id,
+                ];
+            } else {
+                settings.aiOrganizePresetIds = [...new Set([...(settings.aiOrganizePresetIds || []), res.preset.id])];
             }
-            chip.classList.toggle('is-active', willActivate);
-            syncPresetRuleText();
+        }
+        if (newPresetLabelInput instanceof HTMLInputElement) newPresetLabelInput.value = '';
+        if (savePresetBar instanceof HTMLElement) savePresetBar.hidden = true;
+        rebuildAiPresetChipsDom();
+        persistAiStyleSettings();
+        setStatus(`已保存自定义预设「${res.preset?.label}」`, 'success');
+    };
+    modal.querySelector('#wbo-ai-confirm-save-preset')?.addEventListener('click', confirmSaveQuickPreset);
+    bindImeSafeEnter(newPresetLabelInput, confirmSaveQuickPreset);
+
+    // Full Preset Management sub-view (`#wbo-ai-step-presets`)
+    const setPresetsStatus = (msg, kind = 'info') => {
+        if (!presetsStatusEl) return;
+        presetsStatusEl.textContent = msg;
+        presetsStatusEl.className = `wbo-ai-status${kind === 'error' ? ' is-error' : (kind === 'success' ? ' is-success' : '')}`;
+    };
+    const renderPresetsManagerList = () => {
+        if (!presetsMgrListEl) return;
+        const eff = getEffectiveAiOrganizePresets(settings);
+        const resetBtn = modal.querySelector('#wbo-presets-reset-btn');
+        if (resetBtn instanceof HTMLButtonElement) resetBtn.disabled = !eff.isCustomized;
+
+        presetsMgrListEl.innerHTML = eff.all.map((p) => `
+            <div class="wbo-card wbo-preset-mgr-card" data-pm-id="${esc(p.id)}">
+                <div class="wbo-preset-mgr-top">
+                    <input type="text" class="wbo-input wbo-pm-label" value="${esc(p.label)}" placeholder="按钮名称" spellcheck="false">
+                    <select class="wbo-select wbo-inline-select wbo-pm-cat">
+                        <option value="group"${p.cat === 'group' ? ' selected' : ''}>分类方式（单选）</option>
+                        <option value="name"${p.cat === 'name' ? ' selected' : ''}>命名格式（单选）</option>
+                        <option value="custom"${p.cat !== 'group' && p.cat !== 'name' ? ' selected' : ''}>附加要求（可多选）</option>
+                    </select>
+                    <button type="button" class="wbo-btn wbo-btn-primary" data-pm-act="save">保存</button>
+                    <button type="button" class="wbo-btn wbo-btn-danger" data-pm-act="delete" title="删除此预设">删除</button>
+                </div>
+                <textarea class="wbo-textarea wbo-pm-text" rows="2" placeholder="发送给 AI 的归类或命名要求..." spellcheck="false">${esc(p.text)}</textarea>
+            </div>
+        `).join('');
+    };
+
+    modal.querySelector('#wbo-ai-manage-presets-btn')?.addEventListener('click', () => {
+        setPresetsStatus('');
+        renderPresetsManagerList();
+        switchAiTab('presets');
+    });
+    const exitPresetsSubView = () => {
+        rebuildAiPresetChipsDom();
+        switchAiTab('organize');
+    };
+    modal.querySelector('#wbo-presets-back-btn')?.addEventListener('click', exitPresetsSubView);
+    modal.querySelector('#wbo-presets-done-btn')?.addEventListener('click', exitPresetsSubView);
+
+    modal.querySelector('#wbo-presets-add-blank-btn')?.addEventListener('click', () => {
+        const eff = getEffectiveAiOrganizePresets(settings);
+        let idx = eff.all.length + 1;
+        let defaultName = `自定义预设 ${idx}`;
+        while (eff.all.some((p) => p.label === defaultName)) {
+            idx += 1;
+            defaultName = `自定义预设 ${idx}`;
+        }
+        const res = upsertAiOrganizePreset(settings, {
+            label: defaultName,
+            cat: 'group',
+            text: '请按我常用的分类习惯归纳分组，保持组名简短直观。',
         });
+        if (res.ok) {
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+            renderPresetsManagerList();
+            setPresetsStatus(`已新增「${defaultName}」，修改文字后点击保存即可`, 'success');
+            const scrollEl = stepPresets?.querySelector('.wbo-step-scroll');
+            if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+        }
+    });
+
+    modal.querySelector('#wbo-presets-reset-btn')?.addEventListener('click', () => {
+        if (!globalThis.confirm('确认将 AI 整理预设恢复为默认方案？（你新增或修改过的预设将被重置）')) return;
+        resetAiOrganizePresets(settings);
+        settings.aiOrganizePresetIds = [];
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
+        renderPresetsManagerList();
+        rebuildAiPresetChipsDom();
+        setPresetsStatus('已恢复默认预设方案', 'success');
+    });
+
+    presetsMgrListEl?.addEventListener('click', (ev) => {
+        const btn = ev.target instanceof Element ? ev.target.closest('[data-pm-act]') : null;
+        if (!btn) return;
+        const card = btn.closest('.wbo-preset-mgr-card');
+        if (!(card instanceof HTMLElement)) return;
+        const id = card.getAttribute('data-pm-id') || '';
+        const act = btn.getAttribute('data-pm-act') || '';
+        if (act === 'save') {
+            const label = card.querySelector('.wbo-pm-label')?.value?.trim() || '';
+            const cat = card.querySelector('.wbo-pm-cat')?.value || 'group';
+            const text = card.querySelector('.wbo-pm-text')?.value?.trim() || '';
+            const prevText = getEffectiveAiOrganizePresets(settings).all.find((p) => p.id === id)?.text || '';
+            const res = upsertAiOrganizePreset(settings, { id, label, cat, text });
+            if (!res.ok) {
+                setPresetsStatus(res.error || '保存失败', 'error');
+                return;
+            }
+            if (prevText && prevText !== text && customRuleInput instanceof HTMLTextAreaElement && customRuleInput.value.includes(prevText)) {
+                customRuleInput.value = customRuleInput.value.replace(prevText, text);
+                settings.aiOrganizeCustomRule = customRuleInput.value;
+            }
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+            renderPresetsManagerList();
+            rebuildAiPresetChipsDom();
+            setPresetsStatus(`已保存预设「${label}」`, 'success');
+        } else if (act === 'delete') {
+            const curName = card.querySelector('.wbo-pm-label')?.value?.trim() || '该预设';
+            if (!globalThis.confirm(`确认删除预设「${curName}」？`)) return;
+            if (deleteAiOrganizePreset(settings, id)) {
+                void _callbacks?.onMutation({ save: true, uiOnly: true });
+                renderPresetsManagerList();
+                rebuildAiPresetChipsDom();
+                setPresetsStatus(`已删除预设「${curName}」`, 'info');
+            }
+        }
     });
 
     // IME-safe filter inside AI book list
@@ -5296,11 +6654,15 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
     modal.querySelector('#wbo-pick-ungrouped')?.addEventListener('click', () => {
         activeOrganizeScope = 'ungrouped';
+        settings.aiOrganizeScope = 'ungrouped';
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
         setCheckedByPredicate((m) => m.groupId === SPECIAL_GROUPS.UNGROUPED && !sensitiveSet.has(m.realName));
         syncSensBannerUi();
     });
     modal.querySelector('#wbo-pick-nonchar')?.addEventListener('click', () => {
         activeOrganizeScope = 'nonchar';
+        settings.aiOrganizeScope = 'nonchar';
+        void _callbacks?.onMutation({ save: true, uiOnly: true });
         setCheckedByPredicate((m) => !m.isInCharGroup && !sensitiveSet.has(m.realName));
         syncSensBannerUi();
     });
@@ -5397,6 +6759,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             books: booksPayload,
             existingGroups: settings.groups.map((g) => g.name),
             customInstruction: buildCustomInstruction(),
+            presetsPool: getEffectiveAiOrganizePresets(settings).all,
             feedback,
         });
     };
@@ -5632,6 +6995,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         stepSelect.hidden = true;
         if (stepExternal instanceof HTMLElement) stepExternal.hidden = true;
         if (stepApi instanceof HTMLElement) stepApi.hidden = true;
+        if (stepPresets instanceof HTMLElement) stepPresets.hidden = true;
         if (tabsBar instanceof HTMLElement) tabsBar.hidden = true;
         stepPreview.hidden = false;
         const groupCount = getOrderedPreviewGroups().size;
@@ -6240,7 +7604,7 @@ function openScanAndImportModal() {
     const sourceLabel = (s) => {
         if (s === 'primary') return '当前主绑';
         if (s === 'extra') return '额外附加（可能为通用书或旧版残留）';
-        return '同名未绑（本地同名文件，多为旧版残留）';
+        return '本地同名';
     };
 
     const renderModalBody = () => {
@@ -6289,7 +7653,7 @@ function openScanAndImportModal() {
         /** @type {Array<{ key: string, label: string, count: number, rowsHtml: string }>} */
         const covTabs = [];
 
-        const renderCovTable = (rowsHtml, subjectColLabel = '角色卡 / 人设') => `
+        const renderCovTable = (rowsHtml, subjectColLabel = '角色名') => `
             <div class="wbo-cov-table-head">
                 <span>${esc(subjectColLabel)}</span>
                 <span>世界书</span>
@@ -6309,7 +7673,6 @@ function openScanAndImportModal() {
                         <div class="wbo-cov-row-wrap">
                             <div class="wbo-cov-row">
                                 <div class="wbo-cov-subject">
-                                    <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                                     ${charJumpBtn(c.avatar, c.charName)}
                                     ${c.books.length >= 2 ? `<button type="button" class="wbo-cov-action-pill" data-cov-diff="${esc(bookNamesJson)}" title="对比这些世界书的条目差异">对比差异</button>` : ''}
                                 </div>
@@ -6332,7 +7695,7 @@ function openScanAndImportModal() {
                             <div class="wbo-cov-drawer" hidden></div>
                         </div>
                     `;
-                }).join(''), '角色卡'),
+                }).join(''), '角色名'),
             });
         }
         if (coverage.sharedBooks.length > 0) {
@@ -6344,7 +7707,6 @@ function openScanAndImportModal() {
                     <div class="wbo-cov-row-wrap">
                         <div class="wbo-cov-row">
                             <div class="wbo-cov-subject">
-                                <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                                 ${(s.owners || []).map((o) => charJumpBtn(o.avatar, o.charName)).join('')}
                             </div>
                             <div class="wbo-cov-targets">
@@ -6356,7 +7718,7 @@ function openScanAndImportModal() {
                         </div>
                         <div class="wbo-cov-drawer" hidden></div>
                     </div>
-                `).join(''), '角色卡'),
+                `).join(''), '角色名'),
             });
         }
         if (personaSummary.totalBoundCount > 0) {
@@ -6372,7 +7734,7 @@ function openScanAndImportModal() {
                     ` : ''}
                     ${renderCovTable(personaSummary.personaBindings.map((pb) => {
                         const charCrossBadge = pb.charOwners.length > 0
-                            ? `<span class="wbo-cov-subject-badge is-char">角色卡绑定：${esc(pb.charOwners.map((o) => o.charName).join('、'))}</span>`
+                            ? `<span class="wbo-cov-subject-badge is-char">交叉角色：${esc(pb.charOwners.map((o) => o.charName).join('、'))}</span>`
                             : '';
                         const roleText = pb.charOwners.length > 0
                             ? `此书被 User 人设「${pb.personaName}」绑定，同时也被角色卡「${pb.charOwners.map((o) => o.charName).join('、')}」绑定`
@@ -6381,7 +7743,6 @@ function openScanAndImportModal() {
                             <div class="wbo-cov-row-wrap">
                                 <div class="wbo-cov-row">
                                     <div class="wbo-cov-subject">
-                                        <span class="wbo-cov-subject-badge is-persona">User 人设绑定</span>
                                         <span class="wbo-cov-persona-name">${esc(pb.personaName)}</span>
                                     </div>
                                     <div class="wbo-cov-targets">
@@ -6390,7 +7751,7 @@ function openScanAndImportModal() {
                                             <button type="button" class="wbo-cov-action-pill is-danger" data-cov-clear-persona="${esc(pb.pid)}" data-cov-persona-world="${esc(pb.worldName)}" data-cov-persona-name="${esc(pb.personaName)}" title="清除人设上已失效的世界书引用">清除失效绑定</button>
                                         ` : `
                                             ${worldChipHtml(pb.worldName, {
-                                                suffix: pb.charOwners.length > 0 ? '人设+角色交叉' : 'User 人设绑定',
+                                                suffix: pb.charOwners.length > 0 ? '人设+角色交叉' : '',
                                                 roleText,
                                                 unbindKind: 'persona',
                                                 unbindTarget: pb.pid,
@@ -6402,7 +7763,7 @@ function openScanAndImportModal() {
                                 <div class="wbo-cov-drawer" hidden></div>
                             </div>
                         `;
-                    }).join(''), 'User 人设')}
+                    }).join(''), '人设名称')}
                 `,
             });
         }
@@ -6414,7 +7775,6 @@ function openScanAndImportModal() {
                 rowsHtml: renderCovTable(coverage.missingFileChars.map((c) => `
                     <div class="wbo-cov-row">
                         <div class="wbo-cov-subject">
-                            <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                             ${charJumpBtn(c.avatar, c.charName)}
                         </div>
                         <div class="wbo-cov-targets">
@@ -6422,7 +7782,7 @@ function openScanAndImportModal() {
                             <button type="button" class="wbo-cov-action-pill is-danger" data-cov-clear-missing="${esc(c.avatar)}" data-cov-char-name="${esc(c.charName)}" title="清除角色卡上已失效的主世界书引用">清除失效绑定</button>
                         </div>
                     </div>
-                `).join(''), '角色卡'),
+                `).join(''), '角色名'),
             });
         }
         if (coverage.orphanExtraBooks.length > 0) {
@@ -6439,7 +7799,6 @@ function openScanAndImportModal() {
                         <div class="wbo-cov-row-wrap">
                             <div class="wbo-cov-row">
                                 <div class="wbo-cov-subject">
-                                    <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                                     <span class="wbo-cov-missing">${esc(o.charName)}（已删）</span>
                                 </div>
                                 <div class="wbo-cov-targets">
@@ -6455,7 +7814,7 @@ function openScanAndImportModal() {
                             </div>
                             <div class="wbo-cov-drawer" hidden></div>
                         </div>
-                    `).join(''), '角色卡')}
+                    `).join(''), '角色名')}
                 `,
             });
         }
@@ -6472,21 +7831,20 @@ function openScanAndImportModal() {
                         <div class="wbo-cov-row-wrap">
                             <div class="wbo-cov-row">
                                 <div class="wbo-cov-subject">
-                                    <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                                     ${charJumpBtn(m.avatar, m.charName)}
                                     <button type="button" class="wbo-cov-action-pill" data-cov-emb-diff="${esc(m.avatar)}" data-cov-emb-world="${esc(m.worldName)}" data-cov-primary-world="${esc(m.primaryWorld || '')}" title="对比卡内自带世界书与本地同名文件条目差异">对比差异</button>
                                 </div>
                                 <div class="wbo-cov-targets">
                                     ${worldChipHtml(m.worldName, {
-                                        suffix: '同名未绑（本地同名文件，多为旧版残留）',
                                         roleText: `此书为本地同名文件（与角色「${m.charName}」卡内自带世界书同名但未绑定，多为旧版残留）；该角色当前主绑书为「${m.primaryWorld || '未知'}」`,
                                     })}
+                                    <span class="wbo-tag is-warn" title="本地同名文件，未绑定到当前角色卡，多为旧版残留">本地同名</span>
                                     ${m.primaryWorld ? `<span class="wbo-tag">当前主绑：${esc(m.primaryWorld)}</span>` : ''}
                                 </div>
                             </div>
                             <div class="wbo-cov-drawer" hidden></div>
                         </div>
-                    `).join(''), '角色卡')}
+                    `).join(''), '角色名')}
                 `,
             });
         }
@@ -6498,14 +7856,13 @@ function openScanAndImportModal() {
                 rowsHtml: renderCovTable(coverage.unboundChars.map((c) => `
                     <div class="wbo-cov-row">
                         <div class="wbo-cov-subject">
-                            <span class="wbo-cov-subject-badge is-char">角色卡绑定</span>
                             ${charJumpBtn(c.avatar, c.charName)}
                         </div>
                         <div class="wbo-cov-targets">
                             <span class="wbo-cov-missing">${c.shallow ? '尚未加载（可点上方扫描）' : '未绑定世界书'}</span>
                         </div>
                     </div>
-                `).join(''), '角色卡'),
+                `).join(''), '角色名'),
             });
         }
 
@@ -7029,11 +8386,41 @@ function openScanAndImportModal() {
 
         modal.querySelector('#wbo-scan-all-btn')?.addEventListener('click', async (ev) => {
             const btn = ev.currentTarget;
-            if (btn instanceof HTMLButtonElement) btn.disabled = true;
+            if (btn instanceof HTMLButtonElement) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fa-solid fa-arrows-rotate fa-spin"></i> <span>正在扫描...</span>';
+            }
             cancelSignal.cancelled = false;
 
-            const { settings } = _callbacks.getState();
-            const targets = findUnscannedShallowCharacters(getCharactersInMemory(), settings.cachedCharBindings);
+            const prevState = _callbacks.getState();
+            const prevChars = getCharactersInMemory();
+            const prevWorldSet = new Set(getWorldNames([...prevState.classification.byName.keys()]));
+            const prevCov = summarizeCharacterWorldCoverage({
+                characters: prevChars,
+                bindingMap: prevState.bindingMap || new Map(),
+                worldNamesSet: prevWorldSet,
+                cachedCharBindings: prevState.settings.cachedCharBindings,
+            });
+            const prevUnimported = findCardsWithUnimportedBooks({
+                characters: prevChars,
+                worldNamesSet: prevWorldSet,
+                cachedCharBindings: prevState.settings.cachedCharBindings,
+            });
+            const prevSig = JSON.stringify([
+                prevChars.length,
+                prevState.classification.charCount,
+                prevUnimported.length,
+                prevCov.multiBookChars.length,
+                prevCov.missingFileChars.length,
+                prevCov.orphanExtraBooks.length,
+                prevCov.sharedBooks.length,
+                prevCov.embeddedNameMatches.length,
+                prevCov.unboundChars.length,
+            ]);
+
+            const { settings } = prevState;
+            const targets = findUnscannedShallowCharacters(prevChars, settings.cachedCharBindings);
+            let scannedNewCount = 0;
 
             if (targets.length > 0) {
                 setStatus(`正在扫描 ${targets.length} 张未加载角色卡...`);
@@ -7043,6 +8430,7 @@ function openScanAndImportModal() {
                         setStatus(`正在扫描 (${done}/${total})：${currentName}`);
                     },
                 });
+                scannedNewCount = res.scanned.length;
                 if (res.scanned.length > 0) {
                     const { cached } = updateCachedCharBindings({}, res.scanned);
                     Object.assign(settings.cachedCharBindings, cached);
@@ -7075,16 +8463,33 @@ function openScanAndImportModal() {
                     worldNamesSet: latestWorldSet,
                     cachedCharBindings: latest.settings.cachedCharBindings,
                 });
+                const nextSig = JSON.stringify([
+                    latestChars.length,
+                    latest.classification.charCount,
+                    latestUnimported.length,
+                    latestCov.multiBookChars.length,
+                    latestCov.missingFileChars.length,
+                    latestCov.orphanExtraBooks.length,
+                    latestCov.sharedBooks.length,
+                    latestCov.embeddedNameMatches.length,
+                    latestCov.unboundChars.length,
+                ]);
+                const hasChanges = scannedNewCount > 0 || prevSig !== nextSig;
                 const personaCount = Object.keys(getPowerUserSettings()?.personas || {}).length;
                 const anomalyCount = latestCov.multiBookChars.length
-                    + latestCov.missingNameChars.length
-                    + latestCov.extraOnlyChars.length
+                    + latestCov.missingFileChars.length
+                    + latestCov.orphanExtraBooks.length
+                    + latestCov.sharedBooks.length
                     + latestPersona.anomalyCount;
                 const now = new Date();
-                const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-                const summaryMsg = `${hhmm} 扫描完成：已核对 ${latestChars.length} 张角色卡、${personaCount} 套人设，共识别 ${latest.classification.charCount} 本绑定世界书（异常 ${anomalyCount} 项 / 未导入 ${latestUnimported.length} 本）`;
+                const hhmmss = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
+                const summaryMsg = hasChanges
+                    ? `${hhmmss} 扫描完成：已核对 ${latestChars.length} 张角色卡、${personaCount} 套人设，共识别 ${latest.classification.charCount} 本绑定世界书（异常 ${anomalyCount} 项 / 未导入 ${latestUnimported.length} 本）`
+                    : `${hhmmss} 已重新扫描，未发现新增变动（已核对 ${latestChars.length} 张角色卡、${personaCount} 套人设，共 ${latest.classification.charCount} 本绑定书）`;
+
                 const nextStatus = modal.querySelector('#wbo-scan-status');
                 const nextTop = modal.querySelector('#wbo-scan-top-status');
+                const nextScanBtn = modal.querySelector('#wbo-scan-all-btn');
                 if (nextStatus) {
                     nextStatus.textContent = summaryMsg;
                     nextStatus.className = 'wbo-ai-status is-success';
@@ -7094,6 +8499,21 @@ function openScanAndImportModal() {
                     nextTop.className = 'wbo-ai-status is-success wbo-scan-top-status';
                     nextTop.hidden = false;
                 }
+                if (nextScanBtn instanceof HTMLButtonElement) {
+                    const restoreLabel = nextScanBtn.textContent || '重新扫描角色卡';
+                    nextScanBtn.textContent = hasChanges ? '✓ 扫描完成' : '✓ 无新增变动';
+                    setTimeout(() => {
+                        if (nextScanBtn.isConnected) {
+                            nextScanBtn.textContent = restoreLabel;
+                        }
+                    }, 2200);
+                }
+                showToast(
+                    'success',
+                    hasChanges
+                        ? `扫描完成：已更新 ${latestChars.length} 张角色卡绑定状态`
+                        : '✓ 已重新扫描，未发现新增变动',
+                );
             }
         });
 
@@ -7295,24 +8715,37 @@ function openSettingsModal() {
             data-theme-mode="${esc(m.id)}">${esc(m.label)}</button>
     `).join('');
 
+    const initialSettingsTab = ['appearance', 'display', 'behavior'].includes(settings.settingsLastTab)
+        ? settings.settingsLastTab
+        : 'appearance';
+    const quickModeButtonsHtml = [
+        { id: 'merged', label: '三合一按钮' },
+        { id: 'split', label: '分开显示' },
+        { id: 'off', label: '隐藏顶栏按钮' },
+    ].map((m) => `
+        <button type="button"
+            class="wbo-mode-chip${(settings.nativeQuickActionsMode || 'merged') === m.id ? ' is-active' : ''}"
+            data-quick-actions-mode="${esc(m.id)}">${esc(m.label)}</button>
+    `).join('');
+
     const { modal } = createSubModal(
         '显示与行为设置',
         `
             <div class="wbo-pinned-tabs-bar" id="wbo-settings-tabs">
                 <div class="wbo-tabs">
-                    <button type="button" class="wbo-tab is-active" data-settings-tab="appearance">外观与入口</button>
-                    <button type="button" class="wbo-tab" data-settings-tab="display">标题与排除</button>
-                    <button type="button" class="wbo-tab" data-settings-tab="behavior">识别与适配</button>
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'appearance' ? ' is-active' : ''}" data-settings-tab="appearance">外观与入口</button>
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'display' ? ' is-active' : ''}" data-settings-tab="display">标题与排除</button>
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'behavior' ? ' is-active' : ''}" data-settings-tab="behavior">识别与适配</button>
                 </div>
             </div>
 
             <div class="wbo-step-scroll">
-            <div class="wbo-settings-tab-pane" data-settings-pane="appearance">
+            <div class="wbo-settings-tab-pane" data-settings-pane="appearance"${initialSettingsTab === 'appearance' ? '' : ' hidden'}>
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>面板配色</span></div>
                     <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
-                    <div class="wbo-setting-inline-row">
-                        <span>明暗模式</span>
+                    <div class="wbo-setting-inline-row wbo-setting-theme-mode-row">
+                        <span class="wbo-setting-subhead">明暗模式</span>
                         <div class="wbo-mode-group">${modeButtonsHtml}</div>
                     </div>
                     <label class="wbo-check-line">
@@ -7323,23 +8756,34 @@ function openSettingsModal() {
 
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>世界书原生面板快捷按钮</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>顶栏右侧入口样式</span>
+                        <div class="wbo-mode-group">${quickModeButtonsHtml}</div>
+                    </div>
+                    <div class="wbo-split-quick-checks" id="wbo-split-quick-checks"${(settings.nativeQuickActionsMode || 'merged') === 'split' ? '' : ' hidden'}>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeComboBtn">
+                            <span>显示顶栏右侧「组合」快捷按钮</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeExcludeBtn">
+                            <span>显示顶栏右侧「排除」快捷按钮</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeEntrySearchBtn">
+                            <span>显示顶栏右侧「搜条目」快捷按钮</span>
+                        </label>
+                    </div>
+                    <div class="wbo-local-divider"></div>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="showNativeCharToggleBtn">
                         <span>显示编辑下拉框旁「角色书显隐」按钮</span>
                     </label>
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="showNativeExcludeBtn">
-                        <span>显示顶栏右侧「排除」快捷按钮</span>
-                    </label>
-                    <label class="wbo-check-line">
-                        <input type="checkbox" data-setting="showNativeEntrySearchBtn">
-                        <span>显示顶栏右侧「搜条目」快捷按钮</span>
-                    </label>
-                    <div class="wbo-subtle-tip">关闭后原生世界书面板保持零额外图标，仍可在魔棒菜单的分组管理面板中使用全部功能。</div>
+                    <div class="wbo-subtle-tip">默认「三合一按钮」仅占 1 个图标位（内含全局组合、排除分组与搜条目直达）；也可切换为分开显示或完全隐藏。</div>
                 </div>
             </div>
 
-            <div class="wbo-settings-tab-pane" data-settings-pane="display" hidden>
+            <div class="wbo-settings-tab-pane" data-settings-pane="display"${initialSettingsTab === 'display' ? '' : ' hidden'}>
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>标题显示</span></div>
                     <div class="wbo-setting-inline-row">
@@ -7418,7 +8862,7 @@ function openSettingsModal() {
                 </div>
             </div>
 
-            <div class="wbo-settings-tab-pane" data-settings-pane="behavior" hidden>
+            <div class="wbo-settings-tab-pane" data-settings-pane="behavior"${initialSettingsTab === 'behavior' ? '' : ' hidden'}>
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>识别与默认行为</span></div>
                     <label class="wbo-check-line">
@@ -7491,6 +8935,11 @@ function openSettingsModal() {
     modal.querySelectorAll('[data-settings-tab]').forEach((tabBtn) => {
         tabBtn.addEventListener('click', () => {
             const targetTab = tabBtn.getAttribute('data-settings-tab') || 'appearance';
+            if (_callbacks) {
+                const cur = _callbacks.getState().settings;
+                cur.settingsLastTab = targetTab;
+                void _callbacks.onMutation({ save: true, uiOnly: true });
+            }
             modal.querySelectorAll('[data-settings-tab]').forEach((b) => {
                 b.classList.toggle('is-active', b.getAttribute('data-settings-tab') === targetTab);
             });
@@ -7501,6 +8950,26 @@ function openSettingsModal() {
             });
             const scrollEl = modal.querySelector('.wbo-step-scroll');
             if (scrollEl) scrollEl.scrollTop = 0;
+        });
+    });
+
+    const syncQuickActionsModeUi = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        const curMode = cur.nativeQuickActionsMode || 'merged';
+        modal.querySelectorAll('[data-quick-actions-mode]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-quick-actions-mode') === curMode);
+        });
+        const splitBox = modal.querySelector('#wbo-split-quick-checks');
+        if (splitBox instanceof HTMLElement) splitBox.hidden = curMode !== 'split';
+    };
+    modal.querySelectorAll('[data-quick-actions-mode]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-quick-actions-mode');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.nativeQuickActionsMode = val;
+            syncQuickActionsModeUi();
+            await _callbacks.onMutation({ save: true });
         });
     });
 
@@ -7665,6 +9134,7 @@ function openSettingsModal() {
             syncSettingControlsInPlace(modal, _callbacks.getState().settings);
             syncExcludeChips();
             syncThemeChips();
+            syncQuickActionsModeUi();
             syncAllOpenModalsTheme();
         }
     });
@@ -7672,21 +9142,28 @@ function openSettingsModal() {
 }
 
 /**
- * Compact, theme-following quick-exclude popover anchored right inside `#WorldInfo`
- * (opened via the `排除` button on the `#WorldInfo` title bar OR right-click/long-press
- * on `#wbo-hdr-show-char`). Lets users toggle Global & Editor excluded groups on the fly
- * without ever opening Group Manager or Settings!
+ * Fixed-size, theme-following 3-in-1 Quick Hub popover anchored inside `#WorldInfo`:
+ * - Tab 1 (`presets`): switch Global Worldbook Combos in 1 click, overlay (+叠加), save current active books,
+ *   clear all globals, or 1-click undo (`↶ 撤回`).
+ * - Tab 2 (`exclude`): toggle Global & Editor default excluded groups.
+ * - Pinned bottom bar: jump directly to `分组管理` or `搜条目`.
+ *
  * @param {HTMLElement} anchorEl
+ * @param {{ forceTab?: 'presets' | 'exclude' | null }} [opts]
  */
-function openQuickExcludePopover(anchorEl) {
+function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
     const existing = document.getElementById('wbo-quick-exclude-backdrop');
     if (existing) {
+        const prevAnchorId = existing.getAttribute('data-anchor-id') || '';
+        const nextAnchorId = anchorEl?.id || '';
         existing.remove();
-        return;
+        if (prevAnchorId === nextAnchorId) return;
     }
     closeGroupVisibilityPopover();
     if (!_callbacks) return;
-    const { settings } = _callbacks.getState();
+    const { settings, classification } = _callbacks.getState();
+
+    let activeHubTab = forceTab || (settings.quickHubLastTab === 'exclude' ? 'exclude' : 'presets');
 
     const sectionOptions = [
         { id: SPECIAL_GROUPS.CHARACTER, name: '角色世界书', color: '#9b72cf' },
@@ -7714,9 +9191,10 @@ function openQuickExcludePopover(anchorEl) {
     const backdrop = document.createElement('div');
     backdrop.id = 'wbo-quick-exclude-backdrop';
     backdrop.className = 'wbo-vis-backdrop';
+    backdrop.setAttribute('data-anchor-id', anchorEl?.id || '');
 
     const pop = document.createElement('div');
-    pop.className = 'wbo-modal wbo-mp-popover wbo-qe-popover';
+    pop.className = 'wbo-modal wbo-mp-popover wbo-qe-popover wbo-qhub-popover';
     if (settings.outsideDropdownFollowHostTheme !== false) {
         pop.classList.add(detectHostThemeClass());
         pop.setAttribute('data-wbo-palette', 'host');
@@ -7725,42 +9203,71 @@ function openQuickExcludePopover(anchorEl) {
     }
 
     pop.innerHTML = `
-        <div class="wbo-qe-head">
-            <span>下拉框默认排除分组</span>
+        <div class="wbo-qe-head wbo-qhub-head">
+            <div class="wbo-qhub-tabs">
+                <button type="button" class="wbo-qhub-tab${activeHubTab === 'presets' ? ' is-active' : ''}" data-qhub-tab="presets">全局组合</button>
+                <button type="button" class="wbo-qhub-tab${activeHubTab === 'exclude' ? ' is-active' : ''}" data-qhub-tab="exclude">排除分组</button>
+            </div>
             <button type="button" class="wbo-icon-btn wbo-qe-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>
         </div>
-        <div class="wbo-qe-body">
-            <div class="wbo-exclude-block">
-                <div class="wbo-exclude-head">
-                    <span class="wbo-exclude-title-wrap">
-                        <span>全局激活框</span>
-                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
-                    </span>
-                    <span class="wbo-ai-quick-picks">
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds">仅角色书</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
+        <div class="wbo-qe-body wbo-qhub-body">
+            <div class="wbo-qhub-pane" data-qhub-pane="presets"${activeHubTab === 'presets' ? '' : ' hidden'}>
+                <div class="wbo-qhub-top-bar">
+                    <span class="wbo-qhub-status" id="wbo-qhub-status"></span>
+                    <span class="wbo-qhub-top-btns">
+                        <button type="button" class="wbo-link-btn" id="wbo-qhub-save-cur-toggle">+ 存当前</button>
+                        <button type="button" class="wbo-link-btn" id="wbo-qhub-free-new">自由新建</button>
                     </span>
                 </div>
-                <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
+                <div class="wbo-qhub-save-row" id="wbo-qhub-save-row" hidden>
+                    <input type="text" class="wbo-input" id="wbo-qhub-save-input" placeholder="组合名称，如：现代通用套" spellcheck="false">
+                    <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-qhub-save-ok">保存</button>
+                    <button type="button" class="wbo-btn" id="wbo-qhub-save-cancel">取消</button>
+                </div>
+                <div class="wbo-qhub-undo-bar" id="wbo-qhub-undo-bar" hidden>
+                    <span id="wbo-qhub-undo-text"></span>
+                    <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-qhub-undo-btn">↶ 撤回</button>
+                </div>
+                <div class="wbo-qhub-combo-list" id="wbo-qhub-combo-list"></div>
+                <div class="wbo-qhub-sub-actions">
+                    <button type="button" class="wbo-link-btn" id="wbo-qhub-open-combos">管理全部组合</button>
+                    <button type="button" class="wbo-link-btn" id="wbo-qhub-clear-all">全关全局</button>
+                </div>
             </div>
-            <div class="wbo-local-divider"></div>
-            <div class="wbo-exclude-block">
-                <div class="wbo-exclude-head">
-                    <span class="wbo-exclude-title-wrap">
-                        <span>编辑下拉框</span>
-                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
-                    </span>
-                    <span class="wbo-ai-quick-picks">
-                        <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
-                    </span>
+
+            <div class="wbo-qhub-pane" data-qhub-pane="exclude"${activeHubTab === 'exclude' ? '' : ' hidden'}>
+                <div class="wbo-exclude-block">
+                    <div class="wbo-exclude-head">
+                        <span class="wbo-exclude-title-wrap">
+                            <span>全局激活框</span>
+                            <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                        </span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds">仅角色书</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
+                        </span>
+                    </div>
+                    <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
                 </div>
-                <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
+                <div class="wbo-local-divider"></div>
+                <div class="wbo-exclude-block">
+                    <div class="wbo-exclude-head">
+                        <span class="wbo-exclude-title-wrap">
+                            <span>编辑下拉框</span>
+                            <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                        </span>
+                        <span class="wbo-ai-quick-picks">
+                            <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
+                            <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
+                        </span>
+                    </div>
+                    <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
+                </div>
             </div>
         </div>
         <div class="wbo-qe-foot">
@@ -7781,14 +9288,17 @@ function openQuickExcludePopover(anchorEl) {
     const rect = anchorEl.getBoundingClientRect();
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
-    const popW = Math.min(340, vw - 20);
+    const popW = Math.min(348, vw - 20);
     const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
     const spaceBelow = vh - rect.bottom - 14;
     const spaceAbove = rect.top - 14;
-    const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+    const openAbove = spaceBelow < 240 && spaceAbove > spaceBelow;
+    const availSpace = Math.floor((openAbove ? spaceAbove : spaceBelow) - 6);
+    const fixedH = Math.max(230, Math.min(380, availSpace));
     pop.style.width = `${Math.round(popW)}px`;
+    pop.style.height = `${fixedH}px`;
+    pop.style.maxHeight = `${fixedH}px`;
     pop.style.left = `${Math.round(left)}px`;
-    pop.style.maxHeight = `${Math.max(200, Math.min(420, Math.floor((openAbove ? spaceAbove : spaceBelow) - 6)))}px`;
     if (openAbove) {
         pop.style.bottom = `${Math.round(vh - rect.top + 6)}px`;
         pop.style.top = 'auto';
@@ -7797,7 +9307,77 @@ function openQuickExcludePopover(anchorEl) {
         pop.style.bottom = 'auto';
     }
 
-    const syncUi = () => {
+    const qhubStatusEl = pop.querySelector('#wbo-qhub-status');
+    const qhubSaveToggleBtn = pop.querySelector('#wbo-qhub-save-cur-toggle');
+    const qhubSaveRow = pop.querySelector('#wbo-qhub-save-row');
+    const qhubSaveInput = pop.querySelector('#wbo-qhub-save-input');
+    const qhubUndoBar = pop.querySelector('#wbo-qhub-undo-bar');
+    const qhubUndoText = pop.querySelector('#wbo-qhub-undo-text');
+    const qhubListEl = pop.querySelector('#wbo-qhub-combo-list');
+    const qhubClearBtn = pop.querySelector('#wbo-qhub-clear-all');
+
+    const renderQhubCombos = () => {
+        const curState = _callbacks?.getState?.() || { settings, classification };
+        const curSettings = curState.settings;
+        const curCls = curState.classification;
+        const presets = Array.isArray(curSettings.globalPresets) ? curSettings.globalPresets : [];
+        const activeGlobals = getActiveGlobalWorldSet();
+        const matched = findMatchingGlobalPreset(presets, activeGlobals);
+
+        if (qhubStatusEl) {
+            qhubStatusEl.innerHTML = matched
+                ? `已开 <b>${activeGlobals.size}</b> 本 · 生效：<b>${esc(matched.name)}</b>`
+                : `当前已开 <b>${activeGlobals.size}</b> 本全局书`;
+        }
+        if (qhubSaveToggleBtn instanceof HTMLButtonElement) {
+            qhubSaveToggleBtn.disabled = activeGlobals.size === 0;
+        }
+        if (qhubClearBtn instanceof HTMLButtonElement) {
+            qhubClearBtn.disabled = activeGlobals.size === 0;
+            qhubClearBtn.textContent = activeGlobals.size > 0 ? `全关全局 (${activeGlobals.size})` : '全关全局';
+        }
+        if (qhubUndoBar instanceof HTMLElement) {
+            qhubUndoBar.hidden = !_lastGlobalSwitchUndo;
+            if (_lastGlobalSwitchUndo && qhubUndoText) {
+                qhubUndoText.textContent = `刚执行：${_lastGlobalSwitchUndo.label}`;
+            }
+        }
+        if (!qhubListEl) return;
+        if (presets.length === 0) {
+            qhubListEl.innerHTML = `
+                <div class="wbo-empty-hint wbo-qhub-empty">
+                    暂无全局组合。<br>点「+ 存当前」保存当前已开的全局书，或点「自由新建」勾选任意世界书组合。
+                </div>
+            `;
+            return;
+        }
+        qhubListEl.innerHTML = presets.map((p) => {
+            const isMatched = matched?.id === p.id;
+            const previewTitles = p.books
+                .slice(0, 3)
+                .map((n) => curCls?.byName?.get(n)?.primaryTitle || n)
+                .join('、');
+            const moreCnt = p.books.length > 3 ? ` 等 ${p.books.length} 本` : '';
+            return `
+                <div class="wbo-qhub-combo-row${isMatched ? ' is-active' : ''}">
+                    <button type="button" class="wbo-qhub-combo-main" data-qhub-apply="${esc(p.id)}" title="点击一键切换为此组合">
+                        <span class="wbo-qhub-combo-title">
+                            <span>${esc(p.name)}</span>
+                            <span class="wbo-tag">${p.books.length}本</span>
+                            ${isMatched ? '<span class="wbo-tag is-on-tag">生效</span>' : ''}
+                        </span>
+                        <span class="wbo-qhub-combo-sub">${esc(`${previewTitles}${moreCnt}`)}</span>
+                    </button>
+                    <div class="wbo-qhub-combo-acts">
+                        <button type="button" class="wbo-btn wbo-qhub-mini-btn" data-qhub-add="${esc(p.id)}" title="保留已开并叠加开启">+叠加</button>
+                        <button type="button" class="wbo-icon-btn" data-qhub-edit="${esc(p.id)}" title="编辑此组合"><i class="fa-solid fa-pen"></i></button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    };
+
+    const syncExcludeUi = () => {
         const cur = _callbacks?.getState?.()?.settings || settings;
         for (const key of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
             const set = new Set(Array.isArray(cur[key]) ? cur[key] : []);
@@ -7814,6 +9394,136 @@ function openQuickExcludePopover(anchorEl) {
             if (cntEl) cntEl.textContent = `隐藏 ${hiddenCnt} / 显示 ${sectionOptions.length - hiddenCnt} 组`;
         }
     };
+
+    renderQhubCombos();
+
+    pop.querySelectorAll('[data-qhub-tab]').forEach((tabBtn) => {
+        tabBtn.addEventListener('click', () => {
+            const nextTab = tabBtn.getAttribute('data-qhub-tab') === 'exclude' ? 'exclude' : 'presets';
+            activeHubTab = nextTab;
+            if (!forceTab && _callbacks) {
+                const cur = _callbacks.getState().settings;
+                cur.quickHubLastTab = nextTab;
+                void _callbacks.onMutation({ save: true, uiOnly: true });
+            }
+            pop.querySelectorAll('[data-qhub-tab]').forEach((b) => {
+                b.classList.toggle('is-active', b.getAttribute('data-qhub-tab') === nextTab);
+            });
+            pop.querySelectorAll('[data-qhub-pane]').forEach((pane) => {
+                if (pane instanceof HTMLElement) {
+                    pane.hidden = pane.getAttribute('data-qhub-pane') !== nextTab;
+                }
+            });
+            const bodyEl = pop.querySelector('.wbo-qhub-body');
+            if (bodyEl) bodyEl.scrollTop = 0;
+        });
+    });
+
+    qhubSaveToggleBtn?.addEventListener('click', () => {
+        if (!(qhubSaveRow instanceof HTMLElement)) return;
+        const willShow = qhubSaveRow.hidden;
+        qhubSaveRow.hidden = !willShow;
+        if (willShow && qhubSaveInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
+            qhubSaveInput.focus();
+        }
+    });
+    pop.querySelector('#wbo-qhub-save-cancel')?.addEventListener('click', () => {
+        if (qhubSaveRow instanceof HTMLElement) qhubSaveRow.hidden = true;
+    });
+    const confirmQuickSaveCurrent = async () => {
+        if (!_callbacks) return;
+        const cur = _callbacks.getState().settings;
+        const activeGlobals = getActiveGlobalWorldSet();
+        const name = qhubSaveInput instanceof HTMLInputElement ? qhubSaveInput.value.trim() : '';
+        const res = upsertGlobalPreset(cur, { name, books: activeGlobals });
+        if (!res.ok) {
+            showToast('warning', res.error || '保存失败');
+            return;
+        }
+        if (qhubSaveInput instanceof HTMLInputElement) qhubSaveInput.value = '';
+        if (qhubSaveRow instanceof HTMLElement) qhubSaveRow.hidden = true;
+        await _callbacks.onMutation({ save: true, uiOnly: true });
+        syncNativeQuickComboTitles();
+        syncManagerComboStripUi();
+        renderQhubCombos();
+        showToast('success', `已保存全局组合「${res.preset?.name}」（${activeGlobals.size} 本）`);
+    };
+    pop.querySelector('#wbo-qhub-save-ok')?.addEventListener('click', () => { void confirmQuickSaveCurrent(); });
+    bindImeSafeEnter(qhubSaveInput, () => { void confirmQuickSaveCurrent(); });
+
+    pop.querySelector('#wbo-qhub-free-new')?.addEventListener('click', () => {
+        closeGroupVisibilityPopover();
+        openGlobalCombosModal({ initialMode: 'create' });
+    });
+    pop.querySelector('#wbo-qhub-open-combos')?.addEventListener('click', () => {
+        closeGroupVisibilityPopover();
+        openGlobalCombosModal();
+    });
+    qhubClearBtn?.addEventListener('click', () => {
+        const activeGlobals = getActiveGlobalWorldSet();
+        if (activeGlobals.size === 0) return;
+        const sw = executeGlobalBooksSwitch([], {
+            mode: 'replace',
+            label: `全关 (${activeGlobals.size}本)`,
+        });
+        if (sw.ok) {
+            renderQhubCombos();
+            showToast('info', `已关闭全部 ${sw.prevActive.length} 本全局世界书`);
+        }
+    });
+    pop.querySelector('#wbo-qhub-undo-btn')?.addEventListener('click', () => {
+        if (!_lastGlobalSwitchUndo) return;
+        const snap = _lastGlobalSwitchUndo;
+        _lastGlobalSwitchUndo = null;
+        const sw = executeGlobalBooksSwitch(snap.prevBooks, { mode: 'replace', recordUndo: false });
+        if (sw.ok) {
+            renderQhubCombos();
+            showToast('info', `已撤回，恢复 ${sw.nextActive.length} 本全局世界书`);
+        }
+    });
+    qhubListEl?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (!target || !_callbacks) return;
+        const cur = _callbacks.getState().settings;
+        const applyBtn = target.closest('[data-qhub-apply]');
+        if (applyBtn) {
+            const id = applyBtn.getAttribute('data-qhub-apply') || '';
+            const preset = (cur.globalPresets || []).find((p) => p.id === id);
+            if (preset) {
+                const sw = executeGlobalBooksSwitch(preset.books, {
+                    mode: 'replace',
+                    label: `启用「${preset.name}」`,
+                });
+                if (sw.ok) {
+                    renderQhubCombos();
+                    showToast('success', `已切换至「${preset.name}」（共开启 ${sw.nextActive.length} 本）`);
+                }
+            }
+            return;
+        }
+        const addBtn = target.closest('[data-qhub-add]');
+        if (addBtn) {
+            const id = addBtn.getAttribute('data-qhub-add') || '';
+            const preset = (cur.globalPresets || []).find((p) => p.id === id);
+            if (preset) {
+                const sw = executeGlobalBooksSwitch(preset.books, {
+                    mode: 'add',
+                    label: `叠加「${preset.name}」`,
+                });
+                if (sw.ok) {
+                    renderQhubCombos();
+                    showToast('success', `已叠加开启「${preset.name}」（共 ${sw.nextActive.length} 本）`);
+                }
+            }
+            return;
+        }
+        const editBtn = target.closest('[data-qhub-edit]');
+        if (editBtn) {
+            const id = editBtn.getAttribute('data-qhub-edit') || '';
+            closeGroupVisibilityPopover();
+            openGlobalCombosModal({ editPresetId: id });
+        }
+    });
 
     pop.addEventListener('click', (ev) => ev.stopPropagation());
     pop.querySelector('.wbo-qe-close')?.addEventListener('click', closeGroupVisibilityPopover);
@@ -7839,7 +9549,7 @@ function openQuickExcludePopover(anchorEl) {
                     (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
                     (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
             }
-            syncUi();
+            syncExcludeUi();
             await _callbacks.onMutation({ save: true });
         });
     });
@@ -7870,7 +9580,7 @@ function openQuickExcludePopover(anchorEl) {
             cur.hideCharBooksByDefault =
                 (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
                 (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
-            syncUi();
+            syncExcludeUi();
             await _callbacks.onMutation({ save: true });
         });
     });
@@ -7883,6 +9593,10 @@ function openQuickExcludePopover(anchorEl) {
         closeGroupVisibilityPopover();
         openEntrySearchModal('');
     });
+}
+
+function openQuickExcludePopover(anchorEl) {
+    openQuickHubPopover(anchorEl, { forceTab: 'exclude' });
 }
 
 /**
@@ -8147,6 +9861,13 @@ function openBookEntryBrowserModal(bookMetaOrName, { initialUid = null, stack = 
             cur.entryEditorMonoFont = Boolean(nextMono);
             void _callbacks.onMutation({ save: true, uiOnly: true });
         },
+        getTallMode: () => Boolean(_callbacks?.getState?.()?.settings?.entryEditorTall),
+        onToggleTallMode: (nextTall) => {
+            if (!_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.entryEditorTall = Boolean(nextTall);
+            void _callbacks.onMutation({ save: true, uiOnly: true });
+        },
         onEntryMutated: ({ worldName: mutatedWorld }) => {
             _previewCache.delete(mutatedWorld);
             const activeCtrl = _activePreviewControllers.get(mutatedWorld);
@@ -8202,6 +9923,9 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
             .filter((s) => (s.books?.length || 0) > 0)
             .map((s) => ({ value: s.id, label: `仅「${s.name}」 (${s.books.length} 本)` })),
     ];
+    const validScopeSet = new Set(scopeOptions.map((o) => o.value));
+    const effectiveScope = validScopeSet.has(settings.entrySearchScope) ? settings.entrySearchScope : '__nonchar__';
+    const effectiveQuery = initialQuery !== '' ? initialQuery : _lastEntrySearchQuery;
 
     const { overlay, modal } = createSubModal(
         '搜索世界书条目',
@@ -8210,7 +9934,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
                 <div class="wbo-es-top">
                     <div class="wbo-search-wrap wbo-es-input-wrap">
                         <i class="fa-solid fa-magnifying-glass"></i>
-                        <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(initialQuery)}" placeholder="输入关键词，如：第二人称、防抢话" autocomplete="off" spellcheck="false">
+                        <input type="search" class="wbo-search-input" id="wbo-es-query" value="${esc(effectiveQuery)}" placeholder="输入关键词，如：第二人称、防抢话" autocomplete="off" spellcheck="false">
                     </div>
                     <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-es-run-btn">
                         <i class="fa-solid fa-magnifying-glass"></i> 搜索
@@ -8224,19 +9948,19 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
 
                 <div class="wbo-es-controls">
                     <select class="wbo-select wbo-es-scope" id="wbo-es-scope">
-                        ${scopeOptions.map((o) => `<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('')}
+                        ${scopeOptions.map((o) => `<option value="${esc(o.value)}"${o.value === effectiveScope ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
                     </select>
                     <div class="wbo-es-checks">
                         <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-es-in-title" checked>
+                            <input type="checkbox" id="wbo-es-in-title"${settings.entrySearchInTitle !== false ? ' checked' : ''}>
                             <span>标题与触发词</span>
                         </label>
                         <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-es-in-content" checked>
+                            <input type="checkbox" id="wbo-es-in-content"${settings.entrySearchInContent !== false ? ' checked' : ''}>
                             <span>正文内容</span>
                         </label>
                         <label class="wbo-check-line">
-                            <input type="checkbox" id="wbo-es-inc-disabled" checked>
+                            <input type="checkbox" id="wbo-es-inc-disabled"${settings.entrySearchIncludeDisabled !== false ? ' checked' : ''}>
                             <span>含已禁用</span>
                         </label>
                         <label class="wbo-check-line">
@@ -8276,6 +10000,44 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     const progFill = modal.querySelector('#wbo-es-progress-fill');
     const progText = modal.querySelector('#wbo-es-progress-text');
     const resultsEl = modal.querySelector('#wbo-es-results');
+
+    // Persist search scope & option checkboxes permanently; remember typed query in session
+    queryInput?.addEventListener('input', () => {
+        if (queryInput instanceof HTMLInputElement) {
+            _lastEntrySearchQuery = queryInput.value;
+        }
+    });
+    scopeSelect?.addEventListener('change', () => {
+        if (scopeSelect instanceof HTMLSelectElement) {
+            settings.entrySearchScope = scopeSelect.value || '__nonchar__';
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+    inTitleCb?.addEventListener('change', () => {
+        if (inTitleCb instanceof HTMLInputElement) {
+            settings.entrySearchInTitle = inTitleCb.checked;
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+    inContentCb?.addEventListener('change', () => {
+        if (inContentCb instanceof HTMLInputElement) {
+            settings.entrySearchInContent = inContentCb.checked;
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+    incDisabledCb?.addEventListener('change', () => {
+        if (incDisabledCb instanceof HTMLInputElement) {
+            settings.entrySearchIncludeDisabled = incDisabledCb.checked;
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
+    splitSpacesCb?.addEventListener('change', () => {
+        if (splitSpacesCb instanceof HTMLInputElement) {
+            settings.mgrSearchSplitSpaces = splitSpacesCb.checked;
+            syncManagerSearchBarUi();
+            void _callbacks?.onMutation({ save: true, uiOnly: true });
+        }
+    });
 
     const renderHistoryChips = () => {
         if (!(historyRow instanceof HTMLElement)) return;
@@ -8327,6 +10089,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
         const pickBtn = target.closest('[data-es-hist-pick]');
         if (pickBtn) {
             const term = pickBtn.getAttribute('data-es-hist-pick') || '';
+            _lastEntrySearchQuery = term;
             if (queryInput instanceof HTMLInputElement) queryInput.value = term;
             void runSearch();
         }
@@ -8528,6 +10291,7 @@ export function teardownPanels() {
     _charBtnWidthObserver?.disconnect();
     _charBtnWidthObserver = null;
     document.getElementById(PROMPT_OVERLAY_ID)?.remove();
+    closeFloatingGroupManager();
     closeSubModal({ all: true });
     closeManagerModal();
     document.getElementById(CHAR_TOGGLE_BTN_ID)?.remove();

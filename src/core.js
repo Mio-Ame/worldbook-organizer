@@ -86,10 +86,10 @@ export const LOCAL_ORGANIZE_CATEGORIES = Object.freeze([
     },
     {
         id: 'scene',
-        group: '场景与互动',
+        group: '剧情与互动',
         defaultEnabled: false,
-        prefixRegex: /^(?:场景|约会|互动|剧情|日常|事件)$/i,
-        test: (s) => /(?:约会|恋爱|互动|日常|情景|场景|流程|指南|攻略|相处|暧昧|剧情推进)/i.test(s),
+        prefixRegex: /^(?:场景|剧情|事件|互动|日常|跑团|副本)$/i,
+        test: (s) => /(?:剧情|互动|日常|情景|场景|事件|流程|指南|攻略|跑团|副本|相处|约会|恋爱|剧情推进)/i.test(s),
     },
     {
         id: 'theater',
@@ -162,17 +162,38 @@ export const DEFAULT_SETTINGS = Object.freeze({
     showNativeOptgroups: true,
     pinCurrentChatCharBookInEditor: true,
     showNativeCharToggleBtn: true,
+    nativeQuickActionsMode: 'merged', // 'merged' | 'split' | 'off'
+    showNativeComboBtn: true,
     showNativeExcludeBtn: true,
     showNativeEntrySearchBtn: true,
+    quickHubLastTab: 'presets',       // 'presets' | 'exclude'
+    settingsLastTab: 'appearance',    // 'appearance' | 'display' | 'behavior'
     globalHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     editorHiddenGroupIds: [SPECIAL_GROUPS.CHARACTER],
     localOrganizeCategories: ['user_persona', 'style', 'nsfw'],
+    localOrganizeScope: 'ungrouped',  // 'ungrouped' | 'nonchar'
+    localOrganizeUseAnyPrefix: false,
+    localOrganizeCleanTitles: false,
+    localOrganizeCustomRules: [],     // Array<{ kw: string, group: string }>
+    organizeLastTab: 'local',         // 'local' | 'organize'
+    aiOrganizeScope: 'ungrouped',     // 'ungrouped' | 'nonchar'
+    aiOrganizePresets: null,          // null (use built-in defaults) | Array<{ id, label, cat, text }>
+    aiOrganizePresetIds: [],
+    aiOrganizeCustomRule: '',
+    aiOrganizeIncludeClues: false,
+    aiOrganizeClueCount: 5,
+    aiOrganizeSnippetLen: 50,
     entrySearchHistory: [],
+    entrySearchScope: '__nonchar__',
+    entrySearchInTitle: true,
+    entrySearchInContent: true,
+    entrySearchIncludeDisabled: true,
     mgrSearchInBookName: true,
     mgrSearchInCharName: true,
     mgrSearchInEntries: false,
     mgrSearchSplitSpaces: false,
     entryEditorMonoFont: false,
+    entryEditorTall: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
@@ -183,6 +204,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     activeApiChannelId: '',
     apiChannels: [], // Array<{ id, name, baseUrl, apiKey, model }>
     groups: [],
+    globalPresets: [], // Array<{ id: string, name: string, books: string[], updatedAt: number }>
+    bookOrders: {}, // Record<groupId, string[]> custom intra-group drag-order
     assignments: {},
     aliases: {},
     notes: {},
@@ -238,7 +261,7 @@ export function normalizeSettings(raw) {
             collapsed: Boolean(g.collapsed),
         }));
 
-    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed']) {
+    for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed', 'bookOrders']) {
         if (!merged[dictKey] || typeof merged[dictKey] !== 'object' || Array.isArray(merged[dictKey])) {
             merged[dictKey] = {};
         }
@@ -312,6 +335,124 @@ export function normalizeSettings(raw) {
     }
 
     merged.entryEditorMonoFont = Boolean(merged.entryEditorMonoFont);
+    merged.entryEditorTall = Boolean(merged.entryEditorTall);
+    merged.groupPanelExpanded = Boolean(merged.groupPanelExpanded);
+    merged.showNativeComboBtn = merged.showNativeComboBtn !== false;
+    merged.entrySearchInTitle = merged.entrySearchInTitle !== false;
+    merged.entrySearchInContent = merged.entrySearchInContent !== false;
+    merged.entrySearchIncludeDisabled = merged.entrySearchIncludeDisabled !== false;
+    merged.localOrganizeUseAnyPrefix = Boolean(merged.localOrganizeUseAnyPrefix);
+    merged.localOrganizeCleanTitles = Boolean(merged.localOrganizeCleanTitles);
+    merged.aiOrganizeIncludeClues = Boolean(merged.aiOrganizeIncludeClues);
+
+    if (
+        !Object.hasOwn(source, 'nativeQuickActionsMode') &&
+        source.showNativeExcludeBtn === false &&
+        source.showNativeEntrySearchBtn === false
+    ) {
+        merged.nativeQuickActionsMode = 'off';
+    } else if (!['merged', 'split', 'off'].includes(merged.nativeQuickActionsMode)) {
+        merged.nativeQuickActionsMode = DEFAULT_SETTINGS.nativeQuickActionsMode;
+    }
+
+    if (!['presets', 'exclude'].includes(merged.quickHubLastTab)) {
+        merged.quickHubLastTab = DEFAULT_SETTINGS.quickHubLastTab;
+    }
+    if (!['appearance', 'display', 'behavior'].includes(merged.settingsLastTab)) {
+        merged.settingsLastTab = DEFAULT_SETTINGS.settingsLastTab;
+    }
+    if (!['local', 'organize'].includes(merged.organizeLastTab)) {
+        merged.organizeLastTab = DEFAULT_SETTINGS.organizeLastTab;
+    }
+    if (!['ungrouped', 'nonchar'].includes(merged.localOrganizeScope)) {
+        merged.localOrganizeScope = DEFAULT_SETTINGS.localOrganizeScope;
+    }
+    if (!['ungrouped', 'nonchar'].includes(merged.aiOrganizeScope)) {
+        merged.aiOrganizeScope = DEFAULT_SETTINGS.aiOrganizeScope;
+    }
+
+    const rawEsScope = String(merged.entrySearchScope ?? '').trim();
+    merged.entrySearchScope = rawEsScope || '__nonchar__';
+
+    if (!Array.isArray(merged.localOrganizeCustomRules)) {
+        merged.localOrganizeCustomRules = [];
+    } else {
+        merged.localOrganizeCustomRules = merged.localOrganizeCustomRules
+            .filter((r) => r && typeof r === 'object')
+            .map((r) => ({
+                kw: String(r.kw ?? '').trim(),
+                group: String(r.group ?? '').trim(),
+            }))
+            .filter((r) => r.kw && r.group)
+            .slice(0, 100);
+    }
+
+    const clueCnt = Number(merged.aiOrganizeClueCount);
+    merged.aiOrganizeClueCount = Number.isFinite(clueCnt)
+        ? Math.max(1, Math.min(15, Math.round(clueCnt)))
+        : DEFAULT_SETTINGS.aiOrganizeClueCount;
+
+    const snipLen = Number(merged.aiOrganizeSnippetLen);
+    merged.aiOrganizeSnippetLen = [0, 50, 120].includes(snipLen)
+        ? snipLen
+        : DEFAULT_SETTINGS.aiOrganizeSnippetLen;
+
+    merged.aiOrganizeCustomRule = typeof merged.aiOrganizeCustomRule === 'string'
+        ? merged.aiOrganizeCustomRule.slice(0, 2000)
+        : '';
+
+    if (!Array.isArray(merged.aiOrganizePresetIds)) {
+        merged.aiOrganizePresetIds = [];
+    } else {
+        merged.aiOrganizePresetIds = [
+            ...new Set(merged.aiOrganizePresetIds.map((id) => String(id ?? '').trim()).filter(Boolean)),
+        ].slice(0, 24);
+    }
+
+    if (Array.isArray(source.aiOrganizePresets)) {
+        const validPresetCats = new Set(['group', 'name', 'ver', 'author', 'custom']);
+        const seenPresetIds = new Set();
+        merged.aiOrganizePresets = source.aiOrganizePresets
+            .filter((p) => p && typeof p === 'object')
+            .map((p, idx) => {
+                let id = String(p.id ?? '').trim() || `aip_${idx + 1}`;
+                while (seenPresetIds.has(id)) id = `${id}_${idx + 1}`;
+                seenPresetIds.add(id);
+                const cat = validPresetCats.has(p.cat) ? p.cat : 'custom';
+                return {
+                    id,
+                    label: String(p.label ?? '').trim(),
+                    cat,
+                    text: String(p.text ?? '').trim(),
+                };
+            })
+            .filter((p) => p.label && p.text);
+    } else {
+        merged.aiOrganizePresets = null;
+    }
+
+    if (!Array.isArray(merged.globalPresets)) {
+        merged.globalPresets = [];
+    } else {
+        const seenComboIds = new Set();
+        merged.globalPresets = merged.globalPresets
+            .filter((c) => c && typeof c === 'object')
+            .map((c, idx) => {
+                let id = String(c.id ?? '').trim() || `cmb_${idx + 1}`;
+                while (seenComboIds.has(id)) id = `${id}_${idx + 1}`;
+                seenComboIds.add(id);
+                const books = Array.isArray(c.books)
+                    ? [...new Set(c.books.map((b) => String(b ?? '').trim()).filter(Boolean))]
+                    : [];
+                const updatedAt = Number.isFinite(Number(c.updatedAt)) ? Number(c.updatedAt) : 0;
+                return {
+                    id,
+                    name: String(c.name ?? '未命名组合').trim() || '未命名组合',
+                    books,
+                    updatedAt,
+                };
+            });
+    }
 
     const validGroupIds = new Set(merged.groups.map((g) => g.id));
     const specialSet = new Set(Object.values(SPECIAL_GROUPS));
@@ -375,6 +516,16 @@ export function normalizeSettings(raw) {
             ? [...new Set(rawList.filter((id) => typeof id === 'string' && allowedSectionIds.has(id)))]
             : [...defaultHiddenList];
     }
+
+    const cleanedBookOrders = {};
+    for (const [gid, arr] of Object.entries(merged.bookOrders || {})) {
+        if (!allowedSectionIds.has(gid) || !Array.isArray(arr)) continue;
+        const cleanArr = [...new Set(arr.map((n) => String(n ?? '').trim()).filter(Boolean))];
+        if (cleanArr.length > 0) {
+            cleanedBookOrders[gid] = cleanArr;
+        }
+    }
+    merged.bookOrders = cleanedBookOrders;
 
     return merged;
 }
@@ -444,6 +595,85 @@ export function reorderSection(settings, draggedId, targetId, position = 'before
     settings.sectionOrder = order;
     const groupById = new Map((settings.groups || []).map((g) => [g.id, g]));
     settings.groups = order.filter((id) => groupById.has(id)).map((id) => groupById.get(id));
+    return true;
+}
+
+/**
+ * Reorder a worldbook within a group (`settings.bookOrders[groupId]`),
+ * seeding from `currentOrderedNames` when no custom order exists yet.
+ *
+ * @param {Record<string, any>} settings
+ * @param {string} groupId
+ * @param {string} draggedBookName
+ * @param {string} targetBookName
+ * @param {'before' | 'after'} [position='before']
+ * @param {string[] | null} [currentOrderedNames=null]
+ * @returns {boolean}
+ */
+export function reorderBookInGroup(
+    settings,
+    groupId,
+    draggedBookName,
+    targetBookName,
+    position = 'before',
+    currentOrderedNames = null,
+) {
+    const cleanGid = String(groupId ?? '').trim();
+    const cleanDragged = String(draggedBookName ?? '').trim();
+    const cleanTarget = String(targetBookName ?? '').trim();
+    if (!settings || !cleanGid || !cleanDragged || !cleanTarget || cleanDragged === cleanTarget) {
+        return false;
+    }
+
+    if (!settings.bookOrders || typeof settings.bookOrders !== 'object' || Array.isArray(settings.bookOrders)) {
+        settings.bookOrders = {};
+    }
+
+    const existing = Array.isArray(settings.bookOrders[cleanGid])
+        ? [...new Set(settings.bookOrders[cleanGid].map((n) => String(n ?? '').trim()).filter(Boolean))]
+        : [];
+    const baseSet = new Set(existing);
+    const seed = Array.isArray(currentOrderedNames)
+        ? currentOrderedNames.map((n) => String(n ?? '').trim()).filter(Boolean)
+        : [];
+    const order = [...existing];
+    for (const name of seed) {
+        if (!baseSet.has(name)) {
+            baseSet.add(name);
+            order.push(name);
+        }
+    }
+    if (!baseSet.has(cleanDragged)) {
+        baseSet.add(cleanDragged);
+        order.push(cleanDragged);
+    }
+    if (!baseSet.has(cleanTarget)) {
+        baseSet.add(cleanTarget);
+        order.push(cleanTarget);
+    }
+
+    const prevSnapshot = [...order];
+    const fromIdx = order.indexOf(cleanDragged);
+    if (fromIdx < 0) return false;
+    order.splice(fromIdx, 1);
+    const targetIdx = order.indexOf(cleanTarget);
+    if (targetIdx < 0) return false;
+    const insertIdx = position === 'after' ? targetIdx + 1 : targetIdx;
+    order.splice(insertIdx, 0, cleanDragged);
+
+    const unchanged = order.length === prevSnapshot.length && order.every((n, i) => n === prevSnapshot[i]);
+    if (unchanged) return false;
+
+    for (const [otherGid, list] of Object.entries(settings.bookOrders)) {
+        if (otherGid === cleanGid || !Array.isArray(list)) continue;
+        const filtered = list.filter((n) => String(n ?? '').trim() !== cleanDragged);
+        if (filtered.length !== list.length) {
+            if (filtered.length > 0) settings.bookOrders[otherGid] = filtered;
+            else delete settings.bookOrders[otherGid];
+        }
+    }
+
+    settings.bookOrders[cleanGid] = order;
     return true;
 }
 
@@ -1270,9 +1500,25 @@ export function classifyWorldbooks({
         if (a.isPinned !== b.isPinned) return a.isPinned ? -1 : 1;
         return compareZhCn(a.primaryTitle, b.primaryTitle);
     };
-    for (const bucket of customBuckets.values()) bucket.sort(sortByPinnedAndTitle);
-    ungroupedBooks.sort(sortByPinnedAndTitle);
-    characterBooks.sort(sortByPinnedAndTitle);
+    const sortBucketForGroup = (bucket, groupId) => {
+        const customArr = Array.isArray(cfg.bookOrders?.[groupId]) ? cfg.bookOrders[groupId] : null;
+        if (!customArr || customArr.length === 0) {
+            bucket.sort(sortByPinnedAndTitle);
+            return;
+        }
+        const orderMap = new Map(customArr.map((name, i) => [name, i]));
+        bucket.sort((a, b) => {
+            const ia = orderMap.get(a.realName);
+            const ib = orderMap.get(b.realName);
+            if (ia !== undefined && ib !== undefined) return ia - ib;
+            if (ia !== undefined && ib === undefined) return b.isPinned ? 1 : -1;
+            if (ia === undefined && ib !== undefined) return a.isPinned ? -1 : 1;
+            return sortByPinnedAndTitle(a, b);
+        });
+    };
+    for (const [gid, bucket] of customBuckets.entries()) sortBucketForGroup(bucket, gid);
+    sortBucketForGroup(ungroupedBooks, SPECIAL_GROUPS.UNGROUPED);
+    sortBucketForGroup(characterBooks, SPECIAL_GROUPS.CHARACTER);
     pinnedBooks.sort((a, b) => compareZhCn(a.primaryTitle, b.primaryTitle));
 
     const customGroups = cfg.groups.map((g) => ({
@@ -1528,6 +1774,21 @@ export function cleanupDeletedWorldSettings(settings, deletedNames = []) {
     if (Array.isArray(settings.pinnedBooks)) {
         settings.pinnedBooks = settings.pinnedBooks.filter((n) => !removed.has(String(n ?? '').trim()));
     }
+    if (Array.isArray(settings.globalPresets)) {
+        for (const preset of settings.globalPresets) {
+            if (preset && Array.isArray(preset.books)) {
+                preset.books = preset.books.filter((n) => !removed.has(String(n ?? '').trim()));
+            }
+        }
+    }
+    if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+        for (const [gid, arr] of Object.entries(settings.bookOrders)) {
+            if (!Array.isArray(arr)) continue;
+            const next = arr.filter((n) => !removed.has(String(n ?? '').trim()));
+            if (next.length > 0) settings.bookOrders[gid] = next;
+            else delete settings.bookOrders[gid];
+        }
+    }
 }
 
 /**
@@ -1558,6 +1819,27 @@ export function pruneStaleWorldbookSettings(settings, liveWorldNamesSet) {
         if (nextPinned.length !== settings.pinnedBooks.length) {
             settings.pinnedBooks = nextPinned;
             changed = true;
+        }
+    }
+    if (Array.isArray(settings.globalPresets)) {
+        for (const preset of settings.globalPresets) {
+            if (!preset || !Array.isArray(preset.books)) continue;
+            const nextBooks = preset.books.filter((name) => liveWorldNamesSet.has(String(name ?? '').trim()));
+            if (nextBooks.length !== preset.books.length) {
+                preset.books = nextBooks;
+                changed = true;
+            }
+        }
+    }
+    if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+        for (const [gid, arr] of Object.entries(settings.bookOrders)) {
+            if (!Array.isArray(arr)) continue;
+            const next = arr.filter((name) => liveWorldNamesSet.has(String(name ?? '').trim()));
+            if (next.length !== arr.length) {
+                if (next.length > 0) settings.bookOrders[gid] = next;
+                else delete settings.bookOrders[gid];
+                changed = true;
+            }
         }
     }
     return changed;
@@ -1683,19 +1965,19 @@ export const AI_ORGANIZE_CATEGORY_PRESETS = Object.freeze([
         id: 'smart_free',
         label: '智能自由分类',
         cat: 'group',
-        text: '根据每本世界书的实际用途自然归纳为 4~7 个清晰分组，名称简洁直观，不强行套用固定模板。',
+        text: '根据每本世界书的实际内容自然归纳为 4~7 个清晰分组，名称简洁直观，不强行套用固定模板。',
     },
     {
         id: 'by_st_purpose',
-        label: '按酒馆用途',
+        label: '按功能用途',
         cat: 'group',
-        text: '优先按酒馆常用用途归类（如文风、缝合、场景与互动、世界观、小剧场、通用素材）。注意「缝合」指用于缝合进预设的规则指令与功能补丁；约会流程与日常互动归入「场景与互动」。',
+        text: '优先按在酒馆中的实际功能归类（如文风叙事、规则补丁/缝合、世界观背景、剧情与玩法、状态栏/前端、人设与素材），只建当前实际用得到的分组。',
     },
     {
         id: 'compact_3_5',
         label: '精简 3~5 大类',
         cat: 'group',
-        text: '尽量合并归类，总分组数量控制在 3~5 个高频大类内，减少翻找层级。',
+        text: '尽量合并同类项，总分组数量控制在 3~5 个高频大类内，减少翻找层级。',
     },
     {
         id: 'reuse_existing',
@@ -1757,8 +2039,98 @@ export const AI_ORGANIZE_NAMING_PRESETS = Object.freeze([
 ]);
 
 /**
+ * Resolve the effective AI Organize presets (user-customized list if saved, otherwise built-in defaults).
+ * @param {Record<string, any> | null | undefined} settings
+ */
+export function getEffectiveAiOrganizePresets(settings) {
+    const isCustomized = Array.isArray(settings?.aiOrganizePresets);
+    const all = isCustomized
+        ? settings.aiOrganizePresets.map((p) => ({ ...p }))
+        : [...AI_ORGANIZE_CATEGORY_PRESETS, ...AI_ORGANIZE_NAMING_PRESETS].map((p) => ({ ...p }));
+    return {
+        isCustomized,
+        all,
+        categoryPresets: all.filter((p) => p.cat === 'group'),
+        namingPresets: all.filter((p) => p.cat !== 'group'),
+    };
+}
+
+/**
+ * Create or update a user-customizable AI Organize preset in `settings.aiOrganizePresets`.
+ * @param {Record<string, any>} settings
+ * @param {{ id?: string | null, label: string, cat?: string, text: string }} input
+ */
+export function upsertAiOrganizePreset(settings, { id = null, label, cat = 'group', text } = {}) {
+    if (!settings) return { ok: false, error: '配置未就绪' };
+    const cleanLabel = String(label ?? '').trim();
+    const cleanText = String(text ?? '').trim();
+    if (!cleanLabel) return { ok: false, error: '请输入预设名称' };
+    if (!cleanText) return { ok: false, error: '请输入预设提示词内容' };
+
+    const validCats = new Set(['group', 'name', 'ver', 'author', 'custom']);
+    const cleanCat = validCats.has(cat) ? cat : 'custom';
+    const current = getEffectiveAiOrganizePresets(settings).all;
+    const targetId = id ? String(id).trim() : '';
+
+    const dup = current.find(
+        (p) => p.id !== targetId && p.label.trim().toLowerCase() === cleanLabel.toLowerCase(),
+    );
+    if (dup) {
+        return { ok: false, error: `已存在同名预设「${cleanLabel}」` };
+    }
+
+    if (targetId) {
+        const idx = current.findIndex((p) => p.id === targetId);
+        if (idx >= 0) {
+            current[idx] = { ...current[idx], label: cleanLabel, cat: cleanCat, text: cleanText };
+            settings.aiOrganizePresets = current;
+            return { ok: true, created: false, preset: current[idx] };
+        }
+    }
+
+    const taken = new Set(current.map((p) => p.id));
+    let newId = '';
+    do {
+        newId = `aip_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    } while (taken.has(newId));
+
+    const created = { id: newId, label: cleanLabel, cat: cleanCat, text: cleanText };
+    current.push(created);
+    settings.aiOrganizePresets = current;
+    return { ok: true, created: true, preset: created };
+}
+
+/**
+ * Delete an AI Organize preset by ID.
+ * @param {Record<string, any>} settings
+ * @param {string} presetId
+ * @returns {boolean}
+ */
+export function deleteAiOrganizePreset(settings, presetId) {
+    const cleanId = String(presetId ?? '').trim();
+    if (!settings || !cleanId) return false;
+    const current = getEffectiveAiOrganizePresets(settings).all;
+    const next = current.filter((p) => p.id !== cleanId);
+    if (next.length === current.length) return false;
+    settings.aiOrganizePresets = next;
+    if (Array.isArray(settings.aiOrganizePresetIds)) {
+        settings.aiOrganizePresetIds = settings.aiOrganizePresetIds.filter((id) => id !== cleanId);
+    }
+    return true;
+}
+
+/**
+ * Restore AI Organize presets back to the built-in universal defaults.
+ * @param {Record<string, any>} settings
+ */
+export function resetAiOrganizePresets(settings) {
+    if (!settings) return;
+    settings.aiOrganizePresets = null;
+}
+
+/**
  * Build a compact, strict JSON-only prompt for AI worldbook naming & grouping.
- * Uses neutral file-cataloging framing, SillyTavern domain taxonomy guidance,
+ * Uses neutral file-cataloging framing, universal SillyTavern domain terminology,
  * and optional user feedback for partial re-organization of dissatisfied items.
  *
  * @param {object} params
@@ -1767,6 +2139,7 @@ export const AI_ORGANIZE_NAMING_PRESETS = Object.freeze([
  * @param {string} [params.customInstruction='']
  * @param {string} [params.categoryPreset='']
  * @param {string} [params.namingPreset='']
+ * @param {Array<{ id: string, label: string, text: string }> | null} [params.presetsPool=null]
  * @param {{
  *   reason?: string,
  *   previousProposals?: Array<{ realName: string, alias?: string, group?: string, note?: string }>,
@@ -1780,23 +2153,24 @@ export function buildAiOrganizePrompt({
     customInstruction = '',
     categoryPreset = '',
     namingPreset = '',
+    presetsPool = null,
     feedback = null,
 }) {
     const systemPrompt = [
-        '你是本地文档资料库（SillyTavern 角色扮演世界书）的文件目录归类助手。',
+        '你是本地文档资料库（SillyTavern 世界书）的文件目录归类助手。',
         '请仅做客观的文件名规范化与目录归类，不要展开或评价任何文件内容。',
         '根据输入的 realName 以及可选的条目摘要（clues），为每本资料建议：',
         '1. alias：更干净、简洁、统一风格的中文显示名（虚拟别名，不会修改原文件名，去掉冗余版本号/装饰符号/广告词，保留核心主题与必要区分）。',
-        '2. group：简短清晰的分类分组名（优先复用已有分组名，总分组数尽量精简在 3~8 个内）。',
+        '2. group：简短清晰的分类分组名（优先服从用户的额外偏好与已有分组习惯，不生搬硬套无关分类，总分组数尽量精简在 3~8 个内）。',
         '3. note：可选，极简用途说明（不超过 20 字）；只写实际用途，禁止写“分组分析来自…”“根据书名归类”“归入某分组”等元分析废话；若标题本身已足够明确可直接留空 ""。',
         '',
-        '酒馆世界书常见分类维度参考（注意区分，勿混为一谈）：',
-        '- 「文风」：控制行文语气、叙事风格、描写质感、去 AI 味、对话风格、节奏等写作规范。',
-        '- 「缝合」：设计用来缝合进系统预设/指令模板的功能补丁与规则模块（如防抢话、思维链、输出格式、记忆/逻辑增强、通用规则指令等）。',
-        '- 「场景与互动」：约会场景与流程指南、恋爱/日常互动、生活情景、剧情推进模板、特定场合事件等（不要把约会指南、恋爱/日常互动流程误归入「世界观」或「角色设定」）。',
-        '- 「世界观设定」：架空历史、地理势力、时代背景、魔法/科技体系等宏观世界设定。',
-        '- 「小剧场与扩展」：随机小剧场、状态栏/前端扩展、互动小游戏等玩法组件。',
-        '- 「人设与素材」：外貌穿搭、职业生活常识、台词词库、通用素材参考等。',
+        '酒馆世界书常见术语理解参考（仅用于辅助读懂书名与摘要，请按当前书单的实际构成自然建组，勿强套不需要的组名）：',
+        '- 文风与叙事：行文笔触、叙事视角、描写质感、去 AI 味、对话风格与节奏规范等。',
+        '- 规则补丁 / 缝合：用于配合系统预设生效的指令模块与功能补丁（如防抢话、思维链、输出格式、检定/系统机制等）。',
+        '- 世界观与背景：时代历史、地理势力、力量/科技体系、副本背景等设定集。',
+        '- 剧情、事件与玩法：特定场景事件、日常或关系推进、跑团/养成机制、随机小剧场等。',
+        '- 状态栏与前端：状态面板、变量规则、界面美化组件等。',
+        '- 人设与通用素材：User 自设、NPC 群像、职业常识百科、台词词库等参考资料。',
         '',
         '严格要求：',
         '- 必须只输出一个合法 JSON 对象，不要包含任何解释文字、道歉或额外注释。',
@@ -1813,13 +2187,16 @@ export function buildAiOrganizePrompt({
     if (mergedGroups.length > 0) {
         lines.push(`当前已有/已确认可复用的分组：${mergedGroups.join('、')}`);
     }
+    const lookupPool = Array.isArray(presetsPool) && presetsPool.length > 0
+        ? presetsPool
+        : [...AI_ORGANIZE_CATEGORY_PRESETS, ...AI_ORGANIZE_NAMING_PRESETS];
     const presetParts = [];
     if (categoryPreset) {
-        const foundCat = AI_ORGANIZE_CATEGORY_PRESETS.find((p) => p.id === categoryPreset || p.label === categoryPreset);
+        const foundCat = lookupPool.find((p) => p.id === categoryPreset || p.label === categoryPreset);
         if (foundCat) presetParts.push(foundCat.text);
     }
     if (namingPreset) {
-        const foundName = AI_ORGANIZE_NAMING_PRESETS.find((p) => p.id === namingPreset || p.label === namingPreset);
+        const foundName = lookupPool.find((p) => p.id === namingPreset || p.label === namingPreset);
         if (foundName) presetParts.push(foundName.text);
     }
     const mergedInstruction = [
@@ -2142,6 +2519,38 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
                 })
                 .filter(Boolean),
         )];
+    }
+
+    if (Array.isArray(settings.globalPresets)) {
+        for (const preset of settings.globalPresets) {
+            if (!preset || !Array.isArray(preset.books)) continue;
+            preset.books = [
+                ...new Set(
+                    preset.books
+                        .map((b) => {
+                            const clean = String(b ?? '').trim();
+                            return clean === cleanOld ? cleanNew : clean;
+                        })
+                        .filter(Boolean),
+                ),
+            ];
+        }
+    }
+
+    if (settings.bookOrders && typeof settings.bookOrders === 'object') {
+        for (const [gid, arr] of Object.entries(settings.bookOrders)) {
+            if (!Array.isArray(arr)) continue;
+            settings.bookOrders[gid] = [
+                ...new Set(
+                    arr
+                        .map((b) => {
+                            const clean = String(b ?? '').trim();
+                            return clean === cleanOld ? cleanNew : clean;
+                        })
+                        .filter(Boolean),
+                ),
+            ];
+        }
     }
 }
 
@@ -2520,14 +2929,40 @@ export function exportConfigData(settings) {
             showNativeOptgroups: cfg.showNativeOptgroups,
             pinCurrentChatCharBookInEditor: cfg.pinCurrentChatCharBookInEditor,
             showNativeCharToggleBtn: cfg.showNativeCharToggleBtn,
+            nativeQuickActionsMode: cfg.nativeQuickActionsMode,
+            showNativeComboBtn: cfg.showNativeComboBtn,
             showNativeExcludeBtn: cfg.showNativeExcludeBtn,
             showNativeEntrySearchBtn: cfg.showNativeEntrySearchBtn,
             entryEditorMonoFont: cfg.entryEditorMonoFont,
+            entryEditorTall: cfg.entryEditorTall,
+            entrySearchScope: cfg.entrySearchScope,
+            entrySearchInTitle: cfg.entrySearchInTitle,
+            entrySearchInContent: cfg.entrySearchInContent,
+            entrySearchIncludeDisabled: cfg.entrySearchIncludeDisabled,
+            mgrSearchInBookName: cfg.mgrSearchInBookName,
+            mgrSearchInCharName: cfg.mgrSearchInCharName,
+            mgrSearchInEntries: cfg.mgrSearchInEntries,
+            mgrSearchSplitSpaces: cfg.mgrSearchSplitSpaces,
             globalHiddenGroupIds: cfg.globalHiddenGroupIds,
             editorHiddenGroupIds: cfg.editorHiddenGroupIds,
             localOrganizeCategories: cfg.localOrganizeCategories,
+            localOrganizeScope: cfg.localOrganizeScope,
+            localOrganizeUseAnyPrefix: cfg.localOrganizeUseAnyPrefix,
+            localOrganizeCleanTitles: cfg.localOrganizeCleanTitles,
+            localOrganizeCustomRules: cfg.localOrganizeCustomRules,
+            organizeLastTab: cfg.organizeLastTab,
+            aiOrganizeScope: cfg.aiOrganizeScope,
+            aiOrganizePresets: cfg.aiOrganizePresets,
+            aiOrganizePresetIds: cfg.aiOrganizePresetIds,
+            aiOrganizeCustomRule: cfg.aiOrganizeCustomRule,
+            aiOrganizeIncludeClues: cfg.aiOrganizeIncludeClues,
+            aiOrganizeClueCount: cfg.aiOrganizeClueCount,
+            aiOrganizeSnippetLen: cfg.aiOrganizeSnippetLen,
+            groupPanelExpanded: cfg.groupPanelExpanded,
             sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,
+            globalPresets: cfg.globalPresets,
+            bookOrders: cfg.bookOrders,
             assignments: cfg.assignments,
             aliases: cfg.aliases,
             notes: cfg.notes,
@@ -2541,7 +2976,7 @@ export function exportConfigData(settings) {
  * Import backup JSON into settings safely.
  * @param {Record<string, any>} settings
  * @param {any} rawPayload
- * @returns {{ ok: boolean, error?: string, stats?: { groups: number, assignments: number, aliases: number } }}
+ * @returns {{ ok: boolean, error?: string, stats?: { groups: number, assignments: number, aliases: number, globalPresets: number } }}
  */
 export function importConfigData(settings, rawPayload) {
     const payload = typeof rawPayload === 'string' ? (() => {
@@ -2552,8 +2987,13 @@ export function importConfigData(settings, rawPayload) {
         return { ok: false, error: '无效的 JSON 文件' };
     }
     const data = payload.data && typeof payload.data === 'object' ? payload.data : payload;
-    if (!Array.isArray(data.groups) && typeof data.assignments !== 'object' && typeof data.aliases !== 'object') {
-        return { ok: false, error: '未在文件中找到分组或别名配置' };
+    if (
+        !Array.isArray(data.groups) &&
+        !Array.isArray(data.globalPresets) &&
+        typeof data.assignments !== 'object' &&
+        typeof data.aliases !== 'object'
+    ) {
+        return { ok: false, error: '未在文件中找到分组、组合或别名配置' };
     }
 
     const normalized = normalizeSettings({ ...settings, ...data });
@@ -2565,8 +3005,145 @@ export function importConfigData(settings, rawPayload) {
             groups: settings.groups.length,
             assignments: Object.keys(settings.assignments).length,
             aliases: Object.keys(settings.aliases).length,
+            globalPresets: settings.globalPresets.length,
         },
     };
+}
+
+/**
+ * Generate a collision-free Global Worldbook Combo ID.
+ * @param {Array<{ id: string }>} [existingPresets=[]]
+ * @returns {string}
+ */
+export function createGlobalPresetId(existingPresets = []) {
+    const taken = new Set((existingPresets || []).map((p) => p?.id).filter(Boolean));
+    let id = '';
+    do {
+        id = `cmb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    } while (taken.has(id));
+    return id;
+}
+
+/**
+ * Create or update a saved Global Worldbook Combo in `settings.globalPresets`.
+ *
+ * @param {Record<string, any>} settings
+ * @param {{ id?: string | null, name: string, books: Iterable<string> }} input
+ * @returns {{ ok: boolean, created?: boolean, preset?: { id: string, name: string, books: string[], updatedAt: number }, error?: string }}
+ */
+export function upsertGlobalPreset(settings, { id = null, name, books = [] } = {}) {
+    if (!settings) return { ok: false, error: '配置未就绪' };
+    const cleanName = String(name ?? '').trim();
+    if (!cleanName) return { ok: false, error: '请输入组合名称' };
+
+    const cleanBooks = [
+        ...new Set(
+            Array.from(books || [])
+                .map((b) => String(b ?? '').trim())
+                .filter(Boolean),
+        ),
+    ];
+    if (cleanBooks.length === 0) {
+        return { ok: false, error: '请至少选择 1 本世界书' };
+    }
+
+    if (!Array.isArray(settings.globalPresets)) {
+        settings.globalPresets = [];
+    }
+    const targetId = id ? String(id).trim() : '';
+    const dup = settings.globalPresets.find(
+        (p) => p && p.id !== targetId && String(p.name || '').trim().toLowerCase() === cleanName.toLowerCase(),
+    );
+    if (dup) {
+        return { ok: false, error: `已存在同名组合「${cleanName}」，请换一个名称` };
+    }
+
+    const now = Date.now();
+    if (targetId) {
+        const idx = settings.globalPresets.findIndex((p) => p && p.id === targetId);
+        if (idx >= 0) {
+            const updated = {
+                ...settings.globalPresets[idx],
+                name: cleanName,
+                books: cleanBooks,
+                updatedAt: now,
+            };
+            settings.globalPresets[idx] = updated;
+            return { ok: true, created: false, preset: updated };
+        }
+    }
+
+    const created = {
+        id: createGlobalPresetId(settings.globalPresets),
+        name: cleanName,
+        books: cleanBooks,
+        updatedAt: now,
+    };
+    settings.globalPresets.push(created);
+    return { ok: true, created: true, preset: created };
+}
+
+/**
+ * Delete a Global Worldbook Combo by ID.
+ * @param {Record<string, any>} settings
+ * @param {string} presetId
+ * @returns {boolean}
+ */
+export function deleteGlobalPreset(settings, presetId) {
+    const cleanId = String(presetId ?? '').trim();
+    if (!settings || !cleanId || !Array.isArray(settings.globalPresets)) return false;
+    const prevLen = settings.globalPresets.length;
+    settings.globalPresets = settings.globalPresets.filter((p) => p?.id !== cleanId);
+    return settings.globalPresets.length !== prevLen;
+}
+
+/**
+ * Reorder a Global Worldbook Combo up (-1) or down (+1).
+ * @param {Record<string, any>} settings
+ * @param {string} presetId
+ * @param {-1 | 1} delta
+ * @returns {boolean}
+ */
+export function moveGlobalPreset(settings, presetId, delta) {
+    const cleanId = String(presetId ?? '').trim();
+    if (!settings || !cleanId || !Array.isArray(settings.globalPresets)) return false;
+    const idx = settings.globalPresets.findIndex((p) => p?.id === cleanId);
+    const targetIdx = idx + delta;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= settings.globalPresets.length) return false;
+    const next = [...settings.globalPresets];
+    [next[idx], next[targetIdx]] = [next[targetIdx], next[idx]];
+    settings.globalPresets = next;
+    return true;
+}
+
+/**
+ * Find the saved Global Worldbook Combo whose book set exactly equals `activeBooksIterable`.
+ * @param {Array<{ id: string, name: string, books: string[] }>} [globalPresets=[]]
+ * @param {Iterable<string>} [activeBooksIterable=[]]
+ */
+export function findMatchingGlobalPreset(globalPresets = [], activeBooksIterable = []) {
+    if (!Array.isArray(globalPresets) || globalPresets.length === 0) return null;
+    const activeSet = new Set(
+        Array.from(activeBooksIterable || [])
+            .map((b) => String(b ?? '').trim())
+            .filter(Boolean),
+    );
+    if (activeSet.size === 0) return null;
+
+    for (const preset of globalPresets) {
+        if (!preset || !Array.isArray(preset.books) || preset.books.length === 0) continue;
+        const pSet = new Set(preset.books.map((b) => String(b ?? '').trim()).filter(Boolean));
+        if (pSet.size !== activeSet.size) continue;
+        let allMatch = true;
+        for (const name of pSet) {
+            if (!activeSet.has(name)) {
+                allMatch = false;
+                break;
+            }
+        }
+        if (allMatch) return preset;
+    }
+    return null;
 }
 
 /**

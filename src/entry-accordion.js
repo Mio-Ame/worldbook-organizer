@@ -63,6 +63,8 @@ function formatContentStats(text) {
  * @param {string} [opts.extraHeaderActionsHtml='']
  * @param {() => boolean} [opts.getMonoFont]
  * @param {(nextMono: boolean) => void} [opts.onToggleMonoFont]
+ * @param {() => boolean} [opts.getTallMode]
+ * @param {(nextTall: boolean) => void} [opts.onToggleTallMode]
  * @param {(action: string, target: HTMLElement) => void} [opts.onExtraAction]
  * @param {(info: { worldName: string, total: number, enabledCount: number, action: string, uid?: string }) => void} [opts.onEntryMutated]
  * @param {(uid: string | null) => void} [opts.onOpenNative]
@@ -77,6 +79,8 @@ export function mountEntryAccordion(
         extraHeaderActionsHtml = '',
         getMonoFont = () => false,
         onToggleMonoFont = null,
+        getTallMode = () => false,
+        onToggleTallMode = null,
         onExtraAction = null,
         onEntryMutated = null,
         onOpenNative = null,
@@ -379,57 +383,38 @@ export function mountEntryAccordion(
         }
     };
 
+    const buildMetaBrief = ({ enabled, constant, keyText, position, depth, order }) => {
+        const stateText = enabled ? '启用' : '已禁用';
+        const modeText = constant ? '蓝灯' : '绿灯';
+        const kwCount = String(keyText ?? '').split(/[,\n，、]+/).map((s) => s.trim()).filter(Boolean).length;
+        const kwText = kwCount > 0 ? `${kwCount} 词` : '无词';
+        const posNum = Number(position);
+        const posText = `${getPosLabel(Number.isFinite(posNum) ? posNum : 0)}${posNum === 4 ? ` @D${depth}` : ''}`;
+        const ordText = `顺序 ${order}`;
+        return `${stateText} · ${modeText} · ${kwText} · ${posText} · ${ordText}`;
+    };
+
     const mountEditorIntoSlot = (itemEl, slotEl, entry) => {
         const uid = String(entry.uid);
         const posOptsHtml = WORLD_ENTRY_POSITIONS.map(
             (p) => `<option value="${p.value}"${Number(entry.position) === p.value ? ' selected' : ''}>${esc(p.label)}</option>`,
         ).join('');
         const initialMono = Boolean(getMonoFont());
+        const initialTall = Boolean(getTallMode());
+        const initialBrief = buildMetaBrief({
+            enabled: !entry.disable,
+            constant: Boolean(entry.constant),
+            keyText: (entry.key || []).join(', '),
+            position: entry.position ?? 0,
+            depth: entry.depth ?? 4,
+            order: entry.order ?? 100,
+        });
 
         slotEl.innerHTML = `
             <div class="wbo-acc-editor" data-acc-editor-uid="${esc(uid)}">
-                <div class="wbo-ee-row-2col">
-                    <div class="wbo-field">
-                        <label class="wbo-label">条目标题（注释）</label>
-                        <input type="text" class="wbo-input" data-acc-field="comment" value="${esc(entry.comment)}" placeholder="用于列表识别的条目标题" spellcheck="false">
-                    </div>
-                    <div class="wbo-field">
-                        <label class="wbo-label">状态与触发灯</label>
-                        <div class="wbo-ee-inline-flags">
-                            <label class="wbo-check-line">
-                                <input type="checkbox" data-acc-field="enabled"${entry.disable ? '' : ' checked'}>
-                                <span>启用</span>
-                            </label>
-                            <select class="wbo-select wbo-ee-mode-select" data-acc-field="mode">
-                                <option value="green"${!entry.constant ? ' selected' : ''}>绿灯 · 关键词触发</option>
-                                <option value="blue"${entry.constant ? ' selected' : ''}>蓝灯 · 常驻激活</option>
-                            </select>
-                        </div>
-                    </div>
-                </div>
-                <div class="wbo-ee-row-2col">
-                    <div class="wbo-field">
-                        <label class="wbo-label">主触发词（逗号或换行分隔）</label>
-                        <input type="text" class="wbo-input" data-acc-field="key" value="${esc((entry.key || []).join(', '))}" placeholder="关键词1, 关键词2" spellcheck="false">
-                    </div>
-                    <div class="wbo-field">
-                        <label class="wbo-label">次触发词（可选）</label>
-                        <input type="text" class="wbo-input" data-acc-field="keysecondary" value="${esc((entry.keysecondary || []).join(', '))}" placeholder="辅助过滤词1, 词2" spellcheck="false">
-                    </div>
-                </div>
-                <div class="wbo-ee-row-3col">
-                    <div class="wbo-field">
-                        <label class="wbo-label">插入位置</label>
-                        <select class="wbo-select" data-acc-field="position">${posOptsHtml}</select>
-                    </div>
-                    <div class="wbo-field">
-                        <label class="wbo-label">深度 (@D)</label>
-                        <input type="number" class="wbo-input" data-acc-field="depth" min="0" step="1" value="${esc(String(entry.depth))}">
-                    </div>
-                    <div class="wbo-field">
-                        <label class="wbo-label">插入顺序</label>
-                        <input type="number" class="wbo-input" data-acc-field="order" step="1" value="${esc(String(entry.order))}">
-                    </div>
+                <div class="wbo-field wbo-acc-title-field">
+                    <label class="wbo-label">条目标题（注释）</label>
+                    <input type="text" class="wbo-input" data-acc-field="comment" value="${esc(entry.comment)}" placeholder="用于列表识别的条目标题" spellcheck="false">
                 </div>
                 <div class="wbo-field wbo-acc-content-field">
                     <div class="wbo-acc-editor-toolbar">
@@ -450,8 +435,8 @@ export function mountEntryAccordion(
                             <button type="button" class="wbo-btn wbo-acc-mini-btn${initialMono ? ' is-active' : ''}" data-acc-mono aria-pressed="${initialMono ? 'true' : 'false'}" title="切换等宽代码字体 / 常规字体">
                                 <i class="fa-solid fa-code"></i><span>${initialMono ? '常规字体' : '等宽代码字体'}</span>
                             </button>
-                            <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-tall aria-pressed="false" title="切换编辑区高度">
-                                <i class="fa-solid fa-up-down"></i><span>加高</span>
+                            <button type="button" class="wbo-btn wbo-acc-mini-btn${initialTall ? ' is-active' : ''}" data-acc-tall aria-pressed="${initialTall ? 'true' : 'false'}" title="${initialTall ? '恢复默认编辑区高度' : '加高编辑区以便阅读和修改长文本'}">
+                                <i class="fa-solid fa-up-down"></i><span>${initialTall ? '恢复默认高度' : '加高编辑区'}</span>
                             </button>
                         </div>
                     </div>
@@ -461,8 +446,53 @@ export function mountEntryAccordion(
                         <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-prev title="查找上一个">上一个</button>
                         <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-next title="查找下一个">下一个</button>
                     </div>
-                    <textarea class="wbo-textarea wbo-ee-textarea wbo-acc-textarea${initialMono ? ' is-mono' : ''}" data-acc-field="content" placeholder="输入世界书条目正文..." spellcheck="false"></textarea>
+                    <textarea class="wbo-textarea wbo-ee-textarea wbo-acc-textarea${initialMono ? ' is-mono' : ''}${initialTall ? ' is-tall' : ''}" data-acc-field="content" placeholder="输入世界书条目正文..." spellcheck="false"></textarea>
                 </div>
+                <details class="wbo-collapse-box wbo-acc-meta-details">
+                    <summary class="wbo-collapse-summary wbo-acc-meta-summary">
+                        <span class="wbo-acc-meta-title">触发词与策略设置</span>
+                        <span class="wbo-acc-meta-brief" data-acc-meta-brief>${esc(initialBrief)}</span>
+                    </summary>
+                    <div class="wbo-acc-meta-body">
+                        <div class="wbo-field">
+                            <label class="wbo-label">状态与触发灯</label>
+                            <div class="wbo-ee-inline-flags">
+                                <label class="wbo-check-line">
+                                    <input type="checkbox" data-acc-field="enabled"${entry.disable ? '' : ' checked'}>
+                                    <span>启用</span>
+                                </label>
+                                <select class="wbo-select wbo-ee-mode-select" data-acc-field="mode">
+                                    <option value="green"${!entry.constant ? ' selected' : ''}>绿灯 · 关键词触发</option>
+                                    <option value="blue"${entry.constant ? ' selected' : ''}>蓝灯 · 常驻激活</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="wbo-ee-row-2col">
+                            <div class="wbo-field">
+                                <label class="wbo-label">主触发词（逗号或换行分隔）</label>
+                                <input type="text" class="wbo-input" data-acc-field="key" value="${esc((entry.key || []).join(', '))}" placeholder="关键词1, 关键词2" spellcheck="false">
+                            </div>
+                            <div class="wbo-field">
+                                <label class="wbo-label">次触发词（可选）</label>
+                                <input type="text" class="wbo-input" data-acc-field="keysecondary" value="${esc((entry.keysecondary || []).join(', '))}" placeholder="辅助过滤词1, 词2" spellcheck="false">
+                            </div>
+                        </div>
+                        <div class="wbo-ee-row-3col">
+                            <div class="wbo-field">
+                                <label class="wbo-label">插入位置</label>
+                                <select class="wbo-select" data-acc-field="position">${posOptsHtml}</select>
+                            </div>
+                            <div class="wbo-field">
+                                <label class="wbo-label">深度 (@D)</label>
+                                <input type="number" class="wbo-input" data-acc-field="depth" min="0" step="1" value="${esc(String(entry.depth))}">
+                            </div>
+                            <div class="wbo-field">
+                                <label class="wbo-label">插入顺序</label>
+                                <input type="number" class="wbo-input" data-acc-field="order" step="1" value="${esc(String(entry.order))}">
+                            </div>
+                        </div>
+                    </div>
+                </details>
                 <div class="wbo-acc-editor-footer">
                     <button type="button" class="wbo-btn wbo-btn-primary" data-acc-save>保存</button>
                     <button type="button" class="wbo-btn" data-acc-collapse>收起</button>
@@ -482,6 +512,7 @@ export function mountEntryAccordion(
         const posSelect = slotEl.querySelector('[data-acc-field="position"]');
         const depthInput = slotEl.querySelector('[data-acc-field="depth"]');
         const orderInput = slotEl.querySelector('[data-acc-field="order"]');
+        const metaBriefEl = slotEl.querySelector('[data-acc-meta-brief]');
         const contentArea = slotEl.querySelector('[data-acc-field="content"]');
         const statsEl = slotEl.querySelector('[data-acc-stats]');
         const undoBtn = slotEl.querySelector('[data-acc-undo]');
@@ -767,19 +798,69 @@ export function mountEntryAccordion(
             }
         });
 
-        let tallOn = false;
-        tallBtn?.addEventListener('click', () => {
-            tallOn = !tallOn;
+        let localTallOn = initialTall;
+        const applyTallTextareaHeight = () => {
+            if (!(contentArea instanceof HTMLTextAreaElement)) return;
+            if (localTallOn) {
+                contentArea.style.height = 'auto';
+                const naturalScrollH = contentArea.scrollHeight || 0;
+                const targetH = Math.max(380, Math.min(560, naturalScrollH + 12));
+                contentArea.style.height = `${targetH}px`;
+            } else {
+                contentArea.style.height = '';
+            }
+        };
+        const syncTallUi = (tallOn, { userTriggered = false } = {}) => {
+            localTallOn = Boolean(tallOn);
             if (contentArea instanceof HTMLTextAreaElement) {
-                contentArea.classList.toggle('is-tall', tallOn);
+                contentArea.classList.toggle('is-tall', localTallOn);
+                applyTallTextareaHeight();
+                if (userTriggered) {
+                    requestAnimationFrame(() => {
+                        applyTallTextareaHeight();
+                        try { contentArea.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
+                    });
+                }
             }
             if (tallBtn instanceof HTMLElement) {
-                tallBtn.classList.toggle('is-active', tallOn);
-                tallBtn.setAttribute('aria-pressed', tallOn ? 'true' : 'false');
+                tallBtn.classList.toggle('is-active', localTallOn);
+                tallBtn.setAttribute('aria-pressed', localTallOn ? 'true' : 'false');
+                tallBtn.title = localTallOn ? '恢复默认编辑区高度' : '加高编辑区以便阅读和修改长文本';
                 const span = tallBtn.querySelector('span');
-                if (span) span.textContent = tallOn ? '标准' : '加高';
+                if (span) span.textContent = localTallOn ? '恢复默认高度' : '加高编辑区';
+            }
+        };
+        if (initialTall) {
+            requestAnimationFrame(applyTallTextareaHeight);
+        }
+        tallBtn?.addEventListener('click', () => {
+            if (typeof onToggleTallMode === 'function') {
+                const nextTall = !getTallMode();
+                onToggleTallMode(nextTall);
+                for (const ctrl of expandedEditors.values()) {
+                    ctrl.syncTallFromSettings?.(nextTall, { userTriggered: ctrl.slotEl === slotEl });
+                }
+            } else {
+                syncTallUi(!localTallOn, { userTriggered: true });
             }
         });
+
+        const refreshMetaBrief = () => {
+            if (!metaBriefEl) return;
+            const snap = readFormSnapshot();
+            metaBriefEl.textContent = buildMetaBrief({
+                enabled: snap.enabled,
+                constant: snap.mode === 'blue',
+                keyText: snap.key,
+                position: snap.position,
+                depth: snap.depth,
+                order: snap.order,
+            });
+        };
+        for (const el of [enabledCb, modeSelect, keysInput, posSelect, depthInput, orderInput]) {
+            el?.addEventListener('input', refreshMetaBrief);
+            el?.addEventListener('change', refreshMetaBrief);
+        }
 
         collapseBtn?.addEventListener('click', () => {
             collapseEntry(uid);
@@ -884,12 +965,14 @@ export function mountEntryAccordion(
             isDirty,
             getCurrentContent: () => (contentArea instanceof HTMLTextAreaElement ? contentArea.value : String(entry.content ?? '')),
             syncMonoFromSettings: syncMonoUi,
+            syncTallFromSettings: syncTallUi,
             syncDisabledFromHeader: (nextDisable) => {
                 if (enabledCb instanceof HTMLInputElement) {
                     enabledCb.checked = !nextDisable;
                 }
                 entry.disable = Boolean(nextDisable);
                 baseline.enabled = !nextDisable;
+                refreshMetaBrief();
             },
         };
     };

@@ -49,6 +49,102 @@ function bindDrawerSafeBubbleGuard(rootEl) {
 }
 
 let _pinDirtyOnClose = false;
+/** @type {Set<() => void>} */
+const _openCustomPickerClosers = new Set();
+/** @type {(() => void) | null} */
+let _closeMobileEditorPicker = null;
+
+function flushPinDirtyOnClose() {
+    if (_pinDirtyOnClose && _latestSettings && _latestClassification) {
+        _pinDirtyOnClose = false;
+        applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+    }
+}
+
+/**
+ * Close any open SillyTavern / plugin worldbook dropdowns (Select2, mobile picker,
+ * popup grouped picker, or external custom popovers) so they never overlap or block
+ * another selector when switching focus.
+ * @param {{ except?: 'global' | 'editor' | null }} [opts]
+ */
+export function closeAllOpenWorldDropdowns({ except = null } = {}) {
+    const $ = globalThis.jQuery;
+    if ($ && except !== 'editor') {
+        try {
+            const $ed = $('#world_editor_select');
+            if ($ed.data('select2')?.isOpen?.()) {
+                $ed.select2('close');
+            }
+        } catch { /* ignore */ }
+    }
+    if ($ && except !== 'global') {
+        try {
+            const $gl = $('#world_info');
+            if ($gl.data('select2')?.isOpen?.()) {
+                $gl.select2('close');
+            }
+        } catch { /* ignore */ }
+    }
+
+    for (const closer of [..._openCustomPickerClosers]) {
+        try {
+            closer({ except });
+        } catch { /* ignore */ }
+    }
+
+    if (except !== 'editor') {
+        if (_closeMobileEditorPicker) {
+            _closeMobileEditorPicker();
+        } else {
+            document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
+            document.getElementById(MOBILE_TRIGGER_ID)?.classList.remove('is-open');
+        }
+    }
+
+    if (typeof document !== 'undefined') {
+        document.querySelectorAll('#wbo-quick-exclude-backdrop, #wbo-vis-popover-backdrop, #wbo-search-opts-backdrop').forEach((el) => el.remove());
+
+        const hasZeroNonEmptyEnhancedOptions = (containerEl) => {
+            const opts = containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector);
+            for (const optEl of opts) {
+                const hasValAttr = optEl.hasAttribute?.('data-value');
+                const rawVal = optEl.dataset?.value;
+                const text = getEnhancedPopoverOptionText(optEl);
+                if (!((hasValAttr && (rawVal ?? '') === '') || !text || text.startsWith('---'))) {
+                    return false;
+                }
+            }
+            return true;
+        };
+
+        document.querySelectorAll(ENHANCED_POPOVER_SELECTORS.containerSelector).forEach((el) => {
+            if (!(el instanceof HTMLElement) || !el.isConnected) return;
+            const isGlobalContainer = el.id === ENHANCED_POPOVER_SELECTORS.globalContainerId;
+            if (except === 'global' && isGlobalContainer) return;
+            const role = el.dataset.wboPopoverRole || detectEnhancedPopoverRole(el);
+            if (role && !el.dataset.wboPopoverRole) {
+                el.dataset.wboPopoverRole = role;
+            }
+            if (
+                except === 'editor' &&
+                !isGlobalContainer &&
+                (role === 'editor' ||
+                    (!role &&
+                        hasZeroNonEmptyEnhancedOptions(el) &&
+                        Boolean(document.querySelector('#world_popup .gr-select2-display'))))
+            ) {
+                return;
+            }
+            try {
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+            } catch { /* ignore */ }
+            if (el.isConnected) {
+                el.style.display = 'none';
+                el.remove();
+            }
+        });
+    }
+}
 
 /**
  * Toggle pin status for a worldbook directly from any native dropdown/sheet/popover
@@ -141,7 +237,7 @@ const _nativeAppearanceCache = new WeakMap();
 const ENHANCED_POPOVER_SELECTORS = Object.freeze({
     containerClass: 'gr-container-enhanced',
     globalContainerId: 'gr-global-dropdown-container',
-    displaySelector: '#WorldInfo .gr-select2-display',
+    displaySelector: '#WIMultiSelector .gr-select2-display',
     containerSelector: '#gr-global-dropdown-container, .gr-container-enhanced',
     optionSelector: '.gr-option',
     pinClass: 'gr-option-pin',
@@ -149,6 +245,57 @@ const ENHANCED_POPOVER_SELECTORS = Object.freeze({
     groupLabelSelector: ':scope > .gr-group-label',
     searchInputSelector: 'input[type="text"], input[type="search"], .gr-search-input',
 });
+
+function getEnhancedPopoverOptionText(el) {
+    let txt = '';
+    for (const node of el.childNodes) {
+        if (node.nodeType === 3) txt += node.textContent || '';
+        else if (node instanceof HTMLElement && !node.classList.contains(ENHANCED_POPOVER_SELECTORS.pinClass)) {
+            txt += node.textContent || '';
+        }
+    }
+    return txt.trim() || (el.textContent || '').trim();
+}
+
+function detectEnhancedPopoverRole(containerEl) {
+    if (!(containerEl instanceof HTMLElement)) return null;
+    if (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId) return 'global';
+    if (containerEl.dataset.wboPopoverRole === 'global' || containerEl.dataset.wboPopoverRole === 'editor') {
+        return containerEl.dataset.wboPopoverRole;
+    }
+    const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+    if (optionNodes.length === 0) return null;
+
+    const knownWorldNames = new Set();
+    if (_latestClassification?.byName) {
+        for (const k of _latestClassification.byName.keys()) knownWorldNames.add(k);
+    }
+    const editorSel = document.getElementById('world_editor_select');
+    if (editorSel) {
+        editorSel.querySelectorAll('option').forEach((opt) => {
+            const name = (opt.dataset?.wboRealName || opt.textContent || '').trim();
+            if (opt.value !== '' && name && !name.startsWith('---')) knownWorldNames.add(name);
+        });
+    }
+    for (const k of _editorDetachedMap.keys()) knownWorldNames.add(k);
+    if (knownWorldNames.size === 0) return null;
+
+    let nonEmptyCount = 0;
+    let matchedWorldCount = 0;
+    for (const optEl of optionNodes) {
+        const hasValAttr = optEl.hasAttribute?.('data-value');
+        const rawVal = optEl.dataset?.value;
+        const text = getEnhancedPopoverOptionText(optEl);
+        if ((hasValAttr && (rawVal ?? '') === '') || !text || text.startsWith('---')) continue;
+        nonEmptyCount += 1;
+        if (knownWorldNames.has(text)) matchedWorldCount += 1;
+    }
+    if (nonEmptyCount === 0) return null;
+    const isWorldbookPopover =
+        (matchedWorldCount >= 2 && matchedWorldCount / nonEmptyCount >= 0.45) ||
+        (matchedWorldCount >= 1 && matchedWorldCount === nonEmptyCount);
+    return isWorldbookPopover ? 'editor' : null;
+}
 
 let _isApplying = false;
 let _latestClassification = null;
@@ -666,6 +813,9 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         opts.sort((a, b) => {
             const na = (a.textContent || '').trim();
             const nb = (b.textContent || '').trim();
+            const pa = classification?.byName?.get(na)?.isPinned ? 1 : 0;
+            const pb = classification?.byName?.get(nb)?.isPinned ? 1 : 0;
+            if (pa !== pb) return pb - pa;
             const ra = rankMap.get(na);
             const rb = rankMap.get(nb);
             if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
@@ -806,6 +956,35 @@ function mirrorNativeSelectAppearance(selectEl, triggerEl) {
 }
 
 /**
+ * Check whether a pointer/mouse event's viewport coordinates fall inside a visible element's rect.
+ * Used when a full-screen `.wbo-mp-backdrop` intercepts `pointerdown` right over the trigger button.
+ * @param {Event | null | undefined} ev
+ * @param {Element | null | undefined} el
+ */
+function isPointInsideElementRect(ev, el) {
+    if (!(el instanceof Element)) return false;
+    const x = ev?.clientX;
+    const y = ev?.clientY;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const rect = el.getBoundingClientRect?.();
+    if (!rect || !(rect.width > 0 && rect.height > 0)) return false;
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+/**
+ * Consume a recent `wboDismissedTapAt` marker set by `onGlobalDismiss` when a `pointerdown`
+ * on `.wbo-mp-backdrop` over `triggerEl` closed the overlay right before the synthesized `click`.
+ * @param {HTMLElement | null | undefined} triggerEl
+ * @param {number} [windowMs]
+ */
+function consumeRecentDismissedTap(triggerEl, windowMs = 600) {
+    if (!(triggerEl instanceof HTMLElement)) return false;
+    const ts = Number(triggerEl.dataset.wboDismissedTapAt || 0);
+    delete triggerEl.dataset.wboDismissedTapAt;
+    return ts > 0 && Date.now() - ts < windowMs;
+}
+
+/**
  * Mount or remove the iOS/mobile grouped worldbook trigger button in place of the native `<select>`.
  * @param {HTMLSelectElement} selectEl
  * @param {boolean} enabled
@@ -831,8 +1010,14 @@ function syncMobileEditorTrigger(selectEl, enabled) {
             <i class="fa-solid fa-chevron-down wbo-mobile-trigger-chev"></i>
         `;
         trigger.addEventListener('click', (ev) => {
+            if (consumeRecentDismissedTap(trigger)) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                return;
+            }
             ev.preventDefault();
             ev.stopPropagation();
+            closeAllOpenWorldDropdowns({ except: 'editor' });
             openMobileEditorPickerSheet();
         });
         // Mirror native `<select>` geometry ONCE while `<select>` is still visible (zero forced reflow on subsequent toggles!)
@@ -891,8 +1076,12 @@ function openMobileEditorPickerSheet() {
     // Toggle closed if already open
     const existingOverlay = document.getElementById(MOBILE_PICKER_OVERLAY_ID);
     if (existingOverlay) {
-        existingOverlay.remove();
-        triggerEl.classList.remove('is-open');
+        if (_closeMobileEditorPicker) {
+            _closeMobileEditorPicker();
+        } else {
+            existingOverlay.remove();
+            triggerEl.classList.remove('is-open');
+        }
         return;
     }
 
@@ -927,13 +1116,22 @@ function openMobileEditorPickerSheet() {
         }
     }
 
+    const sortSectionBooksPinnedFirst = (list) => [...list].sort((a, b) => {
+        const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
+        const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        return 0;
+    });
+
     const sections = [
         ...(pinnedBooks.length > 0
-            ? [{ id: '__current_char__', name: '当前角色', color: '#4c6ef5', books: pinnedBooks }]
+            ? [{ id: '__current_char__', name: '当前角色', color: '#4c6ef5', books: sortSectionBooksPinnedFirst(pinnedBooks) }]
             : []),
         ...(_latestClassification.orderedSections || [])
             .map((sec) => {
-                const books = (sec.books || []).filter((b) => optValueByRealName.has(b.realName) && !pinnedNames.has(b.realName));
+                const books = sortSectionBooksPinnedFirst(
+                    (sec.books || []).filter((b) => optValueByRealName.has(b.realName) && !pinnedNames.has(b.realName)),
+                );
                 return { id: sec.id, name: sec.name, color: sec.color, books };
             })
             .filter((sec) => sec.books.length > 0),
@@ -979,29 +1177,64 @@ function openMobileEditorPickerSheet() {
     document.body.appendChild(overlay);
     triggerEl.classList.add('is-open');
 
-    // Anchor popover directly below (or above if near bottom) the trigger box
-    const positionPopover = () => {
+    let initialVw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+    let lockedOpenAbove = null;
+
+    // Anchor popover directly below (or above if near bottom) the trigger box, clamped inside visualViewport
+    const positionPopover = ({ preserveDirection = false } = {}) => {
         const rect = triggerEl.getBoundingClientRect();
         const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
-        const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+        const layoutVh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+        const vv = globalThis.visualViewport;
+        const effectiveTop = vv ? Math.max(6, vv.offsetTop || 0) : 6;
+        const effectiveBottom = vv && Number.isFinite(vv.height)
+            ? Math.min(layoutVh, (vv.offsetTop || 0) + vv.height)
+            : layoutVh;
         const margin = 10;
         const popWidth = Math.min(Math.max(rect.width + 64, 280), vw - margin * 2);
         const left = Math.max(margin, Math.min(rect.left, vw - popWidth - margin));
 
-        const spaceBelow = vh - rect.bottom - 14;
-        const spaceAbove = rect.top - 14;
-        const openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
-        const maxH = Math.max(180, Math.min(420, Math.floor((openAbove ? spaceAbove : spaceBelow) - 6)));
+        const spaceBelow = Math.max(0, effectiveBottom - rect.bottom - 10);
+        const spaceAbove = Math.max(0, rect.top - effectiveTop - 10);
+        const keepDir = preserveDirection || popover.contains(document.activeElement);
+        let openAbove;
+        if (lockedOpenAbove === null || !keepDir) {
+            openAbove = spaceBelow < 220 && spaceAbove > spaceBelow;
+            lockedOpenAbove = openAbove;
+        } else {
+            openAbove = lockedOpenAbove;
+            if (openAbove && spaceAbove < 120 && spaceBelow > spaceAbove + 40) {
+                openAbove = false;
+                lockedOpenAbove = false;
+            } else if (!openAbove && spaceBelow < 120 && spaceAbove > spaceBelow + 40) {
+                openAbove = true;
+                lockedOpenAbove = true;
+            }
+        }
 
         popover.style.width = `${Math.round(popWidth)}px`;
         popover.style.left = `${Math.round(left)}px`;
-        popover.style.maxHeight = `${maxH}px`;
+
+        const availTotal = Math.max(120, Math.floor(effectiveBottom - effectiveTop));
+        const minClampH = Math.min(120, availTotal);
         if (openAbove) {
+            const desiredEdgeFromTop = Math.max(
+                effectiveTop + minClampH,
+                Math.min(rect.top - 4, effectiveBottom - 6),
+            );
+            const availAbove = Math.max(120, Math.floor(desiredEdgeFromTop - effectiveTop));
+            const maxH = Math.max(120, Math.min(420, availAbove));
             popover.style.top = 'auto';
-            popover.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
+            popover.style.bottom = `${Math.round(layoutVh - desiredEdgeFromTop)}px`;
+            popover.style.maxHeight = `${maxH}px`;
         } else {
+            const maxTopAllowed = Math.max(effectiveTop, effectiveBottom - minClampH - 6);
+            const topPx = Math.max(effectiveTop, Math.min(rect.bottom + 4, maxTopAllowed));
+            const availBelow = Math.max(120, Math.floor(effectiveBottom - topPx - 6));
+            const maxH = Math.max(120, Math.min(420, availBelow));
             popover.style.bottom = 'auto';
-            popover.style.top = `${Math.round(rect.bottom + 4)}px`;
+            popover.style.top = `${Math.round(topPx)}px`;
+            popover.style.maxHeight = `${maxH}px`;
         }
     };
     positionPopover();
@@ -1011,11 +1244,33 @@ function openMobileEditorPickerSheet() {
     const onGlobalDismiss = (ev) => {
         const t = ev?.target instanceof Element ? ev.target : null;
         if (t && (popover.contains(t) || triggerEl.contains(t))) return;
+        if (isPointInsideElementRect(ev, triggerEl)) {
+            triggerEl.dataset.wboDismissedTapAt = String(Date.now());
+        }
         closePicker();
     };
-    const onViewportChange = () => closePicker();
+    const onViewportChange = (ev) => {
+        const curVw = globalThis.innerWidth || document.documentElement.clientWidth || initialVw;
+        const activeEl = document.activeElement;
+        const isInputFocused = Boolean(activeEl && popover.contains(activeEl));
+        const isOrientation = ev?.type === 'orientationchange';
+        if (isInputFocused || Math.abs(curVw - initialVw) <= 60) {
+            if (isOrientation && isInputFocused) {
+                initialVw = curVw;
+            }
+            positionPopover({ preserveDirection: !isOrientation || !isInputFocused });
+            return;
+        }
+        if (isOrientation || Math.abs(curVw - initialVw) > 60) {
+            closePicker();
+        }
+    };
 
     const closePicker = () => {
+        if (_closeMobileEditorPicker === closePicker) {
+            _closeMobileEditorPicker = null;
+        }
+        _openCustomPickerClosers.delete(pickerCloserEntry);
         if (wiDrawerObserver) {
             wiDrawerObserver.disconnect();
             wiDrawerObserver = null;
@@ -1023,12 +1278,20 @@ function openMobileEditorPickerSheet() {
         document.removeEventListener('pointerdown', onGlobalDismiss, true);
         globalThis.removeEventListener('resize', onViewportChange);
         globalThis.removeEventListener('orientationchange', onViewportChange);
+        globalThis.visualViewport?.removeEventListener('resize', onViewportChange);
+        globalThis.visualViewport?.removeEventListener('scroll', onViewportChange);
         overlay.remove();
         triggerEl.classList.remove('is-open');
+        flushPinDirtyOnClose();
     };
+    _closeMobileEditorPicker = closePicker;
+    const pickerCloserEntry = ({ except } = {}) => {
+        if (except !== 'editor') closePicker();
+    };
+    _openCustomPickerClosers.add(pickerCloserEntry);
 
     // Immediately dismiss the dropdown whenever `#WorldInfo` drawer closes, any top-bar drawer icon is tapped,
-    // or orientation/viewport changes — never leave a floating picker stranded after closing `#WorldInfo`!
+    // or unfocused orientation/width changes — never close/rebuild while the soft keyboard is resizing height!
     const wiDrawer = document.getElementById('WorldInfo');
     if (wiDrawer) {
         wiDrawerObserver = new MutationObserver(() => {
@@ -1041,6 +1304,8 @@ function openMobileEditorPickerSheet() {
     document.addEventListener('pointerdown', onGlobalDismiss, true);
     globalThis.addEventListener('resize', onViewportChange);
     globalThis.addEventListener('orientationchange', onViewportChange);
+    globalThis.visualViewport?.addEventListener('resize', onViewportChange, { passive: true });
+    globalThis.visualViewport?.addEventListener('scroll', onViewportChange, { passive: true });
 
     bindDrawerSafeBubbleGuard(overlay);
     bindDrawerSafeBubbleGuard(popover);
@@ -1517,6 +1782,120 @@ export function setGlobalWorldActive(realName, active) {
 }
 
 /**
+ * Batch-switch or overlay multiple global worldbooks in `#world_info` in a SINGLE pass,
+ * firing `change` at most once so switching a 10-book combo never triggers 10 host saves.
+ *
+ * @param {Iterable<string>} targetBookNames
+ * @param {{ mode?: 'replace' | 'add' }} [opts]
+ * @returns {{ ok: boolean, changed: boolean, prevActive: string[], nextActive: string[], missing: string[] }}
+ */
+export function setGlobalWorldsBatch(targetBookNames, { mode = 'replace' } = {}) {
+    const cleanTargets = [
+        ...new Set(
+            Array.from(targetBookNames || [])
+                .map((n) => String(n ?? '').trim())
+                .filter(Boolean),
+        ),
+    ];
+    const selectEl = document.getElementById('world_info');
+    if (!(selectEl instanceof HTMLSelectElement)) {
+        return { ok: false, changed: false, prevActive: [], nextActive: [], missing: cleanTargets };
+    }
+
+    const prevActive = [];
+    const optByName = new Map();
+    for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
+        if (opt.value === '') continue;
+        const name = (opt.textContent || '').trim();
+        if (!name) continue;
+        optByName.set(name, opt);
+        if (opt.selected) prevActive.push(name);
+    }
+
+    const wantSet = mode === 'add'
+        ? new Set([...prevActive, ...cleanTargets])
+        : new Set(cleanTargets);
+
+    const toReattach = [];
+    const missing = [];
+    for (const name of cleanTargets) {
+        if (!optByName.has(name)) {
+            if (_globalDetachedMap.has(name)) {
+                toReattach.push(name);
+            } else {
+                missing.push(name);
+            }
+        }
+    }
+
+    if (toReattach.length > 0) {
+        _isApplying = true;
+        try {
+            const frag = document.createDocumentFragment();
+            for (const name of toReattach) {
+                const opt = _globalDetachedMap.get(name);
+                if (opt) {
+                    _globalDetachedMap.delete(name);
+                    frag.appendChild(opt);
+                    optByName.set(name, opt);
+                }
+            }
+            selectEl.appendChild(frag);
+            _lastGlobalSignature = null;
+        } finally {
+            _globalSelectObserver?.takeRecords();
+            _isApplying = false;
+        }
+    }
+
+    let changedCount = 0;
+    const nextActive = [];
+    for (const [name, opt] of optByName.entries()) {
+        const nextSel = wantSet.has(name);
+        if (opt.selected !== nextSel) {
+            opt.selected = nextSel;
+            changedCount += 1;
+        }
+        if (nextSel) nextActive.push(name);
+    }
+
+    if (changedCount > 0) {
+        const prevFocus = document.activeElement;
+        const $ = globalThis.jQuery;
+        if ($) {
+            $(selectEl).trigger('change');
+        } else {
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        const curFocus = document.activeElement;
+        if (curFocus instanceof HTMLElement && curFocus !== prevFocus) {
+            const inWorldInfo = curFocus === selectEl || Boolean(curFocus.closest?.('#world_info, .select2-container'));
+            if (inWorldInfo) {
+                curFocus.blur();
+                if (prevFocus instanceof HTMLElement && prevFocus.isConnected) {
+                    try { prevFocus.focus({ preventScroll: true }); } catch { /* ignore */ }
+                }
+            }
+        }
+        if (_latestClassification && _latestSettings) {
+            setTimeout(() => {
+                if (_latestClassification && _latestSettings) {
+                    applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+                }
+            }, 0);
+        }
+    }
+
+    return {
+        ok: true,
+        changed: changedCount > 0,
+        prevActive,
+        nextActive,
+        missing,
+    };
+}
+
+/**
  * Build grouped section metadata for any `<select>` popup based on its live `<option>`s.
  * Optionally pins currently selected options (e.g. `已选附加书`) and/or the current character's
  * own books (`当前角色`) into dedicated top sections!
@@ -1559,7 +1938,12 @@ function buildPopupGroupedSections(
             });
         }
         if (selectedBooks.length > 0) {
-            selectedBooks.sort((a, b) => compareZhCn(a.primaryTitle, b.primaryTitle));
+            selectedBooks.sort((a, b) => {
+                const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
+                const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
+                if (pa !== pb) return pb - pa;
+                return compareZhCn(a.primaryTitle, b.primaryTitle);
+            });
             sections.push({
                 id: '__selected_extras__',
                 name: '已选附加书',
@@ -1590,6 +1974,12 @@ function buildPopupGroupedSections(
             }
         }
         if (currentCharBooks.length > 0) {
+            currentCharBooks.sort((a, b) => {
+                const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
+                const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
+                if (pa !== pb) return pb - pa;
+                return compareZhCn(a.primaryTitle, b.primaryTitle);
+            });
             sections.push({
                 id: '__current_char__',
                 name: '当前角色',
@@ -1626,6 +2016,12 @@ function buildPopupGroupedSections(
             });
         }
         if (books.length > 0) {
+            books.sort((a, b) => {
+                const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
+                const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
+                if (pa !== pb) return pb - pa;
+                return 0;
+            });
             sections.push({
                 id: sec.id,
                 name: sec.name,
@@ -1723,19 +2119,28 @@ function attachGroupedSelectControl(
     }
 
     let openOverlay = null;
+    let removeGlobalDismiss = null;
     const closePopover = () => {
+        _openCustomPickerClosers.delete(popoverCloserEntry);
+        if (removeGlobalDismiss) {
+            removeGlobalDismiss();
+            removeGlobalDismiss = null;
+        }
         if (openOverlay) {
             openOverlay.remove();
             openOverlay = null;
         }
         trigger.classList.remove('is-open');
+        flushPinDirtyOnClose();
     };
+    const popoverCloserEntry = () => closePopover();
 
     const openPopover = () => {
         if (openOverlay) {
             closePopover();
             return;
         }
+        closeAllOpenWorldDropdowns();
 
         const { sections } = buildPopupGroupedSections(selectEl, {
             currentAvatar,
@@ -1783,30 +2188,92 @@ function attachGroupedSelectControl(
         mountRoot.appendChild(overlay);
         trigger.classList.add('is-open');
 
-        const rect = trigger.getBoundingClientRect();
-        const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
-        const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
-        const margin = 10;
-        const popWidth = Math.min(Math.max(rect.width, 280), vw - margin * 2);
-        const left = Math.max(margin, Math.min(rect.left, vw - popWidth - margin));
-        const spaceBelow = vh - rect.bottom - 14;
-        const spaceAbove = rect.top - 14;
-        const openAbove = spaceBelow < 210 && spaceAbove > spaceBelow;
-        const maxH = Math.max(180, Math.min(390, Math.floor((openAbove ? spaceAbove : spaceBelow) - 6)));
+        let lockedOpenAbove = null;
+        const positionPopover = ({ preserveDirection = false } = {}) => {
+            const rect = trigger.getBoundingClientRect();
+            const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
+            const layoutVh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
+            const vv = globalThis.visualViewport;
+            const effectiveTop = vv ? Math.max(6, vv.offsetTop || 0) : 6;
+            const effectiveBottom = vv && Number.isFinite(vv.height)
+                ? Math.min(layoutVh, (vv.offsetTop || 0) + vv.height)
+                : layoutVh;
+            const margin = 10;
+            const popWidth = Math.min(Math.max(rect.width, 280), vw - margin * 2);
+            const left = Math.max(margin, Math.min(rect.left, vw - popWidth - margin));
 
-        popover.style.width = `${Math.round(popWidth)}px`;
-        popover.style.left = `${Math.round(left)}px`;
-        popover.style.maxHeight = `${maxH}px`;
-        if (openAbove) {
-            popover.style.top = 'auto';
-            popover.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
-        } else {
-            popover.style.bottom = 'auto';
-            popover.style.top = `${Math.round(rect.bottom + 4)}px`;
-        }
+            const spaceBelow = Math.max(0, effectiveBottom - rect.bottom - 10);
+            const spaceAbove = Math.max(0, rect.top - effectiveTop - 10);
+            const keepDir = preserveDirection || popover.contains(document.activeElement);
+            let openAbove;
+            if (lockedOpenAbove === null || !keepDir) {
+                openAbove = spaceBelow < 210 && spaceAbove > spaceBelow;
+                lockedOpenAbove = openAbove;
+            } else {
+                openAbove = lockedOpenAbove;
+                if (openAbove && spaceAbove < 120 && spaceBelow > spaceAbove + 40) {
+                    openAbove = false;
+                    lockedOpenAbove = false;
+                } else if (!openAbove && spaceBelow < 120 && spaceAbove > spaceBelow + 40) {
+                    openAbove = true;
+                    lockedOpenAbove = true;
+                }
+            }
+
+            popover.style.width = `${Math.round(popWidth)}px`;
+            popover.style.left = `${Math.round(left)}px`;
+
+            const availTotal = Math.max(120, Math.floor(effectiveBottom - effectiveTop));
+            const minClampH = Math.min(120, availTotal);
+            if (openAbove) {
+                const desiredEdgeFromTop = Math.max(
+                    effectiveTop + minClampH,
+                    Math.min(rect.top - 4, effectiveBottom - 6),
+                );
+                const availAbove = Math.max(120, Math.floor(desiredEdgeFromTop - effectiveTop));
+                const maxH = Math.max(120, Math.min(390, availAbove));
+                popover.style.top = 'auto';
+                popover.style.bottom = `${Math.round(layoutVh - desiredEdgeFromTop)}px`;
+                popover.style.maxHeight = `${maxH}px`;
+            } else {
+                const maxTopAllowed = Math.max(effectiveTop, effectiveBottom - minClampH - 6);
+                const topPx = Math.max(effectiveTop, Math.min(rect.bottom + 4, maxTopAllowed));
+                const availBelow = Math.max(120, Math.floor(effectiveBottom - topPx - 6));
+                const maxH = Math.max(120, Math.min(390, availBelow));
+                popover.style.bottom = 'auto';
+                popover.style.top = `${Math.round(topPx)}px`;
+                popover.style.maxHeight = `${maxH}px`;
+            }
+        };
+        positionPopover();
 
         bindDrawerSafeBubbleGuard(overlay);
         bindDrawerSafeBubbleGuard(popover);
+        const onGlobalDismiss = (ev) => {
+            const t = ev?.target instanceof Element ? ev.target : null;
+            if (t && (popover.contains(t) || trigger.contains(t))) return;
+            if (isPointInsideElementRect(ev, trigger)) {
+                trigger.dataset.wboDismissedTapAt = String(Date.now());
+            }
+            closePopover();
+        };
+        const onViewportChange = (ev) => {
+            const isOrientation = ev?.type === 'orientationchange';
+            positionPopover({ preserveDirection: !isOrientation });
+        };
+        document.addEventListener('pointerdown', onGlobalDismiss, true);
+        globalThis.addEventListener('resize', onViewportChange);
+        globalThis.addEventListener('orientationchange', onViewportChange);
+        globalThis.visualViewport?.addEventListener('resize', onViewportChange, { passive: true });
+        globalThis.visualViewport?.addEventListener('scroll', onViewportChange, { passive: true });
+        removeGlobalDismiss = () => {
+            document.removeEventListener('pointerdown', onGlobalDismiss, true);
+            globalThis.removeEventListener('resize', onViewportChange);
+            globalThis.removeEventListener('orientationchange', onViewportChange);
+            globalThis.visualViewport?.removeEventListener('resize', onViewportChange);
+            globalThis.visualViewport?.removeEventListener('scroll', onViewportChange);
+        };
+        _openCustomPickerClosers.add(popoverCloserEntry);
         overlay.addEventListener('click', (ev) => {
             ev.stopPropagation();
             if (ev.target === overlay) closePopover();
@@ -2088,6 +2555,11 @@ function attachGroupedSelectControl(
     };
 
     trigger.addEventListener('click', (ev) => {
+        if (consumeRecentDismissedTap(trigger)) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            return;
+        }
         ev.preventDefault();
         ev.stopPropagation();
         openPopover();
@@ -3017,8 +3489,23 @@ function syncEditorBeforeOpen() {
  * @param {HTMLElement} containerEl
  */
 function enhanceCustomDropdownPopover(containerEl) {
-    if (!containerEl || !containerEl.isConnected || containerEl.dataset.wboPopoverReady === '1') return;
-    if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) return;
+    if (!containerEl || !containerEl.isConnected) return;
+    bindDrawerSafeBubbleGuard(containerEl);
+    if (containerEl.dataset.wboPopoverReady === '1') return;
+
+    const detectedRole = detectEnhancedPopoverRole(containerEl);
+    if (!detectedRole) return;
+    containerEl.dataset.wboPopoverRole = detectedRole;
+    const isGlobalPopover = detectedRole === 'global';
+
+    const needsPopoverGrouping =
+        (_latestClassification?.customGroups?.length || 0) > 0 ||
+        Boolean(_latestSettings?.showCharBooks) ||
+        (_latestClassification?.pinnedCount || 0) > 0;
+    if (!needsPopoverGrouping || !_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
+        containerEl.dataset.wboPopoverReady = '1';
+        return;
+    }
 
     const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
     if (optionNodes.length === 0) return;
@@ -3026,36 +3513,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     const optionsHost = optionNodes[0].parentElement;
     if (!(optionsHost instanceof HTMLElement)) return;
 
-    const getOptionText = (el) => {
-        // Read text excluding any nested pin/icon spans
-        let txt = '';
-        for (const node of el.childNodes) {
-            if (node.nodeType === 3) txt += node.textContent || '';
-            else if (node instanceof HTMLElement && !node.classList.contains(ENHANCED_POPOVER_SELECTORS.pinClass)) {
-                txt += node.textContent || '';
-            }
-        }
-        return txt.trim() || (el.textContent || '').trim();
-    };
-
-    // Verify this popover is actually displaying worldbooks (not presets/themes/etc.)
-    let nonEmptyCount = 0;
-    let matchedWorldCount = 0;
-    for (const optEl of optionNodes) {
-        const val = optEl.dataset?.value ?? '';
-        const text = getOptionText(optEl);
-        if (!val || !text || text.startsWith('---')) continue;
-        nonEmptyCount += 1;
-        if (_latestClassification.byName.has(text)) {
-            matchedWorldCount += 1;
-        }
-    }
-    if (nonEmptyCount === 0) return;
-    const isWorldbookPopover =
-        (matchedWorldCount >= 2 && matchedWorldCount / nonEmptyCount >= 0.45) ||
-        (matchedWorldCount >= 1 && matchedWorldCount === nonEmptyCount);
-    if (!isWorldbookPopover) return;
-
+    const getOptionText = getEnhancedPopoverOptionText;
     containerEl.dataset.wboPopoverReady = '1';
 
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
@@ -3082,17 +3540,6 @@ function enhanceCustomDropdownPopover(containerEl) {
     const orderedSections = (_latestClassification.orderedSections || []).filter(
         (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0,
     );
-    // Do not inject group headers/bars when only 1 section exists (zero intrusion for hide-only users!)
-    if (orderedSections.length < 2) return;
-
-    // Remove flat default labels before inserting our grouped sections
-    optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.groupLabelSelector).forEach((el) => el.remove());
-
-    for (const ph of placeholders) {
-        optionsHost.appendChild(ph);
-    }
-
-    const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
     const getPopoverPinnedCount = () => {
         let cnt = 0;
         for (const sec of orderedSections) {
@@ -3103,7 +3550,36 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
         return cnt;
     };
-    if (getPopoverPinnedCount() > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
+    const initialPopPinned = getPopoverPinnedCount();
+
+    // When only 1 section exists, keep DOM flat (zero headers) — but STILL sort pinned books to the top!
+    if (orderedSections.length < 2) {
+        if (initialPopPinned > 0) {
+            const allFlat = orderedSections.flatMap((sec) => bucketByGroup.get(sec.id) || []);
+            allFlat.sort((a, b) => {
+                const ma = _latestClassification.byName.get(getOptionText(a));
+                const mb = _latestClassification.byName.get(getOptionText(b));
+                const pa = ma?.isPinned ? 1 : 0;
+                const pb = mb?.isPinned ? 1 : 0;
+                if (pa !== pb) return pb - pa;
+                return compareZhCn(ma?.primaryTitle || getOptionText(a), mb?.primaryTitle || getOptionText(b));
+            });
+            for (const ph of placeholders) optionsHost.appendChild(ph);
+            for (const optEl of allFlat) optionsHost.appendChild(optEl);
+        }
+        bindDrawerSafeBubbleGuard(containerEl);
+        return;
+    }
+
+    // Remove flat default labels before inserting our grouped sections
+    optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.groupLabelSelector).forEach((el) => el.remove());
+
+    for (const ph of placeholders) {
+        optionsHost.appendChild(ph);
+    }
+
+    const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
+    if (initialPopPinned > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
     let activePillGroupId =
@@ -3120,11 +3596,60 @@ function enhanceCustomDropdownPopover(containerEl) {
     /** @type {HTMLElement[]} */
     const sectionEls = [];
 
+    // For global worldbook popover, hoist pinned books into a top `★ 已置顶` section so they always appear first
+    const pinnedGlobalItems = [];
+    if (isGlobalPopover && initialPopPinned > 0) {
+        for (const sec of orderedSections) {
+            const list = bucketByGroup.get(sec.id) || [];
+            const keep = [];
+            for (const optEl of list) {
+                const name = getOptionText(optEl);
+                if (name && _latestClassification?.byName?.get(name)?.isPinned) {
+                    optEl.dataset.wboOrigGroup = sec.id;
+                    pinnedGlobalItems.push(optEl);
+                } else {
+                    keep.push(optEl);
+                }
+            }
+            bucketByGroup.set(sec.id, keep);
+        }
+        pinnedGlobalItems.sort((a, b) => {
+            const ma = _latestClassification.byName.get(getOptionText(a));
+            const mb = _latestClassification.byName.get(getOptionText(b));
+            return compareZhCn(ma?.primaryTitle || getOptionText(a), mb?.primaryTitle || getOptionText(b));
+        });
+        if (pinnedGlobalItems.length > 0) {
+            const secEl = document.createElement('div');
+            secEl.className = 'wbo-pop-section';
+            secEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+
+            const headEl = document.createElement('div');
+            headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+            headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+            headEl.textContent = `★ 已置顶 (${pinnedGlobalItems.length})`;
+            headEl.title = '点击展开或折叠该分组';
+
+            const bodyEl = document.createElement('div');
+            bodyEl.className = 'wbo-pop-group-body';
+            for (const optEl of pinnedGlobalItems) {
+                bodyEl.appendChild(optEl);
+            }
+
+            secEl.append(headEl, bodyEl);
+            optionsHost.appendChild(secEl);
+            sectionEls.push(secEl);
+        }
+    }
+
     for (const sec of orderedSections) {
         const items = bucketByGroup.get(sec.id) || [];
+        if (items.length === 0) continue;
         items.sort((a, b) => {
             const ma = _latestClassification.byName.get(getOptionText(a));
             const mb = _latestClassification.byName.get(getOptionText(b));
+            const pa = ma?.isPinned ? 1 : 0;
+            const pb = mb?.isPinned ? 1 : 0;
+            if (pa !== pb) return pb - pa;
             const ta = ma?.primaryTitle || getOptionText(a);
             const tb = mb?.primaryTitle || getOptionText(b);
             return compareZhCn(ta, tb);
@@ -3175,7 +3700,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
             const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
             for (const o of optsInSec) {
-                if (!isPinFilter) {
+                if (isIsolated && gid === SPECIAL_GROUPS.PINNED) {
+                    o.classList.toggle('wbo-dd-pin-hidden', o.dataset.wboOrigGroup !== activePillGroupId);
+                } else if (!isPinFilter) {
                     o.classList.remove('wbo-dd-pin-hidden');
                 } else {
                     const name = getOptionText(o);
@@ -3192,6 +3719,10 @@ function enhanceCustomDropdownPopover(containerEl) {
             } else if (isPinFilter) {
                 const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
+                secEl.classList.remove('wbo-dd-collapsed');
+            } else if (isIsolated && gid === SPECIAL_GROUPS.PINNED) {
+                const hasOrigMatch = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
+                secEl.classList.toggle('wbo-dd-group-hidden', !hasOrigMatch);
                 secEl.classList.remove('wbo-dd-collapsed');
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
@@ -3222,16 +3753,16 @@ function enhanceCustomDropdownPopover(containerEl) {
         ev.stopPropagation();
     }, true);
 
-    const initialPopPinned = getPopoverPinnedCount();
-    if (orderedSections.length >= 2 || initialPopPinned > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
+    const initialPopPinnedCount = initialPopPinned;
+    if (orderedSections.length >= 2 || initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
         const built = createDropdownFilterBar(
             [
-                ...(initialPopPinned > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
-                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${initialPopPinned}` }]
+                ...(initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${initialPopPinnedCount}` }]
                     : []),
                 ...orderedSections.map((sec) => ({
                     id: sec.id,
-                    label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length}`,
+                    label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length + (isGlobalPopover ? pinnedGlobalItems.filter((el) => el.dataset.wboOrigGroup === sec.id).length : 0)}`,
                 })),
             ],
             activePillGroupId,
@@ -3401,7 +3932,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     if ($) {
         _editorSelect2OpeningHandler = (ev) => {
             if (ev?.target?.id === 'world_editor_select') {
+                closeAllOpenWorldDropdowns({ except: 'editor' });
                 syncEditorBeforeOpen();
+            } else if (ev?.target?.id === 'world_info') {
+                closeAllOpenWorldDropdowns({ except: 'global' });
             }
         };
         _editorSelect2OpenHandler = (ev) => {
@@ -3480,8 +4014,16 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     _docDrawerGuardMouseDown = (ev) => {
         const t = ev.target instanceof Element ? ev.target : null;
         if (!t) return;
+        const inGlobalTrigger = Boolean(
+            t.closest(`#world_info, #WIMultiSelector, ${ENHANCED_POPOVER_SELECTORS.displaySelector}`),
+        );
+        if (inGlobalTrigger) {
+            closeAllOpenWorldDropdowns({ except: 'global' });
+        } else if (t.closest('#world_editor_select, #world_popup .select2-container, #world_popup .gr-select2-display, #wbo-mobile-editor-trigger')) {
+            closeAllOpenWorldDropdowns({ except: 'editor' });
+        }
         const inWorldSelect = Boolean(
-            t.closest(`#world_editor_select, #world_info, #world_popup .select2-container, #WIMultiSelector .select2-container, #WorldInfo .select2-container, ${ENHANCED_POPOVER_SELECTORS.displaySelector}, .select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}`),
+            t.closest(`#world_editor_select, #world_info, #world_popup .select2-container, #world_popup .gr-select2-display, #WIMultiSelector .select2-container, #WorldInfo .select2-container, ${ENHANCED_POPOVER_SELECTORS.displaySelector}, #wbo-mobile-editor-trigger, #wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover, .select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}`),
         );
         if (inWorldSelect) {
             _lastWorldSelectMouseDownAt = Date.now();
@@ -3494,7 +4036,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         if (!t) return;
         if (t.closest?.('.drawer-icon')) return;
         const inDropdownOverlay = Boolean(
-            t.closest?.(`.select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}`),
+            t.closest?.(`.select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}, #wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover`),
         );
         const isRecentOrphanClick =
             Date.now() - _lastWorldSelectMouseDownAt < 500 &&
@@ -3515,13 +4057,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             for (const node of mutation.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
                 if (node.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || node.classList.contains(ENHANCED_POPOVER_SELECTORS.containerClass)) {
-                    // Zero overhead in hide-only mode (when no custom groups & char books hidden)
-                    const needsPopoverGrouping =
-                        (_latestClassification?.customGroups?.length || 0) > 0 ||
-                        Boolean(_latestSettings?.showCharBooks);
-                    if (needsPopoverGrouping) {
-                        requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
-                    }
+                    bindDrawerSafeBubbleGuard(node);
+                    const syncRole = detectEnhancedPopoverRole(node);
+                    if (syncRole) node.dataset.wboPopoverRole = syncRole;
+                    requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
                 } else if (node.classList.contains('character_world')) {
                     enhanceCharBindPopup(node);
                 } else if (node.classList.contains('persona_world')) {
@@ -3564,6 +4103,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
 export function stopNativeObservers() {
     cleanupOpenEditorDropdown();
     cleanupOpenGlobalDropdown();
+    for (const closer of [..._openCustomPickerClosers]) {
+        try { closer(); } catch { /* ignore */ }
+    }
+    _openCustomPickerClosers.clear();
     clearTimeout(_resyncTimer);
     _resyncTimer = null;
     if (_globalSelectObserver) {
