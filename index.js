@@ -57,8 +57,10 @@ import {
     syncNativeQuickActionsUi,
     teardownPanels,
 } from './src/panel.js';
+import { startEntryGrouping, stopEntryGrouping } from './src/entry-groups/lifecycle.js';
+import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.1';
+export const STYLE_ASSET_VERSION = '2.35.2';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _initialAutoScanTimer = null;
@@ -72,6 +74,37 @@ let _deferredSaveTimer = null;
 let _classification = null;
 let _openPanelBridgeHandler = null;
 let _wegEntriesToggledHandler = null;
+const worldbookImports = createWorldbookImportTracker();
+const importsAwaitingCharacterScan = new Map();
+
+function captureWorldbookImport(event) {
+    const input = event.target;
+    if (input?.id !== 'world_import_file' || input.type !== 'file') return;
+    worldbookImports.capture(Array.from(input.files || [], (file) => file.name), getWorldNames());
+}
+
+function applyNewBookImportRules(settings, worldNames, characters, charLore) {
+    const config = settings.importOrganize;
+    if (!config?.rules.length && !config?.sensitiveGroupId) {
+        worldbookImports.clear();
+        importsAwaitingCharacterScan.clear();
+        return 0;
+    }
+    const now = Date.now();
+    for (const name of worldbookImports.collect(worldNames, now)) {
+        if (importsAwaitingCharacterScan.size >= 128) importsAwaitingCharacterScan.delete(importsAwaitingCharacterScan.keys().next().value);
+        importsAwaitingCharacterScan.set(name, now + 5 * 60_000);
+    }
+    if (!importsAwaitingCharacterScan.size) return 0;
+    const live = new Set(worldNames);
+    for (const [name, expires] of importsAwaitingCharacterScan) {
+        if (expires < now || !live.has(name)) importsAwaitingCharacterScan.delete(name);
+    }
+    if (!importsAwaitingCharacterScan.size || findUnscannedShallowCharacters(characters, settings.cachedCharBindings).length > 0) return 0;
+    const plan = planImportedWorldbooks({ settings, titles: [...importsAwaitingCharacterScan.keys()], characters, charLore });
+    importsAwaitingCharacterScan.clear();
+    return applyImportedWorldbookPlan(settings, plan);
+}
 
 /**
  * Bust stale browser/WebView disk cache on `style.css` after an extension update
@@ -284,6 +317,8 @@ function recomputeAndRender({ save = false, deferGlobal = false, backgroundCatch
     }
     const charLore = getCharLoreEntries();
     const powerUser = getPowerUserSettings();
+    const importedMovedCount = applyNewBookImportRules(settings, worldNames, characters, charLore);
+    if (importedMovedCount > 0) save = true;
 
     _bindingMap = buildCharacterBindingIndex({
         characters,
@@ -318,6 +353,7 @@ function recomputeAndRender({ save = false, deferGlobal = false, backgroundCatch
 
     applyAllNativeWorldFilters(_classification, settings, { deferGlobal });
     renderEmbeddedPanel({ backgroundCatchUp });
+    if (importedMovedCount > 0) showToast('success', `已按标题将 ${importedMovedCount} 本导入世界书归组`);
 
     // Gentle initial auto-scan + silent idle catch-up when autoScanNewCharacters is ON
     if (
@@ -620,6 +656,7 @@ async function init() {
     document.getElementById('wbo-extension-settings')?.remove();
 
     recomputeAndRender({ save: false });
+    document.addEventListener('change', captureWorldbookImport, true);
 
     // Watch only direct `<option>` changes in `#world_info` / `#world_editor_select` + bind popup
     startNativeObservers(() => {
@@ -719,22 +756,28 @@ async function init() {
             invalidatePreviewCache(worldName || null);
         };
         window.addEventListener('weg:entries-toggled', _wegEntriesToggledHandler);
+        window.addEventListener('weg:entry-saved', _wegEntriesToggledHandler);
     }
 
     registerSlashCommands(ctx);
     ensureFreshStylesheet();
+    await startEntryGrouping(STYLE_ASSET_VERSION);
 }
 
 /**
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
  */
 export function onDisable() {
+    globalThis.document?.removeEventListener?.('change', captureWorldbookImport, true);
+    worldbookImports.clear();
+    importsAwaitingCharacterScan.clear();
     if (_openPanelBridgeHandler && typeof window !== 'undefined') {
         window.removeEventListener('wbo:open-panel', _openPanelBridgeHandler);
         _openPanelBridgeHandler = null;
     }
     if (_wegEntriesToggledHandler && typeof window !== 'undefined') {
         window.removeEventListener('weg:entries-toggled', _wegEntriesToggledHandler);
+        window.removeEventListener('weg:entry-saved', _wegEntriesToggledHandler);
         _wegEntriesToggledHandler = null;
     }
     clearTimeout(_debounceTimer);
@@ -774,6 +817,7 @@ export function onDisable() {
     _domWorldInfoChangeHandler = null;
     _domEditorChangeHandler = null;
 
+    stopEntryGrouping();
     teardownNativeFilters();
     teardownPanels();
     _initialized = false;

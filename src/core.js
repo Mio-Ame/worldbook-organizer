@@ -156,6 +156,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     includeEmbeddedNameMatch: true,
     autoScanNewCharacters: true,
     autoImportMissingCharBook: false,
+    importOrganize: { sensitivePromptSeen: false, sensitiveGroupId: '', rules: [] },
     autoHideInCharBindPopup: true,
     adaptCharBindPopup: true,
     adaptPersonaBindPopup: true,
@@ -263,6 +264,8 @@ export function normalizeSettings(raw) {
                 : GROUP_COLOR_PALETTE[idx % GROUP_COLOR_PALETTE.length],
             collapsed: Boolean(g.collapsed),
         }));
+
+    merged.importOrganize = normalizeImportOrganize(merged.importOrganize, merged.groups);
 
     for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed', 'bookOrders']) {
         if (!merged[dictKey] || typeof merged[dictKey] !== 'object' || Array.isArray(merged[dictKey])) {
@@ -757,9 +760,28 @@ export function reorderBookInGroup(
     return true;
 }
 
+export function normalizeImportOrganize(raw, groups = []) {
+    const ids = new Set(groups.map((group) => group.id));
+    const seen = new Set();
+    const rules = [];
+    for (const rule of Array.isArray(raw?.rules) ? raw.rules : []) {
+        const keyword = typeof rule?.keyword === 'string' ? rule.keyword.trim().slice(0, 100) : '';
+        if (!keyword || !ids.has(rule.groupId)) continue;
+        const key = keyword.normalize('NFKC').toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rules.push({ keyword, groupId: rule.groupId });
+        if (rules.length >= 100) break;
+    }
+    return {
+        sensitivePromptSeen: raw?.sensitivePromptSeen === true,
+        sensitiveGroupId: ids.has(raw?.sensitiveGroupId) ? raw.sensitiveGroupId : '',
+        rules,
+    };
+}
+
 /**
- * Append a new custom group after existing sections in chronological creation order:
- * default main-panel order is character -> ungrouped -> first-created -> second-created -> ...
+ * Append a new custom group after existing sections in chronological creation order.
  * @param {Record<string, any>} settings
  * @param {{ name: string, color?: string }} input
  */
@@ -1208,7 +1230,6 @@ export function summarizeCharacterWorldCoverage({
 
     for (const [worldName, owners] of bindingMap.entries()) {
         for (const o of owners) {
-            boundAvatars.add(o.avatar);
             if (!liveAvatarSet.has(o.avatar)) {
                 orphanExtraBooks.push({
                     worldName,
@@ -1224,6 +1245,7 @@ export function summarizeCharacterWorldCoverage({
                 }
                 list.books.push({ worldName, source: 'embedded' });
             } else {
+                boundAvatars.add(o.avatar);
                 let list = booksByAvatar.get(o.avatar);
                 if (!list) {
                     list = { avatar: o.avatar, charName: o.charName, books: [] };
@@ -1262,11 +1284,12 @@ export function summarizeCharacterWorldCoverage({
         const realInfo = booksByAvatar.get(avatar);
         const hasRealBinding = Boolean(realInfo && realInfo.books.length > 0);
         for (const b of emb.books) {
+            if (bindingMap.get(b.worldName)?.some((owner) => owner.source !== 'embedded' && liveAvatarSet.has(owner.avatar))) continue;
             embeddedNameMatches.push({
                 avatar,
                 charName: emb.charName,
                 worldName: b.worldName,
-                primaryWorld: realInfo?.books?.[0]?.worldName || '',
+                primaryWorld: realInfo?.books?.find((book) => book.source === 'primary')?.worldName || '',
                 hasRealBinding,
             });
         }
@@ -1424,7 +1447,7 @@ export function extractEmbeddedCharacterBookPreview(charObj, maxChars = 1600) {
         .map((e, idx) => {
             const rawKeys = Array.isArray(e.keys) ? e.keys : (Array.isArray(e.key) ? e.key : []);
             const keys = rawKeys.map((k) => String(k ?? '').trim()).filter(Boolean);
-            const rawContent = String(e.content ?? '').trim();
+            const rawContent = maxChars === Infinity ? String(e.content ?? '') : String(e.content ?? '').trim();
             const content = rawContent.length > maxChars
                 ? `${rawContent.slice(0, maxChars)}…`
                 : rawContent;
@@ -3138,6 +3161,11 @@ export function moveBooksToNamedGroup(
  * @param {Array<{ title: string, keys?: string[], content?: string }>} entriesB
  */
 export function compareWorldbookEntries(entriesA = [], entriesB = []) {
+    const countCharacters = (content) => {
+        let length = 0;
+        for (const character of content) length += 1;
+        return length;
+    };
     const buildIndexed = (list) => {
         const counts = new Map();
         const map = new Map();
@@ -3151,7 +3179,7 @@ export function compareWorldbookEntries(entriesA = [], entriesB = []) {
             map.set(key, {
                 title: String(item?.title || '').trim() || '(无标题)',
                 keys: Array.isArray(item?.keys) ? item.keys : [],
-                content: String(item?.content || '').trim(),
+                content: String(item?.content ?? ''),
             });
         }
         return map;
@@ -3175,8 +3203,8 @@ export function compareWorldbookEntries(entriesA = [], entriesB = []) {
             } else {
                 modified.push({
                     title: a.title,
-                    lenA: a.content.length,
-                    lenB: b.content.length,
+                    lenA: countCharacters(a.content),
+                    lenB: countCharacters(b.content),
                     snippetA: a.content.slice(0, 120),
                     snippetB: b.content.slice(0, 120),
                 });
@@ -3322,6 +3350,7 @@ export function exportConfigData(settings) {
             includeExtraCharBooks: cfg.includeExtraCharBooks,
             includeEmbeddedNameMatch: cfg.includeEmbeddedNameMatch,
             autoScanNewCharacters: cfg.autoScanNewCharacters,
+            importOrganize: cfg.importOrganize,
             autoHideInCharBindPopup: cfg.autoHideInCharBindPopup,
             adaptCharBindPopup: cfg.adaptCharBindPopup,
             adaptPersonaBindPopup: cfg.adaptPersonaBindPopup,

@@ -1592,6 +1592,109 @@
     flex-direction: column !important;
 }
 
+.wbo-bind-content {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 16px;
+}
+
+.wbo-bind-content p {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.wbo-bind-heading,
+.wbo-bind-label,
+.wbo-bind-options {
+    display: grid;
+    gap: 8px;
+    min-width: 0;
+}
+
+.wbo-bind-heading {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    overflow-wrap: anywhere;
+}
+
+.wbo-bind-help {
+    display: contents;
+}
+
+.wbo-bind-help summary {
+    cursor: pointer;
+    display: block;
+    color: var(--wbo-fg-muted);
+    font-size: 16px;
+}
+
+.wbo-bind-help p {
+    grid-column: 1 / -1;
+}
+
+.wbo-bind-help:not([open]) p {
+    display: none;
+}
+
+.wbo-bind-card:not([hidden]) {
+    display: grid;
+    grid-template-columns: 68px minmax(0, 1fr);
+    align-items: center;
+    gap: 12px;
+    overflow-wrap: anywhere;
+}
+
+.wbo-bind-card img {
+    object-fit: cover;
+    border-radius: 6px;
+    background: var(--wbo-bg);
+}
+
+.wbo-bind-options {
+    margin: 0;
+    border: 1px solid var(--wbo-border);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.wbo-bind-options label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-import-rules {
+    display: grid;
+    align-content: start;
+    gap: 12px;
+}
+
+.wbo-import-rules p {
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.wbo-import-field,
+.wbo-import-rule-list {
+    display: grid;
+    gap: 6px;
+}
+
+.wbo-import-rule {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-import-rule > :is(.wbo-input, .wbo-select) {
+    min-width: 0;
+}
+
 .wbo-modal-footer {
     display: flex;
     flex-wrap: wrap;
@@ -2127,6 +2230,13 @@
 
 .wbo-book-actions .wbo-book-more-btn {
     display: none !important;
+}
+
+.wbo-book-actions .wbo-book-bind-btn {
+    width: auto !important;
+    padding: 0 5px !important;
+    gap: 4px;
+    white-space: nowrap;
 }
 
 .wbo-book-more-popover {
@@ -4325,6 +4435,37 @@ details[open] > summary .wbo-details-chev {
     border-bottom: none;
 }
 
+.wbo-cov-row-wrap.wbo-cov-match-card {
+    margin: 8px 10px;
+    border: 1px solid var(--wbo-border);
+    border-radius: 7px;
+}
+
+.wbo-cov-match-card > .wbo-cov-row {
+    grid-template-columns: minmax(0, 38%) minmax(0, 1fr);
+    align-items: stretch;
+    padding: 0;
+    gap: 0;
+}
+
+.wbo-cov-match-card .wbo-cov-subject,
+.wbo-cov-match-card .wbo-cov-targets {
+    padding: 6px 8px;
+    align-items: flex-start;
+}
+
+.wbo-cov-match-card .wbo-cov-subject {
+    border-right: 1px solid var(--wbo-border);
+}
+
+.wbo-cov-match-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--wbo-border);
+}
+
 .wbo-cov-chip-group {
     display: inline-flex;
     align-items: center;
@@ -4414,11 +4555,8 @@ details[open] > summary .wbo-details-chev {
 }
 
 .wbo-cov-same-name-alert {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    display: grid;
+    gap: 3px;
     padding: 8px 10px;
     font-size: 12px;
     line-height: 1.45;
@@ -4427,6 +4565,53 @@ details[open] > summary .wbo-details-chev {
     border-bottom: 1px solid rgba(217, 119, 6, 0.28);
 }
 
+.wbo-cov-same-name-alert p {
+    margin: 0;
+    text-wrap: pretty;
+}
+
+.wbo-diff-table,
+.wbo-cov-unbound-table {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.wbo-diff-table :is(th, td),
+.wbo-cov-unbound-table :is(th, td) {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--wbo-border);
+    text-align: left;
+    overflow-wrap: anywhere;
+}
+
+.wbo-diff-table thead,
+.wbo-cov-unbound-table thead {
+    background: var(--wbo-surface);
+}
+
+.wbo-diff-table thead th:first-child,
+.wbo-cov-unbound-table thead th:first-child {
+    width: 44%;
+}
+
+.wbo-diff-table :is(th, td) + :is(th, td),
+.wbo-cov-unbound-table :is(th, td) + :is(th, td) {
+    border-left: 1px solid var(--wbo-border);
+}
+
+.wbo-diff-table tbody td {
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.wbo-cov-unbound-table .wbo-jump-link {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: left;
+}
 .wbo-cov-reason {
     display: block;
     font-size: 11px;
@@ -4441,11 +4626,19 @@ details[open] > summary .wbo-details-chev {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+}
+
+.wbo-cov-pane-note,
+.wbo-cov-orphan-bar {
     padding: 7px 10px;
     font-size: 12px;
     color: var(--wbo-fg-muted);
     background: var(--wbo-bg-elevated);
     border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-cov-pane-note {
+    margin: 0;
 }
 
 .wbo-cov-drawer {
@@ -5791,7 +5984,7 @@ details[open] > summary .wbo-details-chev {
         margin: 0 4px 6px 8px;
         padding: 8px 8px 10px 10px;
     }
-    .wbo-book-preview .wbo-preview-head-actions > :not([data-acc-sort]) {
+    .wbo-book-preview .wbo-preview-head-actions > :not([data-acc-sort], [data-acc-extra="bind-book-to-character"]) {
         display: none !important;
     }
     .wbo-acc-editor-slot {
@@ -6157,6 +6350,19 @@ details[open] > summary .wbo-details-chev {
     gap: 5px;
 }
 
+.wbo-gp-pills.wbo-book-group-switcher {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 3px;
+    scrollbar-width: thin;
+}
+
+.wbo-book-group-switcher > .wbo-pill {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
 .wbo-gp-sec {
     display: flex;
     flex-direction: column;
@@ -6507,6 +6713,12 @@ details[open] > summary .wbo-details-chev {
     gap: 5px;
 }
 
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-acc-toolbar-right > [data-acc-mono] {
+        display: none !important;
+    }
+}
+
 .wbo-acc-mini-btn,
 .wbo-acc-tool-btn {
     height: 24px !important;
@@ -6814,7 +7026,7 @@ details[open] > summary .wbo-details-chev {
         margin: 0 4px 6px 8px;
         padding: 8px 8px 10px 10px;
     }
-    .wbo-book-preview .wbo-preview-head-actions > :not([data-acc-sort]) {
+    .wbo-book-preview .wbo-preview-head-actions > :not([data-acc-sort], [data-acc-extra="bind-book-to-character"]) {
         display: none !important;
     }
     .wbo-acc-editor-slot {
@@ -7236,6 +7448,10 @@ details[open] > summary .wbo-details-chev {
     background: var(--wbo-accent-soft);
 }
 
+.wbo-qhub-combo-row.is-selected:not(.is-active) {
+    border-color: var(--wbo-accent);
+}
+
 .wbo-qhub-combo-main {
     flex: 1 1 auto !important;
     min-width: 0 !important;
@@ -7276,6 +7492,18 @@ details[open] > summary .wbo-details-chev {
     align-items: center;
     gap: 4px;
     flex-shrink: 0;
+}
+
+@media (max-width: 420px) {
+    .wbo-qhub-combo-row {
+        flex-wrap: wrap;
+    }
+    .wbo-qhub-combo-main {
+        flex-basis: 100% !important;
+    }
+    .wbo-qhub-combo-acts {
+        margin-left: auto;
+    }
 }
 
 .wbo-qhub-mini-btn {
@@ -7431,6 +7659,11 @@ details[open] > summary .wbo-details-chev {
     min-width: 140px;
 }
 
+.wbo-cmb-pick-feedback {
+    color: var(--wbo-fg-muted);
+    font-size: 12px;
+}
+
 /* Customizable AI Organize Presets Bar & Manager Cards */
 .wbo-ai-save-preset-bar {
     display: flex;
@@ -7499,12 +7732,11 @@ details[open] > summary .wbo-details-chev {
     }
 }
 
-/* Prevent iOS WebKit auto-zoom & viewport shift when focusing search/text inputs on mobile/touch */
+/* Prevent iOS WebKit auto-zoom on native-picker searches and modal text editors. */
 @media (max-width: 680px), (pointer: coarse) {
     .wbo-mp-popover .wbo-search-input,
     .wbo-mp-popover input,
-    .wbo-modal .wbo-input,
-    .wbo-modal .wbo-search-input,
+    .wbo-modal .wbo-input:not([type="search"]),
     .wbo-modal .wbo-textarea {
         font-size: 16px !important;
     }
@@ -7517,8 +7749,7 @@ details[open] > summary .wbo-details-chev {
         height: 34px !important;
         min-height: 34px !important;
     }
-    .wbo-modal .wbo-input,
-    .wbo-modal .wbo-search-input {
+    .wbo-modal .wbo-input:not([type="search"]) {
         min-height: 34px !important;
     }
 }

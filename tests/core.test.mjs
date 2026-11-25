@@ -1,7 +1,20 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import util from 'node:util';
+
+function getPanelSourcePaths() {
+    const panelSources = readdirSync(new URL('../src/', import.meta.url))
+        .filter((name) => /^panel(?:-[a-z-]+)?\.js$/.test(name))
+        .map((name) => `../src/${name}`);
+    return [...panelSources, '../src/entry-groups/panel.js'];
+}
+
+function readPanelSource() {
+    return getPanelSourcePaths()
+        .map((file) => readFileSync(new URL(file, import.meta.url), 'utf8'))
+        .join('\n');
+}
 
 import {
     AI_ORGANIZE_CATEGORY_PRESETS,
@@ -570,6 +583,16 @@ test('entry module and all submodules resolve and import without missing paths',
         const mod = await import('../index.js');
         assert.equal(typeof mod.onDisable, 'function');
         assert.equal(typeof mod.onClean, 'function');
+        const panel = await import('../src/panel.js');
+        assert.deepEqual(Object.keys(panel), [
+            'bindPanelCallbacks',
+            'invalidatePreviewCache',
+            'openManagerModal',
+            'renderEmbeddedPanel',
+            'syncEmbeddedPanelIndicators',
+            'syncNativeQuickActionsUi',
+            'teardownPanels',
+        ]);
     } finally {
         if (prevDoc === undefined) delete globalThis.document;
         else globalThis.document = prevDoc;
@@ -1940,12 +1963,12 @@ test('Persistent UI preferences, legacy quick-action migration, and static CSS/s
     assert.match(cssSrc, /\.wbo-book-actions\s+\.wbo-book-action-secondary\s*\{\s*display:\s*none\s*!important;/, 'responsive .wbo-book-action-secondary hide rule must out-specify .wbo-icon-btn');
 
     const forbiddenThirdPartyRe = /(?:baibai|st-baibai-tools|柏宝箱)/i;
-    for (const relPath of ['../style.css', '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', '../src/panel.js', '../src/entry-accordion.js', '../src/native-filter.js']) {
+    for (const relPath of ['../style.css', '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', ...getPanelSourcePaths(), '../src/entry-accordion.js', '../src/native-filter.js']) {
         const txt = readFileSync(new URL(relPath, import.meta.url), 'utf8');
         assert.equal(forbiddenThirdPartyRe.test(txt), false, `Forbidden third-party reference found in ${relPath}`);
     }
 
-    for (const relPath of ['../src/panel.js', '../src/entry-accordion.js', '../src/native-filter.js']) {
+    for (const relPath of [...getPanelSourcePaths(), '../src/entry-accordion.js', '../src/native-filter.js']) {
         const jsSrc = readFileSync(new URL(relPath, import.meta.url), 'utf8');
         const noBlockComments = jsSrc.replace(/\/\*[\s\S]*?\*\//g, '');
         const tags = noBlockComments.match(/<(?:textarea|input)\b(?:\$\{[^}]*\}|[^>])*>/gi) || [];
@@ -1957,7 +1980,7 @@ test('Persistent UI preferences, legacy quick-action migration, and static CSS/s
         }
     }
 
-    for (const relPath of ['../src/panel.js', '../src/entry-accordion.js']) {
+    for (const relPath of [...getPanelSourcePaths(), '../src/entry-accordion.js']) {
         const rawSrc = readFileSync(new URL(relPath, import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
         const lines = rawSrc.split(/\r?\n/);
         for (let i = 0; i < lines.length; i += 1) {
@@ -3431,16 +3454,16 @@ test('R6.2 .wbo-mp-backdrop pointerdown over trigger rect suppresses trailing cl
     }
 });
 
-test('narrow expanded worldbook preview prevents 1-char vertical summary crush and keeps [data-acc-sort] visible while absorbing secondary buttons', () => {
+test('narrow worldbook preview keeps the summary, sort picker and binding action readable', () => {
     const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
     assert.match(css, /\.wbo-acc-summary\s*\{[^}]*white-space:\s*nowrap/s);
     assert.match(css, /\.wbo-preview-head\s*\{[^}]*flex-wrap:\s*wrap/s);
-    assert.match(css, /@container\s+plugin-win\s*\(max-width:\s*600px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\]\)\s*\{\s*display:\s*none\s*!important;/);
-    assert.match(css, /@media\s*\(max-width:\s*680px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\]\)\s*\{\s*display:\s*none\s*!important;/);
+    assert.match(css, /@container\s+plugin-win\s*\(max-width:\s*600px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\],\s*\[data-acc-extra="bind-book-to-character"\]\)\s*\{\s*display:\s*none\s*!important;/);
+    assert.match(css, /@media\s*\(max-width:\s*680px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\],\s*\[data-acc-extra="bind-book-to-character"\]\)\s*\{\s*display:\s*none\s*!important;/);
 });
 
 test('v2.35.1 polish: deleteWorldbookEntryDirect, gr-option pin stars across flat/grouped/re-rendered popovers, no duplicate scan status, and standard undo SVG', async () => {
-    const panelSrc = readFileSync(new URL('../src/panel.js', import.meta.url), 'utf8');
+    const panelSrc = readPanelSource();
     const accSrc = readFileSync(new URL('../src/entry-accordion.js', import.meta.url), 'utf8');
     const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
 
@@ -3452,9 +3475,10 @@ test('v2.35.1 polish: deleteWorldbookEntryDirect, gr-option pin stars across fla
     assert.ok(!panelSrc.includes('id="wbo-scan-top-status"'), 'duplicate scan status box removed');
     assert.equal((panelSrc.match(/id="wbo-scan-status"/g) || []).length, 1, 'exactly one scan status element');
 
-    // 3. Entry-groups detection checks live active DOM / disabledExtensions, never leftover settings.json alone
-    assert.ok(panelSrc.includes('disabledExtensions'), 'isEntryGroupsInstalled respects disabledExtensions');
-    assert.ok(!panelSrc.includes('ctx?.extensionSettings?.worldbook_entry_groups !== undefined'), 'does not falsely trigger on leftover settings key');
+    // 3. A legacy settings record alone must not be used as an install marker.
+    const legacySrc = readFileSync(new URL('../src/entry-groups/legacy.js', import.meta.url), 'utf8');
+    assert.ok(legacySrc.includes('disabledExtensions'));
+    assert.ok(!panelSrc.includes('ctx?.extensionSettings?.worldbook_entry_groups !== undefined'));
 
     // 4. Tall mode never calls scrollIntoView on contentArea, and find nav wraps prev+next together
     assert.ok(!accSrc.includes('contentArea.scrollIntoView'), 'tall mode must keep scroll position stationary');
@@ -5993,7 +6017,7 @@ test('M3 R2, R3 & R5 panel.js: 3-button+gear header, visibility-skipping moves, 
 
 test('M3 R4 & R5 static CSS guardrails: switch capsule !important, footer alignment, floating overlay, and 3-button header grid', () => {
     const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
-    const panelSrc = readFileSync(new URL('../src/panel.js', import.meta.url), 'utf8');
+    const panelSrc = readPanelSource();
 
     // Switch capsule isolation
     assert.match(css, /\.wbo-tool-switch\s*>\s*input,\s*\r?\n\.wbo-modal\s+\.wbo-tool-switch\s*>\s*input\[type="checkbox"\]\s*\{[\s\S]*?position:\s*absolute\s*!important;[\s\S]*?width:\s*1px\s*!important;/);
@@ -6761,6 +6785,8 @@ test('M3 R4 regression: 1-click NSFW & moveBooksToNamedGroup preserve exclude_fr
         panelMod.openManagerModal();
         dom.doc.querySelector('[data-action="open-ai-organize"]').click();
 
+        dom.doc.querySelector('[data-ai-book-tab="sensitive"]').click();
+        dom.doc.getElementById('wbo-pick-toggle-sens').click();
         const moveNsfwBtn = dom.doc.querySelector('[data-action-move-nsfw]');
         assert.ok(moveNsfwBtn);
         assert.equal(moveNsfwBtn.hidden, false);

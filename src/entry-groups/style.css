@@ -1,0 +1,2327 @@
+/* Worldbook Entry Groups — Minimalist low-saturation solid-surface modal + theme-following native button */
+
+.weg-modal-backdrop[hidden],
+.weg-modal [hidden],
+.weg-submodal-host[hidden] {
+    display: none !important;
+}
+
+/* Native toolbar shortcut button inside `#world_popup`: follows active SillyTavern theme seamlessly */
+#weg-native-entry-btn.weg-native-entry-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    margin: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+/* Native Extensions Drawer (`#extensions_settings2`) card body */
+.weg-ext-drawer-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px 2px;
+}
+
+.weg-ext-route-hint {
+    font-size: 12.5px;
+    opacity: 0.78;
+    line-height: 1.4;
+}
+
+.weg-ext-open-btn {
+    width: 100%;
+    justify-content: center;
+}
+
+/* Gentle highlight flash when locating an entry inside SillyTavern's native `#world_popup_entries_list` */
+@keyframes weg-locate-pulse {
+    0% {
+        box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, #7a9a83);
+        background-color: rgba(122, 154, 131, 0.18);
+    }
+    100% {
+        box-shadow: 0 0 0 0 transparent;
+        background-color: transparent;
+    }
+}
+
+.world_entry.weg-entry-locate-flash {
+    animation: weg-locate-pulse 1.9s ease-out;
+    border-radius: 6px;
+}
+
+/* ==========================================================================
+   Theme Tokens — Default Palette: 素雅纸墨 (Paper & Graphite Ink)
+   ========================================================================== */
+.weg-modal,
+.weg-floating-menu,
+.weg-minimized-pill {
+    --weg-bg: #191a1d;
+    --weg-bg-elevated: #212226;
+    --weg-surface: #24252a;
+    --weg-surface-hover: #2d2f36;
+    --weg-surface-active: #353840;
+    --weg-fg: #e7e7e4;
+    --weg-fg-muted: #9a9b9f;
+    --weg-border: #32343a;
+    --weg-border-strong: #4a4d56;
+    --weg-accent: #dcdcd8;
+    --weg-accent-hover: #efefe9;
+    --weg-accent-fg: #18191c;
+    --weg-accent-soft: rgba(220, 220, 216, 0.13);
+    --weg-if-accent: #7da89b;
+    --weg-if-soft: rgba(125, 168, 155, 0.15);
+    --weg-danger: #d4716a;
+    --weg-danger-soft: rgba(212, 113, 106, 0.14);
+    --weg-track-off: #484a52;
+    --weg-track-on: #dcdcd8;
+    --weg-thumb: #18191c;
+    --weg-thumb-off: #e7e7e4;
+    --weg-pin: #c9a86a;
+    --weg-pin-soft: rgba(201, 168, 106, 0.13);
+    box-sizing: border-box;
+    color: var(--weg-fg);
+    font-family: inherit;
+}
+
+.weg-modal.weg-theme-light,
+.weg-floating-menu.weg-theme-light,
+.weg-minimized-pill.weg-theme-light {
+    --weg-bg: #f6f6f3;
+    --weg-bg-elevated: #eeeeea;
+    --weg-surface: #fcfcfb;
+    --weg-surface-hover: #f0f0ec;
+    --weg-surface-active: #e6e6e0;
+    --weg-fg: #222224;
+    --weg-fg-muted: #6c6c70;
+    --weg-border: #dfdfd9;
+    --weg-border-strong: #c6c6be;
+    --weg-accent: #2c2c2e;
+    --weg-accent-hover: #161618;
+    --weg-accent-fg: #fcfcfb;
+    --weg-accent-soft: rgba(44, 44, 46, 0.08);
+    --weg-if-accent: #366f65;
+    --weg-if-soft: rgba(54, 111, 101, 0.11);
+    --weg-danger: #b8443e;
+    --weg-danger-soft: rgba(184, 68, 62, 0.10);
+    --weg-track-off: #cbcbc3;
+    --weg-track-on: #2c2c2e;
+    --weg-thumb: #fcfcfb;
+    --weg-thumb-off: #ffffff;
+    --weg-pin: #9b7332;
+    --weg-pin-soft: rgba(155, 115, 50, 0.10);
+}
+
+/* Palette 2: 素纸青岚 */
+.weg-modal[data-weg-palette="ink"].weg-theme-light,
+.weg-floating-menu[data-weg-palette="ink"].weg-theme-light,
+.weg-minimized-pill[data-weg-palette="ink"].weg-theme-light {
+    --weg-bg: #f1f4f6;
+    --weg-bg-elevated: #e7ecef;
+    --weg-surface: #fbfcfd;
+    --weg-surface-hover: #e6eef2;
+    --weg-surface-active: #dce6ec;
+    --weg-fg: #1f2d3a;
+    --weg-fg-muted: #5c6f82;
+    --weg-border: #d4dde3;
+    --weg-border-strong: #aebec9;
+    --weg-accent: #2c7a7b;
+    --weg-accent-hover: #236364;
+    --weg-accent-fg: #ffffff;
+    --weg-accent-soft: rgba(44, 122, 123, 0.11);
+    --weg-if-accent: #2c7a7b;
+    --weg-if-soft: rgba(44, 122, 123, 0.12);
+    --weg-track-off: #bdcad4;
+    --weg-track-on: #2c7a7b;
+    --weg-thumb: #ffffff;
+    --weg-pin: #9a7438;
+    --weg-pin-soft: rgba(154, 116, 56, 0.10);
+}
+
+.weg-modal[data-weg-palette="ink"].weg-theme-dark,
+.weg-floating-menu[data-weg-palette="ink"].weg-theme-dark,
+.weg-minimized-pill[data-weg-palette="ink"].weg-theme-dark {
+    --weg-bg: #20252d;
+    --weg-bg-elevated: #272d37;
+    --weg-surface: #2a313c;
+    --weg-surface-hover: #333c4a;
+    --weg-surface-active: #3d4758;
+    --weg-fg: #e2e8f0;
+    --weg-fg-muted: #94a3b8;
+    --weg-border: #384150;
+    --weg-border-strong: #515e73;
+    --weg-accent: #56b4b0;
+    --weg-accent-hover: #67c4c0;
+    --weg-accent-fg: #132226;
+    --weg-accent-soft: rgba(86, 180, 176, 0.16);
+    --weg-if-accent: #56b4b0;
+    --weg-if-soft: rgba(86, 180, 176, 0.16);
+    --weg-track-off: #4a5568;
+    --weg-track-on: #56b4b0;
+    --weg-thumb: #132226;
+    --weg-pin: #c8a96e;
+    --weg-pin-soft: rgba(200, 169, 110, 0.14);
+}
+
+/* Palette 3: 暖笺琥珀 */
+.weg-modal[data-weg-palette="warm"].weg-theme-light,
+.weg-floating-menu[data-weg-palette="warm"].weg-theme-light,
+.weg-minimized-pill[data-weg-palette="warm"].weg-theme-light {
+    --weg-bg: #f6f2ea;
+    --weg-bg-elevated: #ede7dc;
+    --weg-surface: #fdfbf7;
+    --weg-surface-hover: #f2ebe0;
+    --weg-surface-active: #e9dfd0;
+    --weg-fg: #2b241d;
+    --weg-fg-muted: #756759;
+    --weg-border: #dfd6c8;
+    --weg-border-strong: #c5b8a4;
+    --weg-accent: #b66634;
+    --weg-accent-hover: #9c5428;
+    --weg-accent-fg: #ffffff;
+    --weg-accent-soft: rgba(182, 102, 52, 0.11);
+    --weg-if-accent: #a65c2e;
+    --weg-if-soft: rgba(182, 102, 52, 0.12);
+    --weg-track-off: #cfc4b4;
+    --weg-track-on: #b66634;
+    --weg-thumb: #ffffff;
+    --weg-pin: #b66634;
+    --weg-pin-soft: rgba(182, 102, 52, 0.11);
+}
+
+.weg-modal[data-weg-palette="warm"].weg-theme-dark,
+.weg-floating-menu[data-weg-palette="warm"].weg-theme-dark,
+.weg-minimized-pill[data-weg-palette="warm"].weg-theme-dark {
+    --weg-bg: #221e1b;
+    --weg-bg-elevated: #2a2521;
+    --weg-surface: #2d2823;
+    --weg-surface-hover: #37312b;
+    --weg-surface-active: #423b34;
+    --weg-fg: #efe8df;
+    --weg-fg-muted: #a6998c;
+    --weg-border: #3d352e;
+    --weg-border-strong: #574c42;
+    --weg-accent: #de935f;
+    --weg-accent-hover: #eaa372;
+    --weg-accent-fg: #231810;
+    --weg-accent-soft: rgba(222, 147, 95, 0.16);
+    --weg-if-accent: #de935f;
+    --weg-if-soft: rgba(222, 147, 95, 0.16);
+    --weg-track-off: #544940;
+    --weg-track-on: #de935f;
+    --weg-thumb: #231810;
+    --weg-pin: #de935f;
+    --weg-pin-soft: rgba(222, 147, 95, 0.15);
+}
+
+/* Palette 4: 雾粉紫烟 */
+.weg-modal[data-weg-palette="sakura"].weg-theme-light,
+.weg-floating-menu[data-weg-palette="sakura"].weg-theme-light,
+.weg-minimized-pill[data-weg-palette="sakura"].weg-theme-light {
+    --weg-bg: #f8f4f7;
+    --weg-bg-elevated: #f0e8ee;
+    --weg-surface: #fefcfd;
+    --weg-surface-hover: #f4eaf0;
+    --weg-surface-active: #ecdde6;
+    --weg-fg: #2c2129;
+    --weg-fg-muted: #766270;
+    --weg-border: #e5d7e0;
+    --weg-border-strong: #ccb7c5;
+    --weg-accent: #b85c88;
+    --weg-accent-hover: #9e4b73;
+    --weg-accent-fg: #ffffff;
+    --weg-accent-soft: rgba(184, 92, 136, 0.11);
+    --weg-if-accent: #a64f79;
+    --weg-if-soft: rgba(184, 92, 136, 0.12);
+    --weg-track-off: #d4c3ce;
+    --weg-track-on: #b85c88;
+    --weg-thumb: #ffffff;
+    --weg-pin: #9c6a44;
+    --weg-pin-soft: rgba(156, 106, 68, 0.10);
+}
+
+.weg-modal[data-weg-palette="sakura"].weg-theme-dark,
+.weg-floating-menu[data-weg-palette="sakura"].weg-theme-dark,
+.weg-minimized-pill[data-weg-palette="sakura"].weg-theme-dark {
+    --weg-bg: #211d24;
+    --weg-bg-elevated: #29242d;
+    --weg-surface: #2c2732;
+    --weg-surface-hover: #362f3e;
+    --weg-surface-active: #41394a;
+    --weg-fg: #efe8f0;
+    --weg-fg-muted: #a696aa;
+    --weg-border: #3d3544;
+    --weg-border-strong: #564a60;
+    --weg-accent: #dc88b0;
+    --weg-accent-hover: #e79bc0;
+    --weg-accent-fg: #24131c;
+    --weg-accent-soft: rgba(220, 136, 176, 0.16);
+    --weg-if-accent: #dc88b0;
+    --weg-if-soft: rgba(220, 136, 176, 0.16);
+    --weg-track-off: #53485c;
+    --weg-track-on: #dc88b0;
+    --weg-thumb: #24131c;
+    --weg-pin: #d0a47c;
+    --weg-pin-soft: rgba(208, 164, 124, 0.14);
+}
+
+/* Palette 5: 跟随酒馆 (Opaque solid fallback mixed from SmartTheme tokens so glass themes never bleed text) */
+.weg-modal[data-weg-palette="host"].weg-theme-light,
+.weg-floating-menu[data-weg-palette="host"].weg-theme-light,
+.weg-minimized-pill[data-weg-palette="host"].weg-theme-light {
+    --weg-bg-base: #f5f5f5;
+    --weg-bg-elevated-base: #f4f4f4;
+    --weg-surface-base: #ffffff;
+    --weg-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #f5f5f5) 88%, #ffffff);
+    --weg-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #222222) 6%, #f4f4f4);
+    --weg-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, #ffffff) 94%, #ffffff);
+    --weg-surface-hover: color-mix(in srgb, var(--SmartThemeBodyColor, #222222) 8%, #ffffff);
+    --weg-surface-active: color-mix(in srgb, var(--SmartThemeBodyColor, #222222) 13%, #ffffff);
+    --weg-fg: var(--SmartThemeBodyColor, #1f2329);
+    --weg-fg-muted: color-mix(in srgb, var(--weg-fg) 64%, #888888);
+    --weg-border: color-mix(in srgb, var(--weg-fg) 16%, #dddddd);
+    --weg-border-strong: color-mix(in srgb, var(--weg-fg) 30%, #cccccc);
+    --weg-accent: var(--SmartThemeQuoteColor, #2f5e58);
+    --weg-accent-hover: color-mix(in srgb, var(--weg-accent) 85%, #000000);
+    --weg-accent-fg: #ffffff;
+    --weg-track-off: color-mix(in srgb, var(--weg-fg) 24%, #d0d0d0);
+    --weg-track-on: var(--weg-accent);
+    --weg-thumb: #ffffff;
+    --weg-pin: var(--weg-accent);
+    --weg-pin-soft: color-mix(in srgb, var(--weg-accent) 11%, var(--weg-surface-base));
+}
+
+.weg-modal[data-weg-palette="host"].weg-theme-dark,
+.weg-floating-menu[data-weg-palette="host"].weg-theme-dark,
+.weg-minimized-pill[data-weg-palette="host"].weg-theme-dark {
+    --weg-bg-base: #181a20;
+    --weg-bg-elevated-base: #1f222a;
+    --weg-surface-base: #20232b;
+    --weg-bg: color-mix(in srgb, var(--SmartThemeBlurTintColor, #1e2128) 88%, #181a20);
+    --weg-bg-elevated: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 6%, #1f222a);
+    --weg-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, #252830) 90%, #20232b);
+    --weg-surface-hover: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 9%, #23262f);
+    --weg-surface-active: color-mix(in srgb, var(--SmartThemeBodyColor, #e2e8f0) 14%, #262a34);
+    --weg-fg: var(--SmartThemeBodyColor, #e2e8f0);
+    --weg-fg-muted: color-mix(in srgb, var(--weg-fg) 66%, #888888);
+    --weg-border: color-mix(in srgb, var(--weg-fg) 16%, #2c303a);
+    --weg-border-strong: color-mix(in srgb, var(--weg-fg) 28%, #3a3f4c);
+    --weg-accent: var(--SmartThemeQuoteColor, #6ab0a6);
+    --weg-accent-hover: color-mix(in srgb, var(--weg-accent) 85%, #ffffff);
+    --weg-accent-fg: #14181d;
+    --weg-track-off: color-mix(in srgb, var(--weg-fg) 24%, #3c404d);
+    --weg-track-on: var(--weg-accent);
+    --weg-thumb: #14181d;
+    --weg-pin: var(--weg-accent);
+    --weg-pin-soft: color-mix(in srgb, var(--weg-accent) 16%, var(--weg-surface-base));
+}
+
+/* ==========================================================================
+   Modal Shell — Transparent Backdrop & Strictly Fixed Window Size
+   ========================================================================== */
+.weg-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 31000;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.weg-modal {
+    position: relative;
+    width: 760px;
+    max-width: calc(100vw - 28px);
+    min-width: 340px;
+    height: 620px;
+    max-height: 100dvh;
+    min-height: 280px;
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    border: 1px solid var(--weg-border-strong);
+    border-radius: 10px;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.26);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-sizing: border-box;
+    line-height: 1.4;
+    pointer-events: auto;
+    container-type: inline-size;
+    container-name: plugin-win;
+}
+
+.weg-modal.is-positioned {
+    position: fixed;
+    margin: 0;
+    max-width: none;
+    max-height: 100dvh;
+}
+
+.weg-minimized-pill {
+    position: fixed;
+    right: 16px;
+    bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+    z-index: 31000;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 999px;
+    border: 1px solid var(--weg-border-strong);
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    color: var(--weg-fg);
+    font-size: 13px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+    pointer-events: auto;
+    white-space: nowrap;
+}
+
+.weg-minimized-pill:hover {
+    background: var(--weg-surface-hover);
+}
+
+.weg-modal *,
+.weg-floating-menu * {
+    box-sizing: border-box;
+}
+
+.weg-view {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Constant Top Header */
+.weg-header {
+    flex-shrink: 0;
+    height: 48px;
+    padding: 0 14px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+}
+
+.weg-header:active {
+    cursor: grabbing;
+}
+
+.weg-header button,
+.weg-header select,
+.weg-header input {
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.weg-header-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.weg-header-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--weg-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-header-stats {
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* Constant Second-Row Toolbar (Uniform height = 34px, radius = 6px) */
+.weg-toolbar {
+    flex-shrink: 0;
+    padding: 8px 14px;
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.weg-book-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 42%;
+    min-width: 180px;
+    flex-shrink: 0;
+}
+
+.weg-filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+}
+
+.weg-search-wrap {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+}
+
+.weg-search-icon {
+    position: absolute;
+    left: 10px;
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    pointer-events: none;
+}
+
+.weg-input,
+.weg-select {
+    height: 34px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    font-size: 13px;
+    padding: 0 10px;
+    margin: 0;
+    outline: none;
+    line-height: 32px;
+}
+
+.weg-input:focus,
+.weg-select:focus {
+    border-color: var(--weg-border-strong);
+}
+
+.weg-book-select {
+    flex: 1;
+    min-width: 0;
+}
+
+.weg-search-input {
+    width: 100%;
+    padding-left: 30px;
+    padding-right: 46px;
+}
+
+/* Constant Quick-Filter Capsule Bar (Zero height jump across desktop & mobile) */
+.weg-quick-filters {
+    flex-shrink: 0;
+    height: 36px;
+    min-height: 36px;
+    padding: 0 14px;
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+
+.weg-quick-filters::-webkit-scrollbar {
+    display: none;
+}
+
+.weg-filter-pill {
+    height: 24px;
+    padding: 0 10px;
+    border-radius: 999px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg-muted);
+    font-size: 12px;
+    line-height: 22px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    cursor: pointer;
+    margin: 0;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.weg-filter-pill:hover {
+    background: var(--weg-surface-hover);
+    border-color: var(--weg-border-strong);
+    color: var(--weg-fg);
+}
+
+.weg-filter-pill.is-active {
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-accent-soft), var(--weg-accent-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+    border-color: var(--weg-border-strong);
+    color: var(--weg-fg);
+    font-weight: 500;
+}
+
+.weg-filter-pill.is-pin-pill .fa-star {
+    font-size: 11px;
+    color: var(--weg-pin);
+}
+
+.weg-filter-pill.is-pin-pill.is-active {
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-pin-soft), var(--weg-pin-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+    border-color: color-mix(in srgb, var(--weg-pin) 55%, var(--weg-border));
+    color: var(--weg-pin);
+}
+
+.weg-filter-pill-count {
+    font-variant-numeric: tabular-nums;
+    opacity: 0.88;
+}
+
+.weg-clear-input-btn {
+    position: absolute;
+    right: 6px;
+    height: 22px;
+    padding: 0 7px;
+    border-radius: 4px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    color: var(--weg-fg-muted);
+    font-size: 11px;
+    cursor: pointer;
+    line-height: 20px;
+}
+
+.weg-clear-input-btn:hover {
+    color: var(--weg-fg);
+    background: var(--weg-surface-hover);
+}
+
+.weg-input-with-clear {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+}
+
+.weg-input-with-clear .weg-input {
+    width: 100%;
+    padding-right: 52px;
+}
+
+/* Uniform Buttons */
+.weg-btn,
+.weg-icon-btn {
+    height: 32px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    font-size: 13px;
+    padding: 0 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    margin: 0;
+    transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.weg-toolbar .weg-icon-btn {
+    height: 34px;
+    width: 34px;
+    padding: 0;
+}
+
+.weg-icon-btn {
+    width: 32px;
+    padding: 0;
+}
+
+.weg-btn:hover:not(:disabled),
+.weg-icon-btn:hover:not(:disabled) {
+    background: var(--weg-surface-hover);
+    border-color: var(--weg-border-strong);
+}
+
+.weg-btn:disabled,
+.weg-icon-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+}
+
+.weg-btn-primary {
+    background: var(--weg-accent);
+    border-color: var(--weg-accent);
+    color: var(--weg-accent-fg);
+    font-weight: 500;
+}
+
+.weg-btn-primary:hover:not(:disabled) {
+    background: var(--weg-accent-hover);
+    border-color: var(--weg-accent-hover);
+}
+
+.weg-btn-danger {
+    color: var(--weg-danger);
+    border-color: color-mix(in srgb, var(--weg-danger) 45%, var(--weg-border));
+    background: var(--weg-danger-soft);
+}
+
+.weg-btn-danger:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--weg-danger) 22%, transparent);
+}
+
+/* ==========================================================================
+   Constant Per-Chat Save Route Binding Bar (Zero height jitter)
+   ========================================================================== */
+.weg-save-bar {
+    flex-shrink: 0;
+    min-height: 36px;
+    padding: 4px 14px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.weg-save-bar-info {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.weg-save-icon {
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    flex-shrink: 0;
+}
+
+.weg-save-icon.is-bound {
+    color: var(--weg-if-accent);
+}
+
+.weg-save-bar-text {
+    font-size: 12px;
+    color: var(--weg-fg);
+    min-width: 0;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-save-bar-text.is-muted,
+.weg-save-chatid {
+    color: var(--weg-fg-muted);
+}
+
+.weg-save-bar-actions {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.weg-mini-btn {
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 4px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    font-size: 11.5px;
+    cursor: pointer;
+    white-space: nowrap;
+    line-height: 22px;
+}
+
+.weg-mini-select {
+    height: 24px;
+    max-width: 156px;
+    padding: 0 6px;
+    border-radius: 4px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    font-size: 11.5px;
+    outline: none;
+    line-height: 22px;
+}
+
+.weg-mini-btn:hover:not(:disabled) {
+    background: var(--weg-surface-hover);
+    border-color: var(--weg-border-strong);
+}
+
+.weg-mini-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.weg-mini-btn.is-primary {
+    background: var(--weg-accent);
+    border-color: var(--weg-accent);
+    color: var(--weg-accent-fg);
+}
+
+.weg-mini-btn.is-muted {
+    color: var(--weg-fg-muted);
+}
+
+.weg-mini-btn.is-danger {
+    color: var(--weg-danger);
+    border-color: color-mix(in srgb, var(--weg-danger) 42%, var(--weg-border));
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-danger-soft), var(--weg-danger-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+}
+
+/* ==========================================================================
+   Scrollable Middle Body — Group Cards & Single-Line Entry Rows
+   ========================================================================== */
+.weg-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 10px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.weg-inline-notice {
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--weg-if-accent) 42%, var(--weg-border));
+    background: var(--weg-if-soft);
+    color: var(--weg-fg);
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.weg-deleted-drafts-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.weg-deleted-draft-card {
+    border: 1px solid color-mix(in srgb, var(--weg-danger) 48%, var(--weg-border));
+    border-radius: 8px;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.weg-deleted-draft-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-danger-soft), var(--weg-danger-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+}
+
+.weg-deleted-draft-msg {
+    display: flex;
+    align-items: flex-start;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    font-size: 12.5px;
+    color: var(--weg-fg);
+    line-height: 1.4;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+}
+
+.weg-deleted-draft-msg .fa-triangle-exclamation {
+    color: var(--weg-danger);
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.weg-deleted-draft-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.weg-group-card {
+    border: 1px solid var(--weg-border);
+    border-radius: 8px;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    overflow: hidden;
+    flex-shrink: 0;
+    contain: layout style;
+}
+
+.weg-group-card.is-active-if {
+    border-color: color-mix(in srgb, var(--weg-if-accent) 55%, var(--weg-border));
+}
+
+.weg-group-card.is-pinned {
+    border-color: color-mix(in srgb, var(--weg-pin) 45%, var(--weg-border));
+}
+
+.weg-group-card.is-pinned .weg-group-header {
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-pin-soft), var(--weg-pin-soft)),
+                      linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+}
+
+.weg-group-header {
+    height: 40px;
+    padding: 0 10px 0 12px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.weg-group-header:hover {
+    background: var(--weg-surface-hover);
+}
+
+.weg-group-header-main {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
+.weg-chevron {
+    width: 12px;
+    font-size: 11px;
+    color: var(--weg-fg-muted);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.weg-group-name {
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--weg-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-badge {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.weg-badge-if {
+    color: var(--weg-if-accent);
+    background: var(--weg-if-soft);
+    border-color: color-mix(in srgb, var(--weg-if-accent) 40%, transparent);
+}
+
+.weg-badge-radio {
+    color: var(--weg-fg);
+    background: var(--weg-accent-soft);
+}
+
+.weg-badge-scene {
+    color: var(--weg-accent);
+    background: var(--weg-accent-soft);
+    border-color: color-mix(in srgb, var(--weg-accent) 35%, var(--weg-border));
+}
+
+.weg-badge-dirty {
+    color: var(--weg-pin);
+    background: var(--weg-pin-soft);
+    border-color: color-mix(in srgb, var(--weg-pin) 45%, var(--weg-border));
+}
+
+.weg-scene-cooldown-row {
+    margin-top: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12.5px;
+    color: var(--weg-fg);
+}
+
+.weg-cooldown-input {
+    width: 72px;
+    text-align: center;
+}
+
+.weg-group-count {
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.weg-group-empty {
+    padding: 12px;
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    text-align: center;
+    border-top: 1px solid var(--weg-border);
+}
+
+.weg-entry-list {
+    border-top: 1px solid var(--weg-border);
+    display: flex;
+    flex-direction: column;
+    contain: layout style;
+}
+
+.weg-entry-item {
+    display: flex;
+    flex-direction: column;
+    border-bottom: 1px solid var(--weg-border);
+}
+
+.weg-entry-item:last-child {
+    border-bottom: none;
+}
+
+/* Strictly single-line entry row: zero two-line wrapping, zero diagonal whitespace */
+.weg-entry-row {
+    height: 38px;
+    padding: 0 10px 0 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    cursor: pointer;
+    contain: layout style;
+}
+
+.weg-entry-row.is-expanded {
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-accent-soft), var(--weg-accent-soft)),
+                      linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+}
+
+.weg-entry-row.is-pinned {
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-pin-soft), var(--weg-pin-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+    box-shadow: inset 2px 0 0 var(--weg-pin);
+}
+
+.weg-entry-row:hover {
+    background: var(--weg-surface-hover);
+}
+
+.weg-entry-row.is-batch {
+    cursor: pointer;
+}
+
+.weg-entry-row.is-selected {
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-accent-soft), var(--weg-accent-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+}
+
+.weg-entry-row.is-disabled .weg-entry-title {
+    color: var(--weg-fg-muted);
+}
+
+.weg-entry-main {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+}
+
+.weg-checkbox {
+    width: 16px;
+    height: 16px;
+    border-radius: 4px;
+    border: 1px solid var(--weg-border-strong);
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    color: var(--weg-accent-fg);
+    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.weg-checkbox.is-checked {
+    background: var(--weg-accent);
+    border-color: var(--weg-accent);
+}
+
+.weg-strategy-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: #6ea87f;
+}
+
+.weg-strategy-dot.is-constant {
+    background: #6798c0;
+}
+
+.weg-strategy-dot.is-vector {
+    background: #a486c2;
+}
+
+.weg-entry-row.is-disabled .weg-strategy-dot {
+    opacity: 0.35;
+}
+
+.weg-entry-uid {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.weg-entry-title {
+    font-size: 13px;
+    color: var(--weg-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-greet-tag {
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--weg-accent-soft);
+    color: var(--weg-fg-muted);
+    border: 1px solid var(--weg-border);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.weg-greet-tag.is-current {
+    color: var(--weg-if-accent);
+    background: var(--weg-if-soft);
+    border-color: color-mix(in srgb, var(--weg-if-accent) 42%, transparent);
+}
+
+.weg-greet-tag.is-exclude {
+    color: var(--weg-danger);
+    background: var(--weg-danger-soft);
+}
+
+/* Right-side compact control pair: 1 toggle switch + 1 `···` button */
+.weg-row-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.weg-switch {
+    position: relative;
+    width: 36px;
+    height: 20px;
+    border-radius: 999px;
+    border: none;
+    padding: 0;
+    margin: 0;
+    background: var(--weg-track-off);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 0.14s ease;
+}
+
+.weg-switch.weg-switch-sm {
+    width: 32px;
+    height: 18px;
+}
+
+.weg-switch.is-partial {
+    background: color-mix(in srgb, var(--weg-track-on) 48%, var(--weg-track-off));
+}
+
+.weg-switch.is-on {
+    background: var(--weg-track-on);
+}
+
+.weg-switch:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.weg-switch-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--weg-thumb-off);
+    transition: transform 0.14s ease, background-color 0.14s ease;
+}
+
+.weg-switch.weg-switch-sm .weg-switch-thumb {
+    width: 14px;
+    height: 14px;
+}
+
+.weg-switch.is-on .weg-switch-thumb {
+    transform: translateX(16px);
+    background: var(--weg-thumb);
+}
+
+.weg-switch.weg-switch-sm.is-on .weg-switch-thumb {
+    transform: translateX(14px);
+}
+
+.weg-more-btn {
+    width: 28px;
+    height: 26px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--weg-fg-muted);
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.weg-more-btn:hover {
+    background: var(--weg-surface-active);
+    border-color: var(--weg-border);
+    color: var(--weg-fg);
+}
+
+.weg-pin-btn {
+    width: 26px;
+    height: 26px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--weg-fg-muted);
+    font-size: 12px;
+    padding: 0;
+    margin: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    opacity: 0.42;
+    transition: opacity 0.12s ease, color 0.12s ease, background-color 0.12s ease;
+}
+
+.weg-entry-row .weg-pin-btn {
+    width: 24px;
+    height: 24px;
+}
+
+.weg-group-header:hover .weg-pin-btn,
+.weg-entry-row:hover .weg-pin-btn,
+.weg-entry-row:focus-within .weg-pin-btn,
+.weg-pin-btn:focus-visible,
+.weg-pin-btn.is-pinned {
+    opacity: 1;
+}
+
+.weg-pin-btn:hover {
+    background: var(--weg-surface-active);
+    border-color: var(--weg-border);
+    color: var(--weg-fg);
+}
+
+.weg-pin-btn.is-pinned {
+    color: var(--weg-pin);
+}
+
+/* ==========================================================================
+   Multi-Open Inline Accordion Editor (Lightweight Ergonomics + Opaque Backing)
+   ========================================================================== */
+.weg-acc-slot:empty {
+    display: none;
+}
+
+.weg-acc-panel {
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-top: 1px solid var(--weg-border);
+    box-shadow: inset 2px 0 0 var(--weg-accent);
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.weg-acc-state-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--weg-fg-muted);
+    padding: 4px 2px;
+}
+
+.weg-acc-state-box.is-error {
+    color: var(--weg-danger);
+}
+
+.weg-acc-mini-btn {
+    height: 26px;
+    padding: 0 10px;
+    font-size: 12px;
+}
+
+.weg-acc-stale-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid color-mix(in srgb, var(--weg-pin) 50%, var(--weg-border));
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-pin-soft), var(--weg-pin-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+    font-size: 12px;
+    color: var(--weg-fg);
+}
+
+.weg-acc-stale-msg {
+    min-width: 0;
+    flex: 1;
+}
+
+.weg-acc-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.weg-acc-top-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+}
+
+.weg-acc-title-col {
+    flex: 1;
+    min-width: 0;
+}
+
+.weg-acc-enable-col {
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding-bottom: 6px;
+}
+
+.weg-acc-enable-col .weg-field-label {
+    margin-bottom: 0;
+}
+
+.weg-acc-meta-grid {
+    display: grid;
+    grid-template-columns: 1.25fr 1.45fr 0.65fr 0.65fr;
+    gap: 8px;
+}
+
+.weg-acc-keys-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.weg-acc-field {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.weg-acc-field .weg-input,
+.weg-acc-field .weg-select {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    line-height: 30px;
+    font-size: 12.5px;
+}
+
+.weg-acc-depth-input:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.weg-field-hint {
+    font-weight: 400;
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.weg-acc-content-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+
+.weg-acc-content-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.weg-acc-content-head .weg-field-label {
+    margin-bottom: 0;
+}
+
+.weg-acc-editor-tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.weg-editor-tool-btn {
+    height: 24px;
+    padding: 0 8px;
+    border-radius: 5px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg-muted);
+    font-size: 11.5px;
+    line-height: 22px;
+    cursor: pointer;
+    margin: 0;
+}
+
+.weg-editor-tool-btn:hover:not(:disabled) {
+    background: var(--weg-surface-hover);
+    border-color: var(--weg-border-strong);
+    color: var(--weg-fg);
+}
+
+.weg-editor-tool-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+}
+
+.weg-acc-find-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.weg-acc-find-input {
+    flex: 1;
+    min-width: 0;
+    height: 26px;
+    line-height: 24px;
+    font-size: 12px;
+    padding: 0 8px;
+}
+
+.weg-acc-find-count {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.weg-editor-tool-btn.is-active {
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-accent-soft), var(--weg-accent-soft)),
+                      linear-gradient(var(--weg-surface), var(--weg-surface));
+    border-color: var(--weg-border-strong);
+    color: var(--weg-fg);
+    font-weight: 500;
+}
+
+.weg-size-seg {
+    display: inline-flex;
+    border: 1px solid var(--weg-border);
+    border-radius: 5px;
+    overflow: hidden;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+}
+
+.weg-size-seg-btn {
+    height: 22px;
+    min-width: 24px;
+    padding: 0 6px;
+    border: none;
+    border-right: 1px solid var(--weg-border);
+    background: transparent;
+    color: var(--weg-fg-muted);
+    font-size: 11px;
+    line-height: 22px;
+    cursor: pointer;
+    margin: 0;
+}
+
+.weg-size-seg-btn:last-child {
+    border-right: none;
+}
+
+.weg-size-seg-btn:hover {
+    background: var(--weg-surface-hover);
+    color: var(--weg-fg);
+}
+
+.weg-size-seg-btn.is-active {
+    background: var(--weg-accent);
+    color: var(--weg-accent-fg);
+    font-weight: 600;
+}
+
+.weg-acc-counter {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.weg-textarea {
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    font-family: inherit;
+    font-size: 13px;
+    line-height: 1.55;
+    resize: vertical;
+    outline: none;
+    margin: 0;
+}
+
+.weg-textarea:focus {
+    border-color: var(--weg-border-strong);
+}
+
+.weg-acc-textarea.is-size-s {
+    height: 110px;
+    min-height: 110px;
+}
+
+.weg-acc-textarea.is-size-m {
+    height: 175px;
+    min-height: 175px;
+}
+
+.weg-acc-textarea.is-size-l {
+    height: 270px;
+    min-height: 270px;
+}
+
+.weg-acc-textarea.is-monospace {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12.5px;
+    tab-size: 2;
+}
+
+.weg-acc-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+.weg-acc-status {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.weg-acc-status.is-dirty {
+    color: var(--weg-pin);
+    font-weight: 500;
+}
+
+.weg-acc-action-btns {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.weg-acc-action-btns .weg-btn {
+    height: 28px;
+    padding: 0 11px;
+    font-size: 12.5px;
+}
+
+/* Incremental Load-More Bar (>60 entries) */
+.weg-load-more-bar {
+    flex-shrink: 0;
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.weg-load-more-info {
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    min-width: 0;
+}
+
+.weg-load-more-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.weg-load-more-actions .weg-btn {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 12px;
+}
+
+/* Empty State */
+.weg-empty-state {
+    margin: auto;
+    padding: 28px 20px;
+    text-align: center;
+    max-width: 420px;
+}
+
+.weg-empty-state.weg-empty-compact {
+    padding: 18px 12px;
+}
+
+.weg-empty-title {
+    margin: 0 0 6px;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--weg-fg);
+}
+
+.weg-empty-desc {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--weg-fg-muted);
+    line-height: 1.5;
+}
+
+/* ==========================================================================
+   Constant Bottom Footer Bar
+   ========================================================================== */
+.weg-footer {
+    flex-shrink: 0;
+    min-height: 48px;
+    padding: 8px 26px 8px 14px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-top: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.weg-footer-status {
+    font-size: 12.5px;
+    color: var(--weg-fg-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-footer-buttons {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Stacked Submodal Host (Inside `.weg-modal` — zero outer window resize!)
+   ========================================================================== */
+.weg-submodal-host {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.28);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.weg-submodal-card {
+    width: 460px;
+    max-width: 100%;
+    max-height: 100%;
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    border: 1px solid var(--weg-border-strong);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.24);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.weg-submodal-card.weg-submodal-wide {
+    width: 560px;
+}
+
+.weg-submodal-card.weg-submodal-compact {
+    width: 400px;
+}
+
+.weg-discard-footer {
+    flex-wrap: wrap;
+}
+
+.weg-submodal-header {
+    height: 44px;
+    padding: 0 12px 0 14px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+
+.weg-submodal-title {
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.weg-submodal-body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 14px;
+}
+
+.weg-submodal-footer {
+    padding: 8px 14px;
+    background-color: var(--weg-bg-elevated-base, var(--weg-bg-elevated));
+    background-image: linear-gradient(var(--weg-bg-elevated), var(--weg-bg-elevated));
+    border-top: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.weg-field-label {
+    display: block;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--weg-fg-muted);
+    margin-bottom: 6px;
+}
+
+.weg-mode-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.weg-mode-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    cursor: pointer;
+}
+
+.weg-mode-card.is-active {
+    border-color: var(--weg-border-strong);
+    background: var(--weg-accent-soft);
+}
+
+.weg-mode-card input[type="radio"] {
+    margin-top: 3px;
+}
+
+.weg-mode-card-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--weg-fg);
+}
+
+.weg-mode-card-desc {
+    font-size: 12px;
+    color: var(--weg-fg-muted);
+    margin-top: 2px;
+}
+
+/* Batch Move Target List */
+.weg-move-target-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+
+.weg-move-target-btn {
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    color: var(--weg-fg);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.weg-move-target-btn:hover {
+    background: var(--weg-surface-hover);
+    border-color: var(--weg-border-strong);
+}
+
+.weg-move-target-meta {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+}
+
+.weg-inline-new-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.weg-inline-new-group .weg-btn {
+    height: 34px;
+}
+
+/* Auto-Detect Preview */
+.weg-detect-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.weg-detect-controls .weg-select {
+    flex: 1;
+    min-width: 210px;
+}
+
+.weg-inline-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12.5px;
+    color: var(--weg-fg);
+    cursor: pointer;
+}
+
+.weg-detect-list {
+    border: 1px solid var(--weg-border);
+    border-radius: 6px;
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+    max-height: 280px;
+    overflow-y: auto;
+}
+
+.weg-detect-row {
+    min-height: 38px;
+    padding: 4px 10px;
+    border-bottom: 1px solid var(--weg-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.weg-detect-row:last-child {
+    border-bottom: none;
+}
+
+.weg-detect-check-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+    flex: 1;
+    cursor: pointer;
+}
+
+.weg-detect-name {
+    font-size: 13px;
+    font-weight: 500;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.weg-detect-mode-select {
+    height: 28px;
+    line-height: 26px;
+    font-size: 12px;
+    padding: 0 6px;
+    width: 94px;
+    flex-shrink: 0;
+}
+
+/* Settings Rows (Right-aligned uniform control widths per `AGENTS.md`) */
+.weg-settings-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.weg-setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--weg-border);
+    background-color: var(--weg-surface-base, var(--weg-surface));
+    background-image: linear-gradient(var(--weg-surface), var(--weg-surface));
+}
+
+.weg-setting-text {
+    min-width: 0;
+    flex: 1;
+}
+
+.weg-setting-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--weg-fg);
+}
+
+.weg-setting-desc {
+    font-size: 11.5px;
+    color: var(--weg-fg-muted);
+    margin-top: 2px;
+}
+
+.weg-setting-control {
+    width: 126px;
+    flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Anchored Floating `···` Menu (Explicitly excluded from mobile fullscreen!)
+   ========================================================================== */
+.weg-floating-menu {
+    position: fixed;
+    z-index: 32000;
+    min-width: 176px;
+    max-width: min(260px, calc(100vw - 16px));
+    padding: 4px;
+    border-radius: 8px;
+    border: 1px solid var(--weg-border-strong);
+    background-color: var(--weg-bg-base, var(--weg-bg));
+    background-image: linear-gradient(var(--weg-bg), var(--weg-bg));
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.weg-floating-menu-item {
+    height: 34px;
+    padding: 0 10px;
+    border-radius: 5px;
+    border: none;
+    background: transparent;
+    color: var(--weg-fg);
+    font-size: 13px;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.weg-floating-menu-item:hover:not(:disabled) {
+    background: var(--weg-surface-hover);
+}
+
+.weg-floating-menu-item:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.weg-floating-menu-item.is-danger {
+    color: var(--weg-danger);
+}
+
+.weg-menu-icon {
+    width: 15px;
+    text-align: center;
+    font-size: 12px;
+    opacity: 0.85;
+    flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Container-Driven Responsive Rules (`@container plugin-win`) + Mobile Shell
+   Adapts cleanly on BOTH 390px mobile AND desktop windows resized to 360x420!
+   ========================================================================== */
+@container plugin-win (max-width: 560px) {
+    .weg-header {
+        padding: 0 10px;
+    }
+
+    .weg-header-stats {
+        display: none;
+    }
+
+    .weg-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 10px;
+        gap: 6px;
+    }
+
+    .weg-book-bar {
+        width: 100%;
+    }
+
+    .weg-save-bar {
+        padding: 5px 10px;
+    }
+
+    .weg-save-chatid {
+        display: none;
+    }
+
+    .weg-body {
+        padding: 8px 10px;
+    }
+
+    .weg-footer {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 8px 26px calc(8px + env(safe-area-inset-bottom, 0px)) 10px;
+    }
+
+    .weg-footer-status {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+    }
+
+    .weg-footer-buttons {
+        width: 100%;
+        display: flex;
+        gap: 6px;
+    }
+
+    .weg-footer-buttons .weg-btn {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .weg-submodal-host {
+        padding: 10px;
+    }
+
+    .weg-submodal-footer {
+        display: flex;
+        gap: 8px;
+    }
+
+    .weg-submodal-footer .weg-btn {
+        flex: 1;
+    }
+
+    .weg-inline-new-group {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .weg-entry-row .weg-pin-btn:not(.is-pinned) {
+        display: none;
+    }
+
+    .weg-entry-row .weg-pin-btn.is-pinned {
+        width: 22px;
+        height: 22px;
+    }
+
+    .weg-quick-filters {
+        padding: 0 10px;
+    }
+
+    .weg-acc-panel {
+        padding: 9px 10px 10px;
+    }
+}
+
+@container plugin-win (max-width: 420px) {
+    .weg-hide-xs {
+        display: none;
+    }
+
+    .weg-acc-meta-grid {
+        grid-template-columns: 1fr 1fr;
+    }
+
+    .weg-acc-keys-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .weg-acc-actions {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+
+    .weg-acc-action-btns {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+    }
+
+    .weg-acc-action-btns .weg-btn {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .weg-load-more-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .weg-load-more-actions {
+        width: 100%;
+        display: flex;
+        gap: 6px;
+    }
+
+    .weg-load-more-actions .weg-btn {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .weg-discard-footer .weg-btn {
+        flex: 1 1 auto;
+    }
+
+    .weg-header {
+        gap: 6px;
+        padding: 0 8px;
+    }
+
+    .weg-header-title {
+        font-size: 14px;
+    }
+
+    .weg-header-actions {
+        gap: 4px;
+    }
+
+    .weg-header-actions .weg-btn {
+        height: 28px;
+        padding: 0 7px;
+        font-size: 11.5px;
+    }
+
+    .weg-header-actions .weg-icon-btn {
+        width: 28px;
+        height: 28px;
+    }
+
+    .weg-save-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 5px;
+        padding: 6px 10px;
+    }
+
+    .weg-save-bar-text {
+        white-space: normal;
+        overflow: visible;
+        text-overflow: clip;
+        line-height: 1.35;
+    }
+
+    .weg-save-bar-actions {
+        justify-content: flex-end;
+        flex-wrap: wrap;
+        width: 100%;
+    }
+
+    .weg-mini-select {
+        max-width: none;
+        flex: 1;
+        min-width: 0;
+    }
+
+    .weg-footer-buttons .weg-btn {
+        padding: 0 8px;
+        font-size: 12px;
+    }
+
+    .weg-deleted-draft-head {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .weg-deleted-draft-actions {
+        width: 100%;
+    }
+
+    .weg-deleted-draft-actions .weg-mini-btn {
+        flex: 1;
+        text-align: center;
+    }
+}
+
+@media (max-width: 680px) {
+    .weg-modal:not(.weg-floating-menu):not(.is-positioned) {
+        width: 100vw !important;
+        max-width: 100vw;
+        min-width: 0;
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+        min-height: 0;
+        border-radius: 0;
+        border: none;
+        padding-top: env(safe-area-inset-top, 0px);
+    }
+
+    .weg-modal:not(.weg-floating-menu).is-positioned {
+        min-width: min(310px, calc(100vw - 16px));
+        min-height: 250px;
+    }
+
+    .weg-modal:not(.weg-floating-menu):not(.is-positioned) .weg-header {
+        cursor: default;
+    }
+
+    .weg-modal:not(.weg-floating-menu):not(.is-positioned) .weg-footer {
+        padding-right: 10px;
+    }
+
+    .weg-textarea {
+        resize: none;
+    }
+}
+
+.weg-modal [data-weg-acc-action="redo"] .wbo-undo-svg {
+    transform: scaleX(-1);
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .weg-modal .weg-input,
+    .weg-modal textarea {
+        font-size: 16px !important;
+    }
+}

@@ -24,6 +24,7 @@ import {
     normalizeSettings,
     parseOptionalFiniteNumber,
     searchEntriesInPayload,
+    updateCachedCharBindings,
 } from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
@@ -36,6 +37,7 @@ let _cachedSettingsCharLore = null;
 let _cachedSettingsWorldNames = null;
 /** @type {Array<{ oldName: string, newName: string }>} */
 const _pendingRenamedEvents = [];
+const _pendingCharacterWorldbookBindings = new Set();
 
 /**
  * Return SillyTavern / TauriTavern global context safely.
@@ -350,12 +352,14 @@ export function getCurrentEditorWorldName() {
  * NEVER called automatically in the background; reads only when the user clicks to expand a book.
  *
  * @param {string} worldName
+ * @param {{ forComparison?: boolean }} [options]
  * @returns {Promise<{ total: number, enabledCount: number, entries: Array<{ uid: string, title: string, keys: string[], content: string, disabled: boolean, constant: boolean }> }>}
  */
-export async function fetchWorldbookPreviewEntries(worldName) {
+export async function fetchWorldbookPreviewEntries(worldName, { forComparison = false } = {}) {
     const data = await fetchWorldInfoUncached(worldName);
     const entriesObj = data?.entries;
     if (!entriesObj || typeof entriesObj !== 'object') {
+        if (forComparison) throw new Error(`读不到世界书「${worldName}」`);
         return { total: 0, enabledCount: 0, entries: [] };
     }
     const dispVal = (e) =>
@@ -371,7 +375,8 @@ export async function fetchWorldbookPreviewEntries(worldName) {
             const keys = Array.isArray(e.key)
                 ? e.key.map((k) => String(k || '').trim()).filter(Boolean)
                 : [];
-            const content = String(e.content ?? '').trim();
+            const rawContent = String(e.content ?? '');
+            const content = forComparison ? rawContent : rawContent.trim();
             return {
                 uid: String(e.uid ?? idx),
                 title: String(e.comment || '').trim() || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
@@ -1031,18 +1036,18 @@ export async function callHostAiForOrganize({ systemPrompt, userPrompt }) {
  * via `/api/characters/get` WITHOUT calling `ctx.unshallowCharacter()` so bulk
  * scans on lazy-loaded libraries never bloat host memory on TT iOS.
  * @param {string} avatar
- * @param {{ allowUnshallow?: boolean }} [opts]
+ * @param {{ allowUnshallow?: boolean, fresh?: boolean }} [opts]
  * @returns {Promise<any | null>}
  */
-export async function fetchFullCharacterOnDemand(avatar, { allowUnshallow = true } = {}) {
+export async function fetchFullCharacterOnDemand(avatar, { allowUnshallow = true, fresh = false } = {}) {
     const ctx = getHostContext();
     const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
     const chid = list.findIndex((c) => c?.avatar === avatar);
-    if (chid >= 0 && !list[chid]?.shallow) {
+    if (!fresh && chid >= 0 && !list[chid]?.shallow) {
         return list[chid];
     }
 
-    if (allowUnshallow && chid >= 0 && typeof ctx?.unshallowCharacter === 'function') {
+    if (!fresh && allowUnshallow && chid >= 0 && typeof ctx?.unshallowCharacter === 'function') {
         try {
             await ctx.unshallowCharacter(chid);
             return ctx.characters?.[chid] || null;
@@ -1785,6 +1790,115 @@ export async function unbindExtraWorldbookFromChar(charKeyOrAvatar, worldName, {
         saveSettings();
     }
     return { ok: true };
+}
+
+function hasWorldbookForBinding(worldName) {
+    const names = getHostContext()?.getWorldInfoNames?.() ?? _worldInfoModule?.world_names;
+    return (Array.isArray(names) ? names : getWorldNames()).includes(worldName);
+}
+
+function readPrimaryWorldbook(card) {
+    const world = card?.data?.extensions?.world;
+    return typeof world === 'string' ? world.trim() : '';
+}
+
+export async function inspectCharacterWorldbookBinding(avatar) {
+    if (!getCharactersInMemory().some((card) => card?.avatar === avatar)) return null;
+    const card = await fetchFullCharacterOnDemand(avatar, { fresh: true });
+    if (card?.avatar !== avatar || !card.data || card.shallow) return null;
+    return { avatar, name: card.name || card.data.name || charaFileName(avatar), primary: readPrimaryWorldbook(card) };
+}
+
+/**
+ * Bind one reviewed character/book pair. A primary write requires the previously
+ * displayed name, including the empty string when the character has no primary.
+ */
+export async function bindWorldbookToCharacter(avatar, worldName, { kind, expectedPrimary, settings } = {}) {
+    if (kind !== 'primary' && kind !== 'extra') return { ok: false, error: '请先选择绑定方式' };
+    if (!avatar || !getCharactersInMemory().some((card) => card?.avatar === avatar)) {
+        return { ok: false, error: '找不到这张角色卡，请重新选择' };
+    }
+    if (!worldName || !hasWorldbookForBinding(worldName)) {
+        return { ok: false, error: '找不到这本世界书。请回角色的发布处找，导入后再绑定。' };
+    }
+    if (_pendingCharacterWorldbookBindings.has(avatar)) return { ok: false, error: '正在保存这张角色卡，请稍等' };
+    _pendingCharacterWorldbookBindings.add(avatar);
+
+    try {
+        const card = await fetchFullCharacterOnDemand(avatar, { fresh: true });
+        if (card?.avatar !== avatar || !card.data || card.shallow) {
+            return { ok: false, error: '读不到这张角色卡，请重新选择' };
+        }
+        const worldInfoModule = kind === 'extra' ? await ensureWorldInfoModule() : _worldInfoModule;
+        if (!getCharactersInMemory().some((current) => current?.avatar === avatar)) {
+            return { ok: false, error: '找不到这张角色卡，请重新选择' };
+        }
+        if (!hasWorldbookForBinding(worldName)) {
+            return { ok: false, error: '找不到这本世界书。请回角色的发布处找，导入后再绑定。' };
+        }
+        const primary = readPrimaryWorldbook(card);
+
+        if (kind === 'extra') {
+            if (primary === worldName) return { ok: true, already: true };
+            const worldInfo = worldInfoModule?.world_info;
+            const key = charaFileName(avatar);
+            if (!key || !worldInfo || typeof getHostContext()?.saveSettingsDebounced !== 'function' ||
+                (worldInfo.charLore != null && !Array.isArray(worldInfo.charLore))) {
+                return { ok: false, error: '酒馆的附加世界书列表暂不可用' };
+            }
+            const charLore = worldInfo.charLore ?? [];
+            const entry = charLore.find((item) => item?.name === key);
+            const originalBooks = entry?.extraBooks;
+            const previous = Array.isArray(originalBooks) ? originalBooks : [];
+            if (previous.includes(worldName)) return { ok: true, already: true };
+            const originalLore = worldInfo.charLore;
+            if (entry) entry.extraBooks = [...previous, worldName];
+            else charLore.push({ name: key, extraBooks: [worldName] });
+            worldInfo.charLore = charLore;
+            try {
+                saveSettings();
+            } catch (error) {
+                if (entry) entry.extraBooks = originalBooks;
+                else charLore.pop();
+                worldInfo.charLore = originalLore;
+                throw error;
+            }
+            return { ok: true };
+        }
+
+        if (expectedPrimary !== primary) {
+            return { ok: false, stale: true, error: '主世界书已变化，请重新核对后再绑定' };
+        }
+        if (primary === worldName) return { ok: true, already: true };
+        const result = await fetch('/api/characters/merge-attributes', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ avatar, data: { extensions: { world: worldName } } }),
+        });
+        if (!result.ok) return { ok: false, error: `酒馆保存失败（HTTP ${result.status}）` };
+
+        const current = getCharactersInMemory().find((item) => item?.avatar === avatar);
+        if (current?.data && !current.shallow) {
+            (current.data.extensions ||= {}).world = worldName;
+        }
+        if (settings) {
+            const savedCard = { ...card, data: { ...card.data, extensions: { ...card.data.extensions, world: worldName } } };
+            settings.cachedCharBindings = updateCachedCharBindings(settings.cachedCharBindings, [savedCard], { pruneDeleted: false }).cached;
+        }
+        if (getCurrentCharacterAvatar() === avatar && getHostContext()?.menuType !== 'create') {
+            const field = globalThis.document?.getElementById('character_world');
+            if (field && field.value === primary) {
+                field.value = worldName;
+                // The native indicator is optional and runs after the card is saved.
+                try { worldInfoModule?.setWorldInfoButtonClass?.(undefined, true); } catch { /* ignore */ }
+            }
+        }
+        return { ok: true };
+    } catch {
+        return { ok: false, error: '保存失败，请确认酒馆可用后重试' };
+    } finally {
+        _pendingCharacterWorldbookBindings.delete(avatar);
+    }
 }
 
 /**

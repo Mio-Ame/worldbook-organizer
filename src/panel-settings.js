@@ -1,0 +1,614 @@
+/** Organizer settings and configuration import/export. */
+
+import {
+    _callbacks,
+    closeSubModal,
+    createSubModal,
+    esc,
+    syncAllOpenModalsTheme,
+    THEME_PALETTES,
+} from './panel-window.js';
+import {
+    exportConfigData,
+    importConfigData,
+    pushUndoSnapshot,
+    SPECIAL_GROUPS,
+} from './core.js';
+import { showToast } from './host.js';
+import { openImportRulesModal } from './panel-import-rules.js';
+
+// ==================== Settings Modal & Extension Settings Panel ====================
+
+function triggerConfigExport() {
+    if (!_callbacks) return;
+    const { settings } = _callbacks.getState();
+    const data = exportConfigData(settings);
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `worldbook-organizer-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+    showToast('success', '已导出配置');
+}
+
+async function handleConfigImportFile(file) {
+    if (!_callbacks || !file) return;
+    const { settings } = _callbacks.getState();
+    try {
+        const text = await file.text();
+        const res = importConfigData(settings, text);
+        if (!res.ok) {
+            showToast('error', res.error || '导入失败');
+            return;
+        }
+        await _callbacks.onMutation({ save: true });
+        showToast('success', `导入成功：${res.stats.groups} 个分组、${res.stats.aliases} 条别名`);
+    } catch (err) {
+        showToast('error', `读取配置失败：${err?.message || err}`);
+    }
+}
+
+/**
+ * Sync live setting values into any container holding `[data-setting]` / `[data-setting-select]`.
+ * @param {Element} container
+ * @param {Record<string, any>} settings
+ */
+function syncSettingControlsInPlace(container, settings) {
+    container.querySelectorAll('input[data-setting]').forEach((el) => {
+        if (!(el instanceof HTMLInputElement)) return;
+        const key = el.getAttribute('data-setting');
+        if (key) el.checked = Boolean(settings[key]);
+    });
+    container.querySelectorAll('select[data-setting-select]').forEach((el) => {
+        if (!(el instanceof HTMLSelectElement)) return;
+        const key = el.getAttribute('data-setting-select');
+        if (key && settings[key] !== undefined) el.value = String(settings[key]);
+    });
+}
+
+/**
+ * Bind change listeners for `[data-setting]` and `[data-setting-select]` reading live state.
+ * @param {Element} container
+ */
+const QUICK_ACTION_UI_ONLY_KEYS = new Set([
+    'showNativeComboBtn',
+    'showNativeExcludeBtn',
+    'showNativeEntrySearchBtn',
+    'showNativeCharToggleBtn',
+]);
+
+function bindSettingControlListeners(container) {
+    container.querySelectorAll('input[data-setting]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            if (!(el instanceof HTMLInputElement) || !_callbacks) return;
+            const key = el.getAttribute('data-setting');
+            if (!key) return;
+            const { settings } = _callbacks.getState();
+            settings[key] = el.checked;
+            if (key === 'hideCharBooksByDefault') {
+                settings.showCharBooks = !el.checked;
+                for (const listKey of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+                    const curList = Array.isArray(settings[listKey]) ? [...settings[listKey]] : [];
+                    if (el.checked) {
+                        if (!curList.includes(SPECIAL_GROUPS.CHARACTER)) curList.unshift(SPECIAL_GROUPS.CHARACTER);
+                    } else {
+                        const idx = curList.indexOf(SPECIAL_GROUPS.CHARACTER);
+                        if (idx >= 0) curList.splice(idx, 1);
+                    }
+                    settings[listKey] = curList;
+                }
+                container.dispatchEvent(new CustomEvent('wbo:sync-exclude-chips'));
+            }
+            if (QUICK_ACTION_UI_ONLY_KEYS.has(key)) {
+                await _callbacks.onMutation({ save: true, uiOnly: true, quickActionsOnly: true });
+                return;
+            }
+            if (key === 'syncEntryOrderOnDrag') {
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                return;
+            }
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    container.querySelectorAll('select[data-setting-select]').forEach((el) => {
+        el.addEventListener('change', async () => {
+            if (!(el instanceof HTMLSelectElement) || !_callbacks) return;
+            const key = el.getAttribute('data-setting-select');
+            if (!key) return;
+            const { settings } = _callbacks.getState();
+            settings[key] = el.value;
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+}
+
+/**
+ * Open the Display & Behavior Settings sub-modal directly inside Group Manager.
+ */
+function openSettingsModal() {
+    if (!_callbacks) return;
+    const { settings, classification } = _callbacks.getState();
+
+    const sectionOptions = [
+        { id: SPECIAL_GROUPS.CHARACTER, name: '角色世界书', color: '#9b72cf' },
+        ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
+        { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
+    ];
+    const renderExcludeChipsHtml = (targetKey, selectedIds) => {
+        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
+        return sectionOptions.map((sec) => {
+            const active = set.has(sec.id);
+            return `
+                <button type="button"
+                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+                    data-exclude-target="${esc(targetKey)}"
+                    data-exclude-gid="${esc(sec.id)}"
+                    aria-pressed="${active ? 'true' : 'false'}">
+                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
+                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
+                    <span>${esc(sec.name)}</span>
+                </button>
+            `;
+        }).join('');
+    };
+
+    const paletteButtonsHtml = THEME_PALETTES.map((p) => `
+        <button type="button"
+            class="wbo-palette-chip${settings.themePalette === p.id ? ' is-active' : ''}"
+            data-theme-palette="${esc(p.id)}">
+            <span class="wbo-palette-swatch" style="background:linear-gradient(135deg, ${p.lightBg} 48%, ${p.accent} 52%)"></span>
+            <span>${esc(p.label)}</span>
+        </button>
+    `).join('');
+
+    const modeButtonsHtml = [
+        { id: 'auto', label: '跟随酒馆' },
+        { id: 'light', label: '浅色' },
+        { id: 'dark', label: '深色' },
+    ].map((m) => `
+        <button type="button"
+            class="wbo-mode-chip${(settings.themeMode || 'auto') === m.id ? ' is-active' : ''}"
+            data-theme-mode="${esc(m.id)}">${esc(m.label)}</button>
+    `).join('');
+
+    const initialSettingsTab = ['appearance', 'display', 'behavior'].includes(settings.settingsLastTab)
+        ? settings.settingsLastTab
+        : 'appearance';
+    const quickModeButtonsHtml = [
+        { id: 'merged', label: '三合一按钮' },
+        { id: 'split', label: '分开显示' },
+        { id: 'off', label: '隐藏顶栏按钮' },
+    ].map((m) => `
+        <button type="button"
+            class="wbo-mode-chip${(settings.nativeQuickActionsMode || 'merged') === m.id ? ' is-active' : ''}"
+            data-quick-actions-mode="${esc(m.id)}">${esc(m.label)}</button>
+    `).join('');
+
+    const { modal } = createSubModal(
+        '显示与行为设置',
+        `
+            <div class="wbo-pinned-tabs-bar" id="wbo-settings-tabs">
+                <div class="wbo-tabs">
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'appearance' ? ' is-active' : ''}" data-settings-tab="appearance">外观与入口</button>
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'display' ? ' is-active' : ''}" data-settings-tab="display">标题与排除</button>
+                    <button type="button" class="wbo-tab${initialSettingsTab === 'behavior' ? ' is-active' : ''}" data-settings-tab="behavior">识别与适配</button>
+                </div>
+            </div>
+
+            <div class="wbo-step-scroll">
+            <div class="wbo-settings-tab-pane" data-settings-pane="appearance"${initialSettingsTab === 'appearance' ? '' : ' hidden'}>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>面板配色</span></div>
+                    <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
+                    <div class="wbo-setting-inline-row wbo-setting-theme-mode-row">
+                        <span class="wbo-setting-subhead">明暗模式</span>
+                        <div class="wbo-mode-group">${modeButtonsHtml}</div>
+                    </div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="outsideDropdownFollowHostTheme">
+                        <span>插件面板外的下拉筛选框跟随酒馆主题</span>
+                    </label>
+                </div>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>世界书原生面板快捷按钮</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>顶栏右侧入口样式</span>
+                        <div class="wbo-mode-group">${quickModeButtonsHtml}</div>
+                    </div>
+                    <div class="wbo-split-quick-checks" id="wbo-split-quick-checks"${(settings.nativeQuickActionsMode || 'merged') === 'split' ? '' : ' hidden'}>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeComboBtn">
+                            <span>显示顶栏右侧「组合」快捷按钮</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeExcludeBtn">
+                            <span>显示顶栏右侧「排除」快捷按钮</span>
+                        </label>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-setting="showNativeEntrySearchBtn">
+                            <span>显示顶栏右侧「搜条目」快捷按钮</span>
+                        </label>
+                    </div>
+                    <div class="wbo-local-divider"></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeCharToggleBtn">
+                        <span>显示编辑下拉框旁「角色书显隐」按钮</span>
+                    </label>
+                    <div class="wbo-subtle-tip">默认「三合一按钮」仅占 1 个图标位（内含全局组合、排除分组与搜条目直达）；也可切换为分开显示或完全隐藏。</div>
+                </div>
+            </div>
+
+            <div class="wbo-settings-tab-pane" data-settings-pane="display"${initialSettingsTab === 'display' ? '' : ' hidden'}>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>标题显示</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>角色世界书标题</span>
+                        <select class="wbo-select" data-setting-select="charBookTitleMode">
+                            <option value="char_with_sub">角色名 + 小字原标题</option>
+                            <option value="char_only">仅角色名</option>
+                            <option value="original">原标题</option>
+                        </select>
+                    </div>
+                    <div class="wbo-setting-inline-row">
+                        <span>显示名展示方式</span>
+                        <select class="wbo-select" data-setting-select="aliasTitleMode">
+                            <option value="alias_with_sub">显示名 + 小字原名</option>
+                            <option value="alias_only">仅显示名</option>
+                        </select>
+                    </div>
+                    <div class="wbo-setting-inline-row">
+                        <span id="wbo-alias-count-label">当前已自定义 ${Object.keys(settings.aliases || {}).length} 个显示名</span>
+                        <button type="button" class="wbo-btn" id="wbo-reset-all-aliases-btn"${Object.keys(settings.aliases || {}).length === 0 ? ' disabled' : ''}>
+                            <i class="fa-solid fa-rotate-left"></i> 全部恢复为文件名
+                        </button>
+                    </div>
+                    <div class="wbo-setting-inline-row">
+                        <span id="wbo-note-count-label">当前共有 ${Object.keys(settings.notes || {}).length} 条备注说明</span>
+                        <button type="button" class="wbo-btn" id="wbo-clear-all-notes-btn"${Object.keys(settings.notes || {}).length === 0 ? ' disabled' : ''}>
+                            <i class="fa-regular fa-trash-can"></i> 清空全部说明
+                        </button>
+                    </div>
+                </div>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>下拉框默认排除分组</span></div>
+                    <div class="wbo-exclude-block">
+                        <div class="wbo-exclude-head">
+                            <span class="wbo-exclude-title-wrap">
+                                <span>全局激活框</span>
+                                <span class="wbo-exclude-count" data-exclude-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                            </span>
+                            <span class="wbo-ai-quick-picks">
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="globalHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="globalHiddenGroupIds">反选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
+                            </span>
+                        </div>
+                        <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
+                            ${renderExcludeChipsHtml('globalHiddenGroupIds', settings.globalHiddenGroupIds)}
+                        </div>
+                    </div>
+                    <div class="wbo-local-divider"></div>
+                    <div class="wbo-exclude-block">
+                        <div class="wbo-exclude-head">
+                            <span class="wbo-exclude-title-wrap">
+                                <span>编辑下拉框</span>
+                                <span class="wbo-exclude-count" data-exclude-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                            </span>
+                            <span class="wbo-ai-quick-picks">
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="editorHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="editorHiddenGroupIds">反选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
+                            </span>
+                        </div>
+                        <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
+                            ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
+                        </div>
+                    </div>
+                    <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏。</div>
+                    <div class="wbo-local-divider"></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="pinCurrentChatCharBookInEditor">
+                        <span>聊天中在编辑下拉框置顶当前角色的世界书</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="wbo-settings-tab-pane" data-settings-pane="behavior"${initialSettingsTab === 'behavior' ? '' : ' hidden'}>
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>识别与默认行为</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="hideCharBooksByDefault">
+                        <span>默认隐藏角色卡绑定的世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="includeExtraCharBooks">
+                        <span>将角色附加世界书归入角色世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="includeEmbeddedNameMatch">
+                        <span>识别角色卡内嵌同名世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoScanNewCharacters">
+                        <span>导入新角色卡时自动扫描绑定的世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoImportMissingCharBook">
+                        <span>打开角色卡时自动导入缺失的卡内世界书</span>
+                    </label>
+                    <div class="wbo-setting-inline-row">
+                        <span>按世界书标题自动归类</span>
+                        <button type="button" class="wbo-btn" data-open-import-rules>导入归类</button>
+                    </div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="showNativeOptgroups">
+                        <span>编辑器下拉框按分组显示</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="syncEntryOrderOnDrag">
+                        <span>拖动调整条目顺序时同步改写插入顺序 (order)</span>
+                    </label>
+                </div>
+
+                <div class="wbo-card">
+                    <div class="wbo-ai-section-head"><span>弹窗适配范围</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptCharBindPopup">
+                        <span>角色卡世界书绑定弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="autoHideInCharBindPopup">
+                        <span>角色卡绑定弹窗默认排除其他角色世界书</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptPersonaBindPopup">
+                        <span>User 人设世界书弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptChatBindPopup">
+                        <span>当前聊天世界书弹窗</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptMoveEntryPopup">
+                        <span>移动/复制条目目标世界书弹窗</span>
+                    </label>
+                </div>
+            </div>
+            </div>
+
+            <div class="wbo-modal-footer wbo-pinned-footer">
+                <button type="button" class="wbo-btn" id="wbo-modal-export-btn">
+                    <i class="fa-solid fa-download"></i> 导出配置
+                </button>
+                <button type="button" class="wbo-btn" id="wbo-modal-import-btn">
+                    <i class="fa-solid fa-upload"></i> 导入配置
+                </button>
+                <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
+                <span class="wbo-spacer"></span>
+                <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
+            </div>
+        `,
+        { pinnedLayout: true, floating: true },
+    );
+
+    modal.querySelectorAll('[data-settings-tab]').forEach((tabBtn) => {
+        tabBtn.addEventListener('click', () => {
+            const targetTab = tabBtn.getAttribute('data-settings-tab') || 'appearance';
+            if (_callbacks) {
+                const cur = _callbacks.getState().settings;
+                cur.settingsLastTab = targetTab;
+                void _callbacks.onMutation({ save: true, uiOnly: true });
+            }
+            modal.querySelectorAll('[data-settings-tab]').forEach((b) => {
+                b.classList.toggle('is-active', b.getAttribute('data-settings-tab') === targetTab);
+            });
+            modal.querySelectorAll('[data-settings-pane]').forEach((pane) => {
+                if (pane instanceof HTMLElement) {
+                    pane.hidden = pane.getAttribute('data-settings-pane') !== targetTab;
+                }
+            });
+            const scrollEl = modal.querySelector('.wbo-step-scroll');
+            if (scrollEl) scrollEl.scrollTop = 0;
+        });
+    });
+
+    const syncQuickActionsModeUi = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        const curMode = cur.nativeQuickActionsMode || 'merged';
+        modal.querySelectorAll('[data-quick-actions-mode]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-quick-actions-mode') === curMode);
+        });
+        const splitBox = modal.querySelector('#wbo-split-quick-checks');
+        if (splitBox instanceof HTMLElement) splitBox.hidden = curMode !== 'split';
+    };
+    modal.querySelectorAll('[data-quick-actions-mode]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-quick-actions-mode');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.nativeQuickActionsMode = val;
+            syncQuickActionsModeUi();
+            await _callbacks.onMutation({ save: true, uiOnly: true, quickActionsOnly: true });
+        });
+    });
+
+    syncSettingControlsInPlace(modal, settings);
+    bindSettingControlListeners(modal);
+
+    const syncExcludeChips = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        for (const targetKey of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
+            const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
+            modal.querySelectorAll(`[data-exclude-target="${targetKey}"]`).forEach((btn) => {
+                const gid = btn.getAttribute('data-exclude-gid') || '';
+                const active = set.has(gid);
+                btn.classList.toggle('is-selected', active);
+                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+                const mark = btn.querySelector('.wbo-local-cat-mark');
+                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+            });
+            const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
+            const cntEl = modal.querySelector(`[data-exclude-count="${targetKey}"]`);
+            if (cntEl) cntEl.textContent = `隐藏 ${hiddenCnt} / 显示 ${sectionOptions.length - hiddenCnt} 组`;
+        }
+        const hideCharCb = modal.querySelector('input[data-setting="hideCharBooksByDefault"]');
+        if (hideCharCb instanceof HTMLInputElement) {
+            const charHiddenAnywhere =
+                (Array.isArray(cur.globalHiddenGroupIds) && cur.globalHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER)) ||
+                (Array.isArray(cur.editorHiddenGroupIds) && cur.editorHiddenGroupIds.includes(SPECIAL_GROUPS.CHARACTER));
+            hideCharCb.checked = charHiddenAnywhere;
+            cur.hideCharBooksByDefault = charHiddenAnywhere;
+        }
+    };
+    modal.addEventListener('wbo:sync-exclude-chips', syncExcludeChips);
+
+    modal.querySelectorAll('[data-exclude-target]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const targetKey = btn.getAttribute('data-exclude-target');
+            const gid = btn.getAttribute('data-exclude-gid');
+            if (!targetKey || !gid) return;
+            const cur = _callbacks.getState().settings;
+            const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
+            if (set.has(gid)) set.delete(gid);
+            else set.add(gid);
+            cur[targetKey] = [...set];
+            // If user just excluded a group while reveal toggle was OFF, apply immediately;
+            // if user had toggled reveal ON earlier, keep reveal state untouched or switch to hidden when excluding?
+            // Keeping `showCharBooks = false` when user actively configures default exclusions ensures instant visible effect!
+            if (set.size > 0 && cur.showCharBooks) {
+                cur.showCharBooks = false;
+            }
+            syncExcludeChips();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    modal.querySelectorAll('[data-exclude-preset]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            if (!_callbacks) return;
+            const preset = btn.getAttribute('data-exclude-preset');
+            const scopeKey = btn.getAttribute('data-exclude-scope');
+            if (!preset || !scopeKey) return;
+            const cur = _callbacks.getState().settings;
+            if (preset === 'clear') {
+                cur[scopeKey] = [];
+            } else if (preset === 'select-all') {
+                cur[scopeKey] = sectionOptions.map((s) => s.id);
+                if (cur[scopeKey].length > 0) cur.showCharBooks = false;
+            } else if (preset === 'invert') {
+                const prev = new Set(Array.isArray(cur[scopeKey]) ? cur[scopeKey] : []);
+                cur[scopeKey] = sectionOptions.map((s) => s.id).filter((id) => !prev.has(id));
+                if (cur[scopeKey].length > 0) cur.showCharBooks = false;
+            } else if (preset === 'char-only') {
+                cur[scopeKey] = [SPECIAL_GROUPS.CHARACTER];
+                cur.showCharBooks = false;
+            } else if (preset === 'copy-global') {
+                cur[scopeKey] = Array.isArray(cur.globalHiddenGroupIds) ? [...cur.globalHiddenGroupIds] : [];
+                if (cur[scopeKey].length > 0) cur.showCharBooks = false;
+            }
+            syncExcludeChips();
+            await _callbacks.onMutation({ save: true });
+        });
+    });
+
+    const syncThemeChips = () => {
+        const cur = _callbacks?.getState?.()?.settings || settings;
+        modal.querySelectorAll('[data-theme-palette]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-theme-palette') === (cur.themePalette || 'classic'));
+        });
+        modal.querySelectorAll('[data-theme-mode]').forEach((btn) => {
+            btn.classList.toggle('is-active', btn.getAttribute('data-theme-mode') === (cur.themeMode || 'auto'));
+        });
+    };
+
+    modal.querySelectorAll('[data-theme-palette]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-theme-palette');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.themePalette = val;
+            syncThemeChips();
+            syncAllOpenModalsTheme();
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+        });
+    });
+
+    modal.querySelectorAll('[data-theme-mode]').forEach((btn) => {
+        btn.addEventListener('click', async () => {
+            const val = btn.getAttribute('data-theme-mode');
+            if (!val || !_callbacks) return;
+            const cur = _callbacks.getState().settings;
+            cur.themeMode = val;
+            syncThemeChips();
+            syncAllOpenModalsTheme();
+            await _callbacks.onMutation({ save: true, uiOnly: true });
+        });
+    });
+
+    modal.querySelector('#wbo-reset-all-aliases-btn')?.addEventListener('click', async () => {
+        if (!_callbacks) return;
+        const cur = _callbacks.getState().settings;
+        const count = Object.keys(cur.aliases || {}).length;
+        if (count === 0) return;
+        if (!globalThis.confirm(`确认清除全部 ${count} 个自定义显示名，一键恢复为世界书原文件名？\n（不会影响已有分组，且可在历史版本中回退）`)) return;
+        pushUndoSnapshot(cur, { count, label: '恢复原文件名' });
+        cur.aliases = {};
+        await _callbacks.onMutation({ save: true });
+        const lbl = modal.querySelector('#wbo-alias-count-label');
+        const btn = modal.querySelector('#wbo-reset-all-aliases-btn');
+        if (lbl) lbl.textContent = '当前已自定义 0 个显示名';
+        if (btn instanceof HTMLButtonElement) btn.disabled = true;
+        showToast('success', `已将 ${count} 本世界书恢复为原文件名`);
+    });
+
+    modal.querySelector('#wbo-clear-all-notes-btn')?.addEventListener('click', async () => {
+        if (!_callbacks) return;
+        const cur = _callbacks.getState().settings;
+        const count = Object.keys(cur.notes || {}).length;
+        if (count === 0) return;
+        if (!globalThis.confirm(`确认清空全部 ${count} 条世界书备注说明？\n（不会影响已有分组与名称，且可在历史版本中回退）`)) return;
+        pushUndoSnapshot(cur, { count, label: '清空全部说明' });
+        cur.notes = {};
+        await _callbacks.onMutation({ save: true });
+        const lbl = modal.querySelector('#wbo-note-count-label');
+        const btn = modal.querySelector('#wbo-clear-all-notes-btn');
+        if (lbl) lbl.textContent = '当前共有 0 条备注说明';
+        if (btn instanceof HTMLButtonElement) btn.disabled = true;
+        showToast('success', `已清空 ${count} 条备注说明`);
+    });
+
+    modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
+    const importInput = modal.querySelector('#wbo-modal-import-file');
+    modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
+        if (importInput instanceof HTMLInputElement) {
+            importInput.value = '';
+            importInput.click();
+        }
+    });
+    importInput?.addEventListener('change', async () => {
+        if (!(importInput instanceof HTMLInputElement) || !importInput.files?.[0]) return;
+        await handleConfigImportFile(importInput.files[0]);
+        if (_callbacks) {
+            syncSettingControlsInPlace(modal, _callbacks.getState().settings);
+            syncExcludeChips();
+            syncThemeChips();
+            syncQuickActionsModeUi();
+            syncAllOpenModalsTheme();
+        }
+    });
+    modal.querySelector('[data-open-import-rules]')?.addEventListener('click', () => openImportRulesModal({ stack: true }));
+    modal.querySelector('#wbo-settings-close-btn')?.addEventListener('click', closeSubModal);
+}
+
+export { openSettingsModal };
