@@ -29,8 +29,107 @@ import {
     compareZhCn,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
+    togglePinnedBook,
 } from './core.js';
 import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, saveSettings } from './host.js';
+
+/**
+ * Prevent `mousedown`, `touchstart`, and `click` events inside floating popovers/sheets
+ * from bubbling to `document.documentElement` (`<html>`) and collapsing ST `.openDrawer`s.
+ * Always bubble phase (`false`).
+ * @param {HTMLElement | null} rootEl
+ */
+function bindDrawerSafeBubbleGuard(rootEl) {
+    if (!(rootEl instanceof HTMLElement) || rootEl.dataset.wboBubbleGuarded === '1') return;
+    rootEl.dataset.wboBubbleGuarded = '1';
+    const stopBubble = (ev) => ev.stopPropagation();
+    rootEl.addEventListener('mousedown', stopBubble, false);
+    rootEl.addEventListener('touchstart', stopBubble, { capture: false, passive: true });
+    rootEl.addEventListener('click', stopBubble, false);
+}
+
+let _pinDirtyOnClose = false;
+
+/**
+ * Toggle pin status for a worldbook directly from any native dropdown/sheet/popover
+ * without rebuilding or closing the currently open dropdown.
+ * @param {string} worldName
+ * @returns {boolean} new pinned state
+ */
+function toggleWorldPinFromNative(worldName) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean || !_latestSettings) return false;
+    const isPinnedNow = togglePinnedBook(_latestSettings, clean);
+    if (_latestClassification?.byName) {
+        const meta = _latestClassification.byName.get(clean);
+        if (meta) meta.isPinned = isPinnedNow;
+        const pinnedBooks = [];
+        for (const m of _latestClassification.byName.values()) {
+            if (m.isPinned) pinnedBooks.push(m);
+        }
+        pinnedBooks.sort((a, b) => compareZhCn(a.primaryTitle || a.realName, b.primaryTitle || b.realName));
+        _latestClassification.pinnedBooks = pinnedBooks;
+        _latestClassification.pinnedCount = pinnedBooks.length;
+    }
+    _pinDirtyOnClose = true;
+    _lastGlobalSignature = null;
+    _lastEditorSignature = null;
+    saveSettings();
+    try {
+        if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
+            window.dispatchEvent(new CustomEvent('wbo:pin-changed', { detail: { worldName: clean, isPinned: isPinnedNow } }));
+        }
+    } catch { /* ignore */ }
+    return isPinnedNow;
+}
+
+/**
+ * Bind capture-phase handlers on a Select2 `.select2-results__options` container so clicking
+ * `.wbo-s2-pin-btn` toggles pin in place WITHOUT selecting the row or closing Select2.
+ * @param {HTMLElement} resultsList
+ * @param {(info: { worldName: string, isPinned: boolean }) => void} [onAfterToggle]
+ * @returns {() => void}
+ */
+function bindSelect2PinHandlers(resultsList, onAfterToggle = null) {
+    const onPointerBlock = (ev) => {
+        const pinBtn = ev.target instanceof Element ? ev.target.closest('.wbo-s2-pin-btn') : null;
+        if (!pinBtn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+    };
+    const onPinClick = (ev) => {
+        const pinBtn = ev.target instanceof Element ? ev.target.closest('.wbo-s2-pin-btn') : null;
+        if (!pinBtn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        ev.stopImmediatePropagation();
+        const worldName = pinBtn.getAttribute('data-pin-world') || '';
+        if (!worldName) return;
+        const nextPinned = toggleWorldPinFromNative(worldName);
+        resultsList.querySelectorAll('.wbo-s2-pin-btn').forEach((btn) => {
+            if (btn.getAttribute('data-pin-world') === worldName) {
+                btn.classList.toggle('is-pinned', nextPinned);
+                btn.setAttribute('aria-pressed', nextPinned ? 'true' : 'false');
+                btn.title = nextPinned ? '取消置顶' : '置顶此世界书';
+                btn.textContent = nextPinned ? '★' : '☆';
+            }
+        });
+        if (typeof onAfterToggle === 'function') {
+            onAfterToggle({ worldName, isPinned: nextPinned });
+        }
+    };
+    resultsList.addEventListener('pointerdown', onPointerBlock, true);
+    resultsList.addEventListener('mousedown', onPointerBlock, true);
+    resultsList.addEventListener('mouseup', onPointerBlock, true);
+    resultsList.addEventListener('click', onPinClick, true);
+    return () => {
+        resultsList.removeEventListener('pointerdown', onPointerBlock, true);
+        resultsList.removeEventListener('mousedown', onPointerBlock, true);
+        resultsList.removeEventListener('mouseup', onPointerBlock, true);
+        resultsList.removeEventListener('click', onPinClick, true);
+    };
+}
 
 /** @type {Map<string, HTMLOptionElement>} */
 const _globalDetachedMap = new Map();
@@ -191,14 +290,19 @@ function renderSelect2OptionResult(state, { showGroupPill }) {
     const subHtml = meta.subtitle
         ? `<span class="wbo-s2-sub" title="${escHtml(meta.realName)}">${escHtml(meta.subtitle)}</span>`
         : '';
+    const isPinned = Boolean(meta.isPinned);
+    const pinBtnHtml = `<button type="button" class="wbo-s2-pin-btn${isPinned ? ' is-pinned' : ''}" data-pin-world="${escHtml(meta.realName)}" title="${isPinned ? '取消置顶' : '置顶此世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>`;
 
     return $(`
-        <span class="wbo-s2-item" title="${escHtml(meta.realName)}">
+        <span class="wbo-s2-item" data-wbo-world="${escHtml(meta.realName)}" title="${escHtml(meta.realName)}">
             <span class="wbo-s2-main">
                 <span class="wbo-s2-title">${escHtml(meta.primaryTitle)}</span>
                 ${subHtml}
             </span>
-            ${groupBadge}
+            <span class="wbo-s2-right">
+                ${groupBadge}
+                ${pinBtnHtml}
+            </span>
         </span>
     `);
 }
@@ -337,6 +441,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         ? (Array.isArray(settings.globalHiddenGroupIds) ? settings.globalHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER])
         : (Array.isArray(settings.editorHiddenGroupIds) ? settings.editorHiddenGroupIds : [SPECIAL_GROUPS.CHARACTER]);
     const hiddenSig = [...hiddenList].sort().join(',');
+    const pinnedSig = [...(Array.isArray(settings.pinnedBooks) ? settings.pinnedBooks : [])].sort().join(',');
     const currentChatAvatarSig = mode === 'editor' && settings.pinCurrentChatCharBookInEditor !== false
         ? (getCurrentCharacterAvatar() || '')
         : '';
@@ -345,6 +450,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         mode,
         Boolean(settings.showCharBooks),
         hiddenSig,
+        pinnedSig,
         currentChatAvatarSig,
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
@@ -433,11 +539,14 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         }
     }
 
-    // Order visible options cleanly by pre-sorted classification rank (O(1) integer compare — zero localeCompare!)
+    // Order visible options cleanly: pinned first, then pre-sorted classification rank (O(1) integer compare)
     const rankMap = buildBookOrderRankMap(classification);
     visibleOpts.sort((a, b) => {
         const na = (a.textContent || '').trim();
         const nb = (b.textContent || '').trim();
+        const pa = classification?.byName?.get(na)?.isPinned ? 1 : 0;
+        const pb = classification?.byName?.get(nb)?.isPinned ? 1 : 0;
+        if (pa !== pb) return pb - pa;
         const ra = rankMap.get(na);
         const rb = rankMap.get(nb);
         if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
@@ -933,10 +1042,8 @@ function openMobileEditorPickerSheet() {
     globalThis.addEventListener('resize', onViewportChange);
     globalThis.addEventListener('orientationchange', onViewportChange);
 
-    const stopPopover = (ev) => ev.stopPropagation();
-    for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
-        popover.addEventListener(evtName, stopPopover);
-    }
+    bindDrawerSafeBubbleGuard(overlay);
+    bindDrawerSafeBubbleGuard(popover);
     overlay.addEventListener('click', (ev) => {
         ev.stopPropagation();
         if (ev.target === overlay) closePicker();
@@ -947,11 +1054,25 @@ function openMobileEditorPickerSheet() {
     const searchInput = popover.querySelector('#wbo-mp-search');
     const listEl = popover.querySelector('#wbo-mp-list');
 
+    const getPinnedBooks = () => {
+        const list = [];
+        for (const sec of sections) {
+            for (const b of sec.books) {
+                if (b.isPinned) list.push(b);
+            }
+        }
+        return list;
+    };
+
     const renderPills = () => {
         if (!pillsEl) return;
         const totalCount = sections.reduce((sum, s) => sum + s.books.length, 0);
+        const pinnedCount = getPinnedBooks().length;
         const items = [
             { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
+            ...(pinnedCount > 0 || activePillId === SPECIAL_GROUPS.PINNED
+                ? [{ id: SPECIAL_GROUPS.PINNED, label: '★ 已置顶', count: pinnedCount, color: '' }]
+                : []),
             ...sections.map((s) => ({ id: s.id, label: s.name, count: s.books.length, color: s.color })),
         ];
         pillsEl.innerHTML = items.map((p) => `
@@ -974,10 +1095,37 @@ function openMobileEditorPickerSheet() {
         }
     };
 
+    const renderMpRowHtml = (b) => {
+        const optVal = optValueByRealName.get(b.realName) || '';
+        const isCurrent = optVal !== '' && optVal === currentSelectedVal;
+        const isPinned = Boolean(b.isPinned);
+        return `
+            <div class="wbo-mp-row${isCurrent ? ' is-selected' : ''}">
+                <button type="button" class="wbo-mp-row-main" data-mp-val="${escHtml(optVal)}">
+                    <span class="wbo-mp-row-text">
+                        <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
+                        ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
+                    </span>
+                </button>
+                <div class="wbo-mp-row-actions">
+                    ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
+                    <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消置顶' : '置顶此世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
+                </div>
+            </div>
+        `;
+    };
+
     const renderList = () => {
         if (!listEl) return;
         const q = searchQuery.trim().toLowerCase();
         const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+        if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
+            const pinned = getPinnedBooks();
+            listEl.innerHTML = pinned.length > 0
+                ? `<div class="wbo-mp-sec"><div class="wbo-mp-sec-head is-static"><span class="wbo-mp-dot-ind">•</span><span class="wbo-group-name">★ 已置顶</span><span class="wbo-group-count">${pinned.length}</span></div><div class="wbo-mp-sec-body">${pinned.map(renderMpRowHtml).join('')}</div></div>`
+                : '<div class="wbo-empty-hint">暂无置顶世界书，点击行右侧 ☆ 可置顶</div>';
+            return;
+        }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
         const html = sections.map((sec) => {
@@ -989,19 +1137,7 @@ function openMobileEditorPickerSheet() {
             const collapsed = !q && !isIsolated && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
             const rowsHtml = collapsed
                 ? ''
-                : books.map((b) => {
-                    const optVal = optValueByRealName.get(b.realName) || '';
-                    const isCurrent = optVal !== '' && optVal === currentSelectedVal;
-                    return `
-                        <button type="button" class="wbo-mp-row${isCurrent ? ' is-selected' : ''}" data-mp-val="${escHtml(optVal)}">
-                            <span class="wbo-mp-row-text">
-                                <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
-                                ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
-                            </span>
-                            ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
-                        </button>
-                    `;
-                }).join('');
+                : books.map(renderMpRowHtml).join('');
 
             return `
                 <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}">
@@ -1077,6 +1213,25 @@ function openMobileEditorPickerSheet() {
         }
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
+        const pinBtn = target.closest('[data-mp-pin]');
+        if (pinBtn) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            const pinWorld = pinBtn.getAttribute('data-mp-pin') || '';
+            if (pinWorld) {
+                const nextPinned = toggleWorldPinFromNative(pinWorld);
+                for (const sec of sections) {
+                    for (const b of sec.books) {
+                        if (b.realName === pinWorld) b.isPinned = nextPinned;
+                    }
+                }
+                const prevTop = listEl.scrollTop;
+                renderPills();
+                renderList();
+                listEl.scrollTop = prevTop;
+            }
+            return;
+        }
         const toggleBtn = target.closest('[data-mp-toggle]');
         if (toggleBtn) {
             if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
@@ -1650,10 +1805,8 @@ function attachGroupedSelectControl(
             popover.style.top = `${Math.round(rect.bottom + 4)}px`;
         }
 
-        const stopPopover = (ev) => ev.stopPropagation();
-        for (const evtName of ['mousedown', 'mouseup', 'pointerdown', 'pointerup', 'click', 'touchstart', 'touchend']) {
-            popover.addEventListener(evtName, stopPopover);
-        }
+        bindDrawerSafeBubbleGuard(overlay);
+        bindDrawerSafeBubbleGuard(popover);
         overlay.addEventListener('click', (ev) => {
             ev.stopPropagation();
             if (ev.target === overlay) closePopover();
@@ -1665,11 +1818,27 @@ function attachGroupedSelectControl(
         const searchInput = popover.querySelector('#wbo-pop-search');
         const listEl = popover.querySelector('#wbo-pop-list');
 
+        const getPinnedBooks = () => {
+            const list = [];
+            for (const sec of sections) {
+                for (const b of sec.books) {
+                    if (_latestClassification?.byName?.get(b.realName)?.isPinned ?? b.isPinned) {
+                        list.push(b);
+                    }
+                }
+            }
+            return list;
+        };
+
         const renderPills = () => {
             if (!pillsEl) return;
             const totalCount = sections.reduce((sum, s) => sum + s.books.length, 0);
+            const pinnedCount = getPinnedBooks().length;
             const items = [
                 { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
+                ...(pinnedCount > 0 || activePillId === SPECIAL_GROUPS.PINNED
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: '★ 已置顶', count: pinnedCount, color: '' }]
+                    : []),
                 ...sections.map((s) => ({ id: s.id, label: s.name, count: s.books.length, color: s.color })),
             ];
             pillsEl.innerHTML = items.map((p) => `
@@ -1692,12 +1861,55 @@ function attachGroupedSelectControl(
             }
         };
 
+        const renderPopRowHtml = (b, selectedSet) => {
+            const isSel = selectedSet.has(b.value);
+            const isPinned = Boolean(_latestClassification?.byName?.get(b.realName)?.isPinned ?? b.isPinned);
+            const pinHtml = `<button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-pop-pin="${escHtml(b.realName)}" title="${isPinned ? '取消置顶' : '置顶此世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>`;
+            if (multiple) {
+                return `
+                    <div class="wbo-mp-row is-multi-row${isSel ? ' is-selected' : ''}" data-pop-row-val="${escHtml(b.value)}">
+                        <span class="wbo-mp-row-text">
+                            <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
+                            ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
+                        </span>
+                        <div class="wbo-mp-row-actions">
+                            ${pinHtml}
+                            <button type="button" class="wbo-mp-toggle-pill${isSel ? ' is-on' : ''}" data-pop-toggle-val="${escHtml(b.value)}">
+                                ${isSel ? '<i class="fa-solid fa-check"></i><span>已选</span>' : '<span>添加</span>'}
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }
+            return `
+                <div class="wbo-mp-row${isSel ? ' is-selected' : ''}">
+                    <button type="button" class="wbo-mp-row-main" data-pop-val="${escHtml(b.value)}">
+                        <span class="wbo-mp-row-text">
+                            <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
+                            ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
+                        </span>
+                    </button>
+                    <div class="wbo-mp-row-actions">
+                        ${isSel ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
+                        ${pinHtml}
+                    </div>
+                </div>
+            `;
+        };
+
         const renderList = () => {
             if (!listEl) return;
             const selectedSet = getSelectedValSet();
             if (clearBtn instanceof HTMLElement) clearBtn.hidden = selectedSet.size === 0;
             const q = searchQuery.trim().toLowerCase();
             const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+            if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
+                const pinned = getPinnedBooks();
+                listEl.innerHTML = pinned.length > 0
+                    ? `<div class="wbo-mp-sec"><div class="wbo-mp-sec-head is-static"><span class="wbo-mp-dot-ind">•</span><span class="wbo-group-name">★ 已置顶</span><span class="wbo-group-count">${pinned.length}</span></div><div class="wbo-mp-sec-body">${pinned.map((b) => renderPopRowHtml(b, selectedSet)).join('')}</div></div>`
+                    : '<div class="wbo-empty-hint">暂无置顶世界书，点击行右侧 ☆ 可置顶</div>';
+                return;
+            }
             const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
             const html = sections.map((sec) => {
@@ -1709,34 +1921,7 @@ function attachGroupedSelectControl(
                 const collapsed = !q && !isIsolated && Boolean(localCollapsed[sec.id]);
                 const rowsHtml = collapsed
                     ? ''
-                    : books.map((b) => {
-                        const isSel = selectedSet.has(b.value);
-                        if (multiple) {
-                            // Anti-misclick multi-select row: body text is passive (safe to scroll!),
-                            // ONLY the explicit right-side `添加 / ✓ 已选` pill toggles selection!
-                            // Unselected items render NO checkmark icon at all (immune to theme icon color overrides!).
-                            return `
-                                <div class="wbo-mp-row is-multi-row${isSel ? ' is-selected' : ''}" data-pop-row-val="${escHtml(b.value)}">
-                                    <span class="wbo-mp-row-text">
-                                        <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
-                                        ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
-                                    </span>
-                                    <button type="button" class="wbo-mp-toggle-pill${isSel ? ' is-on' : ''}" data-pop-toggle-val="${escHtml(b.value)}">
-                                        ${isSel ? '<i class="fa-solid fa-check"></i><span>已选</span>' : '<span>添加</span>'}
-                                    </button>
-                                </div>
-                            `;
-                        }
-                        return `
-                            <button type="button" class="wbo-mp-row${isSel ? ' is-selected' : ''}" data-pop-val="${escHtml(b.value)}">
-                                <span class="wbo-mp-row-text">
-                                    <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
-                                    ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
-                                </span>
-                                ${isSel ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
-                            </button>
-                        `;
-                    }).join('');
+                    : books.map((b) => renderPopRowHtml(b, selectedSet)).join('');
 
                 return `
                     <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}">
@@ -1815,6 +2000,25 @@ function attachGroupedSelectControl(
             }
             const target = ev.target instanceof Element ? ev.target : null;
             if (!target) return;
+            const pinBtn = target.closest('[data-pop-pin]');
+            if (pinBtn) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                const pinWorld = pinBtn.getAttribute('data-pop-pin') || '';
+                if (pinWorld) {
+                    const nextPinned = toggleWorldPinFromNative(pinWorld);
+                    for (const sec of sections) {
+                        for (const b of sec.books) {
+                            if (b.realName === pinWorld) b.isPinned = nextPinned;
+                        }
+                    }
+                    const prevTop = listEl.scrollTop;
+                    renderPills();
+                    renderList();
+                    listEl.scrollTop = prevTop;
+                }
+                return;
+            }
             const toggleBtn = target.closest('[data-pop-toggle]');
             if (toggleBtn) {
                 if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
@@ -2027,6 +2231,8 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
             };
             if (resultsList.dataset.wboExtrasListBound !== '1') {
                 resultsList.dataset.wboExtrasListBound = '1';
+                bindDrawerSafeBubbleGuard(dropdownEl);
+                bindSelect2PinHandlers(resultsList);
                 resultsList.addEventListener('mousedown', (ev) => {
                     const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
                     if (!head) return;
@@ -2317,9 +2523,26 @@ function enhanceOpenEditorDropdown() {
     const inst = $(selectEl).data('select2');
     const dropdownEl = inst?.$dropdown?.[0];
     if (!(dropdownEl instanceof HTMLElement)) return;
+    bindDrawerSafeBubbleGuard(dropdownEl);
 
     const resultsList = dropdownEl.querySelector('.select2-results__options');
     if (!(resultsList instanceof HTMLElement)) return;
+
+    const getDropdownOptionWorldName = (li) => {
+        const s2Item = li.querySelector('.wbo-s2-item');
+        const fromAttr = s2Item?.getAttribute('data-wbo-world') || li.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world');
+        if (fromAttr) return fromAttr;
+        return (li.textContent || '').trim();
+    };
+
+    const getPinnedCountInSelect = () => {
+        let cnt = 0;
+        selectEl.querySelectorAll('option').forEach((opt) => {
+            const name = (opt.textContent || '').trim();
+            if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
+        });
+        return cnt;
+    };
 
     // Build ordered group descriptors directly from the live `<optgroup>` elements
     const groups = Array.from(selectEl.querySelectorAll('optgroup[data-wbo-group]')).map((og) => {
@@ -2329,10 +2552,11 @@ function enhanceOpenEditorDropdown() {
         return { id, fullLabel, shortName, count: og.querySelectorAll('option').length };
     });
 
-    if (groups.length === 0) return;
-
     const groupByLabel = new Map(groups.map((g) => [g.fullLabel, g]));
     const validGroupIds = new Set(groups.map((g) => g.id));
+    if (getPinnedCountInSelect() > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
+        validGroupIds.add(SPECIAL_GROUPS.PINNED);
+    }
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
         _latestSettings.dropdownCollapsed = {};
     }
@@ -2351,12 +2575,26 @@ function enhanceOpenEditorDropdown() {
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
     /**
-     * Synchronize collapsible state, chevrons, and active pill filter onto every
+     * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
     const decorateGroupItems = () => {
         const searching = isSearching();
+        const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
+        const isGroupIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
         const groupNodes = resultsList.querySelectorAll(':scope > li.select2-results__option--group');
+
+        if (isPinFilter) {
+            resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((optLi) => {
+                const name = getDropdownOptionWorldName(optLi);
+                const pinned = Boolean(name && _latestClassification?.byName?.get(name)?.isPinned);
+                optLi.classList.toggle('wbo-dd-pin-hidden', !pinned);
+            });
+        } else {
+            resultsList.querySelectorAll('li.wbo-dd-pin-hidden').forEach((optLi) => {
+                optLi.classList.remove('wbo-dd-pin-hidden');
+            });
+        }
 
         groupNodes.forEach((li) => {
             if (!(li instanceof HTMLElement)) return;
@@ -2366,7 +2604,7 @@ function enhanceOpenEditorDropdown() {
             li.setAttribute('data-wbo-dd-group', gid);
 
             const head = li.querySelector(':scope > .select2-results__group');
-            const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL;
+            const isIsolated = isGroupIsolated || isPinFilter;
             if (head instanceof HTMLElement) {
                 head.classList.add('wbo-dd-group-head');
                 head.classList.toggle('is-isolated', isIsolated);
@@ -2374,13 +2612,16 @@ function enhanceOpenEditorDropdown() {
                 head.setAttribute('title', isIsolated ? '' : '点击展开或折叠该分组');
             }
 
-            // Filter visibility when user picked a single group pill inside the dropdown
-            const hiddenByPill = isIsolated && gid !== activePillGroupId;
-            li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-
-            // Auto-expand while searching OR when isolated via filter pill
-            const isCollapsed = !searching && !isIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
-            li.classList.toggle('wbo-dd-collapsed', isCollapsed);
+            if (isPinFilter) {
+                const hasPinnedChild = Boolean(li.querySelector('.select2-results__option:not(.select2-results__option--group):not(.wbo-dd-pin-hidden)'));
+                li.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
+                li.classList.remove('wbo-dd-collapsed');
+            } else {
+                const hiddenByPill = isGroupIsolated && gid !== activePillGroupId;
+                li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
+                const isCollapsed = !searching && !isGroupIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                li.classList.toggle('wbo-dd-collapsed', isCollapsed);
+            }
         });
     };
 
@@ -2421,9 +2662,35 @@ function enhanceOpenEditorDropdown() {
 
     const getScrollHost = () => findScrollableListEl(resultsList, dropdownEl);
 
-    if (groups.length >= 2) {
+    const syncPinnedPillBtn = () => {
+        if (!filterBar) return;
+        const cnt = getPinnedCountInSelect();
+        const scrollWrap = filterBar.querySelector('.wbo-dd-pill-scroll');
+        let pinPill = filterBar.querySelector(`[data-wbo-pill="${SPECIAL_GROUPS.PINNED}"]`);
+        if (cnt > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
+            if (!pinPill && scrollWrap) {
+                pinPill = document.createElement('button');
+                pinPill.type = 'button';
+                pinPill.className = `wbo-dd-pill${activePillGroupId === SPECIAL_GROUPS.PINNED ? ' is-active' : ''}`;
+                pinPill.setAttribute('data-wbo-pill', SPECIAL_GROUPS.PINNED);
+                scrollWrap.prepend(pinPill);
+            }
+            if (pinPill) pinPill.textContent = `★ 已置顶 ${cnt}`;
+        } else if (pinPill) {
+            pinPill.remove();
+        }
+    };
+
+    const initialPinnedCount = getPinnedCountInSelect();
+    if (groups.length >= 2 || initialPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
+        const pillDescriptors = [
+            ...(initialPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
+                ? [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${initialPinnedCount}` }]
+                : []),
+            ...(groups.length >= 2 ? groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })) : []),
+        ];
         const built = createDropdownFilterBar(
-            groups.map((g) => ({ id: g.id, label: `${g.shortName} ${g.count}` })),
+            pillDescriptors,
             activePillGroupId,
         );
         filterBar = built.barEl;
@@ -2465,6 +2732,11 @@ function enhanceOpenEditorDropdown() {
             resultsWrap.parentElement.insertBefore(filterBar, resultsWrap);
         }
     }
+
+    const unbindPinHandlers = bindSelect2PinHandlers(resultsList, () => {
+        syncPinnedPillBtn();
+        decorateGroupItems();
+    });
 
     // Prevent ANY click inside `.select2-dropdown` (search bar, filter bar, margins) from
     // bubbling to `document` and triggering SillyTavern's unpinned-drawer auto-closer!
@@ -2568,6 +2840,7 @@ function enhanceOpenEditorDropdown() {
         resultsList.removeEventListener('mousedown', onOptionPointerDown, true);
         resultsList.removeEventListener('mousedown', onResultsMouseDown, true);
         resultsList.removeEventListener('click', onResultsClick, true);
+        unbindPinHandlers();
         if (searchInput instanceof HTMLInputElement) {
             searchInput.removeEventListener('input', onSearchInput);
         }
@@ -2577,6 +2850,139 @@ function enhanceOpenEditorDropdown() {
     decorateGroupItems();
     requestAnimationFrame(applySavedScrollPositions);
     applySavedScrollPositions();
+}
+
+/** @type {(() => void) | null} */
+let _openGlobalDropdownCleanup = null;
+/** @type {string} */
+let _activeGlobalPillId = SPECIAL_GROUPS.ALL;
+
+function cleanupOpenGlobalDropdown() {
+    if (_openGlobalDropdownCleanup) {
+        try { _openGlobalDropdownCleanup(); } catch { /* ignore */ }
+        _openGlobalDropdownCleanup = null;
+    }
+    document.querySelectorAll('.wbo-global-dd-bar').forEach((el) => el.remove());
+}
+
+/**
+ * Enhance `#world_info` (Global Worldbooks multiselect) Select2 dropdown with:
+ * - Bubble guard so clicking inside never collapses ST's drawer
+ * - In-place `☆/★` pin button interception without closing/selecting
+ * - Compact `全部 | ★ 已置顶` filter bar when pinned books exist
+ */
+function enhanceOpenGlobalDropdown() {
+    cleanupOpenGlobalDropdown();
+    const $ = globalThis.jQuery;
+    const globalSel = document.getElementById('world_info');
+    if (!$ || !globalSel || !_latestSettings) return;
+
+    const inst = $(globalSel).data('select2');
+    const dropdownEl = inst?.$dropdown?.[0];
+    if (!(dropdownEl instanceof HTMLElement)) return;
+    bindDrawerSafeBubbleGuard(dropdownEl);
+
+    const resultsList = dropdownEl.querySelector('.select2-results__options');
+    if (!(resultsList instanceof HTMLElement)) return;
+
+    const getOptWorldName = (li) => {
+        const s2Item = li.querySelector('.wbo-s2-item');
+        return s2Item?.getAttribute('data-wbo-world')
+            || li.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
+            || (li.textContent || '').trim();
+    };
+
+    const getPinnedCount = () => {
+        let cnt = 0;
+        globalSel.querySelectorAll('option').forEach((opt) => {
+            const name = (opt.textContent || '').trim();
+            if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
+        });
+        return cnt;
+    };
+
+    if (_activeGlobalPillId === SPECIAL_GROUPS.PINNED && getPinnedCount() === 0) {
+        _activeGlobalPillId = SPECIAL_GROUPS.ALL;
+    }
+
+    const searchField = globalSel.parentElement?.querySelector('.select2-search__field');
+    const isSearching = () => searchField instanceof HTMLInputElement && searchField.value.trim().length > 0;
+
+    const syncPinFilter = () => {
+        const pinOnly = !isSearching() && _activeGlobalPillId === SPECIAL_GROUPS.PINNED;
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((optLi) => {
+            if (!pinOnly) {
+                optLi.classList.remove('wbo-dd-pin-hidden');
+                return;
+            }
+            const name = getOptWorldName(optLi);
+            const pinned = Boolean(name && _latestClassification?.byName?.get(name)?.isPinned);
+            optLi.classList.toggle('wbo-dd-pin-hidden', !pinned);
+        });
+    };
+
+    let barEl = null;
+    const syncBar = () => {
+        const cnt = getPinnedCount();
+        if (!barEl && (cnt > 0 || _activeGlobalPillId === SPECIAL_GROUPS.PINNED)) {
+            const built = createDropdownFilterBar(
+                [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${cnt}` }],
+                _activeGlobalPillId,
+                'wbo-global-dd-bar',
+            );
+            barEl = built.barEl;
+            barEl.addEventListener('mousedown', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+            });
+            barEl.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
+                if (!btn) return;
+                ev.preventDefault();
+                const gid = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+                _activeGlobalPillId = (gid === _activeGlobalPillId && gid !== SPECIAL_GROUPS.ALL)
+                    ? SPECIAL_GROUPS.ALL
+                    : gid;
+                barEl.querySelectorAll('.wbo-dd-pill').forEach((b) => {
+                    b.classList.toggle('is-active', b.getAttribute('data-wbo-pill') === _activeGlobalPillId);
+                });
+                syncPinFilter();
+            });
+            const resultsWrap = dropdownEl.querySelector('.select2-results');
+            if (resultsWrap && resultsWrap.parentElement) {
+                resultsWrap.parentElement.insertBefore(barEl, resultsWrap);
+            }
+        } else if (barEl) {
+            const pinPill = barEl.querySelector(`[data-wbo-pill="${SPECIAL_GROUPS.PINNED}"]`);
+            if (pinPill) pinPill.textContent = `★ 已置顶 ${cnt}`;
+            barEl.hidden = cnt === 0 && _activeGlobalPillId !== SPECIAL_GROUPS.PINNED;
+        }
+    };
+
+    syncBar();
+    syncPinFilter();
+
+    const unbindPin = bindSelect2PinHandlers(resultsList, () => {
+        syncBar();
+        syncPinFilter();
+    });
+
+    const onSearchInput = () => requestAnimationFrame(syncPinFilter);
+    if (searchField instanceof HTMLInputElement) {
+        searchField.addEventListener('input', onSearchInput);
+    }
+    const obs = new MutationObserver(() => syncPinFilter());
+    obs.observe(resultsList, { childList: true });
+
+    _openGlobalDropdownCleanup = () => {
+        obs.disconnect();
+        unbindPin();
+        if (searchField instanceof HTMLInputElement) {
+            searchField.removeEventListener('input', onSearchInput);
+        }
+        barEl?.remove();
+    };
 }
 
 /**
@@ -2687,6 +3093,19 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
+    const getPopoverPinnedCount = () => {
+        let cnt = 0;
+        for (const sec of orderedSections) {
+            for (const optEl of (bucketByGroup.get(sec.id) || [])) {
+                const name = getOptionText(optEl);
+                if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
+            }
+        }
+        return cnt;
+    };
+    if (getPopoverPinnedCount() > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
+        validGroupIds.add(SPECIAL_GROUPS.PINNED);
+    }
     let activePillGroupId =
         _dropdownMemory.activePillGroupId !== SPECIAL_GROUPS.ALL && validGroupIds.has(_dropdownMemory.activePillGroupId)
             ? _dropdownMemory.activePillGroupId
@@ -2745,19 +3164,34 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     const syncSections = () => {
         const searching = isSearching();
-        const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL;
+        const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
+        const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
         for (const secEl of sectionEls) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
             const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
             if (headEl instanceof HTMLElement) {
-                headEl.classList.toggle('is-isolated', isIsolated);
-                headEl.title = isIsolated ? '' : '点击展开或折叠该分组';
+                headEl.classList.toggle('is-isolated', isIsolated || isPinFilter);
+                headEl.title = (isIsolated || isPinFilter) ? '' : '点击展开或折叠该分组';
+            }
+            const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+            for (const o of optsInSec) {
+                if (!isPinFilter) {
+                    o.classList.remove('wbo-dd-pin-hidden');
+                } else {
+                    const name = getOptionText(o);
+                    const pinned = Boolean(name && _latestClassification?.byName?.get(name)?.isPinned);
+                    o.classList.toggle('wbo-dd-pin-hidden', !pinned);
+                }
             }
             if (searching) {
-                const hasVisibleChild = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)).some(
+                const hasVisibleChild = optsInSec.some(
                     (o) => o instanceof HTMLElement && o.style.display !== 'none',
                 );
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild);
+                secEl.classList.remove('wbo-dd-collapsed');
+            } else if (isPinFilter) {
+                const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
+                secEl.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
                 secEl.classList.remove('wbo-dd-collapsed');
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
@@ -2788,12 +3222,18 @@ function enhanceCustomDropdownPopover(containerEl) {
         ev.stopPropagation();
     }, true);
 
-    if (orderedSections.length >= 2) {
+    const initialPopPinned = getPopoverPinnedCount();
+    if (orderedSections.length >= 2 || initialPopPinned > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
         const built = createDropdownFilterBar(
-            orderedSections.map((sec) => ({
-                id: sec.id,
-                label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length}`,
-            })),
+            [
+                ...(initialPopPinned > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `★ 已置顶 ${initialPopPinned}` }]
+                    : []),
+                ...orderedSections.map((sec) => ({
+                    id: sec.id,
+                    label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length}`,
+                })),
+            ],
             activePillGroupId,
             'wbo-pop-filter-bar',
         );
@@ -2833,11 +3273,9 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
     }
 
-    // Prevent ANY click inside the body-mounted custom popover from bubbling to `document`
-    // and closing an unpinned `#WorldInfo` drawer!
-    containerEl.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-    });
+    // Prevent ANY mouse/touch/click inside the body-mounted custom popover from bubbling to
+    // `document` / `<html>` and closing an unpinned `#WorldInfo` drawer!
+    bindDrawerSafeBubbleGuard(containerEl);
 
     const popoverScrollHost = getScrollHost();
     const restoreTimers = [];
@@ -2969,11 +3407,23 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         _editorSelect2OpenHandler = (ev) => {
             if (ev?.target?.id === 'world_editor_select') {
                 requestAnimationFrame(enhanceOpenEditorDropdown);
+            } else if (ev?.target?.id === 'world_info') {
+                requestAnimationFrame(enhanceOpenGlobalDropdown);
             }
         };
         _editorSelect2CloseHandler = (ev) => {
             if (ev?.target?.id === 'world_editor_select') {
                 cleanupOpenEditorDropdown();
+                if (_pinDirtyOnClose && _latestSettings && _latestClassification) {
+                    _pinDirtyOnClose = false;
+                    applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+                }
+            } else if (ev?.target?.id === 'world_info') {
+                cleanupOpenGlobalDropdown();
+                if (_pinDirtyOnClose && _latestSettings && _latestClassification) {
+                    _pinDirtyOnClose = false;
+                    applyAllNativeWorldFilters(_latestClassification, _latestSettings);
+                }
             }
         };
         $(window).on('select2:opening.wboEditorOpen', _editorSelect2OpeningHandler);
@@ -3113,6 +3563,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
  */
 export function stopNativeObservers() {
     cleanupOpenEditorDropdown();
+    cleanupOpenGlobalDropdown();
     clearTimeout(_resyncTimer);
     _resyncTimer = null;
     if (_globalSelectObserver) {

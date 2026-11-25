@@ -172,6 +172,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     mgrSearchInCharName: true,
     mgrSearchInEntries: false,
     mgrSearchSplitSpaces: false,
+    entryEditorMonoFont: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
@@ -309,6 +310,8 @@ export function normalizeSettings(raw) {
             merged.pinnedBooks.map((s) => String(s ?? '').trim()).filter(Boolean),
         )];
     }
+
+    merged.entryEditorMonoFont = Boolean(merged.entryEditorMonoFont);
 
     const validGroupIds = new Set(merged.groups.map((g) => g.id));
     const specialSet = new Set(Object.values(SPECIAL_GROUPS));
@@ -1356,6 +1359,9 @@ export function isBookVisibleInSelector({
     if (activeFilterGroupId === SPECIAL_GROUPS.ALL) {
         return true;
     }
+    if (activeFilterGroupId === SPECIAL_GROUPS.PINNED) {
+        return Boolean(bookMeta.isPinned);
+    }
     if (activeFilterGroupId === SPECIAL_GROUPS.CHARACTER) {
         return bookMeta.isInCharGroup;
     }
@@ -1414,6 +1420,7 @@ export function isBookVisibleInCharBindPopup({
     );
 
     if (filterGroupId === SPECIAL_GROUPS.ALL) return true;
+    if (filterGroupId === SPECIAL_GROUPS.PINNED) return Boolean(bookMeta.isPinned);
     if (filterGroupId === SPECIAL_GROUPS.CHARACTER) return bookMeta.isInCharGroup;
     if (filterGroupId === SPECIAL_GROUPS.UNGROUPED) return bookMeta.groupId === SPECIAL_GROUPS.UNGROUPED;
     if (filterGroupId && filterGroupId !== SPECIAL_GROUPS.DEFAULT) {
@@ -1671,6 +1678,84 @@ export function buildLocalOrganizeProposals({
     });
 }
 
+export const AI_ORGANIZE_CATEGORY_PRESETS = Object.freeze([
+    {
+        id: 'smart_free',
+        label: '智能自由分类',
+        cat: 'group',
+        text: '根据每本世界书的实际用途自然归纳为 4~7 个清晰分组，名称简洁直观，不强行套用固定模板。',
+    },
+    {
+        id: 'by_st_purpose',
+        label: '按酒馆用途',
+        cat: 'group',
+        text: '优先按酒馆常用用途归类（如文风、缝合、场景与互动、世界观、小剧场、通用素材）。注意「缝合」指用于缝合进预设的规则指令与功能补丁；约会流程与日常互动归入「场景与互动」。',
+    },
+    {
+        id: 'compact_3_5',
+        label: '精简 3~5 大类',
+        cat: 'group',
+        text: '尽量合并归类，总分组数量控制在 3~5 个高频大类内，减少翻找层级。',
+    },
+    {
+        id: 'reuse_existing',
+        label: '优先复用旧分组',
+        cat: 'group',
+        text: '尽量归入我当前已有的分组中，除非完全无法归类否则少建新分组。',
+    },
+    {
+        id: 'by_genre',
+        label: '按题材背景',
+        cat: 'group',
+        text: '优先按故事题材与世界观背景归纳（如现代都市、古风仙侠、西幻魔法、未来科幻、悬疑规则、通用日常），便于按剧本题材成组取用。',
+    },
+    {
+        id: 'by_mount',
+        label: '按挂载方式',
+        cat: 'group',
+        text: '优先按在酒馆中的挂载方式归纳（如常驻全局、随人设绑定、按剧情关键词触发、通用规则补丁），方便区分常驻书与按需开启书。',
+    },
+]);
+
+export const AI_ORGANIZE_NAMING_PRESETS = Object.freeze([
+    {
+        id: 'bracket_square',
+        label: '[分类] 名称',
+        cat: 'name',
+        text: '名称统一按 [分类] 核心主题 格式包裹，去掉多余符号。',
+    },
+    {
+        id: 'bracket_cn',
+        label: '【分类】名称',
+        cat: 'name',
+        text: '名称统一按 【分类】核心主题 格式包裹，去掉多余符号。',
+    },
+    {
+        id: 'dash_sep',
+        label: '分类 - 名称',
+        cat: 'name',
+        text: '名称统一按 分类 - 核心主题 格式书写，分隔清晰易读。',
+    },
+    {
+        id: 'pure_zh',
+        label: '极简纯中文',
+        cat: 'name',
+        text: '名称不加任何括号前缀，只保留简洁直观的纯中文核心主题名。',
+    },
+    {
+        id: 'keep_version',
+        label: '保留版本号',
+        cat: 'ver',
+        text: '清理冗余装饰词但保留如 v2.0 等关键版本号。',
+    },
+    {
+        id: 'keep_author',
+        label: '保留作者署名',
+        cat: 'author',
+        text: '清理冗余装饰词但保留原作者署名标识，方便日后溯源。',
+    },
+]);
+
 /**
  * Build a compact, strict JSON-only prompt for AI worldbook naming & grouping.
  * Uses neutral file-cataloging framing, SillyTavern domain taxonomy guidance,
@@ -1680,6 +1765,8 @@ export function buildLocalOrganizeProposals({
  * @param {Array<{ realName: string, currentAlias?: string, currentGroup?: string, sampleEntries?: string[] }>} params.books
  * @param {string[]} params.existingGroups
  * @param {string} [params.customInstruction='']
+ * @param {string} [params.categoryPreset='']
+ * @param {string} [params.namingPreset='']
  * @param {{
  *   reason?: string,
  *   previousProposals?: Array<{ realName: string, alias?: string, group?: string, note?: string }>,
@@ -1687,7 +1774,14 @@ export function buildLocalOrganizeProposals({
  * } | null} [params.feedback=null]
  * @returns {{ systemPrompt: string, userPrompt: string }}
  */
-export function buildAiOrganizePrompt({ books, existingGroups = [], customInstruction = '', feedback = null }) {
+export function buildAiOrganizePrompt({
+    books,
+    existingGroups = [],
+    customInstruction = '',
+    categoryPreset = '',
+    namingPreset = '',
+    feedback = null,
+}) {
     const systemPrompt = [
         '你是本地文档资料库（SillyTavern 角色扮演世界书）的文件目录归类助手。',
         '请仅做客观的文件名规范化与目录归类，不要展开或评价任何文件内容。',
@@ -1719,8 +1813,21 @@ export function buildAiOrganizePrompt({ books, existingGroups = [], customInstru
     if (mergedGroups.length > 0) {
         lines.push(`当前已有/已确认可复用的分组：${mergedGroups.join('、')}`);
     }
-    if (customInstruction && customInstruction.trim()) {
-        lines.push(`用户额外偏好：${customInstruction.trim()}`);
+    const presetParts = [];
+    if (categoryPreset) {
+        const foundCat = AI_ORGANIZE_CATEGORY_PRESETS.find((p) => p.id === categoryPreset || p.label === categoryPreset);
+        if (foundCat) presetParts.push(foundCat.text);
+    }
+    if (namingPreset) {
+        const foundName = AI_ORGANIZE_NAMING_PRESETS.find((p) => p.id === namingPreset || p.label === namingPreset);
+        if (foundName) presetParts.push(foundName.text);
+    }
+    const mergedInstruction = [
+        ...presetParts.filter((t) => !String(customInstruction || '').includes(t)),
+        String(customInstruction || '').trim(),
+    ].filter(Boolean).join('\n');
+    if (mergedInstruction) {
+        lines.push(`用户额外偏好：${mergedInstruction}`);
     }
     if (feedback && typeof feedback === 'object') {
         const fbLines = [
@@ -2162,7 +2269,7 @@ export function moveBooksToNamedGroup(
     settings,
     bookNames = [],
     targetGroupName = 'NSFW',
-    { label = '一键归入 NSFW 分组', isCharBoundFn = null } = {},
+    { targetGroupId = null, label = '一键归入 NSFW 分组', isCharBoundFn = null } = {},
 ) {
     if (!settings) {
         return { movedCount: 0, groupId: '', groupName: targetGroupName, createdGroup: false };
@@ -2178,7 +2285,9 @@ export function moveBooksToNamedGroup(
     if (!settings.charBookOverrides || typeof settings.charBookOverrides !== 'object') settings.charBookOverrides = {};
 
     const key = cleanGroupName.toLowerCase();
-    let targetGroup = settings.groups.find((g) => String(g?.name ?? '').trim().toLowerCase() === key) || null;
+    let targetGroup = (targetGroupId
+        ? settings.groups.find((g) => g?.id === targetGroupId)
+        : null) || settings.groups.find((g) => String(g?.name ?? '').trim().toLowerCase() === key) || null;
     const toMove = cleanTargets.filter((name) => !targetGroup || settings.assignments[name] !== targetGroup.id);
     if (toMove.length === 0) {
         return {
@@ -2376,7 +2485,7 @@ export function searchEntriesInPayload(
             constant: Boolean(e.constant),
             matchedIn,
             snippet,
-            content: content.length > 2400 ? `${content.slice(0, 2400)}…` : content,
+            content,
         });
     }
 
@@ -2413,6 +2522,7 @@ export function exportConfigData(settings) {
             showNativeCharToggleBtn: cfg.showNativeCharToggleBtn,
             showNativeExcludeBtn: cfg.showNativeExcludeBtn,
             showNativeEntrySearchBtn: cfg.showNativeEntrySearchBtn,
+            entryEditorMonoFont: cfg.entryEditorMonoFont,
             globalHiddenGroupIds: cfg.globalHiddenGroupIds,
             editorHiddenGroupIds: cfg.editorHiddenGroupIds,
             localOrganizeCategories: cfg.localOrganizeCategories,
@@ -2752,4 +2862,107 @@ export function createNewRawWorldEntry(entriesObj = {}, initialFields = {}) {
         displayIndex: maxDisplay + 1,
     };
     return mergeEntryPatchOntoRaw(template, initialFields);
+}
+
+/**
+ * Auto-detect an existing custom group whose name matches common sensitive/NSFW synonyms
+ * (`nsfw`, `成人`, `18+`, `r18`, `涩`, `色`, `肉`, `车`, or bounded `h` / `h向` / `h文`),
+ * without false-matching unrelated English words like `History` or `Character`.
+ *
+ * @param {Array<{ id: string, name: string, color?: string }>} [groups=[]]
+ * @returns {{ id: string, name: string, color?: string } | null}
+ */
+export function findSensitiveTargetGroup(groups = []) {
+    const list = Array.isArray(groups) ? groups.filter((g) => g && typeof g.name === 'string' && g.name.trim()) : [];
+    if (list.length === 0) return null;
+
+    const exactNsfw = list.find((g) => g.name.trim().toLowerCase() === 'nsfw');
+    if (exactNsfw) return exactNsfw;
+
+    const mainPattern = /(?:nsfw|18\+|r-?18g?|成人|涩|色情|色色|黄色|肉文|肉向|炖肉|肉麻|开车|飙车|车文|车速|黄文|工口)/i;
+    const standaloneCjk = /(?:^|[\s/·\-_|【\[(\（])(?:色|肉|车)(?:$|[\s/·\-_|】\])\）])/;
+    const hPattern = /(?:^|[^a-z])h(?:[^a-z]|$)|h向|h文/i;
+    return list.find((g) => {
+        const name = g.name.trim();
+        return mainPattern.test(name) || standaloneCjk.test(name) || hPattern.test(name);
+    }) || null;
+}
+
+/**
+ * Lightweight, deterministic token estimator for worldbook entry content
+ * (handles mixed CJK and Latin text without loading a heavy tokenizer).
+ * @param {string} text
+ * @returns {number}
+ */
+export function estimateEntryTokens(text) {
+    const s = String(text ?? '');
+    if (!s) return 0;
+    const cjkMatches = s.match(/[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\uff00-\uffef]/g);
+    const cjkCount = cjkMatches ? cjkMatches.length : 0;
+    const nonCjkCount = s.length - cjkCount;
+    return Math.max(1, Math.round(cjkCount * 1.35 + nonCjkCount * 0.28));
+}
+
+/**
+ * Partition worldbook picker candidates for `openCreateOrRenameGroupModal` into:
+ * - `currentMembers`: existing members when editing (or seeded `initialBookName`)
+ * - `ungroupedBooks`: ungrouped candidates not already in `currentMembers`
+ * - `otherGroups`: books already assigned to OTHER custom groups, grouped by original group
+ * - `allCandidates`: flat deduplicated list across all three partitions
+ *
+ * @param {object} params
+ * @param {any} params.classification
+ * @param {string | null} [params.groupId=null]
+ * @param {string | null} [params.initialBookName=null]
+ */
+export function partitionGroupPickerBooks({ classification, groupId = null, initialBookName = null } = {}) {
+    const byName = classification?.byName instanceof Map ? classification.byName : new Map();
+    const ungroupedRaw = Array.isArray(classification?.ungroupedBooks) ? classification.ungroupedBooks : [];
+    const customGroupsRaw = Array.isArray(classification?.customGroups) ? classification.customGroups : [];
+
+    const currentMemberSet = new Set();
+    if (groupId) {
+        const targetGroup = customGroupsRaw.find((g) => g.id === groupId);
+        for (const b of targetGroup?.books || []) {
+            if (b?.realName) currentMemberSet.add(b.realName);
+        }
+    } else if (initialBookName) {
+        currentMemberSet.add(initialBookName);
+    }
+
+    const currentMembers = [];
+    const seenCurrent = new Set();
+    for (const name of currentMemberSet) {
+        const meta = byName.get(name);
+        if (meta && !seenCurrent.has(meta.realName)) {
+            seenCurrent.add(meta.realName);
+            currentMembers.push(meta);
+        }
+    }
+
+    const ungroupedBooks = ungroupedRaw.filter((b) => b?.realName && !currentMemberSet.has(b.realName));
+    const otherGroups = customGroupsRaw
+        .filter((g) => g && g.id !== groupId)
+        .map((g) => ({
+            id: g.id,
+            name: g.name,
+            color: g.color || '#5b8def',
+            books: (g.books || []).filter((b) => b?.realName && !currentMemberSet.has(b.realName)),
+        }))
+        .filter((g) => g.books.length > 0);
+
+    const allCandidates = [
+        ...currentMembers,
+        ...ungroupedBooks,
+        ...otherGroups.flatMap((g) => g.books),
+    ];
+
+    return {
+        currentMemberSet,
+        currentMembers,
+        ungroupedBooks,
+        otherGroups,
+        otherTotalCount: otherGroups.reduce((sum, g) => sum + g.books.length, 0),
+        allCandidates,
+    };
 }

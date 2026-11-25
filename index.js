@@ -57,7 +57,7 @@ import {
     teardownPanels,
 } from './src/panel.js';
 
-export const STYLE_ASSET_VERSION = '2.34.5';
+export const STYLE_ASSET_VERSION = '2.34.6';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;
@@ -442,9 +442,20 @@ async function init() {
             bindingMap: _bindingMap,
             classification: _classification || classifyWorldbooks({ worldNames: [], bindingMap: new Map(), settings: getSettings() }),
         }),
-        onMutation: ({ save = true, uiOnly = false, charToggleOnly = false } = {}) => {
+        onMutation: ({ save = true, uiOnly = false, charToggleOnly = false, pinInPlaceOnly = false } = {}) => {
             if (uiOnly) {
                 if (save) saveSettings();
+                return;
+            }
+            if (pinInPlaceOnly && _classification) {
+                if (save) {
+                    clearTimeout(_deferredSaveTimer);
+                    _deferredSaveTimer = setTimeout(() => {
+                        _deferredSaveTimer = null;
+                        if (_initialized) saveSettings();
+                    }, 120);
+                }
+                applyAllNativeWorldFilters(_classification, getSettings(), { deferGlobal: true });
                 return;
             }
             if (charToggleOnly && _classification) {

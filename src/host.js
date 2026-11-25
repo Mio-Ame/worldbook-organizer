@@ -21,10 +21,10 @@ import {
     mergeEntryPatchOntoRaw,
     migrateSettingsOnWorldRename,
     normalizeSettings,
+    searchEntriesInPayload,
 } from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
-const PREVIEW_CONTENT_MAX_CHARS = 1600;
 
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
@@ -363,10 +363,7 @@ export async function fetchWorldbookPreviewEntries(worldName) {
             const keys = Array.isArray(e.key)
                 ? e.key.map((k) => String(k || '').trim()).filter(Boolean)
                 : [];
-            const rawContent = String(e.content || '').trim();
-            const content = rawContent.length > PREVIEW_CONTENT_MAX_CHARS
-                ? `${rawContent.slice(0, PREVIEW_CONTENT_MAX_CHARS)}…（内容较长，完整正文请在编辑器查看）`
-                : rawContent;
+            const content = String(e.content ?? '').trim();
             return {
                 uid: String(e.uid ?? idx),
                 title: String(e.comment || '').trim() || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
@@ -423,6 +420,31 @@ export async function fetchWorldbookEntryList(worldName) {
     const projected = extractEntryListItems(data);
     data = null;
     return { ok: true, ...projected };
+}
+
+/**
+ * Search full entry bodies + titles + keys of a single worldbook on demand via uncached
+ * `/api/worldinfo/get`, immediately releasing the full payload for GC and returning only matched UIDs.
+ * @param {string} worldName
+ * @param {string} query
+ * @returns {Promise<Set<string>>}
+ */
+export async function fetchWorldbookEntryContentMatchedUids(worldName, query) {
+    const cleanQ = String(query ?? '').trim();
+    if (!cleanQ) return new Set();
+    let data = await fetchWorldInfoUncached(worldName);
+    if (!data || typeof data !== 'object') {
+        return new Set();
+    }
+    const res = searchEntriesInPayload(data, cleanQ, {
+        searchTitleAndKeys: true,
+        searchContent: true,
+        includeDisabled: true,
+        splitSpaces: false,
+        maxHitsPerBook: 10000,
+    });
+    data = null;
+    return new Set((res.hits || []).map((h) => String(h.uid)));
 }
 
 /**
@@ -1600,12 +1622,27 @@ export async function unbindWorldbookFromPersona(pid, expectedWorld = '') {
             changed = true;
         }
     }
-    if (cleanWorld && String(pu.persona_description_lorebook ?? '').trim() === cleanWorld) {
-        pu.persona_description_lorebook = '';
-        changed = true;
-    } else if (cleanPid === '__active__' && pu.persona_description_lorebook) {
-        pu.persona_description_lorebook = '';
-        changed = true;
+    const activePersonaKey = String(pu.persona ?? '').trim();
+    const otherPersonaStillUsesWorld = Boolean(
+        cleanWorld &&
+        pu.persona_descriptions &&
+        typeof pu.persona_descriptions === 'object' &&
+        Object.entries(pu.persona_descriptions).some(
+            ([k, v]) => k !== cleanPid && v && typeof v === 'object' && String(v.lorebook ?? '').trim() === cleanWorld,
+        ),
+    );
+    const shouldClearActiveLorebook =
+        cleanPid === '__active__' ||
+        (activePersonaKey && activePersonaKey === cleanPid) ||
+        (!activePersonaKey && !otherPersonaStillUsesWorld);
+    if (shouldClearActiveLorebook) {
+        if (cleanWorld && String(pu.persona_description_lorebook ?? '').trim() === cleanWorld) {
+            pu.persona_description_lorebook = '';
+            changed = true;
+        } else if (cleanPid === '__active__' && pu.persona_description_lorebook) {
+            pu.persona_description_lorebook = '';
+            changed = true;
+        }
     }
 
     if (!changed) return { ok: false, error: '未找到对应的人设世界书绑定' };

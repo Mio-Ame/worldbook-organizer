@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import {
+    AI_ORGANIZE_CATEGORY_PRESETS,
+    AI_ORGANIZE_NAMING_PRESETS,
     DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
     DEFAULT_SETTINGS,
     GROUP_COLOR_PALETTE,
@@ -28,11 +30,13 @@ import {
     createNewRawWorldEntry,
     deepClone,
     detectAiRefusal,
+    estimateEntryTokens,
     exportConfigData,
     extractEmbeddedCharacterBookPreview,
     extractEntryListItems,
     extractSingleEntryForEdit,
     findCardsWithUnimportedBooks,
+    findSensitiveTargetGroup,
     findUnscannedShallowCharacters,
     formatCharacterDisplayTitle,
     importConfigData,
@@ -49,6 +53,7 @@ import {
     normalizeSettings,
     parseAiOrganizeResponse,
     parseOptionalFiniteNumber,
+    partitionGroupPickerBooks,
     promoteSectionToTop,
     pruneStaleWorldbookSettings,
     pushUndoSnapshot,
@@ -970,7 +975,7 @@ test('organize parser, partial apply, local rules, entry search, diff, and impor
     assert.equal(localProps[1].group, '科幻区');
     assert.equal(localProps[2].group, 'NSFW');
 
-    // searchEntriesInPayload: keysecondary, >2400 char truncation, maxHitsPerBook vs totalMatchesInBook, empty guards
+    // searchEntriesInPayload: keysecondary, ZERO >2400 char truncation, maxHitsPerBook vs totalMatchesInBook, empty guards
     const longBody = `前置内容 matchKey ${'字'.repeat(2500)}`;
     const payload = {
         entries: {
@@ -982,8 +987,8 @@ test('organize parser, partial apply, local rules, entry search, diff, and impor
     assert.equal(searchRes.totalMatchesInBook, 2);
     assert.equal(searchRes.hits.length, 1);
     assert.ok(searchRes.hits[0].matchedIn.includes('触发词'));
-    assert.ok(searchRes.hits[0].content.endsWith('…'));
-    assert.ok(searchRes.hits[0].content.length <= 2401);
+    assert.equal(searchRes.hits[0].content, longBody);
+    assert.ok(searchRes.hits[0].content.length > 2500);
     assert.deepEqual(searchEntriesInPayload(payload, '').hits, []);
     assert.deepEqual(searchEntriesInPayload(payload, 'matchKey', { searchTitleAndKeys: false, searchContent: false }).hits, []);
 
@@ -1093,12 +1098,12 @@ test('manifest version strictly matches STYLE_ASSET_VERSION and host memory/brid
         assert.equal(full?.data?.extensions?.world, '主书');
         assert.equal(unshallowCalls, 0);
 
-        // MEM-02 + MEM-04: preview bypasses loadWorldInfo and truncates >1600 char content
+        // MEM-02: preview bypasses loadWorldInfo and preserves 100% full entry content without truncation
         const preview = await hostMod.fetchWorldbookPreviewEntries('OldBook');
         assert.equal(loadWorldInfoCalls, 0);
         assert.equal(preview.entries.length, 1);
-        assert.ok(preview.entries[0].content.length < 1700);
-        assert.ok(preview.entries[0].content.includes('已截断') || preview.entries[0].content.includes('完整正文'));
+        assert.equal(preview.entries[0].content.length, 2200);
+        assert.equal(preview.entries[0].content, 'A'.repeat(2200));
 
         // INT-01: deferRefresh: true queues wbo:worldbook-renamed until flushWorldInfoListRefresh completes updateListFn
         const settings = normalizeSettings(null);
@@ -1569,4 +1574,128 @@ test('summarizePersonaWorldBindings and extractEmbeddedCharacterBookPreview repo
     ]);
     assert.equal(diff.modified.length, 1);
     assert.equal(diff.onlyA.length, 1);
+});
+
+test('Iteration 3 UX helpers: 6+6 presets, sensitive synonym match, picker partition, tokens, PINNED visibility, and version parity', async () => {
+    // 1. Symmetric 6+6 AI organize presets + prompt injection
+    assert.equal(AI_ORGANIZE_CATEGORY_PRESETS.length, 6);
+    assert.equal(AI_ORGANIZE_NAMING_PRESETS.length, 6);
+    assert.ok(AI_ORGANIZE_CATEGORY_PRESETS.some((p) => p.label === '按题材背景'));
+    assert.ok(AI_ORGANIZE_CATEGORY_PRESETS.some((p) => p.label === '按挂载方式'));
+    const genrePreset = AI_ORGANIZE_CATEGORY_PRESETS.find((p) => p.label === '按题材背景');
+    const namingPreset = AI_ORGANIZE_NAMING_PRESETS.find((p) => p.label === '【分类】名称');
+    const promptWithPresets = buildAiOrganizePrompt({
+        books: [{ realName: 'TestBook', groupName: '未分组', isCharBound: false, charOwners: [], entries: [] }],
+        existingGroups: [],
+        categoryPreset: genrePreset?.id,
+        namingPreset: namingPreset?.id,
+    });
+    assert.ok(promptWithPresets.userPrompt.includes('故事题材与世界观背景'));
+    assert.ok(promptWithPresets.userPrompt.includes('【分类】核心主题'));
+
+    // 2. findSensitiveTargetGroup: synonym match without false positives on History/Character
+    assert.equal(findSensitiveTargetGroup([
+        { id: 'g1', name: 'History 历史背景' },
+        { id: 'g2', name: 'Character 角色' },
+    ]), null);
+    assert.equal(findSensitiveTargetGroup([
+        { id: 'g1', name: 'History 历史' },
+        { id: 'g2', name: '成人向 / R18' },
+    ])?.id, 'g2');
+    assert.equal(findSensitiveTargetGroup([{ id: 'g3', name: '18+ 涩涩库' }])?.id, 'g3');
+    assert.equal(findSensitiveTargetGroup([{ id: 'g4', name: 'H文专用' }])?.id, 'g4');
+
+    // moveBooksToNamedGroup with targetGroupId reuses existing synonym group
+    const moveSettings = normalizeSettings({
+        groups: [{ id: 'g_adult', name: '成人向', color: '#e5534b', collapsed: false }],
+    });
+    const moveRes = moveBooksToNamedGroup(moveSettings, ['敏感测试书'], '成人向', {
+        targetGroupId: 'g_adult',
+    });
+    assert.equal(moveRes.groupId, 'g_adult');
+    assert.equal(moveRes.createdGroup, false);
+    assert.equal(moveSettings.groups.length, 1);
+    assert.equal(moveSettings.assignments['敏感测试书'], 'g_adult');
+
+    // 3. estimateEntryTokens & entryEditorMonoFont round-trip
+    assert.equal(estimateEntryTokens(''), 0);
+    assert.ok(estimateEntryTokens('中文世界书测试内容 English words 12345') > 10);
+    const monoSet = normalizeSettings({ entryEditorMonoFont: true });
+    assert.equal(monoSet.entryEditorMonoFont, true);
+    assert.equal(exportConfigData(monoSet).data.entryEditorMonoFont, true);
+
+    // 4. SPECIAL_GROUPS.PINNED selector visibility
+    const pinSet = normalizeSettings({
+        groups: [{ id: 'g1', name: '文风', color: '#5b8def', collapsed: false }],
+        assignments: { '普通置顶书': 'g1' },
+        pinnedBooks: ['普通置顶书'],
+        globalHiddenGroupIds: ['g1'],
+        showCharBooks: false,
+    });
+    const pinCls = classifyWorldbooks({
+        worldNames: ['普通置顶书', '未置顶书'],
+        bindingMap: new Map(),
+        settings: pinSet,
+    });
+    assert.equal(isBookVisibleInSelector({ bookMeta: pinCls.byName.get('普通置顶书'), activeFilterGroupId: SPECIAL_GROUPS.PINNED, showCharBooks: false }), true);
+    assert.equal(isBookVisibleInSelector({ bookMeta: pinCls.byName.get('未置顶书'), activeFilterGroupId: SPECIAL_GROUPS.PINNED, showCharBooks: false }), false);
+    assert.equal(isBookVisibleInCharBindPopup({ bookMeta: pinCls.byName.get('普通置顶书'), currentCharAvatar: null, hideOtherCharBooks: false, filterGroupId: SPECIAL_GROUPS.PINNED }), true);
+    assert.equal(isBookVisibleInCharBindPopup({ bookMeta: pinCls.byName.get('未置顶书'), currentCharAvatar: null, hideOtherCharBooks: false, filterGroupId: SPECIAL_GROUPS.PINNED }), false);
+
+    // 5. partitionGroupPickerBooks partitions current/ungrouped/otherGroups + promotes initialBookName
+    const pickerSet = normalizeSettings({
+        groups: [
+            { id: 'g_a', name: '分组A', color: '#5b8def', collapsed: false },
+            { id: 'g_b', name: '分组B', color: '#3fb950', collapsed: false },
+        ],
+        assignments: { '书A': 'g_a', '书B': 'g_b' },
+    });
+    const pickerCls = classifyWorldbooks({
+        worldNames: ['书A', '书B', '未分组1', '初始书'],
+        bindingMap: new Map(),
+        settings: pickerSet,
+    });
+    const part = partitionGroupPickerBooks({
+        classification: pickerCls,
+        groupId: 'g_a',
+        initialBookName: '初始书',
+    });
+    assert.equal(part.currentMembers.map((b) => b.realName).join(','), '书A');
+    assert.equal(part.ungroupedBooks[0].realName, '初始书');
+    assert.equal(part.otherGroups.length, 1);
+    assert.equal(part.otherGroups[0].books[0].realName, '书B');
+
+    // 6. manifest.json version === index.js STYLE_ASSET_VERSION
+    const manifestJson = JSON.parse(readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'));
+    const indexSrc = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+    const styleVerMatch = indexSrc.match(/STYLE_ASSET_VERSION\s*=\s*'([^']+)'/);
+    assert.equal(styleVerMatch?.[1], manifestJson.version);
+
+    // 7. unbindWorldbookFromPersona clears persona_description_lorebook ONLY when active or unreferenced
+    const pu = {
+        persona: 'p1.png',
+        persona_description_lorebook: '共享人设书',
+        personas: { 'p1.png': '主控1', 'p2.png': '主控2' },
+        persona_descriptions: {
+            'p1.png': { lorebook: '共享人设书' },
+            'p2.png': { lorebook: '共享人设书' },
+        },
+    };
+    const prevST = globalThis.SillyTavern;
+    globalThis.SillyTavern = {
+        getContext: () => ({ powerUserSettings: pu, saveSettingsDebounced: () => {} }),
+    };
+    try {
+        const hostMod = await import('../src/host.js');
+        const resNonActive = await hostMod.unbindWorldbookFromPersona('p2.png', '共享人设书');
+        assert.equal(resNonActive.ok, true);
+        assert.equal(pu.persona_descriptions['p2.png'].lorebook, '');
+        assert.equal(pu.persona_description_lorebook, '共享人设书');
+
+        const resActive = await hostMod.unbindWorldbookFromPersona('p1.png', '共享人设书');
+        assert.equal(resActive.ok, true);
+        assert.equal(pu.persona_description_lorebook, '');
+    } finally {
+        if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
+    }
 });
