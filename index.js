@@ -54,16 +54,20 @@ import {
     openManagerModal,
     renderEmbeddedPanel,
     syncEmbeddedPanelIndicators,
+    syncNativeQuickActionsUi,
     teardownPanels,
 } from './src/panel.js';
 
-export const STYLE_ASSET_VERSION = '2.35.0';
+export const STYLE_ASSET_VERSION = '2.35.1';
 let _initialized = false;
 let _initialAutoScanRunning = false;
+let _initialAutoScanTimer = null;
 let _incrementalAutoScanRunning = false;
 let _incrementalAutoScanTimer = null;
+let _autoScanSignal = null;
 const _autoScanAttemptedAvatars = new Set();
 let _debounceTimer = null;
+let _idleRefreshId = null;
 let _deferredSaveTimer = null;
 let _classification = null;
 let _openPanelBridgeHandler = null;
@@ -104,13 +108,164 @@ let _domWorldInfoChangeHandler = null;
 let _domEditorChangeHandler = null;
 
 /**
+ * Normalize the return value of `scanShallowCharactersInBatches` (`{ scanned, done, cancelled }`
+ * or an array) into the array of scanned character summaries expected by `updateCachedCharBindings`.
+ * @param {any} scanResult
+ * @returns {Array<any>}
+ */
+export function extractScannedCharacters(scanResult) {
+    if (Array.isArray(scanResult)) return scanResult;
+    if (scanResult && Array.isArray(scanResult.scanned)) return scanResult.scanned;
+    return [];
+}
+
+/**
+ * Execute one silent low-concurrency auto-scan catch-up batch and merge scanned
+ * summaries into `settings.cachedCharBindings`.
+ *
+ * @param {object} [opts]
+ * @returns {Promise<{ scannedCount: number, changed: boolean, skipped: boolean, cancelled: boolean }>}
+ */
+export async function runSilentAutoScanBatch({
+    targets = [],
+    batchSize = 1,
+    yieldMs = 80,
+    signal = null,
+    scanFn = scanShallowCharactersInBatches,
+    getSettingsFn = getSettings,
+    saveSettingsFn = saveSettings,
+    attemptedSet = _autoScanAttemptedAvatars,
+    markInitialDone = false,
+    checkInitialized = () => _initialized,
+} = {}) {
+    const list = Array.isArray(targets) ? targets.filter((t) => t?.avatar) : [];
+    const curSettings = getSettingsFn();
+    if (curSettings?.autoScanNewCharacters === false) {
+        return { scannedCount: 0, changed: false, skipped: true, cancelled: false };
+    }
+    if (list.length === 0) {
+        if (markInitialDone && curSettings && !curSettings.hasDoneInitialAutoScan) {
+            curSettings.hasDoneInitialAutoScan = true;
+            saveSettingsFn();
+        }
+        return { scannedCount: 0, changed: false, skipped: false, cancelled: false };
+    }
+
+    const scanRes = await scanFn(list, {
+        batchSize,
+        yieldMs,
+        signal,
+    });
+    if (!checkInitialized()) {
+        return { scannedCount: 0, changed: false, skipped: true, cancelled: true };
+    }
+
+    const cancelled = Boolean(
+        scanRes &&
+        typeof scanRes === 'object' &&
+        !Array.isArray(scanRes) &&
+        scanRes.cancelled,
+    );
+    const scannedCards = extractScannedCharacters(scanRes);
+    const doneCount = Number.isFinite(scanRes?.done) ? scanRes.done : list.length;
+
+    if (attemptedSet) {
+        const attemptedSlice = cancelled ? list.slice(0, Math.max(0, doneCount)) : list;
+        for (const item of attemptedSlice) {
+            if (item?.avatar) attemptedSet.add(item.avatar);
+        }
+    }
+
+    const latestSettings = getSettingsFn();
+    const { cached, changed } = updateCachedCharBindings(
+        latestSettings.cachedCharBindings,
+        scannedCards,
+        { pruneDeleted: false },
+    );
+    if (changed) {
+        latestSettings.cachedCharBindings = cached;
+    }
+    if (markInitialDone && !cancelled) {
+        latestSettings.hasDoneInitialAutoScan = true;
+    }
+
+    return {
+        scannedCount: scannedCards.length,
+        changed,
+        skipped: false,
+        cancelled,
+    };
+}
+
+function scheduleIdleAutoScanCatchUp(settings, characters) {
+    if (
+        !settings ||
+        settings.autoScanNewCharacters === false ||
+        _initialAutoScanRunning ||
+        _incrementalAutoScanRunning ||
+        !Array.isArray(characters) ||
+        characters.length === 0
+    ) {
+        return;
+    }
+
+    const pending = findUnscannedShallowCharacters(characters, settings.cachedCharBindings)
+        .filter((item) => item?.avatar && !_autoScanAttemptedAvatars.has(item.avatar));
+    if (pending.length === 0) return;
+
+    clearTimeout(_incrementalAutoScanTimer);
+    const runIncrementalScan = async () => {
+        if (!_initialized || _incrementalAutoScanRunning || _initialAutoScanRunning) return;
+        const curSettings = getSettings();
+        if (curSettings.autoScanNewCharacters === false) return;
+        const freshTargets = findUnscannedShallowCharacters(getCharactersInMemory(), curSettings.cachedCharBindings)
+            .filter((item) => item?.avatar && !_autoScanAttemptedAvatars.has(item.avatar));
+        if (freshTargets.length === 0) return;
+
+        _incrementalAutoScanRunning = true;
+        const signal = { cancelled: false };
+        _autoScanSignal = signal;
+        let shouldRerender = false;
+        try {
+            const res = await runSilentAutoScanBatch({
+                targets: freshTargets,
+                batchSize: 1,
+                yieldMs: 80,
+                signal,
+                markInitialDone: true,
+            });
+            if (!_initialized) return;
+            shouldRerender = Boolean(res.changed || !curSettings.hasDoneInitialAutoScan);
+        } catch {
+            // Non-fatal: user can still trigger manual scan from the Scan modal
+        } finally {
+            if (_autoScanSignal === signal) _autoScanSignal = null;
+            _incrementalAutoScanRunning = false;
+        }
+        if (_initialized && shouldRerender) {
+            recomputeAndRender({ save: true, deferGlobal: true, backgroundCatchUp: true });
+        }
+    };
+
+    _incrementalAutoScanTimer = setTimeout(() => {
+        _incrementalAutoScanTimer = null;
+        if (!_initialized) return;
+        if (typeof globalThis.requestIdleCallback === 'function') {
+            globalThis.requestIdleCallback(() => { void runIncrementalScan(); }, { timeout: 2000 });
+        } else {
+            void runIncrementalScan();
+        }
+    }, 2200);
+}
+
+/**
  * Recompute in-memory classification and synchronize both the embedded panel
  * and native `#world_info` / `#world_editor_select` controls.
  * Zero disk I/O!
  *
  * @param {{ save?: boolean }} [opts]
  */
-function recomputeAndRender({ save = false, deferGlobal = false } = {}) {
+function recomputeAndRender({ save = false, deferGlobal = false, backgroundCatchUp = false } = {}) {
     const settings = getSettings();
     const characters = getCharactersInMemory();
 
@@ -162,95 +317,65 @@ function recomputeAndRender({ save = false, deferGlobal = false } = {}) {
     }
 
     applyAllNativeWorldFilters(_classification, settings, { deferGlobal });
-    renderEmbeddedPanel();
+    renderEmbeddedPanel({ backgroundCatchUp });
 
-    // One-time gentle initial auto-scan on first install (handles lazyLoadCharacters seamlessly
-    // and notifies newcomers clearly where their character worldbooks are tucked away).
-    if (!settings.hasDoneInitialAutoScan && !_initialAutoScanRunning && characters.length > 0) {
-        _initialAutoScanRunning = true;
+    // Gentle initial auto-scan + silent idle catch-up when autoScanNewCharacters is ON
+    if (
+        !settings.hasDoneInitialAutoScan &&
+        settings.autoScanNewCharacters !== false &&
+        !_initialAutoScanRunning &&
+        characters.length > 0
+    ) {
         const unscanned = findUnscannedShallowCharacters(characters, settings.cachedCharBindings);
-        settings.hasDoneInitialAutoScan = true;
-        saveSettings();
-
         if (unscanned.length > 0) {
-            setTimeout(async () => {
+            _initialAutoScanRunning = true;
+            clearTimeout(_initialAutoScanTimer);
+            _initialAutoScanTimer = setTimeout(async () => {
+                _initialAutoScanTimer = null;
+                if (!_initialized) {
+                    _initialAutoScanRunning = false;
+                    return;
+                }
+                const signal = { cancelled: false };
+                _autoScanSignal = signal;
+                let batchRes = { changed: false, cancelled: false };
                 try {
-                    const scanned = await scanShallowCharactersInBatches(unscanned, { batchSize: 2 });
-                    if (!_initialized) return;
                     const curSettings = getSettings();
-                    const { cached, changed } = updateCachedCharBindings(curSettings.cachedCharBindings, scanned, { pruneDeleted: false });
-                    if (changed) {
-                        curSettings.cachedCharBindings = cached;
-                    }
-                    recomputeAndRender({ save: true });
-                    if ((_classification?.charCount || 0) > 0 && curSettings.hideCharBooksByDefault) {
-                        showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
-                    }
+                    const freshUnscanned = findUnscannedShallowCharacters(
+                        getCharactersInMemory(),
+                        curSettings.cachedCharBindings,
+                    );
+                    batchRes = await runSilentAutoScanBatch({
+                        targets: freshUnscanned,
+                        batchSize: 2,
+                        yieldMs: 30,
+                        signal,
+                        markInitialDone: true,
+                    });
                 } catch {
                     // Non-fatal: user can always trigger manual scan later
                 } finally {
+                    if (_autoScanSignal === signal) _autoScanSignal = null;
                     _initialAutoScanRunning = false;
+                }
+                if (!_initialized) return;
+                if (!batchRes.skipped) {
+                    recomputeAndRender({ save: true, backgroundCatchUp: true });
+                    const latest = getSettings();
+                    if (!batchRes.cancelled && (_classification?.charCount || 0) > 0 && latest.hideCharBooksByDefault) {
+                        showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
+                    }
                 }
             }, 900);
         } else {
-            _initialAutoScanRunning = false;
+            settings.hasDoneInitialAutoScan = true;
+            saveSettings();
             if ((_classification?.charCount || 0) > 0 && settings.hideCharBooksByDefault) {
                 showToast('info', `已自动识别并收纳 ${_classification.charCount} 本角色世界书，点「角色书」开关可随时查看`);
             }
         }
-    } else if (
-        settings.hasDoneInitialAutoScan &&
-        settings.autoScanNewCharacters !== false &&
-        !_initialAutoScanRunning &&
-        !_incrementalAutoScanRunning &&
-        characters.length > 0
-    ) {
-        // Incremental auto-scan for newly imported lazy-loaded character cards only.
-        // Wait until native import/UI painting is completely idle (2.2s debounce + requestIdleCallback,
-        // 1 card at a time with 80ms yield) so native character import stays 100% stutter-free!
-        const pending = findUnscannedShallowCharacters(characters, settings.cachedCharBindings)
-            .filter((item) => item?.avatar && !_autoScanAttemptedAvatars.has(item.avatar));
-        if (pending.length > 0) {
-            clearTimeout(_incrementalAutoScanTimer);
-            const runIncrementalScan = async () => {
-                if (!_initialized || _incrementalAutoScanRunning) return;
-                const curSettings = getSettings();
-                if (curSettings.autoScanNewCharacters === false) return;
-                const freshTargets = findUnscannedShallowCharacters(getCharactersInMemory(), curSettings.cachedCharBindings)
-                    .filter((item) => item?.avatar && !_autoScanAttemptedAvatars.has(item.avatar));
-                if (freshTargets.length === 0) return;
-
-                _incrementalAutoScanRunning = true;
-                for (const item of freshTargets) {
-                    _autoScanAttemptedAvatars.add(item.avatar);
-                }
-                try {
-                    const scanned = await scanShallowCharactersInBatches(freshTargets, {
-                        batchSize: 1,
-                        yieldMs: 80,
-                    });
-                    if (!_initialized) return;
-                    const latestSettings = getSettings();
-                    const { cached, changed } = updateCachedCharBindings(latestSettings.cachedCharBindings, scanned, { pruneDeleted: false });
-                    if (changed) {
-                        latestSettings.cachedCharBindings = cached;
-                    }
-                    recomputeAndRender({ save: true, deferGlobal: true });
-                } catch {
-                    // Non-fatal: user can still trigger manual scan from the Scan modal
-                } finally {
-                    _incrementalAutoScanRunning = false;
-                }
-            };
-            _incrementalAutoScanTimer = setTimeout(() => {
-                _incrementalAutoScanTimer = null;
-                if (typeof globalThis.requestIdleCallback === 'function') {
-                    globalThis.requestIdleCallback(() => { void runIncrementalScan(); }, { timeout: 2000 });
-                } else {
-                    void runIncrementalScan();
-                }
-            }, 2200);
-        }
+    } else if (settings.hasDoneInitialAutoScan) {
+        scheduleIdleAutoScanCatchUp(settings, characters);
     }
 }
 
@@ -294,22 +419,39 @@ function applyCharToggleFastPath({ save = true } = {}) {
     }
 }
 
+function cancelPendingIdleRefresh() {
+    if (_idleRefreshId !== null) {
+        if (typeof globalThis.cancelIdleCallback === 'function') {
+            try { globalThis.cancelIdleCallback(_idleRefreshId); } catch { /* ignore */ }
+        }
+        _idleRefreshId = null;
+    }
+}
+
 /**
  * Debounced refresh triggered by character or worldbook mutation events.
  * @param {number} [delayMs=450]
  */
 function scheduleRefresh(delayMs = 550) {
     clearTimeout(_debounceTimer);
+    cancelPendingIdleRefresh();
     _debounceTimer = setTimeout(() => {
+        _debounceTimer = null;
         if (!_initialized) return;
         const run = () => {
+            _idleRefreshId = null;
             if (!_initialized) return;
             recomputeAndRender({ save: false, deferGlobal: true });
         };
-        if (typeof globalThis.requestIdleCallback === 'function') {
-            globalThis.requestIdleCallback(run, { timeout: 1200 });
-        } else {
+        if (delayMs <= 120 || typeof globalThis.requestIdleCallback !== 'function') {
             run();
+        } else {
+            let ran = false;
+            const id = globalThis.requestIdleCallback(() => {
+                ran = true;
+                run();
+            }, { timeout: 1200 });
+            if (!ran) _idleRefreshId = id;
         }
     }, delayMs);
 }
@@ -318,6 +460,7 @@ function scheduleRefresh(delayMs = 550) {
  * Manual rescan requested by the user (only time fallback `/api/settings/get` is forced).
  */
 async function performManualRescan() {
+    _autoScanAttemptedAvatars.clear();
     await ensureWorldInfoModule();
     await syncFallbackSettingsData(true);
     recomputeAndRender({ save: true });
@@ -442,9 +585,15 @@ async function init() {
             bindingMap: _bindingMap,
             classification: _classification || classifyWorldbooks({ worldNames: [], bindingMap: new Map(), settings: getSettings() }),
         }),
-        onMutation: ({ save = true, uiOnly = false, charToggleOnly = false, pinInPlaceOnly = false } = {}) => {
+        onMutation: ({ save = true, uiOnly = false, charToggleOnly = false, pinInPlaceOnly = false, catchupScan = false, quickActionsOnly = false } = {}) => {
             if (uiOnly) {
                 if (save) saveSettings();
+                if (quickActionsOnly) {
+                    syncNativeQuickActionsUi();
+                }
+                if (catchupScan) {
+                    scheduleIdleAutoScanCatchUp(getSettings(), getCharactersInMemory());
+                }
                 return;
             }
             if (pinInPlaceOnly && _classification) {
@@ -507,7 +656,7 @@ async function init() {
     trackHostEvent(eventSource, et.CHARACTER_DUPLICATED, onCharOrWorldChanged);
     trackHostEvent(eventSource, et.CHARACTER_IMPORTED, onCharOrWorldChanged);
     trackHostEvent(eventSource, et.CHARACTER_PAGE_LOADED, onCharOrWorldChanged);
-    trackHostEvent(eventSource, et.WORLDINFO_SETTINGS_UPDATED, onCharOrWorldChanged);
+    trackHostEvent(eventSource, et.WORLDINFO_SETTINGS_UPDATED, () => scheduleRefresh(80));
 
     // When user opens a character's hidden lorebook directly via the character card globe icon,
     // keep that book temporarily visible in `#world_editor_select`.
@@ -590,11 +739,19 @@ export function onDisable() {
     }
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
+    cancelPendingIdleRefresh();
     clearTimeout(_deferredSaveTimer);
     _deferredSaveTimer = null;
+    clearTimeout(_initialAutoScanTimer);
+    _initialAutoScanTimer = null;
+    _initialAutoScanRunning = false;
     clearTimeout(_incrementalAutoScanTimer);
     _incrementalAutoScanTimer = null;
     _incrementalAutoScanRunning = false;
+    if (_autoScanSignal) {
+        _autoScanSignal.cancelled = true;
+        _autoScanSignal = null;
+    }
     _autoScanAttemptedAvatars.clear();
 
     const ctx = getHostContext();

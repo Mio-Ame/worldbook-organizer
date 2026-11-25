@@ -19,15 +19,23 @@
 import {
     WORLD_ENTRY_POSITIONS,
     estimateEntryTokens,
+    reorderEntryUids,
+    resolveEntryDisplayIndex,
+    sortEntryListItems,
 } from './core.js';
 import {
     createWorldbookEntryDirect,
+    deleteWorldbookEntryDirect,
     fetchSingleWorldbookEntry,
     fetchWorldbookEntryContentMatchedUids,
     fetchWorldbookEntryList,
+    saveWorldbookEntriesOrderDirect,
     saveWorldbookEntryPatch,
     showToast,
 } from './host.js';
+
+const UNDO_SVG = '<svg class="wbo-undo-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
+const REDO_SVG = '<svg class="wbo-undo-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>';
 
 function esc(str) {
     return String(str ?? '')
@@ -51,6 +59,10 @@ function formatContentStats(text) {
     return `${s.length} 字 · 约 ${estimateEntryTokens(s)} tokens`;
 }
 
+function normalizeSortMode(mode) {
+    return mode === 'order' || mode === 'title' ? mode : 'custom';
+}
+
 /**
  * Mount the shared multi-open entry accordion inside `hostEl`.
  *
@@ -65,6 +77,9 @@ function formatContentStats(text) {
  * @param {(nextMono: boolean) => void} [opts.onToggleMonoFont]
  * @param {() => boolean} [opts.getTallMode]
  * @param {(nextTall: boolean) => void} [opts.onToggleTallMode]
+ * @param {() => boolean} [opts.getSyncOrder]
+ * @param {() => 'custom' | 'order' | 'title'} [opts.getSortMode]
+ * @param {(nextSort: 'custom' | 'order' | 'title') => void} [opts.onChangeSortMode]
  * @param {(action: string, target: HTMLElement) => void} [opts.onExtraAction]
  * @param {(info: { worldName: string, total: number, enabledCount: number, action: string, uid?: string }) => void} [opts.onEntryMutated]
  * @param {(uid: string | null) => void} [opts.onOpenNative]
@@ -81,6 +96,9 @@ export function mountEntryAccordion(
         onToggleMonoFont = null,
         getTallMode = () => false,
         onToggleTallMode = null,
+        getSyncOrder = () => false,
+        getSortMode = () => 'custom',
+        onChangeSortMode = null,
         onExtraAction = null,
         onEntryMutated = null,
         onOpenNative = null,
@@ -90,6 +108,9 @@ export function mountEntryAccordion(
     const sliceStep = Math.max(1, Number(pageSize) || 60);
 
     let destroyed = false;
+    let sortMode = normalizeSortMode(typeof getSortMode === 'function' ? getSortMode() : 'custom');
+    let activeDragCleanup = null;
+    let isReordering = false;
     let searchQuery = '';
     let searchSeq = 0;
     let searchTimer = null;
@@ -100,14 +121,21 @@ export function mountEntryAccordion(
 
     /** @type {Map<string, HTMLElement>} */
     const itemElByUid = new Map();
-    /** @type {Map<string, { loading: boolean, entry?: any, syncDisabledFromHeader?: (nextDisable: boolean) => void, syncMonoFromSettings?: (mono: boolean) => void, isDirty: () => boolean, slotEl: HTMLElement, itemEl: HTMLElement }>} */
+    /** @type {Map<string, { loading: boolean, entry?: any, syncDisabledFromHeader?: (nextDisable: boolean) => void, syncMonoFromSettings?: (mono: boolean) => void, syncOrderFromReorder?: (nextOrder: number) => void, isDirty: () => boolean, slotEl: HTMLElement, itemEl: HTMLElement }>} */
     const expandedEditors = new Map();
 
     hostEl.innerHTML = `
         <div class="wbo-acc-shell">
             <div class="wbo-preview-head wbo-acc-head">
                 <span class="wbo-acc-summary">正在读取条目...</span>
-                ${extraHeaderActionsHtml ? `<span class="wbo-preview-head-actions">${extraHeaderActionsHtml}</span>` : ''}
+                <span class="wbo-preview-head-actions wbo-acc-head-controls">
+                    <select class="wbo-select wbo-acc-sort-select" data-acc-sort aria-label="条目排序方式" title="切换条目列表排序方式">
+                        <option value="custom"${sortMode === 'custom' ? ' selected' : ''}>自定义排序</option>
+                        <option value="order"${sortMode === 'order' ? ' selected' : ''}>顺序 (order)</option>
+                        <option value="title"${sortMode === 'title' ? ' selected' : ''}>标题</option>
+                    </select>
+                    ${extraHeaderActionsHtml}
+                </span>
             </div>
             ${showToolbar ? `
                 <div class="wbo-acc-toolbar">
@@ -133,6 +161,7 @@ export function mountEntryAccordion(
     `;
 
     const summaryEl = hostEl.querySelector('.wbo-acc-summary');
+    const sortSelect = hostEl.querySelector('[data-acc-sort]');
     const searchInput = hostEl.querySelector('.wbo-acc-search');
     const newBtn = hostEl.querySelector('.wbo-acc-new-btn');
     const listEl = hostEl.querySelector('.wbo-acc-list');
@@ -185,14 +214,41 @@ export function mountEntryAccordion(
         }
     };
 
+    const syncSortHandlesUi = () => {
+        const locked = sortMode !== 'custom';
+        const title = locked ? '切回「自定义排序」后可拖动调序' : '拖动调整条目顺序';
+        for (const el of itemElByUid.values()) {
+            const handle = el.querySelector('[data-acc-drag-handle]');
+            if (handle instanceof HTMLElement) {
+                handle.classList.toggle('is-sort-locked', locked);
+                handle.setAttribute('title', title);
+            }
+        }
+    };
+
+    const reconcileListDomOrder = () => {
+        if (!(listEl instanceof HTMLElement)) return;
+        let afterNode = null;
+        for (let i = listState.items.length - 1; i >= 0; i -= 1) {
+            const el = itemElByUid.get(listState.items[i].uid);
+            if (!el || el.parentElement !== listEl) continue;
+            if (el.nextElementSibling !== afterNode) {
+                listEl.insertBefore(el, afterNode);
+            }
+            afterNode = el;
+        }
+    };
+
     const createRowElement = (item) => {
         const kwPreview = (item.keys || []).slice(0, 4).join(' / ');
         const metaText = formatEntryMetaText(item);
+        const locked = sortMode !== 'custom';
         const wrapper = document.createElement('div');
         wrapper.className = `wbo-acc-item${item.disable ? ' is-disabled' : ''}`;
         wrapper.setAttribute('data-acc-uid', item.uid);
         wrapper.innerHTML = `
             <div class="wbo-acc-row">
+                <span class="wbo-acc-drag-handle${locked ? ' is-sort-locked' : ''}" data-acc-drag-handle title="${locked ? '切回「自定义排序」后可拖动调序' : '拖动调整条目顺序'}" aria-label="拖动调整条目顺序"><i class="fa-solid fa-grip-vertical"></i></span>
                 <button type="button" class="wbo-acc-row-main" data-acc-toggle="${esc(item.uid)}" aria-expanded="false" title="点击展开或收起编辑">
                     <i class="fa-solid fa-chevron-right wbo-acc-chev"></i>
                     <span class="wbo-eb-dot ${item.constant ? 'is-const' : 'is-key'}" title="${item.constant ? '蓝灯（常驻）' : '绿灯（关键词触发）'}"></span>
@@ -286,6 +342,8 @@ export function mountEntryAccordion(
                 if (existing) existing.hidden = true;
             }
         }
+
+        reconcileListDomOrder();
 
         if (emptyEl instanceof HTMLElement) {
             if (visibleCount === 0 && q) {
@@ -423,12 +481,14 @@ export function mountEntryAccordion(
                             <span class="wbo-acc-stats" data-acc-stats>${esc(formatContentStats(entry.content))}</span>
                         </div>
                         <div class="wbo-acc-toolbar-right">
-                            <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-undo disabled title="撤回上一步正文修改 (Ctrl+Z)">
-                                <span>↶ 撤回</span>
-                            </button>
-                            <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-redo disabled title="取消撤回 (Ctrl+Y)">
-                                <span>↷ 取消撤回</span>
-                            </button>
+                            <span class="wbo-btn-pair">
+                                <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-undo disabled title="撤回上一步正文修改 (Ctrl+Z)">
+                                    ${UNDO_SVG}<span>撤回</span>
+                                </button>
+                                <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-redo disabled title="重做 / 取消撤回 (Ctrl+Y)">
+                                    ${REDO_SVG}<span>重做</span>
+                                </button>
+                            </span>
                             <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-copy title="复制当前条目正文">
                                 <i class="fa-regular fa-copy"></i><span>复制正文</span>
                             </button>
@@ -442,11 +502,16 @@ export function mountEntryAccordion(
                     </div>
                     <div class="wbo-acc-find-row">
                         <input type="search" class="wbo-input wbo-acc-find-input" data-acc-find-input placeholder="框内查找关键词..." autocomplete="off" spellcheck="false">
-                        <span class="wbo-acc-find-count" data-acc-find-count></span>
-                        <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-prev title="查找上一个">上一个</button>
-                        <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-next title="查找下一个">下一个</button>
+                        <div class="wbo-acc-find-nav">
+                            <span class="wbo-acc-find-count" data-acc-find-count></span>
+                            <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-prev title="查找上一个 (Shift+Enter)">上一个</button>
+                            <button type="button" class="wbo-btn wbo-acc-mini-btn" data-acc-find-next title="查找下一个 (Enter)">下一个</button>
+                        </div>
                     </div>
-                    <textarea class="wbo-textarea wbo-ee-textarea wbo-acc-textarea${initialMono ? ' is-mono' : ''}${initialTall ? ' is-tall' : ''}" data-acc-field="content" placeholder="输入世界书条目正文..." spellcheck="false"></textarea>
+                    <div class="wbo-acc-ta-wrap" data-acc-ta-wrap>
+                        <div class="wbo-acc-ta-backdrop" data-acc-ta-backdrop aria-hidden="true" hidden></div>
+                        <textarea class="wbo-textarea wbo-ee-textarea wbo-acc-textarea${initialMono ? ' is-mono' : ''}${initialTall ? ' is-tall' : ''}" data-acc-field="content" placeholder="输入世界书条目正文..." spellcheck="false"></textarea>
+                    </div>
                 </div>
                 <details class="wbo-collapse-box wbo-acc-meta-details">
                     <summary class="wbo-collapse-summary wbo-acc-meta-summary">
@@ -494,11 +559,18 @@ export function mountEntryAccordion(
                     </div>
                 </details>
                 <div class="wbo-acc-editor-footer">
-                    <button type="button" class="wbo-btn wbo-btn-primary" data-acc-save>保存</button>
-                    <button type="button" class="wbo-btn" data-acc-collapse>收起</button>
-                    <button type="button" class="wbo-btn" data-acc-native title="跳转到酒馆原生编辑器定位该条目">
-                        <i class="fa-solid fa-arrow-up-right-from-square"></i> 跳原生定位
-                    </button>
+                    <span class="wbo-btn-pair">
+                        <button type="button" class="wbo-btn wbo-btn-primary" data-acc-save>保存</button>
+                        <button type="button" class="wbo-btn" data-acc-collapse>收起</button>
+                    </span>
+                    <span class="wbo-btn-pair">
+                        <button type="button" class="wbo-btn" data-acc-native title="跳转到酒馆原生编辑器定位该条目">
+                            <i class="fa-solid fa-arrow-up-right-from-square"></i> 跳原生定位
+                        </button>
+                        <button type="button" class="wbo-btn wbo-acc-del-entry-btn" data-acc-delete title="永久删除此条目">
+                            <i class="fa-regular fa-trash-can"></i> 删除条目
+                        </button>
+                    </span>
                     <span class="wbo-acc-save-status" data-acc-status></span>
                 </div>
             </div>
@@ -513,6 +585,8 @@ export function mountEntryAccordion(
         const depthInput = slotEl.querySelector('[data-acc-field="depth"]');
         const orderInput = slotEl.querySelector('[data-acc-field="order"]');
         const metaBriefEl = slotEl.querySelector('[data-acc-meta-brief]');
+        const taWrapEl = slotEl.querySelector('[data-acc-ta-wrap]');
+        const taBackdropEl = slotEl.querySelector('[data-acc-ta-backdrop]');
         const contentArea = slotEl.querySelector('[data-acc-field="content"]');
         const statsEl = slotEl.querySelector('[data-acc-stats]');
         const undoBtn = slotEl.querySelector('[data-acc-undo]');
@@ -527,6 +601,7 @@ export function mountEntryAccordion(
         const saveBtn = slotEl.querySelector('[data-acc-save]');
         const collapseBtn = slotEl.querySelector('[data-acc-collapse]');
         const nativeBtn = slotEl.querySelector('[data-acc-native]');
+        const deleteBtn = slotEl.querySelector('[data-acc-delete]');
         const statusEl = slotEl.querySelector('[data-acc-status]');
 
         // Lightweight per-editor undo/redo stack (survives Tab/Shift+Tab indents)
@@ -606,8 +681,11 @@ export function mountEntryAccordion(
             return true;
         };
 
-        // In-editor keyword find helpers
+        // In-editor keyword find + live in-textarea highlight box overlay
         let findCursorIdx = -1;
+        /** @type {ResizeObserver | null} */
+        let taResizeObserver = null;
+
         const collectFindMatches = (needleRaw) => {
             if (!(contentArea instanceof HTMLTextAreaElement)) return [];
             const needle = String(needleRaw ?? '').toLowerCase();
@@ -624,33 +702,123 @@ export function mountEntryAccordion(
             return indices;
         };
 
-        const updateFindMatchCount = (activeOrder = null) => {
-            if (!findCountEl) return;
-            const q = findInput instanceof HTMLInputElement ? findInput.value : '';
-            if (!q) {
-                findCountEl.textContent = '';
-                return;
-            }
-            const matches = collectFindMatches(q);
-            if (matches.length === 0) {
-                findCountEl.textContent = '0/0';
-                return;
-            }
-            const shownIdx = Number.isInteger(activeOrder) && activeOrder >= 0 ? activeOrder + 1 : 0;
-            findCountEl.textContent = shownIdx > 0 ? `${shownIdx}/${matches.length}` : `${matches.length} 处`;
+        const syncBackdropMetrics = () => {
+            if (!(contentArea instanceof HTMLTextAreaElement) || !(taBackdropEl instanceof HTMLElement)) return;
+            if (taBackdropEl.hidden || typeof globalThis.getComputedStyle !== 'function') return;
+            try {
+                const cs = globalThis.getComputedStyle(contentArea);
+                const bl = parseFloat(cs.borderLeftWidth) || 0;
+                const br = parseFloat(cs.borderRightWidth) || 0;
+                const pr = parseFloat(cs.paddingRight) || 0;
+                const scrollbarW = Math.max(0, (contentArea.offsetWidth || 0) - (contentArea.clientWidth || 0) - bl - br);
+                taBackdropEl.style.fontFamily = cs.fontFamily;
+                taBackdropEl.style.fontSize = cs.fontSize;
+                taBackdropEl.style.fontWeight = cs.fontWeight;
+                taBackdropEl.style.lineHeight = cs.lineHeight;
+                taBackdropEl.style.letterSpacing = cs.letterSpacing;
+                taBackdropEl.style.paddingTop = cs.paddingTop;
+                taBackdropEl.style.paddingBottom = cs.paddingBottom;
+                taBackdropEl.style.paddingLeft = cs.paddingLeft;
+                taBackdropEl.style.paddingRight = `${pr + scrollbarW}px`;
+                taBackdropEl.style.borderRadius = cs.borderRadius;
+                taBackdropEl.scrollTop = contentArea.scrollTop;
+            } catch { /* ignore */ }
         };
 
-        const stepFindMatch = (dir = 1) => {
+        const syncFindHighlights = ({ scrollToActive = false, focusTextarea = false } = {}) => {
+            const q = findInput instanceof HTMLInputElement ? findInput.value : '';
+            if (!q || !(contentArea instanceof HTMLTextAreaElement)) {
+                findCursorIdx = -1;
+                if (findCountEl) findCountEl.textContent = '';
+                if (taBackdropEl instanceof HTMLElement) {
+                    taBackdropEl.hidden = true;
+                    taBackdropEl.innerHTML = '';
+                }
+                taWrapEl?.classList.remove('has-find-hl');
+                return;
+            }
+
+            const matches = collectFindMatches(q);
+            if (matches.length === 0) {
+                findCursorIdx = -1;
+                if (findCountEl) findCountEl.textContent = '0/0';
+                if (taBackdropEl instanceof HTMLElement) {
+                    taBackdropEl.hidden = true;
+                    taBackdropEl.innerHTML = '';
+                }
+                taWrapEl?.classList.remove('has-find-hl');
+                return;
+            }
+
+            if (findCursorIdx < 0 || findCursorIdx >= matches.length) {
+                findCursorIdx = 0;
+            }
+            if (findCountEl) {
+                findCountEl.textContent = `${findCursorIdx + 1}/${matches.length}`;
+            }
+
+            if (taBackdropEl instanceof HTMLElement) {
+                const raw = contentArea.value;
+                const parts = [];
+                let cursor = 0;
+                for (let i = 0; i < matches.length; i += 1) {
+                    const mStart = matches[i];
+                    const mEnd = mStart + q.length;
+                    if (mStart > cursor) parts.push(esc(raw.slice(cursor, mStart)));
+                    const cls = i === findCursorIdx ? 'wbo-acc-hl-mark is-current' : 'wbo-acc-hl-mark';
+                    parts.push(`<mark class="${cls}">${esc(raw.slice(mStart, mEnd))}</mark>`);
+                    cursor = mEnd;
+                }
+                if (cursor < raw.length) parts.push(esc(raw.slice(cursor)));
+                if (raw.endsWith('\n')) parts.push(' ');
+                taBackdropEl.innerHTML = parts.join('');
+                taBackdropEl.hidden = false;
+                taWrapEl?.classList.add('has-find-hl');
+                syncBackdropMetrics();
+            }
+
+            const activeStart = matches[findCursorIdx];
+            const activeEnd = activeStart + q.length;
+
+            if (scrollToActive) {
+                const currentMark = taBackdropEl?.querySelector?.('.wbo-acc-hl-mark.is-current');
+                if (currentMark instanceof HTMLElement && contentArea.scrollHeight > contentArea.clientHeight) {
+                    const targetTop = Math.max(0, currentMark.offsetTop - contentArea.clientHeight / 3);
+                    contentArea.scrollTop = targetTop;
+                } else if (contentArea.scrollHeight > contentArea.clientHeight) {
+                    const lineCountBefore = contentArea.value.slice(0, activeStart).split('\n').length - 1;
+                    contentArea.scrollTop = Math.max(0, lineCountBefore * 20 - contentArea.clientHeight / 3);
+                }
+                if (taBackdropEl instanceof HTMLElement) {
+                    taBackdropEl.scrollTop = contentArea.scrollTop;
+                }
+            }
+
+            if (focusTextarea) {
+                const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 1200;
+                const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
+                if (vw > 680 && !coarse) {
+                    contentArea.focus();
+                }
+                try { contentArea.setSelectionRange(activeStart, activeEnd); } catch { /* ignore */ }
+            }
+        };
+
+        const updateFindMatchCount = () => {
+            syncFindHighlights({ scrollToActive: false, focusTextarea: false });
+        };
+
+        const stepFindMatch = (dir = 1, { focusTextarea = false } = {}) => {
             if (!(contentArea instanceof HTMLTextAreaElement) || !(findInput instanceof HTMLInputElement)) return;
             const q = findInput.value;
             if (!q) {
-                updateFindMatchCount();
+                syncFindHighlights();
                 return;
             }
             const matches = collectFindMatches(q);
             if (matches.length === 0) {
                 findCursorIdx = -1;
-                updateFindMatchCount();
+                syncFindHighlights();
                 return;
             }
             if (findCursorIdx < 0 || findCursorIdx >= matches.length) {
@@ -658,20 +826,7 @@ export function mountEntryAccordion(
             } else {
                 findCursorIdx = (findCursorIdx + dir + matches.length) % matches.length;
             }
-            const matchStart = matches[findCursorIdx];
-            const matchEnd = matchStart + q.length;
-            const lineCountBefore = contentArea.value.slice(0, matchStart).split('\n').length - 1;
-            const approxLineH = 20;
-            if (contentArea.scrollHeight > contentArea.clientHeight) {
-                contentArea.scrollTop = Math.max(0, lineCountBefore * approxLineH - contentArea.clientHeight / 3);
-            }
-            const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 1200;
-            const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
-            if (vw > 680 && !coarse) {
-                contentArea.focus();
-            }
-            contentArea.setSelectionRange(matchStart, matchEnd);
-            updateFindMatchCount(findCursorIdx);
+            syncFindHighlights({ scrollToActive: true, focusTextarea });
         };
 
         if (contentArea instanceof HTMLTextAreaElement) {
@@ -682,6 +837,15 @@ export function mountEntryAccordion(
                 pushHistoryState({ coalesce: true });
                 updateFindMatchCount();
             });
+            contentArea.addEventListener('scroll', () => {
+                if (taBackdropEl instanceof HTMLElement && !taBackdropEl.hidden) {
+                    taBackdropEl.scrollTop = contentArea.scrollTop;
+                }
+            }, { passive: true });
+            if (typeof globalThis.ResizeObserver === 'function') {
+                taResizeObserver = new globalThis.ResizeObserver(() => syncBackdropMetrics());
+                taResizeObserver.observe(contentArea);
+            }
             contentArea.addEventListener('keydown', (ev) => {
                 if (ev.isComposing || ev.keyCode === 229) return;
                 if (ev.key === 'Tab') {
@@ -740,24 +904,24 @@ export function mountEntryAccordion(
             findInput.addEventListener('compositionstart', () => { findComposing = true; });
             findInput.addEventListener('compositionend', () => {
                 findComposing = false;
-                findCursorIdx = -1;
-                updateFindMatchCount();
+                findCursorIdx = 0;
+                syncFindHighlights({ scrollToActive: true, focusTextarea: false });
             });
             findInput.addEventListener('input', () => {
                 if (findComposing) return;
-                findCursorIdx = -1;
-                updateFindMatchCount();
+                findCursorIdx = 0;
+                syncFindHighlights({ scrollToActive: true, focusTextarea: false });
             });
             findInput.addEventListener('keydown', (ev) => {
                 if (ev.isComposing || ev.keyCode === 229 || findComposing) return;
                 if (ev.key === 'Enter') {
                     ev.preventDefault();
-                    stepFindMatch(ev.shiftKey ? -1 : 1);
+                    stepFindMatch(ev.shiftKey ? -1 : 1, { focusTextarea: false });
                 }
             });
         }
-        findPrevBtn?.addEventListener('click', () => stepFindMatch(-1));
-        findNextBtn?.addEventListener('click', () => stepFindMatch(1));
+        findPrevBtn?.addEventListener('click', () => stepFindMatch(-1, { focusTextarea: true }));
+        findNextBtn?.addEventListener('click', () => stepFindMatch(1, { focusTextarea: true }));
 
         const readFormSnapshot = () => ({
             comment: commentInput instanceof HTMLInputElement ? commentInput.value : String(entry.comment ?? ''),
@@ -788,6 +952,7 @@ export function mountEntryAccordion(
                 const span = monoBtn.querySelector('span');
                 if (span) span.textContent = monoOn ? '常规字体' : '等宽代码字体';
             }
+            syncBackdropMetrics();
         };
 
         monoBtn?.addEventListener('click', () => {
@@ -801,6 +966,9 @@ export function mountEntryAccordion(
         let localTallOn = initialTall;
         const applyTallTextareaHeight = () => {
             if (!(contentArea instanceof HTMLTextAreaElement)) return;
+            const scrollContainer = slotEl.closest('.wbo-groups-list, .wbo-step-scroll, .wbo-modal-body');
+            const savedScrollTop = scrollContainer instanceof HTMLElement ? scrollContainer.scrollTop : null;
+            const savedTaScroll = contentArea.scrollTop;
             if (localTallOn) {
                 contentArea.style.height = 'auto';
                 const naturalScrollH = contentArea.scrollHeight || 0;
@@ -809,16 +977,28 @@ export function mountEntryAccordion(
             } else {
                 contentArea.style.height = '';
             }
+            contentArea.scrollTop = savedTaScroll;
+            if (scrollContainer instanceof HTMLElement && savedScrollTop !== null) {
+                scrollContainer.scrollTop = savedScrollTop;
+            }
+            syncBackdropMetrics();
         };
         const syncTallUi = (tallOn, { userTriggered = false } = {}) => {
             localTallOn = Boolean(tallOn);
             if (contentArea instanceof HTMLTextAreaElement) {
+                const scrollContainer = slotEl.closest('.wbo-groups-list, .wbo-step-scroll, .wbo-modal-body');
+                const savedScrollTop = scrollContainer instanceof HTMLElement ? scrollContainer.scrollTop : null;
                 contentArea.classList.toggle('is-tall', localTallOn);
                 applyTallTextareaHeight();
+                if (scrollContainer instanceof HTMLElement && savedScrollTop !== null) {
+                    scrollContainer.scrollTop = savedScrollTop;
+                }
                 if (userTriggered) {
                     requestAnimationFrame(() => {
                         applyTallTextareaHeight();
-                        try { contentArea.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
+                        if (scrollContainer instanceof HTMLElement && savedScrollTop !== null) {
+                            scrollContainer.scrollTop = savedScrollTop;
+                        }
                     });
                 }
             }
@@ -868,6 +1048,50 @@ export function mountEntryAccordion(
 
         nativeBtn?.addEventListener('click', () => {
             onOpenNative?.(uid);
+        });
+
+        deleteBtn?.addEventListener('click', async () => {
+            const curTitle = (commentInput instanceof HTMLInputElement ? commentInput.value.trim() : '')
+                || listState.items.find((x) => x.uid === uid)?.title
+                || `#${uid}`;
+            if (!globalThis.confirm(`确定删除条目「${curTitle}」吗？删除后不可恢复。`)) {
+                return;
+            }
+            if (deleteBtn instanceof HTMLButtonElement) deleteBtn.disabled = true;
+            if (saveBtn instanceof HTMLButtonElement) saveBtn.disabled = true;
+            if (statusEl) {
+                statusEl.textContent = '正在删除...';
+                statusEl.className = 'wbo-acc-save-status';
+            }
+            const res = await deleteWorldbookEntryDirect(cleanWorld, uid);
+            if (destroyed) return;
+            if (!res.ok) {
+                if (deleteBtn instanceof HTMLButtonElement) deleteBtn.disabled = false;
+                if (saveBtn instanceof HTMLButtonElement) saveBtn.disabled = false;
+                if (statusEl) {
+                    statusEl.textContent = res.error || '删除失败';
+                    statusEl.className = 'wbo-acc-save-status is-error';
+                }
+                showToast('error', res.error || '删除条目失败');
+                return;
+            }
+            taResizeObserver?.disconnect();
+            taResizeObserver = null;
+            expandedEditors.delete(uid);
+            const removedEl = itemElByUid.get(uid);
+            itemElByUid.delete(uid);
+            removedEl?.remove();
+            listState.items = listState.items.filter((x) => x.uid !== uid);
+            updateSummary();
+            syncVisibleRows();
+            onEntryMutated?.({
+                worldName: cleanWorld,
+                total: listState.total,
+                enabledCount: listState.enabledCount,
+                action: 'delete',
+                uid,
+            });
+            showToast('success', `已删除条目「${curTitle}」`);
         });
 
         saveBtn?.addEventListener('click', async () => {
@@ -936,6 +1160,7 @@ export function mountEntryAccordion(
                     position: Number(res.entry.position ?? 0),
                     depth: Number(res.entry.depth ?? 4),
                     order: Number(res.entry.order ?? 100),
+                    displayIndex: resolveEntryDisplayIndex(res.entry, uid, listState.items[idx].displayIndex ?? idx),
                     searchText: [updatedComment, ...updatedKeys, ...updatedKeys2].join('\n').toLowerCase(),
                 };
                 listState.items[idx] = updatedItem;
@@ -973,6 +1198,19 @@ export function mountEntryAccordion(
                 entry.disable = Boolean(nextDisable);
                 baseline.enabled = !nextDisable;
                 refreshMetaBrief();
+            },
+            syncOrderFromReorder: (nextOrder) => {
+                if (!Number.isFinite(nextOrder) || isDirty()) return;
+                entry.order = nextOrder;
+                if (orderInput instanceof HTMLInputElement) {
+                    orderInput.value = String(nextOrder);
+                }
+                baseline.order = String(nextOrder);
+                refreshMetaBrief();
+            },
+            dispose: () => {
+                taResizeObserver?.disconnect();
+                taResizeObserver = null;
             },
         };
     };
@@ -1052,6 +1290,7 @@ export function mountEntryAccordion(
         if (ctrl.isDirty?.() && !globalThis.confirm('该条目有未保存的修改，确定放弃修改并收起吗？')) {
             return false;
         }
+        ctrl.dispose?.();
         expandedEditors.delete(cleanUid);
         ctrl.itemEl?.classList.remove('is-expanded');
         const toggleBtn = ctrl.itemEl?.querySelector('[data-acc-toggle]');
@@ -1089,6 +1328,194 @@ export function mountEntryAccordion(
                 void expandEntry(uid);
             }
         }
+    });
+
+    if (sortSelect instanceof HTMLSelectElement) {
+        sortSelect.addEventListener('change', () => {
+            sortMode = normalizeSortMode(sortSelect.value);
+            onChangeSortMode?.(sortMode);
+            if (listState.ok) {
+                listState.items = sortEntryListItems(listState.items, sortMode);
+            }
+            syncSortHandlesUi();
+            syncVisibleRows();
+        });
+    }
+
+    // Pointer-based entry drag-reorder (works collapsed & expanded, desktop mouse & mobile touch)
+    listEl?.addEventListener('pointerdown', (ev) => {
+        if (destroyed || isReordering) return;
+        if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+        const target = ev.target instanceof Element ? ev.target : null;
+        const handle = target?.closest('[data-acc-drag-handle]');
+        if (!(handle instanceof HTMLElement)) return;
+        const dragItemEl = handle.closest('.wbo-acc-item[data-acc-uid]');
+        const dragUid = dragItemEl?.getAttribute('data-acc-uid') || '';
+        if (!(dragItemEl instanceof HTMLElement) || !dragUid) return;
+
+        if (sortMode !== 'custom') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            showToast('info', '请先切回「自定义排序」再拖动调整条目顺序');
+            return;
+        }
+
+        ev.preventDefault();
+        ev.stopPropagation();
+        activeDragCleanup?.();
+
+        const pointerId = ev.pointerId;
+        const startY = Number(ev.clientY) || 0;
+        let dragActive = false;
+        let targetUid = '';
+        let insertAfter = false;
+
+        try {
+            if (typeof pointerId === 'number') handle.setPointerCapture?.(pointerId);
+        } catch { /* ignore */ }
+
+        const clearDragIndicators = () => {
+            dragItemEl.classList.remove('is-dragging');
+            listEl.classList.remove('is-entry-dragging');
+            listEl.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => {
+                el.classList.remove('wbo-drop-before', 'wbo-drop-after');
+            });
+        };
+
+        const updateDropTarget = (clientY) => {
+            const visibleItems = Array.from(listEl.children).filter(
+                (el) => el instanceof HTMLElement && el.classList.contains('wbo-acc-item') && !el.hidden && el !== dragItemEl,
+            );
+            listEl.querySelectorAll('.wbo-drop-before, .wbo-drop-after').forEach((el) => {
+                el.classList.remove('wbo-drop-before', 'wbo-drop-after');
+            });
+            if (visibleItems.length === 0) {
+                targetUid = '';
+                return;
+            }
+            let chosenEl = null;
+            let chosenAfter = false;
+            for (const cand of visibleItems) {
+                const rect = cand.getBoundingClientRect();
+                const mid = rect.top + rect.height / 2;
+                if (clientY < mid) {
+                    chosenEl = cand;
+                    chosenAfter = false;
+                    break;
+                }
+            }
+            if (!chosenEl) {
+                chosenEl = visibleItems[visibleItems.length - 1];
+                chosenAfter = true;
+            }
+            targetUid = chosenEl.getAttribute('data-acc-uid') || '';
+            insertAfter = chosenAfter;
+            chosenEl.classList.toggle('wbo-drop-before', !chosenAfter);
+            chosenEl.classList.toggle('wbo-drop-after', chosenAfter);
+        };
+
+        const cleanupListeners = () => {
+            globalThis.removeEventListener?.('pointermove', onPointerMove);
+            globalThis.removeEventListener?.('pointerup', onPointerUp);
+            globalThis.removeEventListener?.('pointercancel', onPointerCancel);
+            try {
+                if (typeof pointerId === 'number') handle.releasePointerCapture?.(pointerId);
+            } catch { /* ignore */ }
+            clearDragIndicators();
+            if (activeDragCleanup === cleanupListeners) {
+                activeDragCleanup = null;
+            }
+        };
+
+        const onPointerMove = (moveEv) => {
+            if (destroyed) {
+                cleanupListeners();
+                return;
+            }
+            if (typeof pointerId === 'number' && typeof moveEv.pointerId === 'number' && moveEv.pointerId !== pointerId) return;
+            const curY = Number(moveEv.clientY) || 0;
+            if (!dragActive) {
+                if (Math.abs(curY - startY) < 4) return;
+                dragActive = true;
+                dragItemEl.classList.add('is-dragging');
+                listEl.classList.add('is-entry-dragging');
+            }
+            updateDropTarget(curY);
+        };
+
+        const finishDrag = async (cancelled) => {
+            const wasActive = dragActive;
+            const finalTargetUid = targetUid;
+            const finalAfter = insertAfter;
+            cleanupListeners();
+            if (cancelled || destroyed || !wasActive || !finalTargetUid || finalTargetUid === dragUid) return;
+
+            const syncOrder = Boolean(getSyncOrder?.());
+            const prevItems = listState.items.map((x) => ({ ...x }));
+            const plan = reorderEntryUids(listState.items, dragUid, finalTargetUid, finalAfter, { syncOrder });
+            if (!plan.changed) return;
+
+            for (const item of listState.items) {
+                const upd = plan.updatesByUid?.[item.uid];
+                if (upd) {
+                    item.displayIndex = upd.displayIndex;
+                    if (syncOrder && Number.isFinite(upd.order)) {
+                        item.order = upd.order;
+                    }
+                }
+            }
+            listState.items = sortEntryListItems(listState.items, 'custom');
+            syncVisibleRows();
+            for (const item of listState.items) {
+                const itemEl = itemElByUid.get(item.uid);
+                if (itemEl) patchRowHeaderDom(itemEl, item);
+                if (syncOrder) {
+                    expandedEditors.get(item.uid)?.syncOrderFromReorder?.(item.order);
+                }
+            }
+
+            isReordering = true;
+            const res = await saveWorldbookEntriesOrderDirect(cleanWorld, plan.orderedUids, { syncOrder });
+            isReordering = false;
+            if (destroyed) return;
+
+            if (!res.ok) {
+                listState.items = prevItems;
+                syncVisibleRows();
+                for (const item of listState.items) {
+                    const itemEl = itemElByUid.get(item.uid);
+                    if (itemEl) patchRowHeaderDom(itemEl, item);
+                    if (syncOrder) {
+                        expandedEditors.get(item.uid)?.syncOrderFromReorder?.(item.order);
+                    }
+                }
+                showToast('error', res.error || '保存条目顺序失败');
+                return;
+            }
+
+            onEntryMutated?.({
+                worldName: cleanWorld,
+                total: listState.total,
+                enabledCount: listState.enabledCount,
+                action: 'reorder',
+                uid: dragUid,
+            });
+            showToast('success', syncOrder ? '已保存条目顺序（并同步插入顺序 order）' : '已保存条目自定义顺序');
+        };
+
+        const onPointerUp = (upEv) => {
+            if (typeof pointerId === 'number' && typeof upEv.pointerId === 'number' && upEv.pointerId !== pointerId) return;
+            void finishDrag(false);
+        };
+        const onPointerCancel = (cancelEv) => {
+            if (typeof pointerId === 'number' && typeof cancelEv.pointerId === 'number' && cancelEv.pointerId !== pointerId) return;
+            void finishDrag(true);
+        };
+
+        activeDragCleanup = cleanupListeners;
+        globalThis.addEventListener?.('pointermove', onPointerMove);
+        globalThis.addEventListener?.('pointerup', onPointerUp);
+        globalThis.addEventListener?.('pointercancel', onPointerCancel);
     });
 
     listEl?.addEventListener('change', async (ev) => {
@@ -1170,10 +1597,12 @@ export function mountEntryAccordion(
             position: Number(e.position ?? 0),
             depth: Number(e.depth ?? 4),
             order: Number(e.order ?? 100),
+            displayIndex: resolveEntryDisplayIndex(e, e.uid, listState.items.length),
             searchText: String(e.comment ?? '').toLowerCase(),
         };
         listState.ok = true;
         listState.items.push(newItem);
+        listState.items = sortEntryListItems(listState.items, sortMode);
         updateSummary();
         syncVisibleRows();
         onEntryMutated?.({
@@ -1190,7 +1619,7 @@ export function mountEntryAccordion(
     const loadInitial = async () => {
         const res = await fetchWorldbookEntryList(cleanWorld);
         if (destroyed) return;
-        listState = res;
+        listState = res.ok ? { ...res, items: sortEntryListItems(res.items || [], sortMode) } : res;
         updateSummary();
         syncVisibleRows();
 
@@ -1208,8 +1637,8 @@ export function mountEntryAccordion(
         if (destroyed) return;
         const res = await fetchWorldbookEntryList(cleanWorld);
         if (destroyed || !res.ok) return;
-        listState = res;
-        const validSet = new Set(res.items.map((x) => x.uid));
+        listState = { ...res, items: sortEntryListItems(res.items || [], sortMode) };
+        const validSet = new Set(listState.items.map((x) => x.uid));
         for (const [uid, el] of [...itemElByUid.entries()]) {
             if (!validSet.has(uid)) {
                 el.remove();
@@ -1217,8 +1646,8 @@ export function mountEntryAccordion(
                 expandedEditors.delete(uid);
             }
         }
-        for (let i = 0; i < res.items.length; i += 1) {
-            const item = res.items[i];
+        for (let i = 0; i < listState.items.length; i += 1) {
+            const item = listState.items[i];
             const el = itemElByUid.get(item.uid);
             if (el) {
                 patchRowHeaderDom(el, item);
@@ -1249,9 +1678,14 @@ export function mountEntryAccordion(
         getExpandedUids: () => [...expandedEditors.keys()],
         destroy: () => {
             destroyed = true;
+            activeDragCleanup?.();
+            activeDragCleanup = null;
             clearTimeout(searchTimer);
             searchTimer = null;
             contentMatchUids = null;
+            for (const ctrl of expandedEditors.values()) {
+                ctrl.dispose?.();
+            }
             expandedEditors.clear();
             itemElByUid.clear();
             hostEl.innerHTML = '';

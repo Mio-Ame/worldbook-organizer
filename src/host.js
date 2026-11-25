@@ -13,6 +13,7 @@
 import {
     MODULE_NAME,
     charaFileName,
+    computeReorderedEntries,
     createNewRawWorldEntry,
     deepClone,
     extractEntryListItems,
@@ -21,6 +22,7 @@ import {
     mergeEntryPatchOntoRaw,
     migrateSettingsOnWorldRename,
     normalizeSettings,
+    parseOptionalFiniteNumber,
     searchEntriesInPayload,
 } from './core.js';
 
@@ -356,9 +358,15 @@ export async function fetchWorldbookPreviewEntries(worldName) {
     if (!entriesObj || typeof entriesObj !== 'object') {
         return { total: 0, enabledCount: 0, entries: [] };
     }
+    const dispVal = (e) =>
+        parseOptionalFiniteNumber(e?.displayIndex)
+        ?? parseOptionalFiniteNumber(e?.extensions?.display_index)
+        ?? parseOptionalFiniteNumber(e?.order)
+        ?? parseOptionalFiniteNumber(e?.uid)
+        ?? 0;
     const list = Object.values(entriesObj)
         .filter((e) => e && typeof e === 'object')
-        .sort((a, b) => (Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0)))
+        .sort((a, b) => dispVal(a) - dispVal(b))
         .map((e, idx) => {
             const keys = Array.isArray(e.key)
                 ? e.key.map((k) => String(k || '').trim()).filter(Boolean)
@@ -487,7 +495,12 @@ export async function saveWorldbookEntryPatch(worldName, uid, patch) {
 
     const targetUid = String(uid);
     let entryKey = null;
-    if (Object.hasOwn(data.entries, targetUid) && data.entries[targetUid] && typeof data.entries[targetUid] === 'object') {
+    if (
+        Object.hasOwn(data.entries, targetUid) &&
+        data.entries[targetUid] &&
+        typeof data.entries[targetUid] === 'object' &&
+        (!Array.isArray(data.entries) || String(data.entries[targetUid].uid ?? targetUid) === targetUid)
+    ) {
         entryKey = targetUid;
     } else {
         for (const [k, e] of Object.entries(data.entries)) {
@@ -577,6 +590,220 @@ export async function createWorldbookEntryDirect(worldName, initialFields = {}) 
 }
 
 /**
+ * Delete an entry by UID from a worldbook via uncached `/api/worldinfo/get` -> `/api/worldinfo/edit`.
+ * @param {string} worldName
+ * @param {string | number} uid
+ */
+export async function deleteWorldbookEntryDirect(worldName, uid) {
+    const clean = String(worldName ?? '').trim();
+    if (!clean) return { ok: false, error: '世界书名称为空' };
+    if (uid === null || uid === undefined || String(uid).trim() === '') {
+        return { ok: false, error: '条目 UID 为空' };
+    }
+
+    let data = await fetchWorldInfoUncached(clean);
+    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        return { ok: false, error: `无法读取世界书「${clean}」` };
+    }
+
+    const targetUid = String(uid).trim();
+    let entryKey = null;
+    if (
+        Object.hasOwn(data.entries, targetUid) &&
+        data.entries[targetUid] &&
+        typeof data.entries[targetUid] === 'object' &&
+        (!Array.isArray(data.entries) || String(data.entries[targetUid].uid ?? targetUid) === targetUid)
+    ) {
+        entryKey = targetUid;
+    } else {
+        for (const [k, e] of Object.entries(data.entries)) {
+            if (e && typeof e === 'object' && String(e.uid ?? k) === targetUid) {
+                entryKey = k;
+                break;
+            }
+        }
+    }
+    if (entryKey === null) {
+        data = null;
+        return { ok: false, error: '未找到对应条目（可能已被删除）' };
+    }
+
+    const arrayIdx = Array.isArray(data.entries) && entryKey !== '' ? Number(entryKey) : NaN;
+    if (Array.isArray(data.entries) && Number.isInteger(arrayIdx) && arrayIdx >= 0 && arrayIdx < data.entries.length) {
+        data.entries.splice(arrayIdx, 1);
+    } else {
+        delete data.entries[entryKey];
+    }
+
+    try {
+        const res = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: clean, data }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+        data = null;
+        return { ok: false, error: `删除条目失败：${err?.message || err}` };
+    }
+
+    await syncWorldInfoCacheIfPresent(clean, data);
+    const ctx = getHostContext();
+    const et = ctx?.eventTypes || ctx?.event_types || {};
+    if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
+        try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
+    }
+    emitBridgeEvent('wbo:entries-updated', { worldName: clean });
+
+    data = null;
+    return { ok: true, uid: targetUid };
+}
+
+/**
+ * Persist dragged entry order directly into a worldbook's native `displayIndex` and
+ * `extensions.display_index` (plus `originalData.entries` when present), updating
+ * `order` / `insertion_order` ONLY when `options.syncOrder === true`.
+ *
+ * @param {string} worldName
+ * @param {Array<string | number>} orderedUids
+ * @param {{ syncOrder?: boolean }} [options={}]
+ * @returns {Promise<{ ok: boolean, updatedCount: number, orderedUids?: string[], updatesByUid?: Record<string, any>, error?: string }>}
+ */
+export async function saveWorldbookEntriesOrderDirect(worldName, orderedUids, options = {}) {
+    const syncOrder = Boolean(options?.syncOrder);
+    const clean = String(worldName ?? '').trim();
+    if (!clean) return { ok: false, updatedCount: 0, error: '世界书名称为空' };
+    if (!Array.isArray(orderedUids) || orderedUids.length === 0) {
+        return { ok: false, updatedCount: 0, error: '条目顺序列表为空' };
+    }
+
+    let data = await fetchWorldInfoUncached(clean);
+    if (!data || typeof data !== 'object' || !data.entries || typeof data.entries !== 'object') {
+        data = null;
+        return { ok: false, updatedCount: 0, error: `无法读取世界书「${clean}」` };
+    }
+
+    const plan = computeReorderedEntries(data.entries, orderedUids, { syncOrder });
+    if (plan.updates.length === 0) {
+        data = null;
+        return { ok: false, updatedCount: 0, error: '未找到可排序的条目' };
+    }
+
+    const origEntries = data.originalData && typeof data.originalData === 'object'
+        ? data.originalData.entries
+        : null;
+    const origByUid = Array.isArray(origEntries)
+        ? new Map(
+            origEntries
+                .filter((x) => x && typeof x === 'object')
+                .map((x) => [String(x.uid ?? x.id ?? ''), x]),
+        )
+        : null;
+
+    for (const upd of plan.updates) {
+        let entry = null;
+        if (Array.isArray(data.entries)) {
+            const idx = Number(upd.key);
+            const candidate = Number.isInteger(idx) && idx >= 0 ? data.entries[idx] : null;
+            if (candidate && typeof candidate === 'object' && String(candidate.uid ?? upd.key) === upd.uid) {
+                entry = candidate;
+            } else {
+                entry = data.entries.find(
+                    (e) => e && typeof e === 'object' && String(e.uid ?? '') === upd.uid,
+                ) || null;
+            }
+        } else {
+            entry = data.entries[upd.key];
+        }
+        if (!entry || typeof entry !== 'object') continue;
+
+        entry.displayIndex = upd.displayIndex;
+        if (!entry.extensions || typeof entry.extensions !== 'object' || Array.isArray(entry.extensions)) {
+            entry.extensions = {};
+        }
+        entry.extensions.display_index = upd.displayIndex;
+        if (syncOrder && Number.isFinite(upd.order)) {
+            entry.order = upd.order;
+        }
+
+        let orig = null;
+        if (origByUid) {
+            orig = origByUid.get(upd.uid) || null;
+        } else if (origEntries && typeof origEntries === 'object') {
+            const hasValidId = (v) => v !== undefined && v !== null && String(v).trim() !== '' && (typeof v !== 'number' || Number.isFinite(v));
+            const getOrigId = (obj) => (
+                hasValidId(obj.uid) ? String(obj.uid).trim() : (hasValidId(obj.id) ? String(obj.id).trim() : null)
+            );
+            const byUid = Object.hasOwn(origEntries, upd.uid) ? origEntries[upd.uid] : null;
+            const byUidId = (byUid && typeof byUid === 'object') ? getOrigId(byUid) : null;
+            const byKey = Object.hasOwn(origEntries, upd.key) ? origEntries[upd.key] : null;
+            const byKeyId = (byKey && typeof byKey === 'object') ? getOrigId(byKey) : null;
+            if (byUid && typeof byUid === 'object' && byUidId === upd.uid) {
+                orig = byUid;
+            } else if (byKey && typeof byKey === 'object' && byKeyId === upd.uid) {
+                orig = byKey;
+            } else {
+                orig = Object.values(origEntries).find(
+                    (x) => x && typeof x === 'object' && getOrigId(x) === upd.uid,
+                ) || null;
+                if (!orig) {
+                    if (byKey && typeof byKey === 'object' && byKeyId === null && upd.key === upd.uid) {
+                        orig = byKey;
+                    } else if (byUid && typeof byUid === 'object' && byUidId === null) {
+                        orig = byUid;
+                    }
+                }
+            }
+        }
+        if (orig) {
+            if (!orig.extensions || typeof orig.extensions !== 'object' || Array.isArray(orig.extensions)) {
+                orig.extensions = {};
+            }
+            orig.extensions.display_index = upd.displayIndex;
+            if (Object.hasOwn(orig, 'displayIndex')) {
+                orig.displayIndex = upd.displayIndex;
+            }
+            if (syncOrder && Number.isFinite(upd.order)) {
+                if (Object.hasOwn(orig, 'insertion_order')) {
+                    orig.insertion_order = upd.order;
+                }
+                if (Object.hasOwn(orig, 'order') || !Object.hasOwn(orig, 'insertion_order')) {
+                    orig.order = upd.order;
+                }
+            }
+        }
+    }
+
+    try {
+        const res = await fetch('/api/worldinfo/edit', {
+            method: 'POST',
+            headers: buildRequestHeaders(),
+            body: JSON.stringify({ name: clean, data }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+        data = null;
+        return { ok: false, updatedCount: 0, error: `保存条目排序失败：${err?.message || err}` };
+    }
+
+    await syncWorldInfoCacheIfPresent(clean, data);
+    const ctx = getHostContext();
+    const et = ctx?.eventTypes || ctx?.event_types || {};
+    if (ctx?.eventSource?.emit && et.WORLDINFO_UPDATED) {
+        try { await ctx.eventSource.emit(et.WORLDINFO_UPDATED, clean, data); } catch { /* ignore */ }
+    }
+    emitBridgeEvent('wbo:entries-updated', { worldName: clean });
+
+    data = null;
+    return {
+        ok: true,
+        updatedCount: plan.updates.length,
+        orderedUids: plan.orderedUids,
+        updatesByUid: plan.updatesByUid,
+    };
+}
+
+/**
  * Jump directly to a character card by its avatar filename so users can inspect
  * or fix character-worldbook bindings reported by the scan modal.
  * @param {string} avatar
@@ -663,13 +890,19 @@ export async function fetchWorldbookCluesOnDemand(
     if (!entriesObj || typeof entriesObj !== 'object') return [];
 
     // Prioritize enabled entries with meaningful content/titles first
+    const dispVal = (e) =>
+        parseOptionalFiniteNumber(e?.displayIndex)
+        ?? parseOptionalFiniteNumber(e?.extensions?.display_index)
+        ?? parseOptionalFiniteNumber(e?.order)
+        ?? parseOptionalFiniteNumber(e?.uid)
+        ?? 0;
     const allEntries = Object.values(entriesObj)
         .filter((e) => e && typeof e === 'object')
         .sort((a, b) => {
             const da = a.disable ? 1 : 0;
             const db = b.disable ? 1 : 0;
             if (da !== db) return da - db;
-            return Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0);
+            return dispVal(a) - dispVal(b);
         });
 
     const clues = [];

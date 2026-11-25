@@ -29,9 +29,13 @@ import {
     compareZhCn,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
+    orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, saveSettings } from './host.js';
+import { getCurrentCharacterAvatar, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+
+/** @type {WeakMap<HTMLElement, () => void>} */
+const _bubbleGuardCleanupMap = new WeakMap();
 
 /**
  * Prevent `mousedown`, `touchstart`, and `click` events inside floating popovers/sheets
@@ -46,6 +50,26 @@ function bindDrawerSafeBubbleGuard(rootEl) {
     rootEl.addEventListener('mousedown', stopBubble, false);
     rootEl.addEventListener('touchstart', stopBubble, { capture: false, passive: true });
     rootEl.addEventListener('click', stopBubble, false);
+    _bubbleGuardCleanupMap.set(rootEl, () => {
+        rootEl.removeEventListener('mousedown', stopBubble, false);
+        rootEl.removeEventListener('touchstart', stopBubble, false);
+        rootEl.removeEventListener('click', stopBubble, false);
+    });
+}
+
+/**
+ * Cleanly remove the bubble guard from a reused container if it is repurposed
+ * for a non-worldbook `<select>` (such as `#world_info_sort_order`).
+ * @param {HTMLElement | null} rootEl
+ */
+function unbindDrawerSafeBubbleGuard(rootEl) {
+    if (!(rootEl instanceof HTMLElement)) return;
+    const cleanup = _bubbleGuardCleanupMap.get(rootEl);
+    if (cleanup) {
+        try { cleanup(); } catch { /* ignore */ }
+        _bubbleGuardCleanupMap.delete(rootEl);
+    }
+    delete rootEl.dataset.wboBubbleGuarded;
 }
 
 let _pinDirtyOnClose = false;
@@ -104,43 +128,26 @@ export function closeAllOpenWorldDropdowns({ except = null } = {}) {
     if (typeof document !== 'undefined') {
         document.querySelectorAll('#wbo-quick-exclude-backdrop, #wbo-vis-popover-backdrop, #wbo-search-opts-backdrop').forEach((el) => el.remove());
 
-        const hasZeroNonEmptyEnhancedOptions = (containerEl) => {
-            const opts = containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector);
-            for (const optEl of opts) {
-                const hasValAttr = optEl.hasAttribute?.('data-value');
-                const rawVal = optEl.dataset?.value;
-                const text = getEnhancedPopoverOptionText(optEl);
-                if (!((hasValAttr && (rawVal ?? '') === '') || !text || text.startsWith('---'))) {
-                    return false;
-                }
-            }
-            return true;
-        };
-
         document.querySelectorAll(ENHANCED_POPOVER_SELECTORS.containerSelector).forEach((el) => {
             if (!(el instanceof HTMLElement) || !el.isConnected) return;
-            const isGlobalContainer = el.id === ENHANCED_POPOVER_SELECTORS.globalContainerId;
-            if (except === 'global' && isGlobalContainer) return;
-            const role = el.dataset.wboPopoverRole || detectEnhancedPopoverRole(el);
-            if (role && !el.dataset.wboPopoverRole) {
-                el.dataset.wboPopoverRole = role;
-            }
-            if (
-                except === 'editor' &&
-                !isGlobalContainer &&
-                (role === 'editor' ||
-                    (!role &&
-                        hasZeroNonEmptyEnhancedOptions(el) &&
-                        Boolean(document.querySelector('#world_popup .gr-select2-display'))))
-            ) {
+            // Skip persistent containers that are already closed (`display: none`) so they aren't destroyed before opening.
+            if (el.hidden || el.style.display === 'none') {
+                el.dataset.wboPersistentPopover = '1';
                 return;
             }
+            const role = detectEnhancedPopoverRole(el);
+            // NEVER close, hide, dispatch Escape, or remove non-worldbook popovers (e.g. `#world_info_sort_order`)!
+            if (!role) return;
+            if (except === role) return;
+            const isPersistent = el.dataset.wboPersistentPopover === '1';
             try {
                 el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
             } catch { /* ignore */ }
-            if (el.isConnected) {
+            if (el.isConnected && !el.hidden && el.style.display !== 'none') {
                 el.style.display = 'none';
-                el.remove();
+                if (!isPersistent) {
+                    el.remove();
+                }
             }
         });
     }
@@ -218,13 +225,43 @@ function bindSelect2PinHandlers(resultsList, onAfterToggle = null) {
     resultsList.addEventListener('pointerdown', onPointerBlock, true);
     resultsList.addEventListener('mousedown', onPointerBlock, true);
     resultsList.addEventListener('mouseup', onPointerBlock, true);
+    resultsList.addEventListener('touchstart', onPointerBlock, { capture: true, passive: false });
     resultsList.addEventListener('click', onPinClick, true);
     return () => {
         resultsList.removeEventListener('pointerdown', onPointerBlock, true);
         resultsList.removeEventListener('mousedown', onPointerBlock, true);
         resultsList.removeEventListener('mouseup', onPointerBlock, true);
+        resultsList.removeEventListener('touchstart', onPointerBlock, true);
         resultsList.removeEventListener('click', onPinClick, true);
     };
+}
+
+/**
+ * Fallback injector ensuring every Select2 `<li class="select2-results__option">` has a right-aligned
+ * `.wbo-s2-pin-btn` (`☆` / `★`) even if Select2 rendered options before `templateResult` was patched.
+ * @param {HTMLElement} resultsList
+ */
+function ensureSelect2RowsHavePinBtn(resultsList) {
+    if (!(resultsList instanceof HTMLElement)) return;
+    resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((li) => {
+        if (!(li instanceof HTMLElement)) return;
+        if (li.classList.contains('select2-results__message')) return;
+        if (li.querySelector('.wbo-s2-pin-btn')) return;
+        const rawText = (li.textContent || '').trim();
+        if (!rawText || rawText.startsWith('---')) return;
+        const meta = _latestClassification?.byName?.get(rawText);
+        const worldName = meta?.realName || rawText;
+        const isPinned = Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName));
+        li.classList.add('wbo-s2-li-flex');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `wbo-s2-pin-btn${isPinned ? ' is-pinned' : ''}`;
+        btn.setAttribute('data-pin-world', worldName);
+        btn.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
+        btn.title = isPinned ? '取消置顶' : '置顶此世界书';
+        btn.textContent = isPinned ? '★' : '☆';
+        li.appendChild(btn);
+    });
 }
 
 /** @type {Map<string, HTMLOptionElement>} */
@@ -246,11 +283,24 @@ const ENHANCED_POPOVER_SELECTORS = Object.freeze({
     searchInputSelector: 'input[type="text"], input[type="search"], .gr-search-input',
 });
 
+const WORLD_INFO_SORT_OPTION_FALLBACKS = new Set([
+    'Search', 'Priority', 'Custom', 'Title A-Z', 'Title Z-A',
+    'Tokens ↗', 'Tokens ↘', 'Depth ↗', 'Depth ↘',
+    'Order ↗', 'Order ↘', 'UID ↗', 'UID ↘',
+    'Trigger% ↗', 'Trigger% ↘', 'Length ↗', 'Length ↘',
+]);
+
 function getEnhancedPopoverOptionText(el) {
     let txt = '';
     for (const node of el.childNodes) {
         if (node.nodeType === 3) txt += node.textContent || '';
-        else if (node instanceof HTMLElement && !node.classList.contains(ENHANCED_POPOVER_SELECTORS.pinClass)) {
+        else if (
+            node instanceof HTMLElement &&
+            !node.classList.contains(ENHANCED_POPOVER_SELECTORS.pinClass) &&
+            !node.classList.contains('wbo-s2-badge') &&
+            !node.classList.contains('wbo-s2-right') &&
+            !node.hasAttribute?.('data-wbo-ui')
+        ) {
             txt += node.textContent || '';
         }
     }
@@ -260,28 +310,41 @@ function getEnhancedPopoverOptionText(el) {
 function detectEnhancedPopoverRole(containerEl) {
     if (!(containerEl instanceof HTMLElement)) return null;
     if (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId) return 'global';
-    if (containerEl.dataset.wboPopoverRole === 'global' || containerEl.dataset.wboPopoverRole === 'editor') {
-        return containerEl.dataset.wboPopoverRole;
-    }
+
     const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
-    if (optionNodes.length === 0) return null;
+    if (optionNodes.length === 0) {
+        delete containerEl.dataset.wboPopoverRole;
+        return null;
+    }
 
     const knownWorldNames = new Set();
     if (_latestClassification?.byName) {
         for (const k of _latestClassification.byName.keys()) knownWorldNames.add(k);
     }
-    const editorSel = document.getElementById('world_editor_select');
-    if (editorSel) {
-        editorSel.querySelectorAll('option').forEach((opt) => {
-            const name = (opt.dataset?.wboRealName || opt.textContent || '').trim();
-            if (opt.value !== '' && name && !name.startsWith('---')) knownWorldNames.add(name);
-        });
+    for (const selId of ['world_editor_select', 'world_info']) {
+        const sel = document.getElementById(selId);
+        if (sel) {
+            sel.querySelectorAll('option').forEach((opt) => {
+                const name = (opt.dataset?.wboRealName || opt.textContent || '').trim();
+                if (opt.value !== '' && name && !name.startsWith('---')) knownWorldNames.add(name);
+            });
+        }
     }
     for (const k of _editorDetachedMap.keys()) knownWorldNames.add(k);
-    if (knownWorldNames.size === 0) return null;
+    for (const k of _globalDetachedMap.keys()) knownWorldNames.add(k);
+
+    const sortTexts = new Set(WORLD_INFO_SORT_OPTION_FALLBACKS);
+    const sortSelect = document.getElementById('world_info_sort_order');
+    if (sortSelect) {
+        sortSelect.querySelectorAll('option').forEach((opt) => {
+            const label = (opt.textContent || '').trim();
+            if (label && !label.startsWith('---')) sortTexts.add(label);
+        });
+    }
 
     let nonEmptyCount = 0;
     let matchedWorldCount = 0;
+    let sortMatchCount = 0;
     for (const optEl of optionNodes) {
         const hasValAttr = optEl.hasAttribute?.('data-value');
         const rawVal = optEl.dataset?.value;
@@ -289,18 +352,103 @@ function detectEnhancedPopoverRole(containerEl) {
         if ((hasValAttr && (rawVal ?? '') === '') || !text || text.startsWith('---')) continue;
         nonEmptyCount += 1;
         if (knownWorldNames.has(text)) matchedWorldCount += 1;
+        if (sortTexts.has(text)) sortMatchCount += 1;
     }
-    if (nonEmptyCount === 0) return null;
+    if (nonEmptyCount === 0) {
+        delete containerEl.dataset.wboPopoverRole;
+        return null;
+    }
+    if (sortMatchCount >= 2 && sortMatchCount / nonEmptyCount >= 0.45 && sortMatchCount >= matchedWorldCount) {
+        delete containerEl.dataset.wboPopoverRole;
+        return null;
+    }
+    if (knownWorldNames.size === 0) {
+        delete containerEl.dataset.wboPopoverRole;
+        return null;
+    }
     const isWorldbookPopover =
         (matchedWorldCount >= 2 && matchedWorldCount / nonEmptyCount >= 0.45) ||
         (matchedWorldCount >= 1 && matchedWorldCount === nonEmptyCount);
-    return isWorldbookPopover ? 'editor' : null;
+    if (!isWorldbookPopover) {
+        delete containerEl.dataset.wboPopoverRole;
+        return null;
+    }
+    return 'editor';
+}
+
+/**
+ * Walk past Select2 / enhanced-select / mobile-trigger wrapper siblings to find
+ * the owning `<select>` element (checking preceding siblings first since Select2
+ * and custom displays are mounted after their `<select>`).
+ * @param {Element | null} el
+ * @returns {Element | null}
+ */
+function findOwningSelectSibling(el) {
+    if (!(el instanceof Element)) return null;
+    const isWrapperSibling = (node) =>
+        node instanceof Element &&
+        (node.classList.contains('select2-container') ||
+            node.classList.contains('gr-select2-display') ||
+            node.id === MOBILE_TRIGGER_ID);
+
+    let prev = el.previousElementSibling;
+    while (prev && isWrapperSibling(prev)) {
+        prev = prev.previousElementSibling;
+    }
+    if (prev && prev.tagName === 'SELECT') return prev;
+
+    let next = el.nextElementSibling;
+    while (next && isWrapperSibling(next)) {
+        next = next.nextElementSibling;
+    }
+    if (next && next.tagName === 'SELECT') return next;
+    return null;
+}
+
+/**
+ * Determine whether a click/mousedown target belongs specifically to `#world_editor_select`
+ * (and NOT `#world_info_sort_order` or entry-level `<select>`s inside `#world_popup_entries_list`).
+ * @param {EventTarget | null} t
+ * @returns {boolean}
+ */
+function isEditorSelectTriggerTarget(t) {
+    if (!(t instanceof Element)) return false;
+    if (t.closest('#world_info_sort_order, #world_popup_entries_list')) return false;
+    if (t.closest('#world_editor_select, #wbo-mobile-editor-trigger')) return true;
+
+    const disp = t.closest('#world_popup .gr-select2-display');
+    if (disp) {
+        const selAttr = disp.getAttribute('data-select-id') || disp.getAttribute('data-for') || disp.dataset?.selectId || disp.dataset?.for || '';
+        if (selAttr === 'world_info_sort_order') return false;
+        if (selAttr === 'world_editor_select') return true;
+        const ownerSel = findOwningSelectSibling(disp);
+        if (ownerSel?.id === 'world_info_sort_order') return false;
+        if (ownerSel?.id === 'world_editor_select') return true;
+        if (ownerSel) return false;
+        const parent = disp.parentElement;
+        return Boolean(parent?.querySelector('#world_editor_select') && !parent?.querySelector('#world_info_sort_order'));
+    }
+
+    const s2 = t.closest('#world_popup .select2-container');
+    if (s2) {
+        if (s2.querySelector('#select2-world_info_sort_order-container')) return false;
+        if (s2.querySelector('#select2-world_editor_select-container')) return true;
+        const ownerSel = findOwningSelectSibling(s2);
+        if (ownerSel?.id === 'world_info_sort_order') return false;
+        if (ownerSel?.id === 'world_editor_select') return true;
+        if (ownerSel) return false;
+        const parent = s2.parentElement;
+        return Boolean(parent?.querySelector('#world_editor_select') && !parent?.querySelector('#world_info_sort_order'));
+    }
+
+    return false;
 }
 
 let _isApplying = false;
 let _latestClassification = null;
 let _latestSettings = null;
 let _currentlyEditingWorld = null;
+let _pendingClearedEditingWorld = false;
 let _lastGlobalSignature = null;
 let _lastEditorSignature = null;
 let _deferredGlobalTimer = null;
@@ -324,6 +472,8 @@ let _editorSelectObserver = null;
 /** @type {MutationObserver | null} */
 let _charPopupObserver = null;
 let _resyncTimer = null;
+/** @type {any[]} */
+const _sweepPopoverTimers = [];
 
 /**
  * Escape HTML safely for Select2 template strings.
@@ -371,6 +521,7 @@ export function pruneDetachedWorldNames(liveWorldNamesSet) {
     }
     if (_currentlyEditingWorld && !liveWorldNamesSet.has(_currentlyEditingWorld)) {
         _currentlyEditingWorld = null;
+        _pendingClearedEditingWorld = true;
         editorPruned = true;
     }
     if (globalPruned) _lastGlobalSignature = null;
@@ -382,7 +533,9 @@ export function pruneDetachedWorldNames(liveWorldNamesSet) {
  * @param {string | null} worldName
  */
 export function setCurrentlyEditingWorld(worldName) {
-    _currentlyEditingWorld = worldName ? String(worldName).trim() : null;
+    const clean = worldName ? String(worldName).trim() : null;
+    _currentlyEditingWorld = clean;
+    if (clean) _pendingClearedEditingWorld = false;
 }
 
 /**
@@ -417,11 +570,11 @@ function customSelect2Matcher(params, data) {
 
 /**
  * Build Select2 `templateResult` DOM node showing clean alias/character name,
- * optional muted original author title, and group pill.
+ * optional muted original author title, group pill, and optional `当前编辑` badge.
  * @param {any} state
- * @param {{ showGroupPill: boolean }} opts
+ * @param {{ showGroupPill: boolean, showEditingBadge?: boolean }} opts
  */
-function renderSelect2OptionResult(state, { showGroupPill }) {
+function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = false }) {
     if (!state.id) return state.text; // placeholder or optgroup header
     const realName = String(state.text ?? '').trim();
     const meta = _latestClassification?.byName?.get(realName);
@@ -431,6 +584,16 @@ function renderSelect2OptionResult(state, { showGroupPill }) {
     if (!$) return state.text;
 
     const hasCustomGroups = (_latestClassification?.customGroups?.length || 0) > 0;
+    const isEditing = Boolean(
+        showEditingBadge &&
+        (state.selected ||
+            state.element?.selected ||
+            state.element?.dataset?.wboEditing === '1' ||
+            (_currentlyEditingWorld && realName === _currentlyEditingWorld)),
+    );
+    const editingBadge = isEditing
+        ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>'
+        : '';
     const groupBadge = showGroupPill && (hasCustomGroups || meta.isInCharGroup)
         ? `<span class="wbo-s2-badge${meta.isInCharGroup ? ' is-char' : ''}">${escHtml(meta.groupName)}</span>`
         : '';
@@ -447,6 +610,7 @@ function renderSelect2OptionResult(state, { showGroupPill }) {
                 ${subHtml}
             </span>
             <span class="wbo-s2-right">
+                ${editingBadge}
                 ${groupBadge}
                 ${pinBtnHtml}
             </span>
@@ -466,6 +630,103 @@ function renderEditorSelect2Selection(state) {
     const meta = _latestClassification?.byName?.get(realName);
     if (!meta) return state.text;
     return meta.primaryTitle;
+}
+
+/**
+ * Build a map of `worldName -> String(index)` from authoritative SillyTavern
+ * `world_names` (never from DOM-only fallback when options may be detached).
+ * @returns {Map<string, string>}
+ */
+function getLiveWorldIndexMap() {
+    const ctx = getHostContext();
+    let liveList = null;
+    if (typeof ctx?.getWorldInfoNames === 'function') {
+        const arr = ctx.getWorldInfoNames();
+        if (Array.isArray(arr) && arr.length > 0) liveList = arr;
+    }
+    if (!liveList && Array.isArray(ctx?.world_names) && ctx.world_names.length > 0) {
+        liveList = ctx.world_names;
+    }
+    if (!liveList) {
+        const probe = '__wbo_live_probe__';
+        const probed = getWorldNames([probe]);
+        if (Array.isArray(probed) && probed.length > 0 && !probed.includes(probe)) {
+            liveList = probed;
+        }
+    }
+    const map = new Map();
+    if (Array.isArray(liveList)) {
+        liveList.forEach((name, idx) => {
+            const clean = String(name ?? '').trim();
+            if (clean && !map.has(clean)) map.set(clean, String(idx));
+        });
+    }
+    return map;
+}
+
+/**
+ * Re-sync `<option>.value` on attached options and detached map entries against
+ * live `world_names` indices and deduplicate stale duplicate `<option>`s.
+ * @param {HTMLSelectElement} selectEl
+ * @param {Map<string, HTMLOptionElement> | null} [detachedMap=null]
+ */
+function syncSelectOptionsWithLiveWorldNames(selectEl, detachedMap = null) {
+    if (!(selectEl instanceof HTMLSelectElement)) return;
+    const liveIndexMap = getLiveWorldIndexMap();
+    const byName = new Map();
+    const currentSelectedVal = selectEl.value;
+    let clearedSelectedStale = false;
+    for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
+        if (opt.value === '') continue;
+        const name = (opt.textContent || '').trim();
+        if (!name) continue;
+        const liveVal = liveIndexMap.get(name);
+        if (liveIndexMap.size > 0 && liveVal === undefined) {
+            if (opt.selected || (currentSelectedVal !== '' && opt.value === currentSelectedVal)) {
+                opt.selected = false;
+                clearedSelectedStale = true;
+                if (selectEl.id === 'world_editor_select' && _currentlyEditingWorld === name) {
+                    _currentlyEditingWorld = null;
+                    _pendingClearedEditingWorld = true;
+                }
+            }
+            opt.remove();
+            continue;
+        }
+        if (liveVal !== undefined && opt.value !== liveVal) {
+            opt.value = liveVal;
+        }
+        const prev = byName.get(name);
+        if (prev) {
+            if (opt.selected && !prev.selected) {
+                prev.remove();
+                byName.set(name, opt);
+            } else {
+                opt.remove();
+            }
+        } else {
+            byName.set(name, opt);
+        }
+    }
+    if (clearedSelectedStale && !selectEl.multiple) {
+        selectEl.value = '';
+    }
+    if (detachedMap instanceof Map) {
+        for (const [name, opt] of [...detachedMap.entries()]) {
+            if (byName.has(name)) {
+                detachedMap.delete(name);
+                continue;
+            }
+            if (liveIndexMap.size > 0) {
+                const liveVal = liveIndexMap.get(name);
+                if (liveVal === undefined) {
+                    detachedMap.delete(name);
+                } else if (opt && opt.value !== liveVal) {
+                    opt.value = liveVal;
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -490,8 +751,19 @@ function restoreSelectOptions(selectEl, detachedMap) {
     // Collect existing option texts to avoid duplicates after upstream `updateWorldInfoList`
     const existingByText = new Map();
     selectEl.querySelectorAll('option').forEach((opt) => {
-        if (opt.value !== '') {
-            existingByText.set((opt.textContent || '').trim(), opt);
+        if (opt.value === '') return;
+        const name = (opt.textContent || '').trim();
+        if (!name) return;
+        const prev = existingByText.get(name);
+        if (prev) {
+            if (opt.selected && !prev.selected) {
+                prev.remove();
+                existingByText.set(name, opt);
+            } else {
+                opt.remove();
+            }
+        } else {
+            existingByText.set(name, opt);
         }
     });
 
@@ -523,7 +795,7 @@ function sortByNativeValue(options) {
 }
 
 /**
- * Build an O(1) rank lookup map from `classification.orderedSections` (already sorted by `compareZhCn`)
+ * Build an O(1) rank lookup map from external-ordered sections (`UNGROUPED` last)
  * so native `<option>` sorting uses pure integer subtraction with zero string collation overhead!
  * @param {any} classification
  * @returns {Map<string, number>}
@@ -531,7 +803,7 @@ function sortByNativeValue(options) {
 function buildBookOrderRankMap(classification) {
     const rankMap = new Map();
     let idx = 0;
-    for (const sec of classification?.orderedSections || []) {
+    for (const sec of orderSectionsForExternalDropdown(classification?.orderedSections || [])) {
         for (const b of sec.books || []) {
             if (b?.realName && !rankMap.has(b.realName)) {
                 rankMap.set(b.realName, idx++);
@@ -548,6 +820,7 @@ const compareAsciiKey = ([a], [b]) => (a < b ? -1 : a > b ? 1 : 0);
  * should contain, so we skip touching Select2 completely when nothing changed.
  */
 function computeSelectSignature(selectEl, detachedMap, classification, settings, mode) {
+    const liveIndexMap = getLiveWorldIndexMap();
     const allNames = [];
     const seen = new Set();
     selectEl.querySelectorAll('option').forEach((opt) => {
@@ -555,13 +828,15 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         const name = (opt.textContent || '').trim();
         if (name && !seen.has(name)) {
             seen.add(name);
-            allNames.push(`${name}:${opt.selected ? 1 : 0}`);
+            const liveVal = liveIndexMap.size > 0 ? (liveIndexMap.get(name) ?? '__deleted__') : opt.value;
+            allNames.push(`${name}:${opt.value}:${liveVal}:${opt.selected ? 1 : 0}`);
         }
     });
-    for (const name of detachedMap.keys()) {
+    for (const [name, opt] of detachedMap.entries()) {
         if (!seen.has(name)) {
             seen.add(name);
-            allNames.push(`${name}:0`);
+            const liveVal = liveIndexMap.size > 0 ? (liveIndexMap.get(name) ?? '__deleted__') : (opt?.value ?? '');
+            allNames.push(`${name}:${opt?.value ?? ''}:${liveVal}:0`);
         }
     }
     allNames.sort();
@@ -652,6 +927,7 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
 
     restoreSelectOptions(selectEl, _globalDetachedMap);
+    syncSelectOptionsWithLiveWorldNames(selectEl, _globalDetachedMap);
 
     const placeholderOpts = [];
     const visibleOpts = [];
@@ -732,16 +1008,24 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     if (!selectEl) return;
 
     const sig = computeSelectSignature(selectEl, _editorDetachedMap, classification, settings, 'editor');
-    if (sig === _lastEditorSignature) return;
+    if (sig === _lastEditorSignature && (skipSelectionSync || !_pendingClearedEditingWorld)) return;
     _lastEditorSignature = sig;
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
 
     const prevValue = selectEl.value;
+    const prevSelectedOpt =
+        selectEl.selectedOptions?.[0] ||
+        Array.from(selectEl.options || []).find((o) => o.selected || (prevValue !== '' && o.value === prevValue));
+    const prevSelectedName =
+        prevSelectedOpt && prevSelectedOpt.value !== '' ? (prevSelectedOpt.textContent || '').trim() : '';
+
     restoreSelectOptions(selectEl, _editorDetachedMap);
+    syncSelectOptionsWithLiveWorldNames(selectEl, _editorDetachedMap);
 
     const placeholderOpts = [];
+    const bareTopOpts = [];
     const visibleByGroup = new Map();
 
     const editorHiddenSet = new Set(
@@ -753,6 +1037,8 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         ? getCurrentCharacterAvatar()
         : null;
 
+    const bareMetaByOpt = new WeakMap();
+
     for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
         if (opt.value === '') {
             placeholderOpts.push(opt);
@@ -760,7 +1046,10 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         }
         const realName = (opt.textContent || '').trim();
         const meta = classification.byName.get(realName);
-        const isEditing = opt.selected || (prevValue !== '' && opt.value === prevValue) || realName === _currentlyEditingWorld;
+        const isActiveEditing = prevSelectedName !== ''
+            ? realName === prevSelectedName
+            : Boolean(opt.selected || (prevValue !== '' && opt.value === prevValue) || (_currentlyEditingWorld && realName === _currentlyEditingWorld));
+        const isEditing = Boolean(isActiveEditing || (_currentlyEditingWorld && realName === _currentlyEditingWorld));
         const isCurrentChatCharBook = Boolean(
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
@@ -777,12 +1066,19 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         });
 
         if (visible) {
-            const gid = isCurrentChatCharBook
-                ? '__current_char__'
-                : (meta?.groupId || SPECIAL_GROUPS.UNGROUPED);
-            if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
-            visibleByGroup.get(gid).push(opt);
+            if (isActiveEditing) opt.dataset.wboEditing = '1';
+            else delete opt.dataset.wboEditing;
+            const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+            const isFromHiddenGroup = Boolean(!settings.showCharBooks && editorHiddenSet.has(gid));
+            if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
+                bareMetaByOpt.set(opt, { isActiveEditing, isCurrentChatCharBook });
+                bareTopOpts.push(opt);
+            } else {
+                if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
+                visibleByGroup.get(gid).push(opt);
+            }
         } else {
+            delete opt.dataset.wboEditing;
             opt.remove();
             _editorDetachedMap.set(realName, opt);
         }
@@ -794,20 +1090,42 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         frag.appendChild(opt);
     }
 
-    const orderedSections = [
-        ...(visibleByGroup.has('__current_char__') ? [{ id: '__current_char__', label: '当前角色' }] : []),
-        ...(classification.orderedSections || []).map((s) => ({
-            id: s.id,
-            label: s.name,
-        })),
-    ];
+    const rankMap = buildBookOrderRankMap(classification);
+    if (bareTopOpts.length > 0) {
+        bareTopOpts.sort((a, b) => {
+            const na = (a.textContent || '').trim();
+            const nb = (b.textContent || '').trim();
+            const pa = classification?.byName?.get(na)?.isPinned ? 1 : 0;
+            const pb = classification?.byName?.get(nb)?.isPinned ? 1 : 0;
+            if (pa !== pb) return pb - pa;
+            const ea = bareMetaByOpt.get(a)?.isActiveEditing ? 1 : 0;
+            const eb = bareMetaByOpt.get(b)?.isActiveEditing ? 1 : 0;
+            if (ea !== eb) return eb - ea;
+            const ca = bareMetaByOpt.get(a)?.isCurrentChatCharBook ? 1 : 0;
+            const cb = bareMetaByOpt.get(b)?.isCurrentChatCharBook ? 1 : 0;
+            if (ca !== cb) return cb - ca;
+            const ra = rankMap.get(na);
+            const rb = rankMap.get(nb);
+            if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
+            if (ra !== undefined) return -1;
+            if (rb !== undefined) return 1;
+            return compareZhCn(na, nb);
+        });
+        for (const opt of bareTopOpts) {
+            frag.appendChild(opt);
+        }
+    }
+
+    const orderedSections = orderSectionsForExternalDropdown(classification.orderedSections || []).map((s) => ({
+        id: s.id,
+        label: s.name,
+    }));
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
     // Keep `#world_editor_select` 100% flat & native when only 1 section exists
     // (e.g., user only uses "hide character worldbooks" with 0 custom groups — zero visual intrusion!)
     const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length >= 2;
 
-    const rankMap = buildBookOrderRankMap(classification);
     for (const sec of nonEmptySections) {
         const opts = visibleByGroup.get(sec.id);
         opts.sort((a, b) => {
@@ -840,29 +1158,85 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     }
     selectEl.appendChild(frag);
 
-    // Preserve selection cleanly
-    if (prevValue !== '') {
+    // Preserve selection cleanly by book name against live world_names indices
+    let restoredOpt = null;
+    if (prevSelectedName !== '') {
+        restoredOpt = Array.from(selectEl.querySelectorAll('option')).find(
+            (o) => o.value !== '' && (o.textContent || '').trim() === prevSelectedName,
+        ) || null;
+    }
+    let selectionCleared = false;
+    if (restoredOpt) {
+        for (const o of Array.from(selectEl.querySelectorAll('option'))) {
+            o.selected = o === restoredOpt;
+        }
+        selectEl.value = restoredOpt.value;
+        if (!_currentlyEditingWorld) {
+            _currentlyEditingWorld = prevSelectedName;
+        }
+        _pendingClearedEditingWorld = false;
+    } else if (prevSelectedName === '' && prevValue !== '') {
         selectEl.value = prevValue;
+    } else if (prevSelectedName !== '') {
+        selectEl.value = '';
+        if (_currentlyEditingWorld === prevSelectedName) {
+            _currentlyEditingWorld = null;
+        }
+        selectionCleared = true;
+        _pendingClearedEditingWorld = Boolean(skipSelectionSync);
+    } else {
+        // Explicit empty placeholder restoration: moving `<option value="">` via DocumentFragment
+        // causes Chromium single-<select> to auto-select another option while real options remain attached.
+        let matchedEmpty = false;
+        for (const o of Array.from(selectEl.querySelectorAll('option'))) {
+            const isEmpty = !matchedEmpty && o.value === '';
+            if (isEmpty) matchedEmpty = true;
+            o.selected = isEmpty;
+        }
+        selectEl.value = '';
+        if (_currentlyEditingWorld) {
+            const stillHasEditing = Array.from(selectEl.querySelectorAll('option')).some(
+                (o) => o.value !== '' && (o.textContent || '').trim() === _currentlyEditingWorld,
+            );
+            if (!stillHasEditing) {
+                _currentlyEditingWorld = null;
+                selectionCleared = true;
+                _pendingClearedEditingWorld = Boolean(skipSelectionSync);
+            }
+        } else if (!skipSelectionSync && _pendingClearedEditingWorld) {
+            selectionCleared = true;
+            _pendingClearedEditingWorld = false;
+        }
     }
 
     if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
         const patched = patchExistingSelect2InPlace($select, {
             matcher: customSelect2Matcher,
-            templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: false }),
+            templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: false, showEditingBadge: true }),
             templateSelection: renderEditorSelect2Selection,
         });
         if (patched) {
             selectEl.dataset.wboS2Ready = '1';
         }
-    } else if (!skipSelectionSync && hasSelect2 && $select && prevValue !== '') {
-        // Refresh displayed title in Select2 box (namespaced so host `change` does NOT refire;
-        // skipped during `select2:opening` so `.select2-selection__rendered` is never rebuilt mid-click)
-        try { $select.trigger('change.select2'); } catch { /* ignore */ }
+    }
+    if (!skipSelectionSync) {
+        if (selectionCleared) {
+            if (hasSelect2 && $select) {
+                try { $select.trigger('change'); } catch { /* ignore */ }
+            } else {
+                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+        } else if (hasSelect2 && $select && (selectEl.value !== '' || prevValue !== '' || prevSelectedName !== '')) {
+            // Refresh displayed title in Select2 box (namespaced so host `change` does NOT refire;
+            // skipped during `select2:opening` so `.select2-selection__rendered` is never rebuilt mid-click)
+            try { $select.trigger('change.select2'); } catch { /* ignore */ }
+        }
     }
 
     // On native mobile `<select>` (iOS Safari / iPadOS / TauriTavern iOS / Android where Select2 is skipped),
     // system menus cannot filter or collapse groups. Mount a sleek grouped picker trigger when >= 2 sections exist!
     syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && useOptgroups));
+    syncMobileEditorTriggerLabel();
 }
 
 const MOBILE_TRIGGER_ID = 'wbo-mobile-editor-trigger';
@@ -1091,7 +1465,8 @@ function openMobileEditorPickerSheet() {
         _latestSettings.dropdownCollapsed = {};
     }
 
-    // Build live option list from `#world_editor_select` so every option value matches ST's exact index
+    // Build live option list from `#world_editor_select` synced to live `world_names` indices
+    syncSelectOptionsWithLiveWorldNames(selectEl, _editorDetachedMap);
     const optValueByRealName = new Map();
     selectEl.querySelectorAll('option').forEach((opt) => {
         if (opt.value !== '') {
@@ -1100,21 +1475,52 @@ function openMobileEditorPickerSheet() {
     });
     const currentSelectedOpt = selectEl.selectedOptions?.[0];
     const currentSelectedVal = currentSelectedOpt && currentSelectedOpt.value !== '' ? currentSelectedOpt.value : '';
+    const currentSelectedName =
+        currentSelectedOpt && currentSelectedOpt.value !== '' ? (currentSelectedOpt.textContent || '').trim() : '';
+    const activeEditName = currentSelectedName || _currentlyEditingWorld || '';
 
+    const editorHiddenSet = new Set(
+        Array.isArray(_latestSettings.editorHiddenGroupIds)
+            ? _latestSettings.editorHiddenGroupIds
+            : (_latestSettings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []),
+    );
     const currentChatAvatar = _latestSettings.pinCurrentChatCharBookInEditor !== false
         ? getCurrentCharacterAvatar()
         : null;
-    const pinnedNames = new Set();
-    const pinnedBooks = [];
-    if (currentChatAvatar) {
-        for (const [realName] of optValueByRealName.entries()) {
-            const meta = _latestClassification.byName?.get(realName);
-            if (meta?.charOwners?.some((o) => o.avatar === currentChatAvatar)) {
-                pinnedNames.add(realName);
-                pinnedBooks.push(meta);
-            }
+    const bareNames = new Set();
+    const bareBooks = [];
+    for (const [realName] of optValueByRealName.entries()) {
+        const meta = _latestClassification.byName?.get(realName);
+        const isCurrentChatCharBook = Boolean(
+            currentChatAvatar &&
+            meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
+        );
+        const isEditing = Boolean(activeEditName && realName === activeEditName);
+        const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+        const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
+        if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
+            bareNames.add(realName);
+            bareBooks.push(meta || {
+                realName,
+                primaryTitle: realName,
+                subtitle: '',
+                searchableText: realName.toLowerCase(),
+                isPinned: Boolean(_latestSettings.pinnedBooks?.includes?.(realName)),
+            });
         }
     }
+    bareBooks.sort((a, b) => {
+        const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
+        const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
+        if (pa !== pb) return pb - pa;
+        const ea = activeEditName && a.realName === activeEditName ? 1 : 0;
+        const eb = activeEditName && b.realName === activeEditName ? 1 : 0;
+        if (ea !== eb) return eb - ea;
+        const ca = currentChatAvatar && a.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
+        const cb = currentChatAvatar && b.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
+        if (ca !== cb) return cb - ca;
+        return compareZhCn(a.primaryTitle || a.realName, b.primaryTitle || b.realName);
+    });
 
     const sortSectionBooksPinnedFirst = (list) => [...list].sort((a, b) => {
         const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
@@ -1123,19 +1529,14 @@ function openMobileEditorPickerSheet() {
         return 0;
     });
 
-    const sections = [
-        ...(pinnedBooks.length > 0
-            ? [{ id: '__current_char__', name: '当前角色', color: '#4c6ef5', books: sortSectionBooksPinnedFirst(pinnedBooks) }]
-            : []),
-        ...(_latestClassification.orderedSections || [])
-            .map((sec) => {
-                const books = sortSectionBooksPinnedFirst(
-                    (sec.books || []).filter((b) => optValueByRealName.has(b.realName) && !pinnedNames.has(b.realName)),
-                );
-                return { id: sec.id, name: sec.name, color: sec.color, books };
-            })
-            .filter((sec) => sec.books.length > 0),
-    ];
+    const sections = orderSectionsForExternalDropdown(_latestClassification.orderedSections || [])
+        .map((sec) => {
+            const books = sortSectionBooksPinnedFirst(
+                (sec.books || []).filter((b) => optValueByRealName.has(b.realName) && !bareNames.has(b.realName)),
+            );
+            return { id: sec.id, name: sec.name, color: sec.color, books };
+        })
+        .filter((sec) => sec.books.length > 0);
 
     const validIds = new Set(sections.map((s) => s.id));
     let activePillId =
@@ -1321,9 +1722,19 @@ function openMobileEditorPickerSheet() {
 
     const getPinnedBooks = () => {
         const list = [];
+        const seen = new Set();
+        for (const b of bareBooks) {
+            if (b.isPinned && !seen.has(b.realName)) {
+                seen.add(b.realName);
+                list.push(b);
+            }
+        }
         for (const sec of sections) {
             for (const b of sec.books) {
-                if (b.isPinned) list.push(b);
+                if (b.isPinned && !seen.has(b.realName)) {
+                    seen.add(b.realName);
+                    list.push(b);
+                }
             }
         }
         return list;
@@ -1331,7 +1742,7 @@ function openMobileEditorPickerSheet() {
 
     const renderPills = () => {
         if (!pillsEl) return;
-        const totalCount = sections.reduce((sum, s) => sum + s.books.length, 0);
+        const totalCount = bareBooks.length + sections.reduce((sum, s) => sum + s.books.length, 0);
         const pinnedCount = getPinnedBooks().length;
         const items = [
             { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
@@ -1362,17 +1773,18 @@ function openMobileEditorPickerSheet() {
 
     const renderMpRowHtml = (b) => {
         const optVal = optValueByRealName.get(b.realName) || '';
-        const isCurrent = optVal !== '' && optVal === currentSelectedVal;
+        const isCurrent = (optVal !== '' && optVal === currentSelectedVal) || (Boolean(activeEditName) && b.realName === activeEditName);
         const isPinned = Boolean(b.isPinned);
         return `
             <div class="wbo-mp-row${isCurrent ? ' is-selected' : ''}">
-                <button type="button" class="wbo-mp-row-main" data-mp-val="${escHtml(optVal)}">
+                <button type="button" class="wbo-mp-row-main" data-mp-val="${escHtml(optVal)}" data-mp-world="${escHtml(b.realName)}">
                     <span class="wbo-mp-row-text">
                         <span class="wbo-mp-row-title">${escHtml(b.primaryTitle)}</span>
                         ${b.subtitle ? `<span class="wbo-mp-row-sub">${escHtml(b.subtitle)}</span>` : ''}
                     </span>
                 </button>
                 <div class="wbo-mp-row-actions">
+                    ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                     <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消置顶' : '置顶此世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
                 </div>
@@ -1393,7 +1805,16 @@ function openMobileEditorPickerSheet() {
         }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
-        const html = sections.map((sec) => {
+        const matchingBare = !isIsolated
+            ? (tokens.length > 0
+                ? bareBooks.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
+                : bareBooks)
+            : [];
+        const bareHtml = matchingBare.length > 0
+            ? `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${matchingBare.map(renderMpRowHtml).join('')}</div></div>`
+            : '';
+
+        const secHtml = sections.map((sec) => {
             if (isIsolated && sec.id !== activePillId) return '';
             const books = tokens.length > 0
                 ? sec.books.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
@@ -1417,6 +1838,7 @@ function openMobileEditorPickerSheet() {
             `;
         }).filter(Boolean).join('');
 
+        const html = `${bareHtml}${secHtml}`;
         listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
     };
 
@@ -1485,6 +1907,9 @@ function openMobileEditorPickerSheet() {
             const pinWorld = pinBtn.getAttribute('data-mp-pin') || '';
             if (pinWorld) {
                 const nextPinned = toggleWorldPinFromNative(pinWorld);
+                for (const b of bareBooks) {
+                    if (b.realName === pinWorld) b.isPinned = nextPinned;
+                }
                 for (const sec of sections) {
                     for (const b of sec.books) {
                         if (b.realName === pinWorld) b.isPinned = nextPinned;
@@ -1519,7 +1944,34 @@ function openMobileEditorPickerSheet() {
         }
         const rowBtn = target.closest('[data-mp-val]');
         if (rowBtn) {
-            const val = rowBtn.getAttribute('data-mp-val') ?? '';
+            const realName = (rowBtn.getAttribute('data-mp-world') || '').trim();
+            let val = rowBtn.getAttribute('data-mp-val') ?? '';
+            if (realName) {
+                const liveMap = getLiveWorldIndexMap();
+                if (liveMap.size > 0 && !liveMap.has(realName)) {
+                    setCurrentlyEditingWorld(null);
+                    _pendingClearedEditingWorld = false;
+                    val = '';
+                    const prevApplying = _isApplying;
+                    _isApplying = true;
+                    try {
+                        syncSelectOptionsWithLiveWorldNames(selectEl, _editorDetachedMap);
+                    } finally {
+                        _editorSelectObserver?.takeRecords();
+                        _isApplying = prevApplying;
+                    }
+                } else {
+                    ensureEditorOptionAttached(realName);
+                    const liveOpt = Array.from(selectEl.querySelectorAll('option')).find(
+                        (opt) => opt.value !== '' && (opt.textContent || '').trim() === realName,
+                    );
+                    if (liveOpt) {
+                        val = liveOpt.value;
+                    } else if (liveMap.size > 0) {
+                        val = liveMap.get(realName) ?? '';
+                    }
+                }
+            }
             selectOptionValue(val);
         }
     });
@@ -1622,22 +2074,61 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
 export function ensureEditorOptionAttached(worldName) {
     const clean = String(worldName ?? '').trim();
     if (!clean) return;
-    setCurrentlyEditingWorld(clean);
+    const liveIndexMap = getLiveWorldIndexMap();
+    const liveVal = liveIndexMap.get(clean);
+    if (liveIndexMap.size > 0 && liveVal === undefined) {
+        if (_currentlyEditingWorld === clean) {
+            _currentlyEditingWorld = null;
+        }
+    } else {
+        setCurrentlyEditingWorld(clean);
+    }
 
     const selectEl = document.getElementById('world_editor_select');
     if (!selectEl) return;
 
-    if (_editorDetachedMap.has(clean)) {
-        _isApplying = true;
-        try {
+    const matchingAttached = Array.from(selectEl.querySelectorAll('option')).filter(
+        (opt) => opt.value !== '' && (opt.textContent || '').trim() === clean,
+    );
+
+    const prevApplying = _isApplying;
+    _isApplying = true;
+    try {
+        if (matchingAttached.length > 0) {
+            const keep = matchingAttached.find((o) => o.selected) || matchingAttached[0];
+            for (const dup of matchingAttached) {
+                if (dup !== keep) dup.remove();
+            }
+            if (liveVal !== undefined && keep.value !== liveVal) {
+                keep.value = liveVal;
+            }
+            if (_editorDetachedMap.has(clean)) {
+                _editorDetachedMap.delete(clean);
+            }
+            _lastEditorSignature = null;
+        } else if (_editorDetachedMap.has(clean)) {
             const opt = _editorDetachedMap.get(clean);
             _editorDetachedMap.delete(clean);
-            if (opt) selectEl.appendChild(opt);
+            if (opt) {
+                if (liveVal !== undefined) opt.value = liveVal;
+                selectEl.appendChild(opt);
+            }
             _lastEditorSignature = null;
-        } finally {
-            _editorSelectObserver?.takeRecords();
-            _isApplying = false;
+        } else if (liveVal !== undefined) {
+            const opt = document.createElement('option');
+            opt.value = liveVal;
+            opt.textContent = clean;
+            selectEl.appendChild(opt);
+            _lastEditorSignature = null;
         }
+
+        if (liveIndexMap.size > 0) {
+            syncSelectOptionsWithLiveWorldNames(selectEl, _editorDetachedMap);
+            _lastEditorSignature = null;
+        }
+    } finally {
+        _editorSelectObserver?.takeRecords();
+        _isApplying = prevApplying;
     }
 }
 
@@ -1660,11 +2151,30 @@ export function openWorldInNativeEditor(realName, { focusUid = null } = {}) {
     const selectEl = document.getElementById('world_editor_select');
     if (!selectEl) return false;
 
+    const prevApplying = _isApplying;
+    _isApplying = true;
+    try {
+        if (getLiveWorldIndexMap().size > 0) {
+            syncSelectOptionsWithLiveWorldNames(selectEl, _editorDetachedMap);
+        }
+    } finally {
+        _editorSelectObserver?.takeRecords();
+        _isApplying = prevApplying;
+    }
+
     const targetOpt = Array.from(selectEl.querySelectorAll('option')).find(
         (opt) => opt.value !== '' && (opt.textContent || '').trim() === clean,
     );
     if (!targetOpt) return false;
 
+    const liveVal = getLiveWorldIndexMap().get(clean);
+    if (liveVal !== undefined && targetOpt.value !== liveVal) {
+        targetOpt.value = liveVal;
+    }
+
+    for (const o of Array.from(selectEl.querySelectorAll('option'))) {
+        o.selected = o === targetOpt;
+    }
     const $ = globalThis.jQuery;
     if ($) {
         $(selectEl).val(targetOpt.value).trigger('change');
@@ -1672,6 +2182,7 @@ export function openWorldInNativeEditor(realName, { focusUid = null } = {}) {
         selectEl.value = targetOpt.value;
         selectEl.dispatchEvent(new Event('change', { bubbles: true }));
     }
+    syncMobileEditorTriggerLabel();
 
     // Expand WorldInfo drawer if currently closed
     const drawer = document.getElementById('WorldInfo');
@@ -1897,8 +2408,8 @@ export function setGlobalWorldsBatch(targetBookNames, { mode = 'replace' } = {})
 
 /**
  * Build grouped section metadata for any `<select>` popup based on its live `<option>`s.
- * Optionally pins currently selected options (e.g. `已选附加书`) and/or the current character's
- * own books (`当前角色`) into dedicated top sections!
+ * Optionally pins currently selected options (`已选附加书`) and hoists the current character's
+ * own books bare at the top (without a `当前角色` wrapper).
  *
  * @param {HTMLSelectElement} selectEl
  * @param {{ currentAvatar?: string | null, prioritizeCharGroup?: boolean, pinSelectedSection?: boolean }} [opts]
@@ -1917,7 +2428,9 @@ function buildPopupGroupedSections(
         }
     });
 
-    /** @type {Array<{ id: string, name: string, color: string, books: Array<{ realName: string, primaryTitle: string, subtitle: string, searchableText: string, value: string, selected: boolean }> }>} */
+    /** @type {Array<{ realName: string, primaryTitle: string, subtitle: string, searchableText: string, value: string, selected: boolean, isPinned?: boolean }>} */
+    const bareBooks = [];
+    /** @type {Array<{ id: string, name: string, color: string, books: Array<{ realName: string, primaryTitle: string, subtitle: string, searchableText: string, value: string, selected: boolean, isPinned?: boolean }> }>} */
     const sections = [];
     const placed = new Set();
 
@@ -1935,6 +2448,7 @@ function buildPopupGroupedSections(
                 searchableText: meta?.searchableText || realName.toLowerCase(),
                 value: opt.value,
                 selected: true,
+                isPinned: Boolean(meta?.isPinned),
             });
         }
         if (selectedBooks.length > 0) {
@@ -1954,7 +2468,6 @@ function buildPopupGroupedSections(
     }
 
     if (currentAvatar) {
-        const currentCharBooks = [];
         for (const [realName, opt] of optByRealName.entries()) {
             if (placed.has(realName)) continue;
             const meta = _latestClassification?.byName?.get(realName);
@@ -1963,40 +2476,37 @@ function buildPopupGroupedSections(
             );
             if (belongsToCurrent) {
                 placed.add(realName);
-                currentCharBooks.push({
+                bareBooks.push({
                     realName,
                     primaryTitle: meta?.primaryTitle || realName,
                     subtitle: meta?.subtitle || '',
                     searchableText: meta?.searchableText || realName.toLowerCase(),
                     value: opt.value,
                     selected: opt.selected,
+                    isPinned: Boolean(meta?.isPinned),
                 });
             }
         }
-        if (currentCharBooks.length > 0) {
-            currentCharBooks.sort((a, b) => {
+        if (bareBooks.length > 1) {
+            bareBooks.sort((a, b) => {
                 const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
                 const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
                 if (pa !== pb) return pb - pa;
                 return compareZhCn(a.primaryTitle, b.primaryTitle);
             });
-            sections.push({
-                id: '__current_char__',
-                name: '当前角色',
-                color: '#7c5cdb',
-                books: currentCharBooks,
-            });
         }
     }
 
-    const baseOrdered = [...(_latestClassification?.orderedSections || [])];
+    let baseOrdered = orderSectionsForExternalDropdown(_latestClassification?.orderedSections || []);
     if (prioritizeCharGroup) {
-        // For Primary worldbook binding: place `角色世界书` right after `当前角色` cleanly
-        baseOrdered.sort((a, b) => {
-            if (a.id === SPECIAL_GROUPS.CHARACTER && b.id !== SPECIAL_GROUPS.CHARACTER) return -1;
-            if (b.id === SPECIAL_GROUPS.CHARACTER && a.id !== SPECIAL_GROUPS.CHARACTER) return 1;
-            return 0;
-        });
+        // For Primary worldbook binding: place `角色世界书` at top while keeping `未分组` last
+        baseOrdered = orderSectionsForExternalDropdown(
+            [...baseOrdered].sort((a, b) => {
+                if (a.id === SPECIAL_GROUPS.CHARACTER && b.id !== SPECIAL_GROUPS.CHARACTER) return -1;
+                if (b.id === SPECIAL_GROUPS.CHARACTER && a.id !== SPECIAL_GROUPS.CHARACTER) return 1;
+                return 0;
+            }),
+        );
     }
 
     for (const sec of baseOrdered) {
@@ -2013,6 +2523,7 @@ function buildPopupGroupedSections(
                 searchableText: b.searchableText || b.realName.toLowerCase(),
                 value: opt.value,
                 selected: opt.selected,
+                isPinned: Boolean(b.isPinned),
             });
         }
         if (books.length > 0) {
@@ -2053,7 +2564,7 @@ function buildPopupGroupedSections(
         });
     }
 
-    return { sections, optByRealName };
+    return { bareBooks, sections, optByRealName };
 }
 
 /**
@@ -2142,7 +2653,7 @@ function attachGroupedSelectControl(
         }
         closeAllOpenWorldDropdowns();
 
-        const { sections } = buildPopupGroupedSections(selectEl, {
+        const { bareBooks, sections } = buildPopupGroupedSections(selectEl, {
             currentAvatar,
             prioritizeCharGroup,
             pinSelectedSection: multiple,
@@ -2287,9 +2798,17 @@ function attachGroupedSelectControl(
 
         const getPinnedBooks = () => {
             const list = [];
+            const seen = new Set();
+            for (const b of bareBooks) {
+                if ((_latestClassification?.byName?.get(b.realName)?.isPinned ?? b.isPinned) && !seen.has(b.realName)) {
+                    seen.add(b.realName);
+                    list.push(b);
+                }
+            }
             for (const sec of sections) {
                 for (const b of sec.books) {
-                    if (_latestClassification?.byName?.get(b.realName)?.isPinned ?? b.isPinned) {
+                    if ((_latestClassification?.byName?.get(b.realName)?.isPinned ?? b.isPinned) && !seen.has(b.realName)) {
+                        seen.add(b.realName);
                         list.push(b);
                     }
                 }
@@ -2299,7 +2818,7 @@ function attachGroupedSelectControl(
 
         const renderPills = () => {
             if (!pillsEl) return;
-            const totalCount = sections.reduce((sum, s) => sum + s.books.length, 0);
+            const totalCount = bareBooks.length + sections.reduce((sum, s) => sum + s.books.length, 0);
             const pinnedCount = getPinnedBooks().length;
             const items = [
                 { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
@@ -2379,7 +2898,16 @@ function attachGroupedSelectControl(
             }
             const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
-            const html = sections.map((sec) => {
+            const matchingBare = !isIsolated
+                ? (tokens.length > 0
+                    ? bareBooks.filter((b) => tokens.every((tok) => b.searchableText.includes(tok)))
+                    : bareBooks)
+                : [];
+            const bareHtml = matchingBare.length > 0
+                ? `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${matchingBare.map((b) => renderPopRowHtml(b, selectedSet)).join('')}</div></div>`
+                : '';
+
+            const secHtml = sections.map((sec) => {
                 if (isIsolated && sec.id !== activePillId) return '';
                 const books = tokens.length > 0
                     ? sec.books.filter((b) => tokens.every((tok) => b.searchableText.includes(tok)))
@@ -2403,6 +2931,7 @@ function attachGroupedSelectControl(
                 `;
             }).filter(Boolean).join('');
 
+            const html = `${bareHtml}${secHtml}`;
             listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
         };
 
@@ -2474,6 +3003,9 @@ function attachGroupedSelectControl(
                 const pinWorld = pinBtn.getAttribute('data-pop-pin') || '';
                 if (pinWorld) {
                     const nextPinned = toggleWorldPinFromNative(pinWorld);
+                    for (const b of bareBooks) {
+                        if (b.realName === pinWorld) b.isPinned = nextPinned;
+                    }
                     for (const sec of sections) {
                         for (const b of sec.books) {
                             if (b.realName === pinWorld) b.isPinned = nextPinned;
@@ -2597,7 +3129,7 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
             extrasSelect.appendChild(unwrapFrag);
         }
 
-        const { sections } = buildPopupGroupedSections(extrasSelect, {
+        const { bareBooks, sections } = buildPopupGroupedSections(extrasSelect, {
             currentAvatar,
             prioritizeCharGroup: false,
             pinSelectedSection: true,
@@ -2609,6 +3141,10 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
 
         if (sections.length >= 2) {
             const frag = document.createDocumentFragment();
+            for (const b of bareBooks) {
+                const opt = optMap.get(b.value);
+                if (opt) frag.appendChild(opt);
+            }
             for (const sec of sections) {
                 const grp = document.createElement('optgroup');
                 grp.label = `${sec.name} (${sec.books.length})`;
@@ -2618,6 +3154,19 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
                     if (opt) grp.appendChild(opt);
                 }
                 if (grp.childElementCount > 0) frag.appendChild(grp);
+            }
+            extrasSelect.appendChild(frag);
+        } else if (bareBooks.length > 0) {
+            const frag = document.createDocumentFragment();
+            for (const b of bareBooks) {
+                const opt = optMap.get(b.value);
+                if (opt) frag.appendChild(opt);
+            }
+            for (const sec of sections) {
+                for (const b of sec.books) {
+                    const opt = optMap.get(b.value);
+                    if (opt) frag.appendChild(opt);
+                }
             }
             extrasSelect.appendChild(frag);
         }
@@ -2647,6 +3196,15 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
             if (!(dropdownEl instanceof HTMLElement)) return;
             const resultsList = dropdownEl.querySelector('.select2-results__options');
             if (!(resultsList instanceof HTMLElement)) return;
+
+            ensureSelect2RowsHavePinBtn(resultsList);
+            if (resultsList.dataset.wboExtrasPinBound !== '1') {
+                resultsList.dataset.wboExtrasPinBound = '1';
+                bindDrawerSafeBubbleGuard(dropdownEl);
+                bindSelect2PinHandlers(resultsList);
+                const pinObs = new MutationObserver(() => ensureSelect2RowsHavePinBtn(resultsList));
+                pinObs.observe(resultsList, { childList: true, subtree: true });
+            }
 
             const labelToId = new Map();
             const pillSections = [];
@@ -3205,6 +3763,7 @@ function enhanceOpenEditorDropdown() {
         }
     }
 
+    ensureSelect2RowsHavePinBtn(resultsList);
     const unbindPinHandlers = bindSelect2PinHandlers(resultsList, () => {
         syncPinnedPillBtn();
         decorateGroupItems();
@@ -3432,6 +3991,7 @@ function enhanceOpenGlobalDropdown() {
         }
     };
 
+    ensureSelect2RowsHavePinBtn(resultsList);
     syncBar();
     syncPinFilter();
 
@@ -3444,7 +4004,10 @@ function enhanceOpenGlobalDropdown() {
     if (searchField instanceof HTMLInputElement) {
         searchField.addEventListener('input', onSearchInput);
     }
-    const obs = new MutationObserver(() => syncPinFilter());
+    const obs = new MutationObserver(() => {
+        ensureSelect2RowsHavePinBtn(resultsList);
+        syncPinFilter();
+    });
     obs.observe(resultsList, { childList: true });
 
     _openGlobalDropdownCleanup = () => {
@@ -3481,6 +4044,156 @@ function syncEditorBeforeOpen() {
     }
 }
 
+/** @type {WeakMap<HTMLElement, MutationObserver>} */
+const _containerObserverMap = new WeakMap();
+/** @type {WeakMap<HTMLElement, MutationObserver>} */
+const _hostObserverMap = new WeakMap();
+/** @type {Set<HTMLElement>} */
+const _observedContainers = new Set();
+/** @type {Set<HTMLElement>} */
+const _observedHosts = new Set();
+/** @type {Set<MutationObserver>} */
+const _activeEnhancedObservers = new Set();
+/** @type {Set<any>} */
+const _activePopoverRestoreTimers = new Set();
+/** @type {Map<HTMLElement, { kind: 'raf' | 'timeout', id: any }>} */
+const _pendingContainerEnhance = new Map();
+/** @type {Set<any>} */
+const _activeEnhancedRafs = new Set();
+let _observersActive = false;
+
+function scheduleEnhancedRaf(cb) {
+    if (!_observersActive || typeof requestAnimationFrame !== 'function') return null;
+    let done = false;
+    let id = null;
+    id = requestAnimationFrame(() => {
+        done = true;
+        if (id !== null && id !== undefined) _activeEnhancedRafs.delete(id);
+        if (!_observersActive) return;
+        cb();
+    });
+    if (!done && id !== null && id !== undefined) {
+        _activeEnhancedRafs.add(id);
+    }
+    return id;
+}
+
+function isWboInjectedMutationNode(node) {
+    if (!(node instanceof Element)) return false;
+    return Boolean(
+        node.hasAttribute('data-wbo-ui') ||
+        node.classList.contains('wbo-pop-filter-bar') ||
+        node.classList.contains('wbo-gr-pin-btn') ||
+        node.classList.contains('wbo-dd-group-head') ||
+        node.classList.contains('wbo-s2-right') ||
+        node.classList.contains('wbo-pop-section'),
+    );
+}
+
+function markIfPersistentPopover(el) {
+    if (el instanceof HTMLElement && (el.hidden || el.style.display === 'none')) {
+        el.dataset.wboPersistentPopover = '1';
+    }
+}
+
+function hasNonWboMutation(mutations) {
+    if (!Array.isArray(mutations) || mutations.length === 0) return true;
+    for (const m of mutations) {
+        if (m?.type === 'attributes') continue;
+        const added = m?.addedNodes ? Array.from(m.addedNodes) : [];
+        const removed = m?.removedNodes ? Array.from(m.removedNodes) : [];
+        if (added.length === 0 && removed.length === 0) return true;
+        if (added.some((n) => !isWboInjectedMutationNode(n)) || removed.some((n) => !isWboInjectedMutationNode(n))) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function scheduleContainerReEnhance(containerEl) {
+    if (!_observersActive || !(containerEl instanceof HTMLElement) || _pendingContainerEnhance.has(containerEl)) return;
+    let done = false;
+    const handle = { kind: 'timeout', id: null };
+    _pendingContainerEnhance.set(containerEl, handle);
+    const run = () => {
+        done = true;
+        _pendingContainerEnhance.delete(containerEl);
+        if (!_observersActive || !containerEl.isConnected || containerEl.dataset.wboEnhancing === '1') return;
+        enhanceCustomDropdownPopover(containerEl);
+    };
+    if (typeof requestAnimationFrame === 'function') {
+        handle.kind = 'raf';
+        handle.id = requestAnimationFrame(run);
+    } else {
+        handle.kind = 'timeout';
+        handle.id = setTimeout(run, 0);
+    }
+    if (done) {
+        _pendingContainerEnhance.delete(containerEl);
+    }
+}
+
+function handleEnhancedContainerMutations(containerEl, mutations) {
+    if (!_observersActive || !containerEl.isConnected || containerEl.dataset.wboEnhancing === '1') return;
+    if (!hasNonWboMutation(mutations)) return;
+    const nextRole = detectEnhancedPopoverRole(containerEl);
+    const hasStaleState = Boolean(
+        containerEl.dataset.wboPopoverRole ||
+        containerEl.dataset.wboBubbleGuarded ||
+        containerEl._wboPopState ||
+        containerEl.querySelector('.wbo-pop-filter-bar'),
+    );
+    if (!nextRole) {
+        if (hasStaleState) {
+            enhanceCustomDropdownPopover(containerEl);
+        }
+        return;
+    }
+    const curOpts = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+    const needsEnhance =
+        containerEl.dataset.wboPopoverRole !== nextRole ||
+        containerEl.dataset.wboPopoverReady !== '1' ||
+        curOpts.some((o) => {
+            const txt = getEnhancedPopoverOptionText(o);
+            return txt && !txt.startsWith('---') && !o.querySelector('.wbo-gr-pin-btn');
+        });
+    if (needsEnhance) {
+        scheduleContainerReEnhance(containerEl);
+    }
+}
+
+function ensureEnhancedContainerObserver(containerEl) {
+    if (!_observersActive || !(containerEl instanceof HTMLElement) || _containerObserverMap.has(containerEl)) return;
+    if (typeof MutationObserver !== 'function') return;
+    if (_observedContainers.size > 32) {
+        for (const el of _observedContainers) {
+            if (!el.isConnected) {
+                const oldObs = _containerObserverMap.get(el);
+                if (oldObs) {
+                    try { oldObs.disconnect(); } catch { /* ignore */ }
+                    _activeEnhancedObservers.delete(oldObs);
+                    _containerObserverMap.delete(el);
+                }
+                _observedContainers.delete(el);
+            }
+        }
+    }
+    markIfPersistentPopover(containerEl);
+    const containerObs = new MutationObserver((mutations) => {
+        markIfPersistentPopover(containerEl);
+        handleEnhancedContainerMutations(containerEl, mutations);
+    });
+    containerObs.observe(containerEl, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ['style', 'hidden'],
+    });
+    _containerObserverMap.set(containerEl, containerObs);
+    _observedContainers.add(containerEl);
+    _activeEnhancedObservers.add(containerObs);
+}
+
 /**
  * Progressively enhance custom select popovers when they open for
  * `#world_editor_select` / `#world_info`:
@@ -3490,84 +4203,284 @@ function syncEditorBeforeOpen() {
  */
 function enhanceCustomDropdownPopover(containerEl) {
     if (!containerEl || !containerEl.isConnected) return;
-    bindDrawerSafeBubbleGuard(containerEl);
-    if (containerEl.dataset.wboPopoverReady === '1') return;
+    if (containerEl.dataset.wboEnhancing === '1') return;
 
+    markIfPersistentPopover(containerEl);
+    ensureEnhancedContainerObserver(containerEl);
+    containerEl.dataset.wboEnhancing = '1';
+    let observedHost = null;
+    try {
     const detectedRole = detectEnhancedPopoverRole(containerEl);
-    if (!detectedRole) return;
+    if (!detectedRole) {
+        containerEl._wboPopState?.cancelRestore?.();
+        unbindDrawerSafeBubbleGuard(containerEl);
+        delete containerEl.dataset.wboPopoverRole;
+        delete containerEl.dataset.wboPopoverReady;
+        delete containerEl.dataset.wboEditingWorld;
+        delete containerEl.dataset.wboChatAvatar;
+        containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+        containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
+        containerEl._wboOnPinChanged = undefined;
+        delete containerEl._wboPopState;
+        return;
+    }
+    bindDrawerSafeBubbleGuard(containerEl);
     containerEl.dataset.wboPopoverRole = detectedRole;
     const isGlobalPopover = detectedRole === 'global';
 
-    const needsPopoverGrouping =
-        (_latestClassification?.customGroups?.length || 0) > 0 ||
-        Boolean(_latestSettings?.showCharBooks) ||
-        (_latestClassification?.pinnedCount || 0) > 0;
-    if (!needsPopoverGrouping || !_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
-        containerEl.dataset.wboPopoverReady = '1';
+    if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
         return;
     }
 
     const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
     if (optionNodes.length === 0) return;
 
-    const optionsHost = optionNodes[0].parentElement;
+    const existingSec = optionNodes[0].closest?.('.wbo-pop-section');
+    const optionsHost = existingSec?.parentElement || optionNodes[0].parentElement;
     if (!(optionsHost instanceof HTMLElement)) return;
+    observedHost = optionsHost;
 
     const getOptionText = getEnhancedPopoverOptionText;
+
+    // Bind in-place pin click delegation ONCE per containerEl (survives host re-renders of option children!)
+    if (containerEl.dataset.wboPinDelegated !== '1') {
+        containerEl.dataset.wboPinDelegated = '1';
+        const blockPinEvt = (ev) => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const pinBtn = ev.target instanceof Element ? ev.target.closest('.wbo-gr-pin-btn') : null;
+            if (!pinBtn) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            ev.stopImmediatePropagation();
+        };
+        const onGrPinClick = (ev) => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const pinBtn = ev.target instanceof Element ? ev.target.closest('.wbo-gr-pin-btn') : null;
+            if (!pinBtn) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            ev.stopImmediatePropagation();
+            const worldName = pinBtn.getAttribute('data-pin-world') || '';
+            if (!worldName) return;
+            const nextPinned = toggleWorldPinFromNative(worldName);
+            containerEl.querySelectorAll('.wbo-gr-pin-btn').forEach((btn) => {
+                if (btn.getAttribute('data-pin-world') === worldName) {
+                    btn.classList.toggle('is-pinned', nextPinned);
+                    btn.setAttribute('aria-pressed', nextPinned ? 'true' : 'false');
+                    btn.title = nextPinned ? '取消置顶' : '置顶此世界书';
+                    btn.textContent = nextPinned ? '★' : '☆';
+                }
+            });
+            containerEl._wboOnPinChanged?.({ worldName, isPinned: nextPinned });
+        };
+        containerEl.addEventListener('pointerdown', blockPinEvt, true);
+        containerEl.addEventListener('mousedown', blockPinEvt, true);
+        containerEl.addEventListener('mouseup', blockPinEvt, true);
+        containerEl.addEventListener('touchstart', blockPinEvt, { capture: true, passive: false });
+        containerEl.addEventListener('click', onGrPinClick, true);
+    }
+
+    // Watch `optionsHost` so if the host re-renders `.gr-option` items on subsequent opens without recreating `containerEl`,
+    // we automatically re-inject `☆ / ★` pin buttons and group sections (or unbind if repurposed)!
+    if (_observersActive && optionsHost.dataset.wboOptObserved !== '1') {
+        if (_observedHosts.size > 32) {
+            for (const h of _observedHosts) {
+                if (!h.isConnected) {
+                    const oldObs = _hostObserverMap.get(h);
+                    if (oldObs) {
+                        try { oldObs.disconnect(); } catch { /* ignore */ }
+                        _activeEnhancedObservers.delete(oldObs);
+                        _hostObserverMap.delete(h);
+                    }
+                    delete h.dataset.wboOptObserved;
+                    _observedHosts.delete(h);
+                }
+            }
+        }
+        optionsHost.dataset.wboOptObserved = '1';
+        const hostObs = new MutationObserver((mutations) => {
+            handleEnhancedContainerMutations(containerEl, mutations);
+        });
+        hostObs.observe(optionsHost, { childList: true });
+        _hostObserverMap.set(optionsHost, hostObs);
+        _observedHosts.add(optionsHost);
+        _activeEnhancedObservers.add(hostObs);
+    }
+
+    const editorSel = !isGlobalPopover ? document.getElementById('world_editor_select') : null;
+    const selectedEditorOpt = editorSel?.selectedOptions?.[0];
+    const selectedEditorName =
+        selectedEditorOpt && selectedEditorOpt.value !== '' ? (selectedEditorOpt.textContent || '').trim() : '';
+    const activeEditName = !isGlobalPopover ? (selectedEditorName || _currentlyEditingWorld || '') : '';
+    const currentChatAvatar =
+        !isGlobalPopover && _latestSettings.pinCurrentChatCharBookInEditor !== false
+            ? getCurrentCharacterAvatar()
+            : null;
+    const editorHiddenSet = new Set(
+        Array.isArray(_latestSettings.editorHiddenGroupIds)
+            ? _latestSettings.editorHiddenGroupIds
+            : (_latestSettings.hideCharBooksByDefault !== false ? [SPECIAL_GROUPS.CHARACTER] : []),
+    );
+
+    // Check if current `.gr-option` nodes are already enhanced with our pin buttons & current editing/chat state
+    const realOptionNodes = optionNodes.filter((optEl) => {
+        const val = optEl.dataset?.value ?? '';
+        const text = getOptionText(optEl);
+        return !(optEl.hasAttribute('data-value') && val === '') && Boolean(text) && !text.startsWith('---');
+    });
+    if (realOptionNodes.length === 0) return;
+    const alreadyHasPins = realOptionNodes.every((optEl) => Boolean(optEl.querySelector('.wbo-gr-pin-btn')));
+    const stateChanged =
+        !isGlobalPopover &&
+        ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
+            (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || ''));
+    if (alreadyHasPins && containerEl.dataset.wboPopoverReady === '1' && !stateChanged) return;
+
     containerEl.dataset.wboPopoverReady = '1';
+    containerEl.dataset.wboEditingWorld = activeEditName;
+    containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
+    containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+    containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
+
+    // Unwrap any previously created `.wbo-pop-section`s if re-enhancing a reused container
+    const prevSections = Array.from(optionsHost.querySelectorAll(':scope > .wbo-pop-section'));
+    if (prevSections.length > 0) {
+        for (const sec of prevSections) {
+            sec.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector).forEach((o) => optionsHost.appendChild(o));
+            sec.remove();
+        }
+    }
+
+    // Inject right-aligned `[当前编辑] [☆ / ★]` controls into EVERY real `.gr-option` row!
+    for (const optEl of realOptionNodes) {
+        const text = getOptionText(optEl);
+        const meta = _latestClassification.byName.get(text);
+        const worldName = meta?.realName || text;
+        const isPinned = Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName));
+        const isEditingRow = Boolean(!isGlobalPopover && activeEditName && worldName === activeEditName);
+        optEl.classList.add('wbo-has-pin');
+
+        let pinBtn = optEl.querySelector('.wbo-gr-pin-btn');
+        if (!pinBtn) {
+            pinBtn = document.createElement('button');
+            pinBtn.type = 'button';
+            pinBtn.className = `${ENHANCED_POPOVER_SELECTORS.pinClass} wbo-s2-pin-btn wbo-gr-pin-btn${isPinned ? ' is-pinned' : ''}`;
+            pinBtn.setAttribute('data-pin-world', worldName);
+            pinBtn.setAttribute('data-wbo-gr-pin', worldName);
+        } else {
+            pinBtn.classList.toggle('is-pinned', isPinned);
+        }
+        pinBtn.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
+        pinBtn.title = isPinned ? '取消置顶' : '置顶此世界书';
+        pinBtn.textContent = isPinned ? '★' : '☆';
+
+        let rightWrap = optEl.querySelector(':scope > .wbo-s2-right');
+        if (!rightWrap) {
+            rightWrap = document.createElement('span');
+            rightWrap.className = 'wbo-s2-right';
+            rightWrap.setAttribute('data-wbo-ui', '1');
+            optEl.appendChild(rightWrap);
+        }
+        if (isEditingRow) {
+            const badge = document.createElement('span');
+            badge.className = 'wbo-s2-badge is-editing';
+            badge.setAttribute('data-wbo-ui', '1');
+            badge.setAttribute('data-wbo-editing-badge', '1');
+            badge.textContent = '当前编辑';
+            rightWrap.appendChild(badge);
+        }
+        rightWrap.appendChild(pinBtn);
+    }
 
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
         _latestSettings.dropdownCollapsed = {};
     }
 
     const placeholders = [];
+    const bareEditorItems = [];
+    const bareEditorMeta = new WeakMap();
     /** @type {Map<string, HTMLElement[]>} */
     const bucketByGroup = new Map();
 
     for (const optEl of optionNodes) {
         const val = optEl.dataset?.value ?? '';
         const text = getOptionText(optEl);
-        if (val === '' || text.startsWith('---')) {
+        if ((optEl.hasAttribute('data-value') && val === '') || !text || text.startsWith('---')) {
             placeholders.push(optEl);
             continue;
         }
         const meta = _latestClassification.byName.get(text);
+        const worldName = meta?.realName || text;
         const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+        if (!isGlobalPopover) {
+            const isEditingRow = Boolean(activeEditName && worldName === activeEditName);
+            const isCurrentChatCharBook = Boolean(
+                currentChatAvatar &&
+                meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
+            );
+            const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
+            if (isCurrentChatCharBook || (isEditingRow && isFromHiddenGroup)) {
+                bareEditorMeta.set(optEl, {
+                    isPinned: Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName)),
+                    isEditing: isEditingRow,
+                    isCurrentChatCharBook,
+                    groupId: gid,
+                });
+                bareEditorItems.push(optEl);
+                continue;
+            }
+        }
         if (!bucketByGroup.has(gid)) bucketByGroup.set(gid, []);
         bucketByGroup.get(gid).push(optEl);
     }
 
-    const orderedSections = (_latestClassification.orderedSections || []).filter(
+    if (bareEditorItems.length > 1) {
+        bareEditorItems.sort((a, b) => {
+            const ma = bareEditorMeta.get(a);
+            const mb = bareEditorMeta.get(b);
+            const pa = ma?.isPinned ? 1 : 0;
+            const pb = mb?.isPinned ? 1 : 0;
+            if (pa !== pb) return pb - pa;
+            const ea = ma?.isEditing ? 1 : 0;
+            const eb = mb?.isEditing ? 1 : 0;
+            if (ea !== eb) return eb - ea;
+            const ca = ma?.isCurrentChatCharBook ? 1 : 0;
+            const cb = mb?.isCurrentChatCharBook ? 1 : 0;
+            if (ca !== cb) return cb - ca;
+            const ta = _latestClassification.byName.get(getOptionText(a))?.primaryTitle || getOptionText(a);
+            const tb = _latestClassification.byName.get(getOptionText(b))?.primaryTitle || getOptionText(b);
+            return compareZhCn(ta, tb);
+        });
+    }
+
+    const orderedSections = orderSectionsForExternalDropdown(_latestClassification.orderedSections || []).filter(
         (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0,
     );
     const getPopoverPinnedCount = () => {
         let cnt = 0;
-        for (const sec of orderedSections) {
-            for (const optEl of (bucketByGroup.get(sec.id) || [])) {
-                const name = getOptionText(optEl);
-                if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
-            }
+        for (const optEl of realOptionNodes) {
+            const name = getOptionText(optEl);
+            if (name && _latestClassification?.byName?.get(name)?.isPinned) cnt += 1;
         }
         return cnt;
     };
     const initialPopPinned = getPopoverPinnedCount();
 
-    // When only 1 section exists, keep DOM flat (zero headers) — but STILL sort pinned books to the top!
-    if (orderedSections.length < 2) {
-        if (initialPopPinned > 0) {
-            const allFlat = orderedSections.flatMap((sec) => bucketByGroup.get(sec.id) || []);
-            allFlat.sort((a, b) => {
-                const ma = _latestClassification.byName.get(getOptionText(a));
-                const mb = _latestClassification.byName.get(getOptionText(b));
-                const pa = ma?.isPinned ? 1 : 0;
-                const pb = mb?.isPinned ? 1 : 0;
-                if (pa !== pb) return pb - pa;
-                return compareZhCn(ma?.primaryTitle || getOptionText(a), mb?.primaryTitle || getOptionText(b));
-            });
+    // When only 1 section exists and 0 pinned books, keep DOM flat (zero headers) — pin buttons & bare top items are ALREADY mounted!
+    if (orderedSections.length < 2 && initialPopPinned === 0) {
+        if (bareEditorItems.length > 0) {
             for (const ph of placeholders) optionsHost.appendChild(ph);
-            for (const optEl of allFlat) optionsHost.appendChild(optEl);
+            for (const optEl of bareEditorItems) optionsHost.appendChild(optEl);
+            for (const sec of orderedSections) {
+                for (const optEl of bucketByGroup.get(sec.id) || []) {
+                    optionsHost.appendChild(optEl);
+                }
+            }
         }
-        bindDrawerSafeBubbleGuard(containerEl);
+        containerEl._wboOnPinChanged = () => {};
+        delete containerEl._wboPopState;
         return;
     }
 
@@ -3576,6 +4489,9 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     for (const ph of placeholders) {
         optionsHost.appendChild(ph);
+    }
+    for (const optEl of bareEditorItems) {
+        optionsHost.appendChild(optEl);
     }
 
     const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
@@ -3691,6 +4607,20 @@ function enhanceCustomDropdownPopover(containerEl) {
         const searching = isSearching();
         const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
         const isIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
+        for (const o of bareEditorItems) {
+            if (searching) {
+                o.classList.remove('wbo-dd-pin-hidden');
+            } else if (isPinFilter) {
+                const name = getOptionText(o);
+                const pinned = Boolean(name && _latestClassification?.byName?.get(name)?.isPinned);
+                o.classList.toggle('wbo-dd-pin-hidden', !pinned);
+            } else if (isIsolated) {
+                const gid = bareEditorMeta.get(o)?.groupId || SPECIAL_GROUPS.UNGROUPED;
+                o.classList.toggle('wbo-dd-pin-hidden', gid !== activePillGroupId);
+            } else {
+                o.classList.remove('wbo-dd-pin-hidden');
+            }
+        }
         for (const secEl of sectionEls) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
             const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
@@ -3733,25 +4663,79 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     };
 
-    optionsHost.addEventListener('mousedown', (ev) => {
-        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
-        if (!head) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (activePillGroupId !== SPECIAL_GROUPS.ALL) return;
-        const gid = head.getAttribute('data-wbo-dd-group');
-        if (!gid) return;
-        _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
-        saveSettings();
-        syncSections();
-    }, true);
+    const popoverScrollHost = getScrollHost();
+    const restoreTimers = [];
+    const cancelRestore = () => {
+        isRestoringScroll = false;
+        while (restoreTimers.length) {
+            const tid = restoreTimers.pop();
+            clearTimeout(tid);
+            _activePopoverRestoreTimers.delete(tid);
+        }
+    };
+    const savePopoverScroll = () => {
+        const host = getScrollHost();
+        if (!isSearching() && host.isConnected && host.clientHeight > 0) {
+            _dropdownMemory.scrollTopByGroup[activePillGroupId] = host.scrollTop;
+        }
+        if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
+            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
+        }
+    };
 
-    optionsHost.addEventListener('click', (ev) => {
-        const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
-        if (!head) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-    }, true);
+    containerEl._wboPopState?.cancelRestore?.();
+    containerEl._wboPopState = {
+        getActivePillId: () => activePillGroupId,
+        isSearching,
+        isRestoringScroll: () => isRestoringScroll,
+        syncSections,
+        cancelRestore,
+        savePopoverScroll,
+        setActivePillId: (nextId) => {
+            activePillGroupId = nextId;
+        },
+    };
+
+    if (optionsHost.dataset.wboHostListenersBound !== '1') {
+        optionsHost.dataset.wboHostListenersBound = '1';
+        optionsHost.addEventListener('mousedown', (ev) => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+            if (!head) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const st = containerEl._wboPopState;
+            if (!st || st.getActivePillId() !== SPECIAL_GROUPS.ALL) return;
+            const gid = head.getAttribute('data-wbo-dd-group');
+            if (!gid) return;
+            _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
+            saveSettings();
+            st.syncSections();
+        }, true);
+
+        optionsHost.addEventListener('click', (ev) => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
+            if (!head) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+        }, true);
+
+        const onPopoverOptionPointerDown = (ev) => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            if (ev.target instanceof Element && ev.target.closest(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+                const st = containerEl._wboPopState;
+                if (!st) return;
+                st.cancelRestore();
+                st.savePopoverScroll();
+            }
+        };
+        optionsHost.addEventListener('pointerdown', onPopoverOptionPointerDown, true);
+        optionsHost.addEventListener('mousedown', onPopoverOptionPointerDown, true);
+    }
 
     const initialPopPinnedCount = initialPopPinned;
     if (orderedSections.length >= 2 || initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
@@ -3804,58 +4788,72 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
     }
 
-    // Prevent ANY mouse/touch/click inside the body-mounted custom popover from bubbling to
-    // `document` / `<html>` and closing an unpinned `#WorldInfo` drawer!
-    bindDrawerSafeBubbleGuard(containerEl);
-
-    const popoverScrollHost = getScrollHost();
-    const restoreTimers = [];
-    const cancelRestore = () => {
-        isRestoringScroll = false;
-        while (restoreTimers.length) clearTimeout(restoreTimers.pop());
-    };
-    const savePopoverScroll = () => {
-        const host = getScrollHost();
-        if (!isSearching() && host.isConnected && host.clientHeight > 0) {
-            _dropdownMemory.scrollTopByGroup[activePillGroupId] = host.scrollTop;
-        }
-        if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
-            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
-        }
-    };
-
     // Listen on BOTH optionsHost and discovered scrollHost (and containerEl) in case popover layout settles lazily
     const scrollTargets = new Set([optionsHost, popoverScrollHost, containerEl]);
     for (const st of scrollTargets) {
+        if (st.dataset.wboScrollBound === '1') continue;
+        st.dataset.wboScrollBound = '1';
         st.addEventListener('scroll', () => {
-            if (!isRestoringScroll && !isSearching() && st.clientHeight > 0 && st.scrollHeight > st.clientHeight + 2) {
-                _dropdownMemory.scrollTopByGroup[activePillGroupId] = st.scrollTop;
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const pState = containerEl._wboPopState;
+            if (!pState) return;
+            if (!pState.isRestoringScroll?.() && !pState.isSearching?.() && st.clientHeight > 0 && st.scrollHeight > st.clientHeight + 2) {
+                _dropdownMemory.scrollTopByGroup[pState.getActivePillId()] = st.scrollTop;
             }
         }, { passive: true });
-        st.addEventListener('wheel', cancelRestore, { passive: true });
-        st.addEventListener('touchmove', cancelRestore, { passive: true });
+        st.addEventListener('wheel', () => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            containerEl._wboPopState?.cancelRestore();
+        }, { passive: true });
+        st.addEventListener('touchmove', () => {
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            containerEl._wboPopState?.cancelRestore();
+        }, { passive: true });
     }
 
-    // Capture exact scroll position right before clicking an option closes the popover
-    const onPopoverOptionPointerDown = (ev) => {
-        if (ev.target instanceof Element && ev.target.closest(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
-            cancelRestore();
-            savePopoverScroll();
-        }
-    };
-    optionsHost.addEventListener('pointerdown', onPopoverOptionPointerDown, true);
-    optionsHost.addEventListener('mousedown', onPopoverOptionPointerDown, true);
-
-    if (searchInput instanceof HTMLInputElement) {
+    if (searchInput instanceof HTMLInputElement && searchInput.dataset.wboPopSearchBound !== '1') {
+        searchInput.dataset.wboPopSearchBound = '1';
         searchInput.addEventListener('input', () => {
-            cancelRestore();
-            requestAnimationFrame(syncSections);
+            const role = containerEl.dataset.wboPopoverRole;
+            if (role !== 'global' && role !== 'editor') return;
+            const pState = containerEl._wboPopState;
+            if (!pState) return;
+            pState.cancelRestore();
+            requestAnimationFrame(pState.syncSections);
         });
     }
 
+    const syncPopoverPinnedPill = () => {
+        if (!filterBar) return;
+        const cnt = getPopoverPinnedCount();
+        const scrollWrap = filterBar.querySelector('.wbo-dd-pill-scroll');
+        let pinPill = filterBar.querySelector(`[data-wbo-pill="${SPECIAL_GROUPS.PINNED}"]`);
+        if (cnt > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED) {
+            if (!pinPill && scrollWrap) {
+                pinPill = document.createElement('button');
+                pinPill.type = 'button';
+                pinPill.className = `wbo-dd-pill${activePillGroupId === SPECIAL_GROUPS.PINNED ? ' is-active' : ''}`;
+                pinPill.setAttribute('data-wbo-pill', SPECIAL_GROUPS.PINNED);
+                scrollWrap.prepend(pinPill);
+            }
+            if (pinPill) pinPill.textContent = `★ 已置顶 ${cnt}`;
+        } else if (pinPill) {
+            pinPill.remove();
+        }
+    };
+    containerEl._wboOnPinChanged = () => {
+        syncPopoverPinnedPill();
+        syncSections();
+    };
+
     syncSections();
     const applyPopoverScroll = () => {
-        if (!isRestoringScroll) return;
+        if (!_observersActive || !isRestoringScroll || !containerEl.isConnected) return;
+        const role = containerEl.dataset.wboPopoverRole;
+        if (role !== 'global' && role !== 'editor') return;
         if (pillScrollEl && pillScrollEl.clientWidth > 0) {
             pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
         }
@@ -3868,15 +4866,26 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     };
     applyPopoverScroll();
-    requestAnimationFrame(applyPopoverScroll);
-    restoreTimers.push(
-        setTimeout(applyPopoverScroll, 35),
-        setTimeout(applyPopoverScroll, 110),
-        setTimeout(() => {
-            applyPopoverScroll();
-            isRestoringScroll = false;
-        }, 210),
-    );
+    scheduleEnhancedRaf(applyPopoverScroll);
+    const scheduleRestoreTimer = (fn, delay) => {
+        const tid = setTimeout(() => {
+            _activePopoverRestoreTimers.delete(tid);
+            fn();
+        }, delay);
+        restoreTimers.push(tid);
+        _activePopoverRestoreTimers.add(tid);
+    };
+    scheduleRestoreTimer(applyPopoverScroll, 35);
+    scheduleRestoreTimer(applyPopoverScroll, 110);
+    scheduleRestoreTimer(() => {
+        applyPopoverScroll();
+        isRestoringScroll = false;
+    }, 210);
+    } finally {
+        _containerObserverMap.get(containerEl)?.takeRecords();
+        if (observedHost) _hostObserverMap.get(observedHost)?.takeRecords();
+        delete containerEl.dataset.wboEnhancing;
+    }
 }
 
 /**
@@ -3888,6 +4897,7 @@ function enhanceCustomDropdownPopover(containerEl) {
  */
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
+    _observersActive = true;
 
     const scheduleResync = () => {
         if (_isApplying) return;
@@ -3972,6 +4982,22 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         const t = ev.target instanceof Element ? ev.target : null;
         if (!t || ev.shiftKey || ev.altKey) return;
 
+        const wiChoice = t.closest('#WIMultiSelector .select2-selection__choice');
+        if (wiChoice) {
+            if (t.closest('.select2-selection__choice__remove')) return;
+            const displayEl = wiChoice.querySelector('.select2-selection__choice__display');
+            const rawTitle = (
+                displayEl?.textContent ||
+                wiChoice.getAttribute('title') ||
+                wiChoice.textContent ||
+                ''
+            ).replace(/^\s*×\s*/, '').trim();
+            if (rawTitle) {
+                ensureEditorOptionAttached(rawTitle);
+            }
+            return;
+        }
+
         if (t.closest('#world_button')) {
             const ctx = getHostContext();
             const $ = globalThis.jQuery;
@@ -4006,24 +5032,61 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             }
         }
     };
+    document.addEventListener('mousedown', _docWorldJumpPreAttach, true);
     document.addEventListener('click', _docWorldJumpPreAttach, true);
 
     // Guard against SillyTavern's `$(document).on('click')` unpinned-drawer auto-closer
     // firing when opening `#world_editor_select` / `#world_info` spawns a body-mounted
     // Select2 dropdown or custom popover directly under the pointer between pointerdown & click!
+    const sweepOpenEnhancedPopovers = () => {
+        if (!_observersActive || typeof document === 'undefined') return;
+        document.querySelectorAll(ENHANCED_POPOVER_SELECTORS.containerSelector).forEach((el) => {
+            if (el instanceof HTMLElement && el.isConnected) {
+                enhanceCustomDropdownPopover(el);
+            }
+        });
+    };
+    const schedulePopoverSweep = () => {
+        if (!_observersActive) return;
+        scheduleEnhancedRaf(sweepOpenEnhancedPopovers);
+        _sweepPopoverTimers.push(
+            setTimeout(sweepOpenEnhancedPopovers, 35),
+            setTimeout(sweepOpenEnhancedPopovers, 110),
+        );
+    };
+
     _docDrawerGuardMouseDown = (ev) => {
         const t = ev.target instanceof Element ? ev.target : null;
         if (!t) return;
         const inGlobalTrigger = Boolean(
             t.closest(`#world_info, #WIMultiSelector, ${ENHANCED_POPOVER_SELECTORS.displaySelector}`),
         );
+        const inEditorTrigger = isEditorSelectTriggerTarget(t);
+        const enhancedContainer = t.closest(ENHANCED_POPOVER_SELECTORS.containerSelector);
+        const inWorldEnhanced = Boolean(
+            enhancedContainer instanceof HTMLElement && detectEnhancedPopoverRole(enhancedContainer) !== null,
+        );
+        const s2Drop = t.closest('.select2-dropdown');
+        const inWorldS2Drop = Boolean(s2Drop && !s2Drop.querySelector('#select2-world_info_sort_order-results'));
         if (inGlobalTrigger) {
             closeAllOpenWorldDropdowns({ except: 'global' });
-        } else if (t.closest('#world_editor_select, #world_popup .select2-container, #world_popup .gr-select2-display, #wbo-mobile-editor-trigger')) {
+            schedulePopoverSweep();
+        } else if (inEditorTrigger) {
             closeAllOpenWorldDropdowns({ except: 'editor' });
+            schedulePopoverSweep();
+        } else if (
+            !inWorldEnhanced &&
+            !inWorldS2Drop &&
+            t.closest('#world_popup .gr-select2-display, #world_popup .select2-container, #world_info_sort_order')
+        ) {
+            closeAllOpenWorldDropdowns({ except: 'global' });
         }
         const inWorldSelect = Boolean(
-            t.closest(`#world_editor_select, #world_info, #world_popup .select2-container, #world_popup .gr-select2-display, #WIMultiSelector .select2-container, #WorldInfo .select2-container, ${ENHANCED_POPOVER_SELECTORS.displaySelector}, #wbo-mobile-editor-trigger, #wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover, .select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}`),
+            inGlobalTrigger ||
+            inEditorTrigger ||
+            t.closest('#WIMultiSelector .select2-container, #wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover') ||
+            inWorldS2Drop ||
+            inWorldEnhanced,
         );
         if (inWorldSelect) {
             _lastWorldSelectMouseDownAt = Date.now();
@@ -4035,8 +5098,16 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         const t = ev.target instanceof Element ? ev.target : null;
         if (!t) return;
         if (t.closest?.('.drawer-icon')) return;
+        const enhancedContainer = t.closest?.(ENHANCED_POPOVER_SELECTORS.containerSelector);
+        const inWorldEnhanced = Boolean(
+            enhancedContainer instanceof HTMLElement && detectEnhancedPopoverRole(enhancedContainer) !== null,
+        );
+        const s2Drop = t.closest?.('.select2-dropdown');
+        const inWorldS2Drop = Boolean(s2Drop && !s2Drop.querySelector('#select2-world_info_sort_order-results'));
         const inDropdownOverlay = Boolean(
-            t.closest?.(`.select2-dropdown, ${ENHANCED_POPOVER_SELECTORS.containerSelector}, #wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover`),
+            inWorldEnhanced ||
+            inWorldS2Drop ||
+            t.closest?.('#wbo-mobile-picker-overlay, .wbo-mp-backdrop, .wbo-mp-popover'),
         );
         const isRecentOrphanClick =
             Date.now() - _lastWorldSelectMouseDownAt < 500 &&
@@ -4057,10 +5128,14 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             for (const node of mutation.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
                 if (node.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || node.classList.contains(ENHANCED_POPOVER_SELECTORS.containerClass)) {
-                    bindDrawerSafeBubbleGuard(node);
+                    markIfPersistentPopover(node);
+                    ensureEnhancedContainerObserver(node);
                     const syncRole = detectEnhancedPopoverRole(node);
-                    if (syncRole) node.dataset.wboPopoverRole = syncRole;
-                    requestAnimationFrame(() => enhanceCustomDropdownPopover(node));
+                    if (syncRole) {
+                        node.dataset.wboPopoverRole = syncRole;
+                        bindDrawerSafeBubbleGuard(node);
+                    }
+                    scheduleEnhancedRaf(() => enhanceCustomDropdownPopover(node));
                 } else if (node.classList.contains('character_world')) {
                     enhanceCharBindPopup(node);
                 } else if (node.classList.contains('persona_world')) {
@@ -4095,12 +5170,15 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         }
     });
     _charPopupObserver.observe(document.body, { childList: true, subtree: false });
+    sweepOpenEnhancedPopovers();
+    scheduleEnhancedRaf(sweepOpenEnhancedPopovers);
 }
 
 /**
  * Stop observers cleanly.
  */
 export function stopNativeObservers() {
+    _observersActive = false;
     cleanupOpenEditorDropdown();
     cleanupOpenGlobalDropdown();
     for (const closer of [..._openCustomPickerClosers]) {
@@ -4109,6 +5187,21 @@ export function stopNativeObservers() {
     _openCustomPickerClosers.clear();
     clearTimeout(_resyncTimer);
     _resyncTimer = null;
+    while (_sweepPopoverTimers.length) clearTimeout(_sweepPopoverTimers.pop());
+    for (const tid of _activePopoverRestoreTimers) clearTimeout(tid);
+    _activePopoverRestoreTimers.clear();
+    for (const handle of _pendingContainerEnhance.values()) {
+        if (handle.kind === 'raf') {
+            if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle.id);
+        } else {
+            clearTimeout(handle.id);
+        }
+    }
+    _pendingContainerEnhance.clear();
+    for (const rafId of _activeEnhancedRafs) {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafId);
+    }
+    _activeEnhancedRafs.clear();
     if (_globalSelectObserver) {
         _globalSelectObserver.disconnect();
         _globalSelectObserver = null;
@@ -4121,6 +5214,28 @@ export function stopNativeObservers() {
         _charPopupObserver.disconnect();
         _charPopupObserver = null;
     }
+    for (const el of _observedContainers) {
+        const obs = _containerObserverMap.get(el);
+        if (obs) {
+            try { obs.disconnect(); } catch { /* ignore */ }
+            _containerObserverMap.delete(el);
+        }
+    }
+    _observedContainers.clear();
+    for (const host of _observedHosts) {
+        const obs = _hostObserverMap.get(host);
+        if (obs) {
+            try { obs.disconnect(); } catch { /* ignore */ }
+            _hostObserverMap.delete(host);
+        }
+        delete host.dataset.wboOptObserved;
+    }
+    _observedHosts.clear();
+    for (const obs of _activeEnhancedObservers) {
+        try { obs.disconnect(); } catch { /* ignore */ }
+    }
+    _activeEnhancedObservers.clear();
+    _pendingClearedEditingWorld = false;
     if (_editorNativeOpenHandler) {
         const editorEl = document.getElementById('world_editor_select');
         if (editorEl) {
@@ -4130,6 +5245,7 @@ export function stopNativeObservers() {
         _editorNativeOpenHandler = null;
     }
     if (_docWorldJumpPreAttach) {
+        document.removeEventListener('mousedown', _docWorldJumpPreAttach, true);
         document.removeEventListener('click', _docWorldJumpPreAttach, true);
         _docWorldJumpPreAttach = null;
     }
@@ -4166,6 +5282,8 @@ export function teardownNativeFilters() {
     clearTimeout(_deferredGlobalTimer);
     _deferredGlobalTimer = null;
     stopNativeObservers();
+    _currentlyEditingWorld = null;
+    _pendingClearedEditingWorld = false;
     _lastGlobalSignature = null;
     _lastEditorSignature = null;
     _isApplying = true;

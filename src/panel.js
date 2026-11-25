@@ -19,6 +19,7 @@ import {
     cleanupDeletedWorldSettings,
     classifyWorldbooks,
     compareWorldbookEntries,
+    computeScanPromptState,
     createApiChannelId,
     deepClone,
     deleteAiOrganizePreset,
@@ -30,6 +31,7 @@ import {
     findSensitiveTargetGroup,
     findUnscannedShallowCharacters,
     getEffectiveAiOrganizePresets,
+    getVisibleSectionMoveBounds,
     importConfigData,
     isPotentiallySensitiveTitle,
     matchesSearch,
@@ -126,6 +128,9 @@ const _previewCache = new Map();
 /** @type {Map<string, any>} */
 const _activePreviewControllers = new Map();
 let _hasPendingPinResort = false;
+let _hasPendingDeferredListRender = false;
+/** @type {string[]} */
+let _renderedMovableSectionIds = [];
 const MAX_PREVIEW_CACHE_BOOKS = 8;
 const MAX_PREVIEW_CACHE_BOOKS_MOBILE = 3;
 
@@ -192,15 +197,24 @@ function bindImeSafeEnter(inputEl, onEnter, { preventDefault = true } = {}) {
     });
 }
 
+const UNDO_SVG = '<svg class="wbo-undo-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
+
 function isEntryGroupsInstalled() {
+    if (typeof document === 'undefined') return false;
     const ctx = getHostContext();
+    const disabledList = ctx?.extensionSettings?.disabledExtensions;
+    if (Array.isArray(disabledList) && disabledList.some((x) => String(x).includes('worldbook-entry-groups'))) {
+        return false;
+    }
     return Boolean(
-        ctx?.extensionSettings?.worldbook_entry_groups !== undefined ||
-        (typeof document !== 'undefined' && document.getElementById('weg-wand-entry')),
+        document.getElementById('weg-wand-entry') ||
+        document.getElementById('weg-native-entry-btn') ||
+        document.querySelector('link[data-weg-style-ver], link[href*="worldbook-entry-groups/"]'),
     );
 }
 
 function getEntryGroupsSummary(worldName) {
+    if (!isEntryGroupsInstalled()) return [];
     const ctx = getHostContext();
     const groups = ctx?.extensionSettings?.worldbook_entry_groups?.books?.[worldName]?.groups;
     return Array.isArray(groups) ? groups : [];
@@ -545,9 +559,10 @@ function ensureHeaderBar() {
 }
 
 /**
- * Sync the native inline char-toggle icon AND the Group Manager modal (ONLY if open — 0 work when closed!).
+ * Sync ONLY the native `#WorldInfo` header shortcut buttons & char-toggle icon
+ * without touching or re-rendering the Group Manager modal.
  */
-export function renderEmbeddedPanel() {
+export function syncNativeQuickActionsUi() {
     if (!_callbacks) return;
     const showCharBtn = ensureHeaderBar();
 
@@ -599,10 +614,18 @@ export function renderEmbeddedPanel() {
                 : `已隐藏角色世界书（${classification.charCount} 本），点击显示`;
         }
     }
+}
+
+/**
+ * Sync the native inline char-toggle icon AND the Group Manager modal (ONLY if open — 0 work when closed!).
+ */
+export function renderEmbeddedPanel({ backgroundCatchUp = false } = {}) {
+    if (!_callbacks) return;
+    syncNativeQuickActionsUi();
 
     // Only refresh Group Manager when it is actually open (0 background scanning when closed!)
     if (document.getElementById(MANAGER_OVERLAY_ID)) {
-        refreshManagerModalContent();
+        refreshManagerModalContent({ backgroundCatchUp });
     }
 }
 
@@ -627,7 +650,7 @@ function syncNativeQuickComboTitles() {
 }
 
 /**
- * Sync the Group Manager's top `组合` button badge and optional 1-row quick combo bar.
+ * Sync the Group Manager's top `组合` button badge.
  */
 function syncManagerComboStripUi() {
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
@@ -648,38 +671,6 @@ function syncManagerComboStripUi() {
     if (comboLbl) {
         comboLbl.textContent = presets.length > 0 ? `组合 ${presets.length}` : '组合';
     }
-
-    const barEl = overlay.querySelector('#wbo-mgr-combo-bar');
-    if (!(barEl instanceof HTMLElement)) return;
-    if (presets.length === 0 && !_lastGlobalSwitchUndo) {
-        barEl.hidden = true;
-        barEl.innerHTML = '';
-        return;
-    }
-    barEl.hidden = false;
-    const pillsHtml = presets.map((p) => {
-        const isCurrent = matched?.id === p.id;
-        return `
-            <button type="button"
-                class="wbo-pill wbo-combo-quick-pill${isCurrent ? ' is-active' : ''}"
-                data-action="apply-global-combo"
-                data-combo-id="${esc(p.id)}"
-                title="${esc(`${p.name}（${p.books.length} 本）：点击一键切换`)}">
-                ${isCurrent ? '<i class="fa-solid fa-check"></i>' : ''}
-                <span>${esc(p.name)}</span>
-                <span class="wbo-pill-count">${p.books.length}</span>
-            </button>
-        `;
-    }).join('');
-    const undoBtnHtml = _lastGlobalSwitchUndo
-        ? `<button type="button" class="wbo-link-btn wbo-combo-undo-btn" data-action="undo-global-combo" title="恢复切换前的全局激活状态">↶ 撤回</button>`
-        : '';
-    barEl.innerHTML = `
-        <span class="wbo-es-history-label">组合</span>
-        <div class="wbo-combo-pills-scroll">${pillsHtml}</div>
-        ${undoBtnHtml}
-        <button type="button" class="wbo-link-btn wbo-combo-manage-link" data-action="open-combos-modal">管理</button>
-    `;
 }
 
 /**
@@ -704,52 +695,99 @@ function executeGlobalBooksSwitch(targetBooks, { mode = 'replace', label = '切�
     return res;
 }
 
+let _isSyncingEmbeddedIndicators = false;
+
 /**
  * Lightweight in-place sync when native `#world_info` or `#world_editor_select` changes.
  * Updates both per-row global pills AND group header active counts with zero DOM rebuild!
  */
 export function syncEmbeddedPanelIndicators() {
-    syncNativeQuickComboTitles();
-    syncManagerComboStripUi();
-    const listEl = document.getElementById('wbo-mgr-groups-list');
-    if (!listEl) return;
+    if (_isSyncingEmbeddedIndicators) return;
+    _isSyncingEmbeddedIndicators = true;
+    try {
+        syncNativeQuickComboTitles();
+        syncManagerComboStripUi();
+        const listEl = document.getElementById('wbo-mgr-groups-list');
+        if (!listEl) return;
 
-    const activeGlobals = getActiveGlobalWorldSet();
-    const currentEditor = getCurrentEditorWorldName();
+        const activeGlobals = getActiveGlobalWorldSet();
+        const currentEditor = getCurrentEditorWorldName();
 
-    listEl.querySelectorAll('.wbo-book-row').forEach((row) => {
-        const name = row.getAttribute('data-book');
-        if (!name) return;
-        const isActive = activeGlobals.has(name);
-        const isEditing = currentEditor === name;
-        const globalBtn = row.querySelector('[data-action="toggle-global"]');
-        row.classList.toggle('is-active', Boolean(globalBtn && isActive));
-        row.classList.toggle('is-editing', isEditing);
-        if (globalBtn) {
-            globalBtn.classList.toggle('is-on', isActive);
-            globalBtn.innerHTML = isActive
-                ? '<i class="fa-solid fa-check"></i><span>已全局</span>'
-                : '<span>全局</span>';
-            globalBtn.setAttribute('title', isActive ? '点击取消全局激活' : '点击设为全局激活');
+        if (_callbacks) {
+            const { settings, classification } = _callbacks.getState();
+            const editingMeta = currentEditor ? classification?.byName?.get(currentEditor) : null;
+            const q = _searchQuery.trim();
+            const searchOpts = {
+                searchBookName: settings.mgrSearchInBookName !== false,
+                searchCharName: settings.mgrSearchInCharName !== false,
+                splitSpaces: Boolean(settings.mgrSearchSplitSpaces),
+            };
+            const needsBareEditing = Boolean(
+                settings.activeFilterGroupId === SPECIAL_GROUPS.DEFAULT &&
+                !settings.showCharBooks &&
+                editingMeta?.isInCharGroup &&
+                (!q || matchesSearch(editingMeta, q, searchOpts)),
+            );
+            const hasBareEditing = Boolean(listEl.querySelector('.wbo-mgr-bare-editing'));
+            const curBareBook = listEl.querySelector('.wbo-mgr-bare-editing .wbo-book-row')?.getAttribute('data-book') || '';
+            if (needsBareEditing !== hasBareEditing || (needsBareEditing && curBareBook !== currentEditor)) {
+                const rebuilt = renderManagerGroupsListOnly({ skipIndicatorSync: true });
+                if (rebuilt) return;
+            }
         }
-    });
 
-    // Update each group header active/total counter cleanly in place
-    listEl.querySelectorAll('.wbo-group').forEach((groupEl) => {
-        const countEl = groupEl.querySelector('.wbo-group-count');
-        if (!countEl) return;
-        const total = Number(groupEl.getAttribute('data-book-count'));
-        if (!Number.isFinite(total)) return;
-        const rows = groupEl.querySelectorAll('.wbo-book-row');
-        if (rows.length > 0) {
-            let activeCount = 0;
-            rows.forEach((r) => {
-                const n = r.getAttribute('data-book');
-                if (n && activeGlobals.has(n)) activeCount += 1;
-            });
-            countEl.textContent = activeCount > 0 ? `${activeCount}/${total}` : `${total}`;
-        }
-    });
+        listEl.querySelectorAll('.wbo-book-row').forEach((row) => {
+            const name = row.getAttribute('data-book');
+            if (!name) return;
+            const isActive = activeGlobals.has(name);
+            const isEditing = currentEditor === name;
+            const globalBtn = row.querySelector('[data-action="toggle-global"]');
+            row.classList.toggle('is-active', Boolean(globalBtn && isActive));
+            row.classList.toggle('is-editing', isEditing);
+            const titleLine = row.querySelector('.wbo-book-title-line');
+            if (titleLine) {
+                const existingBadge = titleLine.querySelector('.wbo-s2-badge.is-editing');
+                if (isEditing && !existingBadge) {
+                    const badge = document.createElement('span');
+                    badge.className = 'wbo-s2-badge is-editing';
+                    badge.setAttribute('data-wbo-ui', '1');
+                    badge.textContent = '当前编辑';
+                    const subEl = titleLine.querySelector('.wbo-book-sub');
+                    const anchorEl = subEl || titleLine.querySelector('.wbo-book-title');
+                    if (anchorEl) anchorEl.insertAdjacentElement('afterend', badge);
+                    else titleLine.appendChild(badge);
+                } else if (!isEditing && existingBadge) {
+                    existingBadge.remove();
+                }
+            }
+            if (globalBtn) {
+                globalBtn.classList.toggle('is-on', isActive);
+                globalBtn.innerHTML = isActive
+                    ? '<i class="fa-solid fa-check"></i><span>已全局</span>'
+                    : '<span>全局</span>';
+                globalBtn.setAttribute('title', isActive ? '点击取消全局激活' : '点击设为全局激活');
+            }
+        });
+
+        // Update each group header active/total counter cleanly in place
+        listEl.querySelectorAll('.wbo-group').forEach((groupEl) => {
+            const countEl = groupEl.querySelector('.wbo-group-count');
+            if (!countEl) return;
+            const total = Number(groupEl.getAttribute('data-book-count'));
+            if (!Number.isFinite(total)) return;
+            const rows = groupEl.querySelectorAll('.wbo-book-row');
+            if (rows.length > 0) {
+                let activeCount = 0;
+                rows.forEach((r) => {
+                    const n = r.getAttribute('data-book');
+                    if (n && activeGlobals.has(n)) activeCount += 1;
+                });
+                countEl.textContent = activeCount > 0 ? `${activeCount}/${total}` : `${total}`;
+            }
+        });
+    } finally {
+        _isSyncingEmbeddedIndicators = false;
+    }
 }
 
 // ==================== Standalone Group Manager Modal ====================
@@ -781,6 +819,9 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
     const subHtml = book.subtitle
         ? `<span class="wbo-book-sub" title="${esc(book.realName)}">${esc(book.subtitle)}</span>`
         : '';
+    const editingBadgeHtml = isEditing
+        ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1">当前编辑</span>'
+        : '';
     const noteHtml = book.note
         ? `<div class="wbo-book-note">${esc(book.note)}</div>`
         : '';
@@ -803,7 +844,7 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
         : '';
 
     const mainAction = _batchMode ? 'toggle-batch-row' : 'toggle-book-preview';
-    const mainTitle = _batchMode ? '点击勾选或取消勾选' : '点击展开条目列表与直编；可拖动调序或拖入分组';
+    const mainTitle = _batchMode ? '点击勾选或取消勾选' : '点击展开条目列表，可拖动调序或拖入分组';
 
     return `
         <div class="wbo-book-item" data-book="${esc(book.realName)}">
@@ -816,6 +857,7 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                         <span class="wbo-book-title-line">
                             <span class="wbo-book-title">${esc(book.primaryTitle)}</span>
                             ${subHtml}
+                            ${editingBadgeHtml}
                             ${localSameNameTag}
                             ${extraTag}
                             ${ownerHint}
@@ -827,6 +869,10 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                 </div>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
+                    ${isEntryGroupsInstalled() ? `
+                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="open-entry-groups" title="条目分组">
+                        <i class="fa-solid fa-folder-tree"></i>
+                    </button>` : ''}
                     <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="edit-book" title="在酒馆编辑器中打开">
                         <i class="fa-solid fa-arrow-up-right-from-square"></i>
                     </button>
@@ -877,6 +923,10 @@ async function toggleInlineBookPreview(itemEl, bookName) {
         previewEl.innerHTML = '';
         previewEl.hidden = true;
         rowEl?.classList.remove('is-preview-open');
+        if (_activePreviewControllers.size === 0 && _hasPendingDeferredListRender) {
+            _hasPendingDeferredListRender = false;
+            renderManagerGroupsListOnly();
+        }
         return;
     }
 
@@ -889,20 +939,11 @@ async function toggleInlineBookPreview(itemEl, bookName) {
     previewEl.hidden = false;
     rowEl?.classList.add('is-preview-open');
 
-    const entryGroupsBtn = isEntryGroupsInstalled()
-        ? '<button type="button" class="wbo-link-btn" data-acc-extra="open-entry-groups">条目分组</button>'
-        : '';
-    const extraHeaderActionsHtml = `
-        ${entryGroupsBtn}
-        <button type="button" class="wbo-link-btn" data-acc-extra="edit-book">在酒馆编辑器打开</button>
-        <button type="button" class="wbo-link-btn is-danger" data-acc-extra="delete-single-book">删除此书</button>
-    `;
-
     const ctrl = mountEntryAccordion(previewEl, {
         worldName: bookName,
         pageSize: 60,
         showToolbar: true,
-        extraHeaderActionsHtml,
+        extraHeaderActionsHtml: '',
         getMonoFont: () => Boolean(_callbacks?.getState?.()?.settings?.entryEditorMonoFont),
         onToggleMonoFont: (nextMono) => {
             const curSettings = _callbacks?.getState?.()?.settings;
@@ -917,16 +958,7 @@ async function toggleInlineBookPreview(itemEl, bookName) {
             curSettings.entryEditorTall = Boolean(nextTall);
             void _callbacks.onMutation({ save: true, uiOnly: true });
         },
-        onExtraAction: (act) => {
-            if (act === 'open-entry-groups') {
-                openEntryGroupsForBook(bookName);
-            } else if (act === 'edit-book') {
-                openWorldInNativeEditor(bookName);
-                closeManagerModal();
-            } else if (act === 'delete-single-book') {
-                void confirmAndDeleteWorldbooks([bookName]);
-            }
-        },
+        getSyncOrder: () => Boolean(_callbacks?.getState?.()?.settings?.syncEntryOrderOnDrag),
         onEntryMutated: ({ worldName: mutatedWorld }) => {
             _previewCache.delete(mutatedWorld);
         },
@@ -940,19 +972,28 @@ async function toggleInlineBookPreview(itemEl, bookName) {
 
 /**
  * Assign a worldbook to a target group (`customId`, `UNGROUPED`, or `CHARACTER`).
- * Returns false if disallowed (e.g. dropping a non-character book into `角色世界书`).
  */
 function assignBookToGroup(settings, bookMeta, targetGroupId) {
     if (!bookMeta || !targetGroupId) return false;
-    if (bookMeta.groupId === targetGroupId) return false;
+    const hasRealBinding = Boolean(
+        (bookMeta.charOwners || []).some((o) => o && o.source !== 'embedded'),
+    );
+    const needsIncludeConfirm =
+        targetGroupId === SPECIAL_GROUPS.CHARACTER &&
+        !hasRealBinding &&
+        settings.charBookOverrides?.[bookMeta.realName] !== 'include_in_char';
+    if (bookMeta.groupId === targetGroupId && !needsIncludeConfirm) return false;
+
+    settings.assignments ||= {};
+    settings.charBookOverrides ||= {};
 
     if (targetGroupId === SPECIAL_GROUPS.CHARACTER) {
-        if (!bookMeta.isCharBound) {
-            showToast('warning', '只有角色卡绑定的世界书可以放入「角色世界书」');
-            return false;
-        }
         delete settings.assignments[bookMeta.realName];
-        delete settings.charBookOverrides[bookMeta.realName];
+        if (hasRealBinding) {
+            delete settings.charBookOverrides[bookMeta.realName];
+        } else {
+            settings.charBookOverrides[bookMeta.realName] = 'include_in_char';
+        }
         return true;
     }
 
@@ -960,6 +1001,8 @@ function assignBookToGroup(settings, bookMeta, targetGroupId) {
         delete settings.assignments[bookMeta.realName];
         if (bookMeta.isCharBound) {
             settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
+        } else if (settings.charBookOverrides?.[bookMeta.realName] === 'include_in_char') {
+            delete settings.charBookOverrides[bookMeta.realName];
         }
         return true;
     }
@@ -967,6 +1010,8 @@ function assignBookToGroup(settings, bookMeta, targetGroupId) {
     settings.assignments[bookMeta.realName] = targetGroupId;
     if (bookMeta.isCharBound) {
         settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
+    } else if (settings.charBookOverrides?.[bookMeta.realName] === 'include_in_char') {
+        delete settings.charBookOverrides[bookMeta.realName];
     }
     return true;
 }
@@ -992,6 +1037,7 @@ function renderGroupSectionHtml({
     collapsed,
     isCustom,
     isSingleView = false,
+    hideOrderActions = false,
     charBookTitleMode = 'char_with_sub',
     hiddenInGlobal = false,
     hiddenInEditor = false,
@@ -1041,7 +1087,8 @@ function renderGroupSectionHtml({
                     <i class="fa-solid fa-eye"></i>
                 </button>
             `;
-    const orderActions = isSingleView
+    const disableReorder = isSingleView || hideOrderActions;
+    const orderActions = disableReorder
         ? ''
         : `
             <button type="button" class="wbo-icon-btn" data-action="move-section-up" data-group-id="${esc(id)}" ${canMoveUp ? '' : 'disabled'} title="上移">
@@ -1082,7 +1129,7 @@ function renderGroupSectionHtml({
             </div>
         `
         : `
-            <span class="wbo-group-drag-handle" title="拖动调整分组顺序"><i class="fa-solid fa-grip-vertical"></i></span>
+            ${disableReorder ? '' : '<span class="wbo-group-drag-handle" title="拖动调整分组顺序"><i class="fa-solid fa-grip-vertical"></i></span>'}
             ${batchGroupCheckHtml}
             <button type="button" class="wbo-group-toggle" data-action="toggle-group-collapse" data-group-id="${esc(id)}" aria-expanded="${!collapsed}">
                 <i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>
@@ -1095,7 +1142,7 @@ function renderGroupSectionHtml({
     _renderedGroupBooksMap.set(id, books.map((b) => b.realName));
     return `
         <div class="wbo-group${collapsed ? ' is-collapsed' : ''}" data-group-id="${esc(id)}" data-book-count="${books.length}" style="--wbo-group-accent:${esc(color)}">
-            <div class="wbo-group-header"${isSingleView ? '' : ` data-drag-group-id="${esc(id)}"`}>
+            <div class="wbo-group-header"${disableReorder ? '' : ` data-drag-group-id="${esc(id)}"`}>
                 ${titleNode}
                 <div class="wbo-group-actions">
                     ${charTitlePill}
@@ -1227,6 +1274,7 @@ function closeManagerModal() {
     _renderedGroupBooksMap.clear();
     _previewCache.clear();
     _hasPendingPinResort = false;
+    _hasPendingDeferredListRender = false;
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
     const modal = overlay?.querySelector('.wbo-modal');
     if (modal instanceof HTMLElement) {
@@ -1504,7 +1552,8 @@ function openManageGroupsModal() {
         const { settings } = _callbacks.getState();
 
         if (act === 'up' || act === 'down') {
-            if (moveSectionOrder(settings, gid, act === 'up' ? -1 : 1)) {
+            const visibleGroupIds = (settings.groups || []).map((g) => g.id);
+            if (moveSectionOrder(settings, gid, act === 'up' ? -1 : 1, visibleGroupIds)) {
                 await _callbacks.onMutation({ save: true });
                 renderList();
             }
@@ -1532,7 +1581,7 @@ function openManageGroupsModal() {
                         <div class="wbo-subtle-tip">该分组下的全部世界书将移入目标分组，并删除原分组「${esc(srcGrp.name)}」。</div>
                         <div class="wbo-move-list">${targetListHtml}</div>
                     </div>
-                    <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
+                    <div class="wbo-modal-footer wbo-pinned-footer">
                         <button type="button" class="wbo-btn" id="wbo-merge-cancel-btn">返回</button>
                     </div>
                 `,
@@ -1606,6 +1655,7 @@ function openBatchMoveModal(bookNames) {
 
     const options = [
         ...settings.groups.map((g) => ({ id: g.id, label: g.name, color: g.color })),
+        { id: SPECIAL_GROUPS.CHARACTER, label: '角色世界书', color: '#7c8594' },
         { id: SPECIAL_GROUPS.UNGROUPED, label: '未分组', color: '#8c99a6' },
     ];
 
@@ -1622,7 +1672,6 @@ function openBatchMoveModal(bookNames) {
             <div class="wbo-move-list">${listHtml}</div>
             <div class="wbo-modal-footer wbo-footer-pair">
                 <button type="button" class="wbo-btn" id="wbo-batch-new-group">新建分组并移入</button>
-                <span class="wbo-spacer"></span>
                 <button type="button" class="wbo-btn" id="wbo-cancel-btn">取消</button>
             </div>
         `,
@@ -2035,6 +2084,17 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
  */
 export function openManagerModal() {
     if (!_callbacks) return;
+    const triggerPanelCatchupScanIfNeeded = () => {
+        const curSettings = _callbacks?.getState?.()?.settings;
+        if (!curSettings || curSettings.autoScanNewCharacters === false) return;
+        const unscanned = findUnscannedShallowCharacters(
+            getCharactersInMemory(),
+            curSettings.cachedCharBindings,
+        );
+        if (unscanned.length > 0) {
+            void _callbacks.onMutation({ save: false, uiOnly: true, catchupScan: true });
+        }
+    };
     if (document.getElementById(MANAGER_OVERLAY_ID)) {
         restoreManagerModal();
         if (_hasPendingPinResort) {
@@ -2043,6 +2103,7 @@ export function openManagerModal() {
         } else {
             refreshManagerModalContent();
         }
+        triggerPanelCatchupScanIfNeeded();
         return;
     }
 
@@ -2069,6 +2130,9 @@ export function openManagerModal() {
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">世界书分组管理</span>
                 <div class="wbo-modal-header-actions">
+                    <button type="button" class="wbo-icon-btn wbo-modal-settings-btn" data-action="open-settings-modal" title="显示与行为设置" aria-label="设置">
+                        <i class="fa-solid fa-gear"></i>
+                    </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-minimize-btn" data-wbo-minimize-btn title="最小化（保留草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus"></i>
                     </button>
@@ -2078,21 +2142,17 @@ export function openManagerModal() {
                 </div>
             </div>
             <div class="wbo-mgr-header-tools">
-                <button type="button" class="wbo-tool-btn" id="wbo-mgr-combo-btn" data-action="open-combos-modal" title="自由组合全局世界书并保存方案">
-                    <i class="fa-solid fa-bookmark"></i>
-                    <span id="wbo-mgr-combo-label">组合</span>
-                </button>
                 <button type="button" class="wbo-tool-btn" data-action="open-ai-organize" title="本地一键整理 / AI 智能整理">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>整理</span>
                 </button>
+                <button type="button" class="wbo-tool-btn" id="wbo-mgr-combo-btn" data-action="open-combos-modal" title="自由组合全局世界书并保存方案">
+                    <i class="fa-solid fa-bookmark"></i>
+                    <span id="wbo-mgr-combo-label">组合</span>
+                </button>
                 <button type="button" class="wbo-tool-btn" id="wbo-mgr-scan-btn" data-action="open-scan-modal" title="扫描角色世界书">
                     <i class="fa-solid fa-arrows-rotate"></i>
                     <span id="wbo-mgr-scan-label">扫描</span>
-                </button>
-                <button type="button" class="wbo-tool-btn" data-action="open-settings-modal" title="显示与行为设置">
-                    <i class="fa-solid fa-gear"></i>
-                    <span>设置</span>
                 </button>
             </div>
         </div>
@@ -2145,9 +2205,9 @@ export function openManagerModal() {
                     </button>
                 </div>
             </div>
-            <div class="wbo-es-history-row wbo-mgr-combo-bar" id="wbo-mgr-combo-bar" hidden></div>
             <div class="wbo-es-history-row wbo-mgr-hist-row" id="wbo-mgr-hist-row" hidden></div>
-            <div class="wbo-mgr-drag-hint">提示：拖动分组左侧 ⋮⋮ 可上下排序；拖动世界书（展开态亦可）可组内调序或直接拖入上方分组</div>
+            <div class="wbo-mgr-scan-prompt" id="wbo-mgr-scan-prompt" hidden></div>
+            <div class="wbo-mgr-drag-hint" title="拖动分组左侧 ⋮⋮ 可排序；拖动世界书可调序或拖入上方分组">拖动分组左侧 ⋮⋮ 可排序；拖动世界书可调序或拖入上方分组</div>
         </div>
         <div class="wbo-mgr-es-box" id="wbo-mgr-es-box" hidden></div>
         <div class="wbo-batch-bar" id="wbo-batch-bar" hidden>
@@ -2351,10 +2411,7 @@ export function openManagerModal() {
     modal.addEventListener('dragstart', (ev) => {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
-        if (target.closest('.wbo-book-preview')) {
-            ev.preventDefault();
-            return;
-        }
+        if (target.closest('.wbo-book-preview')) return;
 
         const bookRow = target.closest('.wbo-book-row[data-book]');
         if (bookRow instanceof HTMLElement) {
@@ -2460,7 +2517,8 @@ export function openManagerModal() {
         if (dragState.type === 'group') {
             const targetGroup = target.closest('.wbo-group[data-group-id]');
             if (!(targetGroup instanceof HTMLElement)) return;
-            const targetId = targetGroup.getAttribute('data-group-id');
+            const targetHeader = targetGroup.querySelector('.wbo-group-header[data-drag-group-id]');
+            const targetId = targetHeader?.getAttribute('data-drag-group-id') || '';
             if (!targetId || targetId === dragState.groupId) return;
 
             ev.preventDefault();
@@ -2559,7 +2617,8 @@ export function openManagerModal() {
 
         if (activeDrag.type === 'group' && target) {
             const targetGroup = target.closest('.wbo-group[data-group-id]');
-            const targetId = targetGroup?.getAttribute('data-group-id');
+            const targetHeader = targetGroup?.querySelector('.wbo-group-header[data-drag-group-id]');
+            const targetId = targetHeader?.getAttribute('data-drag-group-id') || '';
             const pos = targetGroup?.classList.contains('wbo-drop-after') ? 'after' : 'before';
             clearDropHighlights();
             dragState = null;
@@ -2632,6 +2691,9 @@ export function openManagerModal() {
                 } else if (gid === SPECIAL_GROUPS.UNGROUPED) {
                     settings.ungroupedCollapsed = !settings.ungroupedCollapsed;
                     willCollapse = settings.ungroupedCollapsed;
+                } else if (gid === SPECIAL_GROUPS.PINNED) {
+                    settings.pinnedGroupCollapsed = !settings.pinnedGroupCollapsed;
+                    willCollapse = settings.pinnedGroupCollapsed;
                 } else {
                     const grp = settings.groups.find((g) => g.id === gid);
                     if (grp) {
@@ -2651,14 +2713,14 @@ export function openManagerModal() {
             }
             case 'move-section-up': {
                 const gid = target.getAttribute('data-group-id');
-                if (gid && moveSectionOrder(settings, gid, -1)) {
+                if (gid && moveSectionOrder(settings, gid, -1, _renderedMovableSectionIds)) {
                     await _callbacks.onMutation({ save: true });
                 }
                 break;
             }
             case 'move-section-down': {
                 const gid = target.getAttribute('data-group-id');
-                if (gid && moveSectionOrder(settings, gid, 1)) {
+                if (gid && moveSectionOrder(settings, gid, 1, _renderedMovableSectionIds)) {
                     await _callbacks.onMutation({ save: true });
                 }
                 break;
@@ -2867,15 +2929,29 @@ export function openManagerModal() {
                 if (_batchSelected.size === 0) break;
                 let ungroupedCount = 0;
                 for (const name of [..._batchSelected]) {
+                    let changedThis = false;
                     if (settings.assignments && name in settings.assignments) {
                         delete settings.assignments[name];
-                        ungroupedCount += 1;
+                        changedThis = true;
                     }
-                    // If a character-bound book was manually pulled out into a custom group, let it return cleanly
+                    // If a real character-bound book was pulled out, or an unbound/embedded book was manually included, reset cleanly
                     const meta = classification.byName.get(name);
-                    if (meta?.isCharBound && settings.charBookOverrides?.[name] === 'exclude_from_char') {
+                    const hasRealBinding = Boolean(
+                        (meta?.charOwners || []).some((o) => o && o.source !== 'embedded'),
+                    );
+                    if (hasRealBinding && settings.charBookOverrides?.[name] === 'exclude_from_char') {
                         delete settings.charBookOverrides[name];
+                        changedThis = true;
+                    } else if (settings.charBookOverrides?.[name] === 'include_in_char') {
+                        if (meta?.isCharBound && !hasRealBinding) {
+                            settings.charBookOverrides ||= {};
+                            settings.charBookOverrides[name] = 'exclude_from_char';
+                        } else {
+                            delete settings.charBookOverrides[name];
+                        }
+                        changedThis = true;
                     }
+                    if (changedThis) ungroupedCount += 1;
                 }
                 _batchSelected.clear();
                 await _callbacks.onMutation({ save: true });
@@ -3011,7 +3087,14 @@ export function openManagerModal() {
                 break;
             }
             case 'open-scan-modal': {
+                document.getElementById('wbo-mgr-scan-btn')?.blur?.();
                 openScanAndImportModal();
+                break;
+            }
+            case 'open-scan-prompt-action': {
+                const targetTab = target.getAttribute('data-scan-tab') || '';
+                document.getElementById('wbo-mgr-scan-btn')?.blur?.();
+                openScanAndImportModal({ initialTab: targetTab });
                 break;
             }
             case 'open-settings-modal': {
@@ -3031,16 +3114,17 @@ export function openManagerModal() {
     });
 
     refreshManagerModalContent();
+    triggerPanelCatchupScanIfNeeded();
 }
 
 /**
  * Refresh the Group Manager modal header indicators, filter pills, and list.
  */
-function refreshManagerModalContent() {
+function refreshManagerModalContent({ backgroundCatchUp = false } = {}) {
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
     if (!overlay || !_callbacks) return;
 
-    const { settings, classification } = _callbacks.getState();
+    const { settings, classification, bindingMap } = _callbacks.getState();
     const hasCustomGroups = classification.customGroups.length > 0;
     const orderedSections = classification.orderedSections || [];
 
@@ -3053,18 +3137,33 @@ function refreshManagerModalContent() {
     if (modalEl instanceof HTMLElement) applyThemeClass(modalEl);
 
     const characters = getCharactersInMemory();
-    const unscannedShallowCount = findUnscannedShallowCharacters(characters, settings.cachedCharBindings).length;
-    const unimportedBookCount = findCardsWithUnimportedBooks({
+    const scanPrompt = computeScanPromptState({
+        worldNames: [...classification.byName.keys()],
         characters,
-        worldNamesSet: new Set(classification.byName.keys()),
-        cachedCharBindings: settings.cachedCharBindings,
-    }).length;
-    const scanBadgeCount = unscannedShallowCount + unimportedBookCount;
+        bindingMap: bindingMap || new Map(),
+        settings,
+    });
 
     const scanBtn = overlay.querySelector('#wbo-mgr-scan-btn');
     const scanLbl = overlay.querySelector('#wbo-mgr-scan-label');
-    if (scanBtn) scanBtn.classList.toggle('is-active', scanBadgeCount > 0);
-    if (scanLbl) scanLbl.textContent = scanBadgeCount > 0 ? `扫描 ${scanBadgeCount}` : '扫描';
+    if (scanBtn) scanBtn.classList.remove('is-active');
+    if (scanLbl) scanLbl.textContent = scanPrompt.badgeCount > 0 ? `扫描 ${scanPrompt.badgeCount}` : '扫描';
+
+    const promptEl = overlay.querySelector('#wbo-mgr-scan-prompt');
+    if (promptEl instanceof HTMLElement) {
+        if (scanPrompt.shouldShowPrompt) {
+            const actionLabel = scanPrompt.promptKind === 'manual_scan' ? '立即扫描' : '查看处理';
+            const targetTab = scanPrompt.sameNameNeedConfirmCount > 0 ? 'same_name' : '';
+            promptEl.hidden = false;
+            promptEl.innerHTML = `
+                <span class="wbo-mgr-scan-prompt-text">${esc(scanPrompt.promptMessage)}</span>
+                <button type="button" class="wbo-link-btn wbo-mgr-scan-prompt-btn" data-action="open-scan-prompt-action" data-scan-tab="${esc(targetTab)}">${esc(actionLabel)}</button>
+            `;
+        } else {
+            promptEl.hidden = true;
+            promptEl.innerHTML = '';
+        }
+    }
 
     const manageGroupsBtn = overlay.querySelector('#wbo-mgr-manage-groups-btn');
     if (manageGroupsBtn instanceof HTMLElement) {
@@ -3140,7 +3239,12 @@ function refreshManagerModalContent() {
 
     syncManagerComboStripUi();
     syncManagerSearchBarUi();
-    renderManagerGroupsListOnly();
+    if (backgroundCatchUp && _activePreviewControllers.size > 0) {
+        _hasPendingDeferredListRender = true;
+    } else {
+        _hasPendingDeferredListRender = false;
+        renderManagerGroupsListOnly();
+    }
     _syncFloatingGroupManager?.();
 }
 
@@ -3442,11 +3546,14 @@ async function runManagerInlineEntrySearch() {
 
 /**
  * Re-render ONLY `#wbo-mgr-groups-list` while preserving scroll position and search input!
+ * @param {{ skipIndicatorSync?: boolean }} [options]
+ * @returns {boolean} true if the list DOM was rebuilt, false if skipped
  */
-function renderManagerGroupsListOnly() {
-    if (!_callbacks) return;
+function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
+    _hasPendingDeferredListRender = false;
+    if (!_callbacks) return false;
     const listEl = document.getElementById('wbo-mgr-groups-list');
-    if (!listEl) return;
+    if (!listEl) return false;
 
     const { settings, classification, bindingMap } = _callbacks.getState();
     const embeddedMatchSet = new Set();
@@ -3479,16 +3586,19 @@ function renderManagerGroupsListOnly() {
         splitSpaces: Boolean(settings.mgrSearchSplitSpaces),
     };
 
+    const currentEditor = getCurrentEditorWorldName();
     // Read LIVE collapse & hidden-group state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
         q,
         _batchMode,
+        currentEditor || '',
         settings.activeFilterGroupId,
         settings.charBookTitleMode,
         settings.aliasTitleMode,
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
         Boolean(settings.ungroupedCollapsed),
+        Boolean(settings.pinnedGroupCollapsed),
         searchOpts.searchBookName,
         searchOpts.searchCharName,
         Boolean(settings.mgrSearchInEntries),
@@ -3505,150 +3615,204 @@ function renderManagerGroupsListOnly() {
         ]),
     ]);
     if (structSig === _lastModalListSig && listEl.childElementCount > 0) {
-        syncEmbeddedPanelIndicators();
-        return;
+        if (!skipIndicatorSync) {
+            syncEmbeddedPanelIndicators();
+        }
+        return false;
     }
     _lastModalListSig = structSig;
 
     const prevScroll = listEl.scrollTop;
     _renderedGroupBooksMap.clear();
     const activeGlobals = getActiveGlobalWorldSet();
-    const currentEditor = getCurrentEditorWorldName();
     const hasCustomGroups = classification.customGroups.length > 0;
     const filterId = settings.activeFilterGroupId;
-    const includeCharExplicitly =
-        filterId === SPECIAL_GROUPS.CHARACTER ||
-        filterId === SPECIAL_GROUPS.ALL ||
-        (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
+    const isAllView = filterId === SPECIAL_GROUPS.ALL || (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
+    const includeCharExplicitly = filterId === SPECIAL_GROUPS.CHARACTER || isAllView;
 
-    const sections = [];
+    /** @type {Array<{ type: 'raw', html: string, isMovable?: boolean } | { type: 'section', id: string, name: string, color: string, collapsed: boolean, isCustom: boolean, isSingleView: boolean, isMovable: boolean, charBookTitleMode?: string, hiddenInGlobal?: boolean, hiddenInEditor?: boolean, books: Array<any> }>} */
+    const renderSpecs = [];
+
+    const pushSectionSpec = (sec, { isSingleView = false, isMovable = true, forceOpen = false } = {}) => {
+        if (sec.kind === 'custom') {
+            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            if (q && books.length === 0) return;
+            const liveCollapsed = Boolean(liveGroupById.get(sec.id)?.collapsed);
+            renderSpecs.push({
+                type: 'section',
+                id: sec.id,
+                name: sec.name,
+                color: sec.color,
+                collapsed: (Boolean(q) || isSingleView || forceOpen) ? false : liveCollapsed,
+                isCustom: true,
+                isSingleView,
+                isMovable: isMovable && !isSingleView,
+                hiddenInGlobal: globalHiddenSet.has(sec.id),
+                hiddenInEditor: editorHiddenSet.has(sec.id),
+                books,
+            });
+            return;
+        }
+        if (sec.kind === 'ungrouped') {
+            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            if ((q || !isSingleView) && books.length === 0) return;
+            renderSpecs.push({
+                type: 'section',
+                id: SPECIAL_GROUPS.UNGROUPED,
+                name: hasCustomGroups ? '未分组' : '非角色世界书',
+                color: '#8c99a6',
+                collapsed: (Boolean(q) || isSingleView || forceOpen) ? false : Boolean(settings.ungroupedCollapsed),
+                isCustom: false,
+                isSingleView,
+                isMovable: isMovable && !isSingleView,
+                hiddenInGlobal: globalHiddenSet.has(SPECIAL_GROUPS.UNGROUPED),
+                hiddenInEditor: editorHiddenSet.has(SPECIAL_GROUPS.UNGROUPED),
+                books,
+            });
+            return;
+        }
+        if (sec.kind === 'character' && classification.charCount > 0) {
+            const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            if (q && matchedCharBooks.length === 0) return;
+            renderSpecs.push({
+                type: 'section',
+                id: SPECIAL_GROUPS.CHARACTER,
+                name: '角色世界书',
+                color: '#7c8594',
+                collapsed: (Boolean(q) || isSingleView || forceOpen) ? false : Boolean(settings.charGroupCollapsed),
+                isCustom: false,
+                isSingleView,
+                isMovable: isMovable && !isSingleView,
+                charBookTitleMode: settings.charBookTitleMode,
+                hiddenInGlobal: globalHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
+                hiddenInEditor: editorHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
+                books: matchedCharBooks,
+            });
+        }
+    };
 
     if (filterId === SPECIAL_GROUPS.PINNED) {
         const pinnedList = q
             ? (classification.pinnedBooks || []).filter((b) => matchesSearch(b, q, searchOpts))
             : (classification.pinnedBooks || []);
         if (pinnedList.length > 0) {
-            sections.push(
-                renderGroupSectionHtml({
-                    id: SPECIAL_GROUPS.PINNED,
-                    name: '★ 已置顶',
-                    color: '#e09f3e',
-                    collapsed: false,
-                    isCustom: false,
-                    isSingleView: true,
-                    canMoveUp: false,
-                    canMoveDown: false,
-                    books: pinnedList,
-                    activeGlobals,
-                    currentEditor,
-                    embeddedMatchSet,
-                }),
-            );
+            renderSpecs.push({
+                type: 'section',
+                id: SPECIAL_GROUPS.PINNED,
+                name: '★ 已置顶',
+                color: '#e09f3e',
+                collapsed: false,
+                isCustom: false,
+                isSingleView: true,
+                isMovable: false,
+                books: pinnedList,
+            });
         } else {
-            sections.push(
-                `<div class="wbo-empty-hint">${q ? '已置顶中无匹配世界书' : '暂无已置顶的世界书，点击书行右侧 ★ 即可置顶'}</div>`,
-            );
+            renderSpecs.push({
+                type: 'raw',
+                html: `<div class="wbo-empty-hint">${q ? '已置顶中无匹配世界书' : '暂无已置顶的世界书，点击书行右侧 ★ 即可置顶'}</div>`,
+            });
+        }
+    } else if (isAllView) {
+        const pinnedList = q
+            ? (classification.pinnedBooks || []).filter((b) => matchesSearch(b, q, searchOpts))
+            : (classification.pinnedBooks || []);
+        if (pinnedList.length > 0) {
+            const charSec = orderedSections.find((s) => s.kind === 'character');
+            if (charSec) {
+                pushSectionSpec(charSec, { isSingleView: false, isMovable: false });
+            }
+            renderSpecs.push({
+                type: 'section',
+                id: SPECIAL_GROUPS.PINNED,
+                name: '★ 已置顶',
+                color: '#e09f3e',
+                collapsed: Boolean(q) ? false : Boolean(settings.pinnedGroupCollapsed),
+                isCustom: false,
+                isSingleView: false,
+                isMovable: false,
+                books: pinnedList,
+            });
+            orderedSections.forEach((sec) => {
+                if (sec.kind !== 'character') {
+                    pushSectionSpec(sec, { isSingleView: false, isMovable: true });
+                }
+            });
+        } else {
+            orderedSections.forEach((sec) => {
+                pushSectionSpec(sec, { isSingleView: false, isMovable: true });
+            });
         }
     } else {
-        orderedSections.forEach((sec, idx) => {
-        const canMoveUp = idx > 0;
-        const canMoveDown = idx < orderedSections.length - 1;
-
-        if (sec.kind === 'custom') {
-            if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== SPECIAL_GROUPS.ALL && filterId !== sec.id) return;
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
-            if (q && books.length === 0) return;
-            const liveCollapsed = Boolean(liveGroupById.get(sec.id)?.collapsed);
-            const isSingleView = filterId === sec.id;
-            const forceOpen = Boolean(q) || isSingleView;
-            sections.push(
-                renderGroupSectionHtml({
-                    id: sec.id,
-                    name: sec.name,
-                    color: sec.color,
-                    collapsed: forceOpen ? false : liveCollapsed,
-                    isCustom: true,
-                    isSingleView,
-                    hiddenInGlobal: globalHiddenSet.has(sec.id),
-                    hiddenInEditor: editorHiddenSet.has(sec.id),
-                    canMoveUp,
-                    canMoveDown,
-                    books,
-                    activeGlobals,
-                    currentEditor,
-                    embeddedMatchSet,
-                }),
-            );
-            return;
-        }
-
-        if (sec.kind === 'ungrouped') {
-            if (
-                filterId !== SPECIAL_GROUPS.DEFAULT &&
-                filterId !== SPECIAL_GROUPS.ALL &&
-                filterId !== SPECIAL_GROUPS.UNGROUPED
-            ) return;
-            const books = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
-            if (q && books.length === 0) return;
-            const isSingleView = filterId === SPECIAL_GROUPS.UNGROUPED;
-            const forceOpen = Boolean(q) || isSingleView;
-            sections.push(
-                renderGroupSectionHtml({
-                    id: SPECIAL_GROUPS.UNGROUPED,
-                    name: hasCustomGroups ? '未分组' : '非角色世界书',
-                    color: '#8c99a6',
-                    collapsed: forceOpen ? false : Boolean(settings.ungroupedCollapsed),
-                    isCustom: false,
-                    isSingleView,
-                    hiddenInGlobal: globalHiddenSet.has(SPECIAL_GROUPS.UNGROUPED),
-                    hiddenInEditor: editorHiddenSet.has(SPECIAL_GROUPS.UNGROUPED),
-                    canMoveUp,
-                    canMoveDown,
-                    books,
-                    activeGlobals,
-                    currentEditor,
-                    embeddedMatchSet,
-                }),
-            );
-            return;
-        }
-
-        if (sec.kind === 'character' && classification.charCount > 0) {
-            const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
-            if (includeCharExplicitly) {
-                if (q && matchedCharBooks.length === 0) return;
-                const isSingleView = filterId === SPECIAL_GROUPS.CHARACTER;
-                const forceOpen = Boolean(q) || isSingleView;
-                sections.push(
-                    renderGroupSectionHtml({
-                        id: SPECIAL_GROUPS.CHARACTER,
-                        name: '角色世界书',
-                        color: '#7c8594',
-                        collapsed: forceOpen ? false : Boolean(settings.charGroupCollapsed),
-                        isCustom: false,
-                        isSingleView,
-                        charBookTitleMode: settings.charBookTitleMode,
-                        hiddenInGlobal: globalHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
-                        hiddenInEditor: editorHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
-                        canMoveUp,
-                        canMoveDown,
-                        books: matchedCharBooks,
-                        activeGlobals,
-                        currentEditor,
-                        embeddedMatchSet,
-                    }),
-                );
-            } else if (filterId === SPECIAL_GROUPS.DEFAULT && q && matchedCharBooks.length > 0) {
-                sections.push(`
-                    <div class="wbo-char-match-bar">
-                        <span>已隐藏的角色书中有 ${matchedCharBooks.length} 项匹配</span>
-                        <button type="button" class="wbo-link-btn" data-action="reveal-char-books">查看</button>
-                    </div>
-                `);
+        if (filterId === SPECIAL_GROUPS.DEFAULT && !settings.showCharBooks && currentEditor) {
+            const editingMeta = classification.byName.get(currentEditor);
+            if (editingMeta?.isInCharGroup && (!q || matchesSearch(editingMeta, q, searchOpts))) {
+                renderSpecs.push({
+                    type: 'raw',
+                    html: `<div class="wbo-mgr-bare-editing">${renderBookRowHtml(editingMeta, activeGlobals, currentEditor, embeddedMatchSet)}</div>`,
+                });
             }
         }
-    });
+        orderedSections.forEach((sec) => {
+            if (sec.kind === 'custom') {
+                if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== sec.id) return;
+                pushSectionSpec(sec, { isSingleView: filterId === sec.id, isMovable: filterId !== sec.id });
+                return;
+            }
+            if (sec.kind === 'ungrouped') {
+                if (filterId !== SPECIAL_GROUPS.DEFAULT && filterId !== SPECIAL_GROUPS.UNGROUPED) return;
+                pushSectionSpec(sec, { isSingleView: filterId === SPECIAL_GROUPS.UNGROUPED, isMovable: filterId !== SPECIAL_GROUPS.UNGROUPED });
+                return;
+            }
+            if (sec.kind === 'character' && classification.charCount > 0) {
+                if (includeCharExplicitly) {
+                    pushSectionSpec(sec, { isSingleView: filterId === SPECIAL_GROUPS.CHARACTER, isMovable: false });
+                } else if (filterId === SPECIAL_GROUPS.DEFAULT && q) {
+                    const matchedCharBooks = sec.books.filter((b) => matchesSearch(b, q, searchOpts));
+                    if (matchedCharBooks.length > 0) {
+                        renderSpecs.push({
+                            type: 'raw',
+                            html: `
+                                <div class="wbo-char-match-bar">
+                                    <span>已隐藏的角色书中有 ${matchedCharBooks.length} 项匹配</span>
+                                    <button type="button" class="wbo-link-btn" data-action="reveal-char-books">查看</button>
+                                </div>
+                            `,
+                        });
+                    }
+                }
+            }
+        });
     }
+
+    const visibleMovableIds = renderSpecs
+        .filter((s) => s.type === 'section' && s.isMovable)
+        .map((s) => s.id);
+    _renderedMovableSectionIds = visibleMovableIds;
+    const boundsMap = getVisibleSectionMoveBounds(visibleMovableIds);
+
+    const sections = renderSpecs.map((spec) => {
+        if (spec.type === 'raw') return spec.html;
+        const bnd = spec.isMovable ? boundsMap.get(spec.id) : null;
+        return renderGroupSectionHtml({
+            id: spec.id,
+            name: spec.name,
+            color: spec.color,
+            collapsed: spec.collapsed,
+            isCustom: spec.isCustom,
+            isSingleView: spec.isSingleView,
+            hideOrderActions: !spec.isMovable,
+            charBookTitleMode: spec.charBookTitleMode,
+            hiddenInGlobal: spec.hiddenInGlobal,
+            hiddenInEditor: spec.hiddenInEditor,
+            canMoveUp: Boolean(bnd?.canMoveUp),
+            canMoveDown: Boolean(bnd?.canMoveDown),
+            books: spec.books,
+            activeGlobals,
+            currentEditor,
+            embeddedMatchSet,
+        });
+    });
 
     if (q && !settings.mgrSearchInEntries) {
         sections.push(`
@@ -3670,6 +3834,7 @@ function renderManagerGroupsListOnly() {
 
     listEl.scrollTop = prevScroll;
     syncBatchBarUi();
+    return true;
 }
 
 // ==================== Sub-Modals (stack above Manager Modal) ====================
@@ -3744,6 +3909,7 @@ function closeSubModal(opts = null) {
     if (_subModalStack.length === 0) {
         prunePreviewCacheAfterSubModal();
     }
+    document.getElementById('wbo-mgr-scan-btn')?.blur?.();
 }
 
 /**
@@ -3863,14 +4029,14 @@ function openInlineTextPrompt({
 /**
  * Create a sub-modal stacked above the Group Manager modal without closing `#WorldInfo`.
  */
-function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, stack = false } = {}) {
+function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, stack = false, floating = false } = {}) {
     if (!stack) {
         closeSubModal({ all: true });
     }
     const stackIdx = _subModalStack.length;
     const overlay = document.createElement('div');
     overlay.id = stackIdx === 0 ? SUBMODAL_OVERLAY_ID : `${SUBMODAL_OVERLAY_ID}-${stackIdx}`;
-    overlay.className = 'wbo-modal-overlay wbo-submodal-overlay';
+    overlay.className = `wbo-modal-overlay wbo-submodal-overlay${floating ? ' wbo-floating-overlay' : ''}`;
     if (stackIdx > 0) {
         overlay.style.zIndex = String(10020 + stackIdx);
     }
@@ -3908,7 +4074,9 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
     _subModalStack.push(overlay);
 
     // Isolate events from SillyTavern and close ONLY via the `×` / action buttons (never backdrop click!)
-    bindDrawerSafeBubbleGuard(overlay);
+    if (!floating) {
+        bindDrawerSafeBubbleGuard(overlay);
+    }
     bindDrawerSafeBubbleGuard(modal);
     const subWinCleanup = attachModalWindowControls(modal, modal.querySelector('.wbo-modal-header'));
     _modalWindowCleanupMap.set(modal, subWinCleanup);
@@ -4480,19 +4648,19 @@ function openMoveGroupModal(bookMeta) {
             desc: '',
         })),
         {
+            id: SPECIAL_GROUPS.CHARACTER,
+            label: '角色世界书',
+            color: '#7c8594',
+            desc: bookMeta.isCharBound
+                ? bookMeta.charOwners.map((o) => o.charName).join('、')
+                : '手动归入角色世界书',
+        },
+        {
             id: SPECIAL_GROUPS.UNGROUPED,
             label: bookMeta.isCharBound ? '移出角色世界书' : '未分组',
             color: '#8c99a6',
             desc: '',
         },
-        ...(bookMeta.isCharBound
-            ? [{
-                id: SPECIAL_GROUPS.CHARACTER,
-                label: '角色世界书',
-                color: '#7c8594',
-                desc: bookMeta.charOwners.map((o) => o.charName).join('、'),
-            }]
-            : []),
     ];
 
     const listHtml = options
@@ -4513,7 +4681,6 @@ function openMoveGroupModal(bookMeta) {
             <div class="wbo-move-list">${listHtml}</div>
             <div class="wbo-modal-footer wbo-footer-pair">
                 <button type="button" class="wbo-btn" id="wbo-move-new-group">新建分组</button>
-                <span class="wbo-spacer"></span>
                 <button type="button" class="wbo-btn" id="wbo-cancel-btn">关闭</button>
             </div>
         `,
@@ -4524,20 +4691,7 @@ function openMoveGroupModal(bookMeta) {
             const targetId = btn.getAttribute('data-target-group');
             if (!targetId) return;
 
-            if (targetId === SPECIAL_GROUPS.CHARACTER) {
-                delete settings.assignments[bookMeta.realName];
-                delete settings.charBookOverrides[bookMeta.realName];
-            } else if (targetId === SPECIAL_GROUPS.UNGROUPED) {
-                delete settings.assignments[bookMeta.realName];
-                if (bookMeta.isCharBound) {
-                    settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
-                }
-            } else {
-                settings.assignments[bookMeta.realName] = targetId;
-                if (bookMeta.isCharBound) {
-                    settings.charBookOverrides[bookMeta.realName] = 'exclude_from_char';
-                }
-            }
+            assignBookToGroup(settings, bookMeta, targetId);
 
             closeSubModal();
             await _callbacks.onMutation({ save: true });
@@ -4575,7 +4729,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                     <div class="wbo-cmb-live-row">
                         <span class="wbo-cmb-live-info" id="wbo-cmb-live-info"></span>
                         <span class="wbo-cmb-live-actions">
-                            <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-cmb-undo-btn" hidden>↶ 撤回切换</button>
+                            <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-cmb-undo-btn" hidden>${UNDO_SVG}<span>撤回切换</span></button>
                             <button type="button" class="wbo-btn" id="wbo-cmb-clear-global-btn">全关当前全局</button>
                         </span>
                     </div>
@@ -4634,7 +4788,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                 </div>
             </div>
         `,
-        { wide: true, pinnedLayout: true },
+        { wide: true, pinnedLayout: true, floating: true },
     );
 
     const stepList = modal.querySelector('#wbo-cmb-step-list');
@@ -4693,9 +4847,12 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         if (!listEl) return;
         if (presets.length === 0) {
             listEl.innerHTML = `
-                <div class="wbo-empty-hint">
-                    还没有保存过全局组合。<br>
-                    点上方「自由勾选新建组合」可跨分组任意搭配世界书，或点「存当前全局为组合」保存当前已开的全局书。
+                <div class="wbo-empty-hint wbo-qhub-empty">
+                    <div class="wbo-qhub-empty-title">还没有保存过全局组合</div>
+                    <div class="wbo-qhub-empty-steps">
+                        <div>• 点上方<b>「存当前全局为组合」</b>：直接保存当前已开的全局书</div>
+                        <div>• 点上方<b>「自由勾选新建组合」</b>：跨分组自由勾选任意世界书</div>
+                    </div>
                 </div>
             `;
             return;
@@ -5360,7 +5517,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <div class="wbo-modal-footer wbo-ai-footer wbo-ai-footer-single wbo-pinned-footer">
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-local-undo-btn" ${hasUndo ? '' : 'hidden'}>
-                            <i class="fa-solid fa-rotate-left"></i> <span id="wbo-local-undo-label">${esc(getUndoButtonLabel())}</span>
+                            ${UNDO_SVG} <span id="wbo-local-undo-label">${esc(getUndoButtonLabel())}</span>
                         </button>
                     </div>
                     <div class="wbo-ai-footer-right">
@@ -5399,7 +5556,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     </div>
                     <div class="wbo-sens-result-bar" id="wbo-sens-result-bar" hidden>
                         <span class="wbo-sens-result-text" id="wbo-sens-result-text"></span>
-                        <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-sens-inline-undo">撤回</button>
+                        <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-sens-inline-undo">${UNDO_SVG}<span>撤回</span></button>
                     </div>
                     <input type="search" class="wbo-input wbo-ai-book-filter" id="wbo-ai-book-filter" placeholder="搜索筛选世界书..." autocomplete="off" spellcheck="false">
                     <div class="wbo-ai-book-list" id="wbo-ai-book-list">${bookChecksHtml}</div>
@@ -5482,7 +5639,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <div class="wbo-modal-footer wbo-ai-footer wbo-pinned-footer">
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-ai-undo-btn" ${hasUndo ? '' : 'hidden'} title="恢复到上一次整理前的分组与显示名">
-                            <i class="fa-solid fa-rotate-left"></i> <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
+                            ${UNDO_SVG} <span id="wbo-ai-undo-label">${esc(getUndoButtonLabel())}</span>
                         </button>
                         <span class="wbo-api-inline-info">
                             <b id="wbo-api-summary-text">${esc(getApiSummaryText())}</b>
@@ -5555,7 +5712,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <input type="text" class="wbo-input" id="wbo-api-name" value="${esc(activeCh?.name || '')}" placeholder="配置名称，例如：常用通道 1" spellcheck="false">
                         <input type="text" class="wbo-input" id="wbo-api-base-url" value="${esc(activeCh?.baseUrl || 'https://api.openai.com/v1')}" placeholder="Base URL，例如 https://api.openai.com/v1" spellcheck="false">
                         <div class="wbo-api-model-row">
-                            <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off">
+                            <input type="password" class="wbo-input" id="wbo-api-key" value="${esc(activeCh?.apiKey || '')}" placeholder="API Key" autocomplete="off" spellcheck="false">
                             <button type="button" class="wbo-btn" id="wbo-toggle-key-btn" title="显示或隐藏密钥">
                                 <i class="fa-regular fa-eye"></i>
                             </button>
@@ -7422,6 +7579,21 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         return { rolledBack, rollbackErrors };
     };
 
+    const applyOutboundCharExclusions = (targetSettings, appliedProposals, resolveIsCharBound) => {
+        if (!targetSettings || !Array.isArray(appliedProposals) || appliedProposals.length === 0) return;
+        targetSettings.charBookOverrides ||= {};
+        for (const p of appliedProposals) {
+            if (!p?.realName) continue;
+            if (p.applyGroup === false) continue;
+            const cleanGroup = typeof p.group === 'string' ? p.group.trim() : '';
+            if (!cleanGroup || cleanGroup === '角色世界书') continue;
+            if (cleanGroup !== '未分组' && !targetSettings.assignments?.[p.realName]) continue;
+            if (resolveIsCharBound(p.realName)) {
+                targetSettings.charBookOverrides[p.realName] = 'exclude_from_char';
+            }
+        }
+    };
+
     modal.querySelector('#wbo-ai-apply-btn')?.addEventListener('click', async (ev) => {
         const applyBtn = ev.currentTarget;
         const applyMode = modal.querySelector('input[name="wbo-ai-apply-mode"]:checked')?.value || 'alias';
@@ -7466,6 +7638,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             /** @type {Array<{ oldName: string, newName: string, error: string }>} */
             const failedItems = [];
             const adjustedProposals = [];
+            const origNameByFinalName = new Map();
 
             const renderRunningProgress = (idx, label) => {
                 if (!(applyProgressBox instanceof HTMLElement)) return;
@@ -7511,6 +7684,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         });
                     }
                 }
+                origNameByFinalName.set(finalRealName, item.realName);
                 adjustedProposals.push({
                     realName: finalRealName,
                     alias: '',
@@ -7534,7 +7708,17 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             }
 
             // Commit groups/notes & flush host world list ONCE for the whole batch!
-            applyAiOrganizeProposals(settings, adjustedProposals, { label: previewFromLocal ? '免 AI 整理' : 'AI 整理' });
+            applyAiOrganizeProposals(settings, adjustedProposals, {
+                label: previewFromLocal ? '免 AI 整理' : 'AI 整理',
+                isCharBoundFn: (name) => {
+                    const origName = origNameByFinalName.get(name) || name;
+                    return Boolean((classification.byName.get(origName)?.charOwners || []).some((o) => o && o.source !== 'embedded'));
+                },
+            });
+            applyOutboundCharExclusions(settings, adjustedProposals, (name) => {
+                const origName = origNameByFinalName.get(name) || name;
+                return Boolean(classification.byName.get(origName)?.isCharBound);
+            });
             await flushWorldInfoListRefresh();
             await _callbacks.onRescan();
 
@@ -7586,7 +7770,13 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
 
         const { appliedCount, createdGroups } = applyAiOrganizeProposals(settings, chosen, {
             label: previewFromLocal ? '免 AI 整理' : 'AI 整理',
+            isCharBoundFn: (name) => Boolean((classification.byName.get(name)?.charOwners || []).some((o) => o && o.source !== 'embedded')),
         });
+        applyOutboundCharExclusions(
+            settings,
+            chosen,
+            (name) => Boolean(classification.byName.get(name)?.isCharBound),
+        );
         closeSubModal();
         await _callbacks.onMutation({ save: true });
         const extra = createdGroups.length > 0 ? `，新建分组：${createdGroups.join('、')}` : '';
@@ -7598,13 +7788,20 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
  * Unified Character Worldbook Scan modal with complete accounting for BOTH
  * fewer books (unbound / missing / shared) AND extra books (multi-book chars / orphan extra books).
  */
-function openScanAndImportModal() {
+function openScanAndImportModal({ initialTab = '' } = {}) {
     if (!_callbacks) return;
+    document.getElementById('wbo-mgr-scan-btn')?.blur?.();
 
     const sourceLabel = (s) => {
         if (s === 'primary') return '当前主绑';
         if (s === 'extra') return '额外附加（可能为通用书或旧版残留）';
         return '本地同名';
+    };
+
+    const matchReasonLabel = (m) => {
+        if (m.reason === 'exact_name') return `与角色「${m.charName}」同名，但角色卡未绑定`;
+        if (m.reason === 'unscanned_card_name') return `与未扫描角色卡「${m.charName}」同名`;
+        return `与角色「${m.charName}」近似同名，但角色卡未绑定`;
     };
 
     const renderModalBody = () => {
@@ -7622,6 +7819,7 @@ function openScanAndImportModal() {
             bindingMap: bindingMap || new Map(),
             worldNamesSet,
             cachedCharBindings: settings.cachedCharBindings,
+            settings,
         });
         const personaSummary = summarizePersonaWorldBindings({
             powerUserSettings: getPowerUserSettings(),
@@ -7660,6 +7858,65 @@ function openScanAndImportModal() {
             </div>
             <div class="wbo-cov-table-body">${rowsHtml}</div>
         `;
+
+        const overrides = settings.charBookOverrides || {};
+        const unboundMatches = coverage.unboundNameMatches || [];
+        const embeddedMatches = (coverage.embeddedNameMatches || []).filter((m) => {
+            const ov = overrides[m?.worldName];
+            return ov !== 'include_in_char' && ov !== 'exclude_from_char';
+        });
+        const totalSameNameCount = unboundMatches.length + embeddedMatches.length;
+
+        if (totalSameNameCount > 0) {
+            const unboundRowsHtml = unboundMatches.map((m) => `
+                <div class="wbo-cov-row-wrap">
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            ${charJumpBtn(m.avatar, m.charName)}
+                            <span class="wbo-cov-reason">${esc(matchReasonLabel(m))}</span>
+                        </div>
+                        <div class="wbo-cov-targets">
+                            ${worldChipHtml(m.worldName, {
+                                roleText: `${matchReasonLabel(m)}。可点「归入角色世界书」手动归类`,
+                            })}
+                            <button type="button" class="wbo-cov-action-pill is-primary" data-cov-assign-char="${esc(m.worldName)}" data-cov-match-kind="unbound" title="将此世界书归入「角色世界书」分组">归入角色世界书</button>
+                        </div>
+                    </div>
+                    <div class="wbo-cov-drawer" hidden></div>
+                </div>
+            `).join('');
+
+            const embeddedRowsHtml = embeddedMatches.map((m) => `
+                <div class="wbo-cov-row-wrap">
+                    <div class="wbo-cov-row">
+                        <div class="wbo-cov-subject">
+                            ${charJumpBtn(m.avatar, m.charName)}
+                            <button type="button" class="wbo-cov-action-pill" data-cov-emb-diff="${esc(m.avatar)}" data-cov-emb-world="${esc(m.worldName)}" data-cov-primary-world="${esc(m.primaryWorld || '')}" title="对比角色卡自带内容与这本本地同名书">对比差异</button>
+                        </div>
+                        <div class="wbo-cov-targets">
+                            ${worldChipHtml(m.worldName, {
+                                roleText: `这是未启用的本地重名世界书${m.primaryWorld ? `（角色「${m.charName}」当前实际正在使用的是「${m.primaryWorld}」）` : ''}`,
+                            })}
+                            <span class="wbo-tag is-warn" title="本地未启用的重名世界书副本">本地重名</span>
+                            <button type="button" class="wbo-cov-action-pill is-primary" data-cov-assign-char="${esc(m.worldName)}" data-cov-match-kind="embedded" title="将此世界书归入「角色世界书」分组">归入角色世界书</button>
+                        </div>
+                    </div>
+                    <div class="wbo-cov-drawer" hidden></div>
+                </div>
+            `).join('');
+
+            covTabs.push({
+                key: 'same_name',
+                label: '同名待归类',
+                count: totalSameNameCount,
+                rowsHtml: `
+                    <div class="wbo-cov-same-name-alert">
+                        <span>以下 <b>${totalSameNameCount}</b> 本世界书与角色卡同名或相近，但角色卡中未直接绑定（如卡内未填绑定、角色卡尚未扫描或旧版同名副本），因此暂未自动归入「角色世界书」。确认属于角色时可一键归类。</span>
+                    </div>
+                    ${renderCovTable(`${unboundRowsHtml}${embeddedRowsHtml}`, '角色名')}
+                `,
+            });
+        }
 
         if (coverage.multiBookChars.length > 0) {
             covTabs.push({
@@ -7818,56 +8075,10 @@ function openScanAndImportModal() {
                 `,
             });
         }
-        if (coverage.embeddedNameMatches?.length > 0) {
-            covTabs.push({
-                key: 'embedded',
-                label: '卡内同名书',
-                count: coverage.embeddedNameMatches.length,
-                rowsHtml: `
-                    <div class="wbo-cov-orphan-bar">
-                        <span>这些角色卡已绑定主世界书，同时卡内自带世界书与另一本本地世界书同名（多为旧版残留，并非附加绑定）。点「对比差异」可核对两者内容。</span>
-                    </div>
-                    ${renderCovTable(coverage.embeddedNameMatches.map((m) => `
-                        <div class="wbo-cov-row-wrap">
-                            <div class="wbo-cov-row">
-                                <div class="wbo-cov-subject">
-                                    ${charJumpBtn(m.avatar, m.charName)}
-                                    <button type="button" class="wbo-cov-action-pill" data-cov-emb-diff="${esc(m.avatar)}" data-cov-emb-world="${esc(m.worldName)}" data-cov-primary-world="${esc(m.primaryWorld || '')}" title="对比卡内自带世界书与本地同名文件条目差异">对比差异</button>
-                                </div>
-                                <div class="wbo-cov-targets">
-                                    ${worldChipHtml(m.worldName, {
-                                        roleText: `此书为本地同名文件（与角色「${m.charName}」卡内自带世界书同名但未绑定，多为旧版残留）；该角色当前主绑书为「${m.primaryWorld || '未知'}」`,
-                                    })}
-                                    <span class="wbo-tag is-warn" title="本地同名文件，未绑定到当前角色卡，多为旧版残留">本地同名</span>
-                                    ${m.primaryWorld ? `<span class="wbo-tag">当前主绑：${esc(m.primaryWorld)}</span>` : ''}
-                                </div>
-                            </div>
-                            <div class="wbo-cov-drawer" hidden></div>
-                        </div>
-                    `).join(''), '角色名')}
-                `,
-            });
-        }
-        if (coverage.unboundChars.length > 0) {
-            covTabs.push({
-                key: 'unbound',
-                label: '未绑定角色',
-                count: coverage.unboundChars.length,
-                rowsHtml: renderCovTable(coverage.unboundChars.map((c) => `
-                    <div class="wbo-cov-row">
-                        <div class="wbo-cov-subject">
-                            ${charJumpBtn(c.avatar, c.charName)}
-                        </div>
-                        <div class="wbo-cov-targets">
-                            <span class="wbo-cov-missing">${c.shallow ? '尚未加载（可点上方扫描）' : '未绑定世界书'}</span>
-                        </div>
-                    </div>
-                `).join(''), '角色名'),
-            });
-        }
-
         const totalDiffItems = covTabs.reduce((acc, t) => acc + t.count, 0);
-        const firstTabKey = covTabs[0]?.key || '';
+        const firstTabKey = (initialTab && covTabs.some((t) => t.key === initialTab))
+            ? initialTab
+            : (covTabs[0]?.key || '');
         const overviewSummary = covTabs.length > 0
             ? covTabs.map((t) => `${t.label} ${t.count}`).join(' · ')
             : '所有角色卡与世界书一一对应，未发现异常。';
@@ -7880,8 +8091,8 @@ function openScanAndImportModal() {
                         <span class="wbo-subtle-tip">点击世界书查看操作选项</span>
                     </div>
                     <div class="wbo-cov-tab-bar">
-                        ${covTabs.map((t, i) => `
-                            <button type="button" class="wbo-pill${i === 0 ? ' is-active' : ''}" data-cov-tab="${esc(t.key)}">
+                        ${covTabs.map((t) => `
+                            <button type="button" class="wbo-pill${t.key === firstTabKey ? ' is-active' : ''}" data-cov-tab="${esc(t.key)}">
                                 <span>${esc(t.label)}</span><span class="wbo-pill-count">${t.count}</span>
                             </button>
                         `).join('')}
@@ -7937,12 +8148,10 @@ function openScanAndImportModal() {
                     <i class="fa-solid fa-magnifying-glass"></i> ${esc(scanBtnLabel)}
                 </button>
             </div>
-            <div class="wbo-ai-status wbo-scan-top-status" id="wbo-scan-top-status" hidden></div>
+            <div class="wbo-ai-status wbo-scan-top-status" id="wbo-scan-status" hidden></div>
 
             ${coverageHtml}
             ${unimportedSection}
-
-            <div class="wbo-ai-status" id="wbo-scan-status"></div>
             </div>
 
             <div class="wbo-modal-footer wbo-pinned-footer">
@@ -7956,18 +8165,13 @@ function openScanAndImportModal() {
 
     const bindHandlers = () => {
         const statusEl = modal.querySelector('#wbo-scan-status');
-        const topStatusEl = modal.querySelector('#wbo-scan-top-status');
         const setStatus = (msg, state = false) => {
             const kind = state === true ? 'error' : (state === 'error' || state === 'success' ? state : 'info');
-            const cls = `wbo-ai-status${kind === 'error' ? ' is-error' : (kind === 'success' ? ' is-success' : '')}`;
-            if (statusEl) {
+            const cls = `wbo-ai-status wbo-scan-top-status${kind === 'error' ? ' is-error' : (kind === 'success' ? ' is-success' : '')}`;
+            if (statusEl instanceof HTMLElement) {
                 statusEl.textContent = msg;
                 statusEl.className = cls;
-            }
-            if (topStatusEl instanceof HTMLElement) {
-                topStatusEl.textContent = msg;
-                topStatusEl.className = `${cls} wbo-scan-top-status`;
-                topStatusEl.hidden = !msg;
+                statusEl.hidden = !msg;
             }
         };
 
@@ -7982,17 +8186,12 @@ function openScanAndImportModal() {
             }
             if (statusMsg) {
                 const kind = statusKind === true ? 'error' : (statusKind === 'error' || statusKind === 'success' ? statusKind : 'info');
-                const cls = `wbo-ai-status${kind === 'error' ? ' is-error' : (kind === 'success' ? ' is-success' : '')}`;
+                const cls = `wbo-ai-status wbo-scan-top-status${kind === 'error' ? ' is-error' : (kind === 'success' ? ' is-success' : '')}`;
                 const nextStatus = modal.querySelector('#wbo-scan-status');
-                const nextTop = modal.querySelector('#wbo-scan-top-status');
-                if (nextStatus) {
+                if (nextStatus instanceof HTMLElement) {
                     nextStatus.textContent = statusMsg;
                     nextStatus.className = cls;
-                }
-                if (nextTop instanceof HTMLElement) {
-                    nextTop.textContent = statusMsg;
-                    nextTop.className = `${cls} wbo-scan-top-status`;
-                    nextTop.hidden = false;
+                    nextStatus.hidden = false;
                 }
             }
         };
@@ -8103,37 +8302,50 @@ function openScanAndImportModal() {
                     if (!drawer.isConnected || drawer.getAttribute('data-drawer-key') !== key) return;
                     const diff = compareWorldbookEntries(dataA?.entries || [], dataB?.entries || []);
                     const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0 && diff.modified.length === 0;
-                    const renderTitleChips = (arr, emptyText) =>
-                        arr.length > 0
-                            ? arr.slice(0, 12).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('') + (arr.length > 12 ? `<span class="wbo-subtle-tip">…等 ${arr.length} 条</span>` : '')
-                            : `<span class="wbo-subtle-tip">${emptyText}</span>`;
+                    const renderTitleChips = (arr, emptyText) => {
+                        if (arr.length === 0) return `<span class="wbo-subtle-tip">${emptyText}</span>`;
+                        const visible = arr.slice(0, 16).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('');
+                        const rest = arr.slice(16).map((x) => `<span class="wbo-tag" data-diff-extra hidden>${esc(x.title)}</span>`).join('');
+                        const moreBtn = arr.length > 16
+                            ? `<button type="button" class="wbo-link-btn wbo-diff-more-btn" data-expand-diff-chips>展开其余 ${arr.length - 16} 条</button>`
+                            : '';
+                        return `${visible}${rest}${moreBtn}`;
+                    };
 
                     drawer.innerHTML = `
-                        <div class="wbo-preview-head">
-                            <span><b>差异对比</b>：${identical ? '两本世界书条目内容完全一致，可放心解除其中一本' : `完全相同 ${diff.sameCount} 条 · 仅前书 ${diff.onlyA.length} 条 · 仅后书 ${diff.onlyB.length} 条 · 同名内容不同 ${diff.modified.length} 条`}</span>
+                        <div class="wbo-preview-head wbo-cov-drawer-head">
+                            <span><b>对比结果</b>：${identical ? '两本书内容完全一样，解除其中一本即可。' : `相同 ${diff.sameCount} 条 · 仅第 1 本有 ${diff.onlyA.length} 条 · 仅第 2 本有 ${diff.onlyB.length} 条${diff.modified.length > 0 ? ` · 同名但内容不同 ${diff.modified.length} 条` : ''}`}</span>
                             <button type="button" class="wbo-link-btn" data-close-cov-drawer>收起</button>
                         </div>
                         <div class="wbo-diff-grid">
                             <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅「${esc(bookA)}」（共 ${diff.totalA} 条）独有：${diff.onlyA.length}</div>
+                                <div class="wbo-diff-col-head">仅「${esc(bookA)}」有（${diff.onlyA.length} 条）</div>
                                 <div class="wbo-diff-chips">${renderTitleChips(diff.onlyA, '无独有条目')}</div>
                             </div>
                             <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅「${esc(bookB)}」（共 ${diff.totalB} 条）独有：${diff.onlyB.length}</div>
+                                <div class="wbo-diff-col-head">仅「${esc(bookB)}」有（${diff.onlyB.length} 条）</div>
                                 <div class="wbo-diff-chips">${renderTitleChips(diff.onlyB, '无独有条目')}</div>
                             </div>
                         </div>
                         ${diff.modified.length > 0 ? `
                             <div class="wbo-diff-mod">
-                                <div class="wbo-diff-col-head">同名但正文不同（${diff.modified.length} 条）：</div>
-                                <div class="wbo-diff-chips">${diff.modified.slice(0, 10).map((m) => `<span class="wbo-tag" title="${esc(bookA)}: ${m.lenA}字 / ${esc(bookB)}: ${m.lenB}字">${esc(m.title)} (${m.lenA} vs ${m.lenB}字)</span>`).join('')}</div>
+                                <div class="wbo-diff-col-head">同名但内容不同（${diff.modified.length} 条）</div>
+                                <div class="wbo-diff-chips">${diff.modified.slice(0, 12).map((m) => `<span class="wbo-tag" title="${esc(bookA)}: ${m.lenA}字 / ${esc(bookB)}: ${m.lenB}字">${esc(m.title)} (${m.lenA} vs ${m.lenB}字)</span>`).join('')}</div>
                             </div>
                         ` : ''}
                     `;
+                    drawer.querySelectorAll('[data-expand-diff-chips]').forEach((eb) => {
+                        eb.addEventListener('click', () => {
+                            const col = eb.closest('.wbo-diff-chips');
+                            col?.querySelectorAll('[data-diff-extra]').forEach((el) => { el.hidden = false; });
+                            eb.remove();
+                        });
+                    });
                     drawer.querySelector('[data-close-cov-drawer]')?.addEventListener('click', () => {
                         drawer.hidden = true;
                         drawer.removeAttribute('data-drawer-key');
                     });
+                    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
                 } catch (err) {
                     drawer.innerHTML = `<div class="wbo-preview-loading">对比失败：${esc(err?.message || err)}</div>`;
                 }
@@ -8172,37 +8384,50 @@ function openScanAndImportModal() {
                     }
                     const diff = compareWorldbookEntries(embPreview.entries || [], localData?.entries || []);
                     const identical = diff.onlyA.length === 0 && diff.onlyB.length === 0 && diff.modified.length === 0;
-                    const renderTitleChips = (arr, emptyText) =>
-                        arr.length > 0
-                            ? arr.slice(0, 12).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('') + (arr.length > 12 ? `<span class="wbo-subtle-tip">…等 ${arr.length} 条</span>` : '')
-                            : `<span class="wbo-subtle-tip">${emptyText}</span>`;
+                    const renderTitleChips = (arr, emptyText) => {
+                        if (arr.length === 0) return `<span class="wbo-subtle-tip">${emptyText}</span>`;
+                        const visible = arr.slice(0, 16).map((x) => `<span class="wbo-tag">${esc(x.title)}</span>`).join('');
+                        const rest = arr.slice(16).map((x) => `<span class="wbo-tag" data-diff-extra hidden>${esc(x.title)}</span>`).join('');
+                        const moreBtn = arr.length > 16
+                            ? `<button type="button" class="wbo-link-btn wbo-diff-more-btn" data-expand-diff-chips>展开其余 ${arr.length - 16} 条</button>`
+                            : '';
+                        return `${visible}${rest}${moreBtn}`;
+                    };
 
                     drawer.innerHTML = `
-                        <div class="wbo-preview-head">
-                            <span><b>卡内 vs 本地对比</b>：${identical ? '卡内自带世界书与本地同名文件条目完全一致' : `完全相同 ${diff.sameCount} 条 · 仅卡内 ${diff.onlyA.length} 条 · 仅本地「${esc(embWorld)}」 ${diff.onlyB.length} 条 · 同名内容不同 ${diff.modified.length} 条`}${primaryWorld ? `（当前主绑：${esc(primaryWorld)}）` : ''}</span>
+                        <div class="wbo-preview-head wbo-cov-drawer-head">
+                            <span><b>对比结果</b>：${identical ? '两边内容完全一样，这本本地重名书可以直接删掉。' : `内容有差异（相同 ${diff.sameCount} 条 · 仅角色卡自带 ${diff.onlyA.length} 条 · 仅本地这本有 ${diff.onlyB.length} 条${diff.modified.length > 0 ? ` · 同名但内容不同 ${diff.modified.length} 条` : ''}）`}</span>
                             <button type="button" class="wbo-link-btn" data-close-cov-drawer>收起</button>
                         </div>
                         <div class="wbo-diff-grid">
                             <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅卡内「${esc(embPreview.name)}」（共 ${diff.totalA} 条）独有：${diff.onlyA.length}</div>
+                                <div class="wbo-diff-col-head">角色卡自带独有（${diff.onlyA.length} 条）</div>
                                 <div class="wbo-diff-chips">${renderTitleChips(diff.onlyA, '无独有条目')}</div>
                             </div>
                             <div class="wbo-diff-col">
-                                <div class="wbo-diff-col-head">仅本地「${esc(embWorld)}」（共 ${diff.totalB} 条）独有：${diff.onlyB.length}</div>
+                                <div class="wbo-diff-col-head">本地这本独有（${diff.onlyB.length} 条）</div>
                                 <div class="wbo-diff-chips">${renderTitleChips(diff.onlyB, '无独有条目')}</div>
                             </div>
                         </div>
                         ${diff.modified.length > 0 ? `
                             <div class="wbo-diff-mod">
-                                <div class="wbo-diff-col-head">同名但正文不同（${diff.modified.length} 条）：</div>
-                                <div class="wbo-diff-chips">${diff.modified.slice(0, 10).map((m) => `<span class="wbo-tag" title="卡内: ${m.lenA}字 / 本地: ${m.lenB}字">${esc(m.title)} (${m.lenA} vs ${m.lenB}字)</span>`).join('')}</div>
+                                <div class="wbo-diff-col-head">同名但内容不同（${diff.modified.length} 条）</div>
+                                <div class="wbo-diff-chips">${diff.modified.slice(0, 12).map((m) => `<span class="wbo-tag" title="卡内: ${m.lenA}字 / 本地: ${m.lenB}字">${esc(m.title)} (${m.lenA} vs ${m.lenB}字)</span>`).join('')}</div>
                             </div>
                         ` : ''}
                     `;
+                    drawer.querySelectorAll('[data-expand-diff-chips]').forEach((eb) => {
+                        eb.addEventListener('click', () => {
+                            const col = eb.closest('.wbo-diff-chips');
+                            col?.querySelectorAll('[data-diff-extra]').forEach((el) => { el.hidden = false; });
+                            eb.remove();
+                        });
+                    });
                     drawer.querySelector('[data-close-cov-drawer]')?.addEventListener('click', () => {
                         drawer.hidden = true;
                         drawer.removeAttribute('data-drawer-key');
                     });
+                    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
                 } catch (err) {
                     drawer.innerHTML = `<div class="wbo-preview-loading">对比失败：${esc(err?.message || err)}</div>`;
                 }
@@ -8285,6 +8510,30 @@ function openScanAndImportModal() {
                 await _callbacks.onRescan();
                 showToast('success', `已清除「${charName}」的失效世界书绑定`);
                 rerenderScanBody(tabKey, `已清除「${charName}」的失效世界书绑定`, 'success');
+            });
+        });
+
+        modal.querySelectorAll('[data-cov-assign-char]').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                const worldName = btn.getAttribute('data-cov-assign-char') || '';
+                if (!worldName || !_callbacks) return;
+                const matchKind = btn.getAttribute('data-cov-match-kind') || '';
+                const tabKey = getActiveCovTabKey();
+                const { settings: curSettings, classification: curCls } = _callbacks.getState();
+                const meta = curCls.byName.get(worldName);
+                const hasRealBinding = Boolean(
+                    (meta?.charOwners || []).some((o) => o && o.source !== 'embedded'),
+                );
+                curSettings.charBookOverrides ||= {};
+                if (matchKind !== 'embedded' && hasRealBinding) {
+                    delete curSettings.charBookOverrides[worldName];
+                } else {
+                    curSettings.charBookOverrides[worldName] = 'include_in_char';
+                }
+                delete curSettings.assignments[worldName];
+                await _callbacks.onMutation({ save: true });
+                showToast('success', `已将「${worldName}」归入「角色世界书」`);
+                rerenderScanBody(tabKey, `已将「${worldName}」归入「角色世界书」`, 'success');
             });
         });
 
@@ -8400,6 +8649,7 @@ function openScanAndImportModal() {
                 bindingMap: prevState.bindingMap || new Map(),
                 worldNamesSet: prevWorldSet,
                 cachedCharBindings: prevState.settings.cachedCharBindings,
+                settings: prevState.settings,
             });
             const prevUnimported = findCardsWithUnimportedBooks({
                 characters: prevChars,
@@ -8415,6 +8665,7 @@ function openScanAndImportModal() {
                 prevCov.orphanExtraBooks.length,
                 prevCov.sharedBooks.length,
                 prevCov.embeddedNameMatches.length,
+                (prevCov.unboundNameMatches || []).length,
                 prevCov.unboundChars.length,
             ]);
 
@@ -8452,6 +8703,7 @@ function openScanAndImportModal() {
                     bindingMap: latest.bindingMap || new Map(),
                     worldNamesSet: latestWorldSet,
                     cachedCharBindings: latest.settings.cachedCharBindings,
+                    settings: latest.settings,
                 });
                 const latestPersona = summarizePersonaWorldBindings({
                     powerUserSettings: getPowerUserSettings(),
@@ -8472,6 +8724,7 @@ function openScanAndImportModal() {
                     latestCov.orphanExtraBooks.length,
                     latestCov.sharedBooks.length,
                     latestCov.embeddedNameMatches.length,
+                    (latestCov.unboundNameMatches || []).length,
                     latestCov.unboundChars.length,
                 ]);
                 const hasChanges = scannedNewCount > 0 || prevSig !== nextSig;
@@ -8484,20 +8737,15 @@ function openScanAndImportModal() {
                 const now = new Date();
                 const hhmmss = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
                 const summaryMsg = hasChanges
-                    ? `${hhmmss} 扫描完成：已核对 ${latestChars.length} 张角色卡、${personaCount} 套人设，共识别 ${latest.classification.charCount} 本绑定世界书（异常 ${anomalyCount} 项 / 未导入 ${latestUnimported.length} 本）`
-                    : `${hhmmss} 已重新扫描，未发现新增变动（已核对 ${latestChars.length} 张角色卡、${personaCount} 套人设，共 ${latest.classification.charCount} 本绑定书）`;
+                    ? `${hhmmss} 扫描完成：共 ${latestChars.length} 张角色卡、${latest.classification.charCount} 本绑定书（待处理 ${anomalyCount} 项）`
+                    : `${hhmmss} 已重新扫描，暂无新增变动（共 ${latestChars.length} 张角色卡、${latest.classification.charCount} 本绑定书）`;
 
                 const nextStatus = modal.querySelector('#wbo-scan-status');
-                const nextTop = modal.querySelector('#wbo-scan-top-status');
                 const nextScanBtn = modal.querySelector('#wbo-scan-all-btn');
-                if (nextStatus) {
+                if (nextStatus instanceof HTMLElement) {
                     nextStatus.textContent = summaryMsg;
-                    nextStatus.className = 'wbo-ai-status is-success';
-                }
-                if (nextTop instanceof HTMLElement) {
-                    nextTop.textContent = summaryMsg;
-                    nextTop.className = 'wbo-ai-status is-success wbo-scan-top-status';
-                    nextTop.hidden = false;
+                    nextStatus.className = 'wbo-ai-status is-success wbo-scan-top-status';
+                    nextStatus.hidden = false;
                 }
                 if (nextScanBtn instanceof HTMLButtonElement) {
                     const restoreLabel = nextScanBtn.textContent || '重新扫描角色卡';
@@ -8628,6 +8876,13 @@ function syncSettingControlsInPlace(container, settings) {
  * Bind change listeners for `[data-setting]` and `[data-setting-select]` reading live state.
  * @param {Element} container
  */
+const QUICK_ACTION_UI_ONLY_KEYS = new Set([
+    'showNativeComboBtn',
+    'showNativeExcludeBtn',
+    'showNativeEntrySearchBtn',
+    'showNativeCharToggleBtn',
+]);
+
 function bindSettingControlListeners(container) {
     container.querySelectorAll('input[data-setting]').forEach((el) => {
         el.addEventListener('change', async () => {
@@ -8649,6 +8904,14 @@ function bindSettingControlListeners(container) {
                     settings[listKey] = curList;
                 }
                 container.dispatchEvent(new CustomEvent('wbo:sync-exclude-chips'));
+            }
+            if (QUICK_ACTION_UI_ONLY_KEYS.has(key)) {
+                await _callbacks.onMutation({ save: true, uiOnly: true, quickActionsOnly: true });
+                return;
+            }
+            if (key === 'syncEntryOrderOnDrag') {
+                await _callbacks.onMutation({ save: true, uiOnly: true });
+                return;
             }
             await _callbacks.onMutation({ save: true });
         });
@@ -8889,6 +9152,10 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="showNativeOptgroups">
                         <span>编辑器下拉框按分组显示</span>
                     </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="syncEntryOrderOnDrag">
+                        <span>拖动调整条目顺序时同步改写插入顺序 (order)</span>
+                    </label>
                 </div>
 
                 <div class="wbo-card">
@@ -8929,7 +9196,7 @@ function openSettingsModal() {
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
             </div>
         `,
-        { pinnedLayout: true },
+        { pinnedLayout: true, floating: true },
     );
 
     modal.querySelectorAll('[data-settings-tab]').forEach((tabBtn) => {
@@ -8969,7 +9236,7 @@ function openSettingsModal() {
             const cur = _callbacks.getState().settings;
             cur.nativeQuickActionsMode = val;
             syncQuickActionsModeUi();
-            await _callbacks.onMutation({ save: true });
+            await _callbacks.onMutation({ save: true, uiOnly: true, quickActionsOnly: true });
         });
     });
 
@@ -9144,7 +9411,7 @@ function openSettingsModal() {
 /**
  * Fixed-size, theme-following 3-in-1 Quick Hub popover anchored inside `#WorldInfo`:
  * - Tab 1 (`presets`): switch Global Worldbook Combos in 1 click, overlay (+叠加), save current active books,
- *   clear all globals, or 1-click undo (`↶ 撤回`).
+ *   clear all globals, or 1-click undo.
  * - Tab 2 (`exclude`): toggle Global & Editor default excluded groups.
  * - Pinned bottom bar: jump directly to `分组管理` or `搜条目`.
  *
@@ -9163,6 +9430,7 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
     if (!_callbacks) return;
     const { settings, classification } = _callbacks.getState();
 
+    const isSplitMode = Boolean(forceTab);
     let activeHubTab = forceTab || (settings.quickHubLastTab === 'exclude' ? 'exclude' : 'presets');
 
     const sectionOptions = [
@@ -9204,10 +9472,14 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
 
     pop.innerHTML = `
         <div class="wbo-qe-head wbo-qhub-head">
-            <div class="wbo-qhub-tabs">
-                <button type="button" class="wbo-qhub-tab${activeHubTab === 'presets' ? ' is-active' : ''}" data-qhub-tab="presets">全局组合</button>
-                <button type="button" class="wbo-qhub-tab${activeHubTab === 'exclude' ? ' is-active' : ''}" data-qhub-tab="exclude">排除分组</button>
-            </div>
+            ${isSplitMode
+                ? `<div class="wbo-qhub-single-title">${activeHubTab === 'exclude' ? '排除分组' : '全局组合'}</div>`
+                : `
+                    <div class="wbo-qhub-tabs">
+                        <button type="button" class="wbo-qhub-tab${activeHubTab === 'presets' ? ' is-active' : ''}" data-qhub-tab="presets">全局组合</button>
+                        <button type="button" class="wbo-qhub-tab${activeHubTab === 'exclude' ? ' is-active' : ''}" data-qhub-tab="exclude">排除分组</button>
+                    </div>
+                `}
             <button type="button" class="wbo-icon-btn wbo-qe-close" aria-label="关闭"><i class="fa-solid fa-xmark"></i></button>
         </div>
         <div class="wbo-qe-body wbo-qhub-body">
@@ -9226,7 +9498,7 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
                 </div>
                 <div class="wbo-qhub-undo-bar" id="wbo-qhub-undo-bar" hidden>
                     <span id="wbo-qhub-undo-text"></span>
-                    <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-qhub-undo-btn">↶ 撤回</button>
+                    <button type="button" class="wbo-btn wbo-sens-undo-btn" id="wbo-qhub-undo-btn">${UNDO_SVG}<span>撤回</span></button>
                 </div>
                 <div class="wbo-qhub-combo-list" id="wbo-qhub-combo-list"></div>
                 <div class="wbo-qhub-sub-actions">
@@ -9236,40 +9508,38 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             </div>
 
             <div class="wbo-qhub-pane" data-qhub-pane="exclude"${activeHubTab === 'exclude' ? '' : ' hidden'}>
+                <div class="wbo-exclude-tip">勾选下方分组即在对应下拉框中隐藏（默认排除角色世界书）</div>
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
-                        <span class="wbo-exclude-title-wrap">
-                            <span>全局激活框</span>
-                            <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
-                        </span>
-                        <span class="wbo-ai-quick-picks">
-                            <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds">仅角色书</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
-                        </span>
+                        <span class="wbo-exclude-title">全局激活框</span>
+                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                    </div>
+                    <div class="wbo-exclude-quick-row">
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds" title="恢复默认：仅排除角色世界书">默认(仅角色书)</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
                 </div>
                 <div class="wbo-local-divider"></div>
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
-                        <span class="wbo-exclude-title-wrap">
-                            <span>编辑下拉框</span>
-                            <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
-                        </span>
-                        <span class="wbo-ai-quick-picks">
-                            <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
-                            <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
-                        </span>
+                        <span class="wbo-exclude-title">编辑下拉框</span>
+                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                    </div>
+                    <div class="wbo-exclude-quick-row">
+                        <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
                 </div>
             </div>
         </div>
+        ${isSplitMode ? '' : `
         <div class="wbo-qe-foot">
             <button type="button" class="wbo-btn wbo-qe-foot-btn" id="wbo-qe-open-mgr">
                 <i class="fa-solid fa-layer-group"></i> 分组管理
@@ -9278,6 +9548,7 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
                 <i class="fa-solid fa-magnifying-glass"></i> 搜条目
             </button>
         </div>
+        `}
     `;
 
     backdrop.appendChild(pop);
@@ -9346,7 +9617,11 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
         if (presets.length === 0) {
             qhubListEl.innerHTML = `
                 <div class="wbo-empty-hint wbo-qhub-empty">
-                    暂无全局组合。<br>点「+ 存当前」保存当前已开的全局书，或点「自由新建」勾选任意世界书组合。
+                    <div class="wbo-qhub-empty-title">暂无已保存的全局组合</div>
+                    <div class="wbo-qhub-empty-steps">
+                        <div>• 点<b>「+ 存当前」</b>：保存当前已开的全局书</div>
+                        <div>• 点<b>「自由新建」</b>：勾选任意世界书搭配组合</div>
+                    </div>
                 </div>
             `;
             return;
@@ -9371,6 +9646,7 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
                     <div class="wbo-qhub-combo-acts">
                         <button type="button" class="wbo-btn wbo-qhub-mini-btn" data-qhub-add="${esc(p.id)}" title="保留已开并叠加开启">+叠加</button>
                         <button type="button" class="wbo-icon-btn" data-qhub-edit="${esc(p.id)}" title="编辑此组合"><i class="fa-solid fa-pen"></i></button>
+                        <button type="button" class="wbo-icon-btn wbo-icon-danger" data-qhub-delete="${esc(p.id)}" title="删除此组合" aria-label="删除此组合"><i class="fa-regular fa-trash-can"></i></button>
                     </div>
                 </div>
             `;
@@ -9391,7 +9667,7 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             });
             const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
             const cntEl = pop.querySelector(`[data-qe-count="${key}"]`);
-            if (cntEl) cntEl.textContent = `隐藏 ${hiddenCnt} / 显示 ${sectionOptions.length - hiddenCnt} 组`;
+            if (cntEl) cntEl.textContent = `已排除 ${hiddenCnt} / ${sectionOptions.length} 组`;
         }
     };
 
@@ -9522,6 +9798,20 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             const id = editBtn.getAttribute('data-qhub-edit') || '';
             closeGroupVisibilityPopover();
             openGlobalCombosModal({ editPresetId: id });
+            return;
+        }
+        const delBtn = target.closest('[data-qhub-delete]');
+        if (delBtn) {
+            const id = delBtn.getAttribute('data-qhub-delete') || '';
+            const preset = (cur.globalPresets || []).find((p) => p.id === id);
+            if (!preset) return;
+            if (!globalThis.confirm(`确认删除全局组合「${preset.name}」吗？\n（仅删除组合方案，不会删除世界书）`)) return;
+            deleteGlobalPreset(cur, id);
+            void _callbacks.onMutation({ save: true, uiOnly: true });
+            syncManagerComboStripUi();
+            syncNativeQuickComboTitles();
+            renderQhubCombos();
+            showToast('success', `已删除组合「${preset.name}」`);
         }
     });
 
@@ -9868,6 +10158,7 @@ function openBookEntryBrowserModal(bookMetaOrName, { initialUid = null, stack = 
             cur.entryEditorTall = Boolean(nextTall);
             void _callbacks.onMutation({ save: true, uiOnly: true });
         },
+        getSyncOrder: () => Boolean(_callbacks?.getState?.()?.settings?.syncEntryOrderOnDrag),
         onEntryMutated: ({ worldName: mutatedWorld }) => {
             _previewCache.delete(mutatedWorld);
             const activeCtrl = _activePreviewControllers.get(mutatedWorld);
@@ -10282,6 +10573,8 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
  * Remove all DOM nodes mounted by this panel module cleanly.
  */
 export function teardownPanels() {
+    _isSyncingEmbeddedIndicators = false;
+    _searchQuery = '';
     destroyAllPreviewControllers();
     removeRestorePill();
     cancelManagerInlineEntrySearch();

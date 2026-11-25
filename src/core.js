@@ -139,9 +139,11 @@ export const DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS = Object.freeze(
     LOCAL_ORGANIZE_CATEGORIES.filter((c) => c.defaultEnabled).map((c) => c.id),
 );
 
+export const SECTION_ORDER_VERSION = 3;
+
 export const DEFAULT_SETTINGS = Object.freeze({
     version: 1,
-    sectionOrderVersion: 2,
+    sectionOrderVersion: SECTION_ORDER_VERSION,
     hasDoneInitialAutoScan: false,
     hideCharBooksByDefault: true,
     showCharBooks: false,
@@ -194,12 +196,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
     mgrSearchSplitSpaces: false,
     entryEditorMonoFont: false,
     entryEditorTall: false,
+    syncEntryOrderOnDrag: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     ungroupedCollapsed: false,
     dropdownCollapsed: {},
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
-    sectionOrder: [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER],
+    sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
     apiProvider: 'host', // 'host' | 'custom'
     activeApiChannelId: '',
     apiChannels: [], // Array<{ id, name, baseUrl, apiKey, model }>
@@ -336,6 +339,7 @@ export function normalizeSettings(raw) {
 
     merged.entryEditorMonoFont = Boolean(merged.entryEditorMonoFont);
     merged.entryEditorTall = Boolean(merged.entryEditorTall);
+    merged.syncEntryOrderOnDrag = Boolean(merged.syncEntryOrderOnDrag);
     merged.groupPanelExpanded = Boolean(merged.groupPanelExpanded);
     merged.showNativeComboBtn = merged.showNativeComboBtn !== false;
     merged.entrySearchInTitle = merged.entrySearchInTitle !== false;
@@ -460,8 +464,8 @@ export function normalizeSettings(raw) {
         merged.activeFilterGroupId = SPECIAL_GROUPS.DEFAULT;
     }
 
-    // Normalize unified sectionOrder containing all custom groups + __ungrouped__ + __char__
-    // Default order places custom groups first, general/ungrouped next, and character books at the bottom.
+    // Normalize unified sectionOrder containing all custom groups + __char__ + __ungrouped__
+    // Default main-panel order places character worldbooks first, ungrouped next, and custom groups after.
     const allowedSectionIds = new Set([
         ...merged.groups.map((g) => g.id),
         SPECIAL_GROUPS.UNGROUPED,
@@ -476,36 +480,54 @@ export function normalizeSettings(raw) {
             cleanedOrder.push(id);
         }
     }
-    // Any newly present custom groups not yet in sectionOrder are inserted
-    // after existing custom groups and before builtin sections (`__ungrouped__`, `__char__`).
-    const missingCustom = merged.groups.map((g) => g.id).filter((id) => !seenOrder.has(id));
-    const finalOrder = [...cleanedOrder];
-    if (missingCustom.length > 0) {
-        const firstBuiltinIdx = finalOrder.findIndex(
-            (id) => id === SPECIAL_GROUPS.UNGROUPED || id === SPECIAL_GROUPS.CHARACTER,
-        );
-        if (firstBuiltinIdx >= 0) {
-            finalOrder.splice(firstBuiltinIdx, 0, ...missingCustom);
-        } else {
-            finalOrder.push(...missingCustom);
+
+    const baseOrder = [...cleanedOrder];
+    for (const builtin of [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED]) {
+        if (!seenOrder.has(builtin)) {
+            baseOrder.push(builtin);
         }
-    }
-    for (const builtin of [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]) {
-        if (!seenOrder.has(builtin)) finalOrder.push(builtin);
     }
 
-    // One-time v1 -> v2 migration: if user still had legacy default [..., __char__, __ungrouped__],
-    // place general/ungrouped above character worldbooks so character books default to the bottom.
-    const prevOrderVer = Number(source.sectionOrderVersion || 1);
-    if (prevOrderVer < 2 && finalOrder.length >= 2) {
+    // Migrate legacy v1/v2 default patterns to v3 (`[__char__, __ungrouped__, ...custom]`)
+    // BEFORE appending newly missing custom groups, while preserving explicit user custom orders.
+    const rawPrevVer = Number(source.sectionOrderVersion);
+    const prevOrderVer = Number.isFinite(rawPrevVer) && rawPrevVer > 0 ? rawPrevVer : 1;
+    const hasExplicitSourceOrder = Object.hasOwn(source, 'sectionOrder') && Array.isArray(source.sectionOrder);
+    const customSet = new Set(merged.groups.map((g) => g.id));
+    let finalOrder = [...baseOrder];
+
+    if (hasExplicitSourceOrder && prevOrderVer < SECTION_ORDER_VERSION && finalOrder.length >= 2) {
         const last = finalOrder[finalOrder.length - 1];
         const secondLast = finalOrder[finalOrder.length - 2];
-        if (secondLast === SPECIAL_GROUPS.CHARACTER && last === SPECIAL_GROUPS.UNGROUPED) {
-            finalOrder[finalOrder.length - 2] = SPECIAL_GROUPS.UNGROUPED;
-            finalOrder[finalOrder.length - 1] = SPECIAL_GROUPS.CHARACTER;
+        const headCustomAll = finalOrder.slice(0, -2).every((id) => customSet.has(id));
+        const isV2TrailingDefault =
+            headCustomAll &&
+            secondLast === SPECIAL_GROUPS.UNGROUPED &&
+            last === SPECIAL_GROUPS.CHARACTER;
+        const isV1TrailingDefault =
+            prevOrderVer < 2 &&
+            headCustomAll &&
+            secondLast === SPECIAL_GROUPS.CHARACTER &&
+            last === SPECIAL_GROUPS.UNGROUPED;
+        const isV2PromotedCharDefault =
+            finalOrder.length >= 3 &&
+            finalOrder[0] === SPECIAL_GROUPS.CHARACTER &&
+            finalOrder[finalOrder.length - 1] === SPECIAL_GROUPS.UNGROUPED &&
+            finalOrder.slice(1, -1).every((id) => customSet.has(id));
+
+        if (isV2TrailingDefault || isV1TrailingDefault || isV2PromotedCharDefault) {
+            const customInOrder = finalOrder.filter((id) => customSet.has(id));
+            finalOrder = [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED, ...customInOrder];
         }
     }
-    merged.sectionOrderVersion = 2;
+
+    const finalSeen = new Set(finalOrder);
+    const missingCustom = merged.groups.map((g) => g.id).filter((id) => !finalSeen.has(id));
+    if (missingCustom.length > 0) {
+        finalOrder.push(...missingCustom);
+    }
+
+    merged.sectionOrderVersion = SECTION_ORDER_VERSION;
     merged.sectionOrder = finalOrder;
 
     // Normalize per-selector custom hidden group lists (defaulting smoothly from legacy `hideCharBooksByDefault`)
@@ -533,24 +555,82 @@ export function normalizeSettings(raw) {
 /**
  * Reorder a section ID up (-1) or down (+1) in `settings.sectionOrder`,
  * keeping `settings.groups` order synchronized for custom groups.
+ * When `visibleSectionIds` is supplied, moves 1 step in the visible list
+ * (skipping hidden sections such as `__char__` or `__ungrouped__`).
+ *
  * @param {Record<string, any>} settings
  * @param {string} sectionId
  * @param {-1 | 1} delta
+ * @param {string[] | null} [visibleSectionIds=null]
  * @returns {boolean}
  */
-export function moveSectionOrder(settings, sectionId, delta) {
+export function moveSectionOrder(settings, sectionId, delta, visibleSectionIds = null) {
+    if (!settings || !sectionId || (delta !== -1 && delta !== 1)) return false;
     const normalized = normalizeSettings(settings);
     const order = [...normalized.sectionOrder];
-    const idx = order.indexOf(sectionId);
-    const targetIdx = idx + delta;
-    if (idx < 0 || targetIdx < 0 || targetIdx >= order.length) return false;
-    [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
+
+    if (Array.isArray(visibleSectionIds)) {
+        const orderSet = new Set(order);
+        const visible = [];
+        const seenVis = new Set();
+        for (const rawId of visibleSectionIds) {
+            const id = String(rawId ?? '').trim();
+            if (id && orderSet.has(id) && !seenVis.has(id)) {
+                seenVis.add(id);
+                visible.push(id);
+            }
+        }
+        const visIdx = visible.indexOf(sectionId);
+        const targetVisIdx = visIdx + delta;
+        if (visIdx < 0 || targetVisIdx < 0 || targetVisIdx >= visible.length) return false;
+        const targetId = visible[targetVisIdx];
+        const fromIdx = order.indexOf(sectionId);
+        if (fromIdx < 0) return false;
+        order.splice(fromIdx, 1);
+        const newTargetIdx = order.indexOf(targetId);
+        if (newTargetIdx < 0) return false;
+        const insertIdx = delta > 0 ? newTargetIdx + 1 : newTargetIdx;
+        order.splice(insertIdx, 0, sectionId);
+    } else {
+        const idx = order.indexOf(sectionId);
+        const targetIdx = idx + delta;
+        if (idx < 0 || targetIdx < 0 || targetIdx >= order.length) return false;
+        [order[idx], order[targetIdx]] = [order[targetIdx], order[idx]];
+    }
+
     settings.sectionOrder = order;
 
     // Keep custom groups array in the same relative order
     const groupById = new Map((settings.groups || []).map((g) => [g.id, g]));
     settings.groups = order.filter((id) => groupById.has(id)).map((id) => groupById.get(id));
     return true;
+}
+
+/**
+ * Compute visible move-up / move-down boundary flags for an ordered list of
+ * currently displayed section IDs so disabled states always match visible rows.
+ * @param {string[]} [visibleSectionIds=[]]
+ * @returns {Map<string, { index: number, canMoveUp: boolean, canMoveDown: boolean }>}
+ */
+export function getVisibleSectionMoveBounds(visibleSectionIds = []) {
+    const clean = [];
+    const seen = new Set();
+    for (const raw of visibleSectionIds || []) {
+        const id = String(raw ?? '').trim();
+        if (id && !seen.has(id)) {
+            seen.add(id);
+            clean.push(id);
+        }
+    }
+    const bounds = new Map();
+    clean.forEach((id, index) => {
+        bounds.set(id, {
+            index,
+            canMoveUp: index > 0,
+            canMoveDown: index < clean.length - 1,
+        });
+    });
+    return bounds;
 }
 
 /**
@@ -678,8 +758,8 @@ export function reorderBookInGroup(
 }
 
 /**
- * Append a new custom group in chronological creation order:
- * first-created -> second-created -> ... -> ungrouped -> character worldbooks.
+ * Append a new custom group after existing sections in chronological creation order:
+ * default main-panel order is character -> ungrouped -> first-created -> second-created -> ...
  * @param {Record<string, any>} settings
  * @param {{ name: string, color?: string }} input
  */
@@ -693,16 +773,31 @@ export function addCustomGroup(settings, { name, color }) {
     };
     settings.groups = [...normalized.groups, group];
     const nextOrder = normalized.sectionOrder.filter((id) => id !== group.id);
-    const firstBuiltinIdx = nextOrder.findIndex(
-        (id) => id === SPECIAL_GROUPS.UNGROUPED || id === SPECIAL_GROUPS.CHARACTER,
-    );
-    if (firstBuiltinIdx >= 0) {
-        nextOrder.splice(firstBuiltinIdx, 0, group.id);
-    } else {
-        nextOrder.push(group.id);
-    }
+    nextOrder.push(group.id);
     settings.sectionOrder = nextOrder;
     return group;
+}
+
+/**
+ * Reorder sections for external SillyTavern dropdowns/popovers so `未分组`
+ * (`SPECIAL_GROUPS.UNGROUPED`) is always placed last (after custom groups),
+ * without mutating the input array.
+ * @param {Array<any>} [orderedSections=[]]
+ * @returns {Array<any>}
+ */
+export function orderSectionsForExternalDropdown(orderedSections = []) {
+    if (!Array.isArray(orderedSections) || orderedSections.length === 0) return [];
+    const rest = [];
+    const ungrouped = [];
+    for (const sec of orderedSections) {
+        if (!sec) continue;
+        const isUngrouped = typeof sec === 'string'
+            ? sec === SPECIAL_GROUPS.UNGROUPED
+            : (sec.id === SPECIAL_GROUPS.UNGROUPED || sec.kind === 'ungrouped');
+        if (isUngrouped) ungrouped.push(sec);
+        else rest.push(sec);
+    }
+    return [...rest, ...ungrouped];
 }
 
 /**
@@ -914,6 +1009,177 @@ export function findCardsWithUnimportedBooks({
 }
 
 /**
+ * Normalize a character or worldbook title for conservative similar-name matching:
+ * NFKC -> lowercase -> iteratively strip trailing copy suffixes `(n)`, media/json
+ * extensions, keycap emoji, pictographs, variation selectors, ZWJ, whitespace,
+ * and punctuation/symbols (without stripping legitimate version digits like `2.0`).
+ *
+ * @param {string | null | undefined} raw
+ * @returns {string}
+ */
+export function normalizeMatchName(raw) {
+    let s = String(raw ?? '').normalize('NFKC').trim().toLowerCase();
+    if (!s) return '';
+    let prev;
+    do {
+        prev = s;
+        s = s
+            .replace(/(?:\s*\(\d+\))+$/g, '')
+            .replace(/\.(?:png|jpe?g|webp|json)$/i, '')
+            .replace(/[0-9#*][\uFE0E\uFE0F]?\u20E3$/g, '')
+            .replace(/(?:[\p{Extended_Pictographic}\p{S}\s\uFE00-\uFE0F\u200D\u20E3]|(?![)])\p{P})+$/gu, '')
+            .trim();
+    } while (s !== prev);
+    return s
+        .replace(/[0-9#*][\uFE0E\uFE0F]?\u20E3/g, '')
+        .replace(/[\p{Extended_Pictographic}\p{P}\p{S}\s\uFE00-\uFE0F\u200D\u20E3]+/gu, '');
+}
+
+const CJK_CHAR_RE = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/;
+
+function isExactMatchableToken(token) {
+    const clean = String(token ?? '').trim();
+    if (clean.length < 2) return false;
+    if (/^\d+$/.test(clean)) return false;
+    return true;
+}
+
+function isNormalizedMatchableToken(norm) {
+    if (!norm || /^\d+$/.test(norm)) return false;
+    return CJK_CHAR_RE.test(norm) ? norm.length >= 2 : norm.length >= 3;
+}
+
+/**
+ * Find unbound standalone worldbooks whose title matches a scanned or shallow
+ * character card's `name` or `charaFileName(avatar)` (exact or normalized stripping
+ * trailing `(n)` copy suffixes, emoji, whitespace, and punctuation).
+ *
+ * Excludes books already bound to a live card in `bindingIndex` or already handled
+ * via `charBookOverrides` (`'include_in_char'` / `'exclude_from_char'`).
+ *
+ * @param {string[]} [worldNames=[]]
+ * @param {Array<any>} [characters=[]]
+ * @param {Map<string, Array<{ avatar: string, charName: string, source: string, orphan?: boolean }>>} [bindingIndex=new Map()]
+ * @param {Record<string, any>} [settings={}]
+ * @returns {Array<{ worldName: string, avatar: string, charName: string, reason: 'unscanned_card_name' | 'exact_name' | 'normalized_name', matchType: 'exact' | 'normalized', hasUnscanned: boolean, matchedChars: Array<{ avatar: string, charName: string, matchType: 'exact' | 'normalized', isUnscanned: boolean }> }>}
+ */
+export function findUnboundCharacterNameMatches(
+    worldNames = [],
+    characters = [],
+    bindingIndex = new Map(),
+    settings = {},
+) {
+    const worlds = Array.isArray(worldNames) ? worldNames : [];
+    const chars = Array.isArray(characters) ? characters : [];
+    if (worlds.length === 0 || chars.length === 0) return [];
+
+    const overrides = settings?.charBookOverrides || {};
+    const cachedBindings = settings?.cachedCharBindings || {};
+
+    const charCandidates = [];
+    const seenAvatars = new Set();
+    for (const ch of chars) {
+        const avatar = String(ch?.avatar ?? '').trim();
+        if (!avatar || seenAvatars.has(avatar)) continue;
+        seenAvatars.add(avatar);
+
+        const avatarBase = charaFileName(avatar).trim();
+        const charName = String(ch?.name || ch?.data?.name || avatarBase).trim() || avatar;
+        const cached = cachedBindings?.[avatar];
+        const isUnscanned = Boolean(ch?.shallow && cached?.scanned !== true);
+
+        const labels = [];
+        const seenLabels = new Set();
+        for (const rawLabel of [charName, avatarBase]) {
+            const clean = String(rawLabel ?? '').trim();
+            if (!clean) continue;
+            const exact = clean.normalize('NFKC').toLowerCase();
+            if (seenLabels.has(exact)) continue;
+            seenLabels.add(exact);
+            labels.push({
+                exact,
+                norm: normalizeMatchName(clean),
+            });
+        }
+        if (labels.length === 0) continue;
+        charCandidates.push({ avatar, charName, isUnscanned, labels });
+    }
+
+    if (charCandidates.length === 0) return [];
+
+    const out = [];
+    const seenWorlds = new Set();
+
+    for (const rawWorld of worlds) {
+        const worldName = String(rawWorld ?? '').trim();
+        if (!worldName || seenWorlds.has(worldName)) continue;
+        seenWorlds.add(worldName);
+
+        const owners = bindingIndex?.get?.(worldName);
+        if (Array.isArray(owners) && owners.some((o) => !o?.orphan)) continue;
+
+        const ov = overrides[worldName];
+        if (ov === 'include_in_char' || ov === 'exclude_from_char') continue;
+
+        const worldExact = worldName.normalize('NFKC').trim().toLowerCase();
+        const worldNorm = normalizeMatchName(worldName);
+        const canExact = isExactMatchableToken(worldExact);
+        const canNorm = isNormalizedMatchableToken(worldNorm);
+        if (!canExact && !canNorm) continue;
+
+        const matchedChars = [];
+        for (const ch of charCandidates) {
+            let matchType = null;
+            for (const lbl of ch.labels) {
+                if (canExact && isExactMatchableToken(lbl.exact) && worldExact === lbl.exact) {
+                    matchType = 'exact';
+                    break;
+                }
+                if (canNorm && isNormalizedMatchableToken(lbl.norm) && worldNorm === lbl.norm) {
+                    matchType = 'normalized';
+                }
+            }
+            if (matchType) {
+                matchedChars.push({
+                    avatar: ch.avatar,
+                    charName: ch.charName,
+                    matchType,
+                    isUnscanned: ch.isUnscanned,
+                });
+            }
+        }
+
+        if (matchedChars.length === 0) continue;
+
+        // Prioritize exact matches first, then scanned over unscanned
+        matchedChars.sort((a, b) => {
+            if (a.matchType !== b.matchType) return a.matchType === 'exact' ? -1 : 1;
+            if (a.isUnscanned !== b.isUnscanned) return a.isUnscanned ? 1 : -1;
+            return compareZhCn(a.charName, b.charName);
+        });
+
+        const primaryMatch = matchedChars[0];
+        const hasUnscanned = matchedChars.some((m) => m.isUnscanned);
+        const reason = primaryMatch.isUnscanned
+            ? 'unscanned_card_name'
+            : (primaryMatch.matchType === 'exact' ? 'exact_name' : 'normalized_name');
+
+        out.push({
+            worldName,
+            avatar: primaryMatch.avatar,
+            charName: primaryMatch.charName,
+            reason,
+            matchType: primaryMatch.matchType,
+            hasUnscanned,
+            matchedChars,
+        });
+    }
+
+    out.sort((a, b) => compareZhCn(a.worldName, b.worldName));
+    return out;
+}
+
+/**
  * Summarize character-to-worldbook coverage so users immediately know why
  * character count and recognized worldbook count differ (e.g. 71 cards vs 70 books).
  *
@@ -922,12 +1188,14 @@ export function findCardsWithUnimportedBooks({
  * @param {Map<string, Array<{ avatar: string, charName: string, source: string }>>} params.bindingMap
  * @param {Set<string>} params.worldNamesSet
  * @param {Record<string, any>} [params.cachedCharBindings={}]
+ * @param {Record<string, any> | null} [params.settings=null]
  */
 export function summarizeCharacterWorldCoverage({
     characters = [],
     bindingMap = new Map(),
     worldNamesSet = new Set(),
     cachedCharBindings = {},
+    settings = null,
 }) {
     const boundAvatars = new Set();
     const sharedBooks = [];
@@ -992,15 +1260,15 @@ export function summarizeCharacterWorldCoverage({
     const embeddedNameMatches = [];
     for (const [avatar, emb] of embeddedByAvatar.entries()) {
         const realInfo = booksByAvatar.get(avatar);
-        if (realInfo && realInfo.books.length > 0) {
-            for (const b of emb.books) {
-                embeddedNameMatches.push({
-                    avatar,
-                    charName: emb.charName,
-                    worldName: b.worldName,
-                    primaryWorld: realInfo.books[0]?.worldName || '',
-                });
-            }
+        const hasRealBinding = Boolean(realInfo && realInfo.books.length > 0);
+        for (const b of emb.books) {
+            embeddedNameMatches.push({
+                avatar,
+                charName: emb.charName,
+                worldName: b.worldName,
+                primaryWorld: realInfo?.books?.[0]?.worldName || '',
+                hasRealBinding,
+            });
         }
     }
 
@@ -1025,6 +1293,16 @@ export function summarizeCharacterWorldCoverage({
         }
     }
 
+    const worldList = worldNamesSet instanceof Set
+        ? [...worldNamesSet]
+        : (Array.isArray(worldNamesSet) ? worldNamesSet : []);
+    const unboundNameMatches = findUnboundCharacterNameMatches(
+        worldList,
+        characters,
+        bindingMap,
+        settings || { cachedCharBindings },
+    );
+
     return {
         unboundChars,
         missingFileChars,
@@ -1032,6 +1310,95 @@ export function summarizeCharacterWorldCoverage({
         multiBookChars,
         orphanExtraBooks,
         embeddedNameMatches,
+        unboundNameMatches,
+    };
+}
+
+/**
+ * Compute F3.3 scan prompt & badge state:
+ * - Shows a 1-line prompt ONLY when unbound/embedded same-name books need user
+ *   confirmation OR when `autoScanNewCharacters === false` and unscanned shallow cards remain.
+ * - When `autoScanNewCharacters !== false` and no same-name books need confirmation,
+ *   background idle catch-up handles remaining shallow cards silently (`shouldShowPrompt: false`).
+ *
+ * @param {object} params
+ * @param {string[] | Set<string>} [params.worldNames=[]]
+ * @param {Array<any>} [params.characters=[]]
+ * @param {Map<string, any>} [params.bindingMap=new Map()]
+ * @param {Record<string, any>} [params.settings={}]
+ */
+export function computeScanPromptState({
+    worldNames = [],
+    characters = [],
+    bindingMap = new Map(),
+    settings = {},
+} = {}) {
+    const worldNamesSet = worldNames instanceof Set
+        ? worldNames
+        : new Set((Array.isArray(worldNames) ? worldNames : []).map((n) => String(n ?? '').trim()).filter(Boolean));
+    const cachedCharBindings = settings?.cachedCharBindings || {};
+    const overrides = settings?.charBookOverrides || {};
+
+    const unscannedShallowCount = findUnscannedShallowCharacters(characters, cachedCharBindings).length;
+    const unimportedBookCount = findCardsWithUnimportedBooks({
+        characters,
+        worldNamesSet,
+        cachedCharBindings,
+    }).length;
+
+    const cov = summarizeCharacterWorldCoverage({
+        characters,
+        bindingMap,
+        worldNamesSet,
+        cachedCharBindings,
+        settings,
+    });
+
+    const unboundNameMatches = cov.unboundNameMatches || [];
+    const embeddedNameMatches = (cov.embeddedNameMatches || []).filter((m) => {
+        const ov = overrides[m?.worldName];
+        return ov !== 'include_in_char' && ov !== 'exclude_from_char';
+    });
+
+    const sameNameSet = new Set();
+    for (const m of unboundNameMatches) {
+        if (m?.worldName) sameNameSet.add(m.worldName);
+    }
+    for (const m of embeddedNameMatches) {
+        if (m?.worldName) sameNameSet.add(m.worldName);
+    }
+
+    const sameNameNeedConfirmCount = sameNameSet.size;
+    const autoScanDisabled = settings?.autoScanNewCharacters === false;
+    const manualScanRequiredCount = autoScanDisabled ? unscannedShallowCount : 0;
+    const shouldShowPrompt = sameNameNeedConfirmCount > 0 || manualScanRequiredCount > 0;
+
+    let promptKind = 'none';
+    let promptMessage = '';
+    if (sameNameNeedConfirmCount > 0 && manualScanRequiredCount > 0) {
+        promptKind = 'both';
+        promptMessage = `发现 ${sameNameNeedConfirmCount} 本同名世界书待确认，另有 ${manualScanRequiredCount} 张未扫描角色卡`;
+    } else if (sameNameNeedConfirmCount > 0) {
+        promptKind = 'same_name';
+        promptMessage = `发现 ${sameNameNeedConfirmCount} 本与角色同名的世界书待归类`;
+    } else if (manualScanRequiredCount > 0) {
+        promptKind = 'manual_scan';
+        promptMessage = `有 ${manualScanRequiredCount} 张懒加载角色卡待手动扫描`;
+    }
+
+    const badgeCount = unscannedShallowCount + unimportedBookCount;
+
+    return {
+        shouldShowPrompt,
+        promptKind,
+        promptMessage,
+        sameNameNeedConfirmCount,
+        unboundNameMatches,
+        embeddedNameMatches,
+        unscannedShallowCount,
+        unimportedBookCount,
+        manualScanRequiredCount,
+        badgeCount,
     };
 }
 
@@ -1214,7 +1581,7 @@ export function buildCharacterBindingIndex({
     const addBinding = (worldName, avatar, charName, source, orphan = false) => {
         const cleanWorld = String(worldName ?? '').trim();
         if (!cleanWorld) return;
-        if (worldNamesSet && worldNamesSet.size > 0 && !worldNamesSet.has(cleanWorld)) return;
+        if (worldNamesSet && !worldNamesSet.has(cleanWorld)) return;
 
         let list = bindingMap.get(cleanWorld);
         if (!list) {
@@ -1410,7 +1777,9 @@ export function classifyWorldbooks({
         const charOwners = rawOwners.filter((o) => !o.orphan);
         const personaOwners = personaMap.get(realName) || [];
         const isCharBound = charOwners.length > 0;
-        const isExcludedFromChar = cfg.charBookOverrides[realName] === 'exclude_from_char';
+        const charOverride = cfg.charBookOverrides[realName];
+        const isExcludedFromChar = charOverride === 'exclude_from_char';
+        const isIncludedInChar = charOverride === 'include_in_char';
 
         const assignedGroupId = cfg.assignments[realName];
         const hasValidManualGroup = Boolean(assignedGroupId && validGroupMap.has(assignedGroupId));
@@ -1418,7 +1787,7 @@ export function classifyWorldbooks({
         let groupId;
         if (hasValidManualGroup) {
             groupId = assignedGroupId;
-        } else if (isCharBound && !isExcludedFromChar) {
+        } else if ((isCharBound && !isExcludedFromChar) || isIncludedInChar) {
             groupId = SPECIAL_GROUPS.CHARACTER;
         } else {
             groupId = SPECIAL_GROUPS.UNGROUPED;
@@ -1477,6 +1846,8 @@ export function classifyWorldbooks({
             isCharBound,
             isInCharGroup,
             isExcludedFromChar,
+            isCharIncluded: isIncludedInChar,
+            isCharManualOverride: isIncludedInChar && !isCharBound,
             charOwners,
             personaOwners,
             searchableText,
@@ -2402,15 +2773,30 @@ export function pushUndoSnapshot(settings, { count = 0, label = '整理' } = {})
  *
  * @param {Record<string, any>} settings
  * @param {Array<{ realName: string, alias?: string, group?: string, note?: string, applyAlias?: boolean, applyGroup?: boolean, applyNote?: boolean }>} proposals
- * @param {{ label?: string }} [opts]
+ * @param {{ label?: string, isCharBoundFn?: ((name: string) => boolean) | null } | ((name: string) => boolean) | null} [optionsOrFn={}]
+ * @param {((name: string) => boolean) | null} [maybeFn=null]
  * @returns {{ appliedCount: number, createdGroups: string[] }}
  */
-export function applyAiOrganizeProposals(settings, proposals, { label = '整理' } = {}) {
+export function applyAiOrganizeProposals(settings, proposals, optionsOrFn = {}, maybeFn = null) {
     if (!Array.isArray(proposals) || proposals.length === 0) {
         return { appliedCount: 0, createdGroups: [] };
     }
 
+    const opts = typeof optionsOrFn === 'function'
+        ? { isCharBoundFn: optionsOrFn }
+        : (optionsOrFn && typeof optionsOrFn === 'object' ? optionsOrFn : {});
+    const label = typeof opts.label === 'string' && opts.label ? opts.label : '整理';
+    const isCharBoundFn = typeof opts.isCharBoundFn === 'function'
+        ? opts.isCharBoundFn
+        : (typeof maybeFn === 'function' ? maybeFn : null);
+
     pushUndoSnapshot(settings, { count: proposals.length, label });
+
+    if (!Array.isArray(settings.groups)) settings.groups = [];
+    if (!settings.assignments || typeof settings.assignments !== 'object') settings.assignments = {};
+    if (!settings.aliases || typeof settings.aliases !== 'object') settings.aliases = {};
+    if (!settings.notes || typeof settings.notes !== 'object') settings.notes = {};
+    if (!settings.charBookOverrides || typeof settings.charBookOverrides !== 'object') settings.charBookOverrides = {};
 
     const groupByName = new Map(
         (settings.groups || []).map((g) => [g.name.trim().toLowerCase(), g]),
@@ -2445,10 +2831,20 @@ export function applyAiOrganizeProposals(settings, proposals, { label = '整理'
             const cleanGroup = p.group.trim();
             if (cleanGroup === '未分组') {
                 delete settings.assignments[p.realName];
+                if (settings.charBookOverrides?.[p.realName] === 'include_in_char') {
+                    delete settings.charBookOverrides[p.realName];
+                }
                 touched = true;
             } else if (cleanGroup === '角色世界书') {
                 delete settings.assignments[p.realName];
-                delete settings.charBookOverrides[p.realName];
+                const knownCharBound = typeof isCharBoundFn === 'function'
+                    ? Boolean(isCharBoundFn(p.realName))
+                    : settings.charBookOverrides[p.realName] === 'exclude_from_char';
+                if (knownCharBound) {
+                    delete settings.charBookOverrides[p.realName];
+                } else {
+                    settings.charBookOverrides[p.realName] = 'include_in_char';
+                }
                 touched = true;
             } else {
                 const key = cleanGroup.toLowerCase();
@@ -2465,6 +2861,9 @@ export function applyAiOrganizeProposals(settings, proposals, { label = '整理'
                     createdGroups.push(cleanGroup);
                 }
                 settings.assignments[p.realName] = targetGroup.id;
+                if (settings.charBookOverrides?.[p.realName] === 'include_in_char') {
+                    delete settings.charBookOverrides[p.realName];
+                }
                 touched = true;
             }
         }
@@ -2719,6 +3118,8 @@ export function moveBooksToNamedGroup(
         settings.assignments[name] = targetGroup.id;
         if (typeof isCharBoundFn === 'function' && isCharBoundFn(name)) {
             settings.charBookOverrides[name] = 'exclude_from_char';
+        } else if (settings.charBookOverrides?.[name] === 'include_in_char') {
+            delete settings.charBookOverrides[name];
         }
     }
 
@@ -2935,6 +3336,7 @@ export function exportConfigData(settings) {
             showNativeEntrySearchBtn: cfg.showNativeEntrySearchBtn,
             entryEditorMonoFont: cfg.entryEditorMonoFont,
             entryEditorTall: cfg.entryEditorTall,
+            syncEntryOrderOnDrag: cfg.syncEntryOrderOnDrag,
             entrySearchScope: cfg.entrySearchScope,
             entrySearchInTitle: cfg.entrySearchInTitle,
             entrySearchInContent: cfg.entrySearchInContent,
@@ -2959,6 +3361,7 @@ export function exportConfigData(settings) {
             aiOrganizeClueCount: cfg.aiOrganizeClueCount,
             aiOrganizeSnippetLen: cfg.aiOrganizeSnippetLen,
             groupPanelExpanded: cfg.groupPanelExpanded,
+            sectionOrderVersion: cfg.sectionOrderVersion,
             sectionOrder: cfg.sectionOrder,
             groups: cfg.groups,
             globalPresets: cfg.globalPresets,
@@ -2996,7 +3399,14 @@ export function importConfigData(settings, rawPayload) {
         return { ok: false, error: '未在文件中找到分组、组合或别名配置' };
     }
 
-    const normalized = normalizeSettings({ ...settings, ...data });
+    const mergeInput = { ...settings, ...data };
+    if (
+        Object.hasOwn(data, 'sectionOrder') &&
+        (!Object.hasOwn(data, 'sectionOrderVersion') || data.sectionOrderVersion == null)
+    ) {
+        mergeInput.sectionOrderVersion = 1;
+    }
+    const normalized = normalizeSettings(mergeInput);
     Object.assign(settings, normalized);
 
     return {
@@ -3222,10 +3632,334 @@ export function normalizeEntryKeywordsInput(raw) {
 }
 
 /**
+ * Resolve an entry's displayIndex using SillyTavern priority without coercing
+ * `null` / `''` / booleans to `0` while still preserving legitimate `0`.
+ * @param {any} entry
+ * @param {string | number} [mapKey]
+ * @param {number} [fallbackIdx=0]
+ * @returns {number}
+ */
+export function resolveEntryDisplayIndex(entry, mapKey, fallbackIdx = 0) {
+    return (
+        parseOptionalFiniteNumber(entry?.displayIndex) ??
+        parseOptionalFiniteNumber(entry?.extensions?.display_index) ??
+        parseOptionalFiniteNumber(entry?.uid) ??
+        parseOptionalFiniteNumber(mapKey) ??
+        fallbackIdx
+    );
+}
+
+function compareEntryUidValues(uidA, uidB) {
+    const na = parseOptionalFiniteNumber(uidA);
+    const nb = parseOptionalFiniteNumber(uidB);
+    if (na !== null && nb !== null && na !== nb) return na - nb;
+    return String(uidA ?? '').localeCompare(String(uidB ?? ''));
+}
+
+function getEntrySortTitle(item) {
+    const direct = String(item?.title ?? item?.comment ?? '').trim();
+    if (direct) return direct;
+    if (Array.isArray(item?.keys) && item.keys.length > 0) return item.keys.join(' / ');
+    if (Array.isArray(item?.key) && item.key.length > 0) return item.key.join(' / ');
+    return '';
+}
+
+/**
+ * Sort projected or raw worldbook entry items without mutating the input array.
+ * Supported modes:
+ * - `'custom'` (default): `displayIndex` asc -> `order` asc -> `uid` asc
+ * - `'order'`: `order` asc -> `displayIndex` asc -> `uid` asc
+ * - `'title'`: `title`/`comment`/`keys` `zh-CN` asc -> `displayIndex` asc -> `uid` asc
+ *
+ * @template T
+ * @param {T[]} [items=[]]
+ * @param {'custom' | 'order' | 'title'} [sortMode='custom']
+ * @returns {T[]}
+ */
+export function sortEntryListItems(items = [], sortMode = 'custom') {
+    const list = Array.isArray(items) ? [...items] : [];
+    const mode = sortMode === 'order' || sortMode === 'title' ? sortMode : 'custom';
+
+    const disp = (x) =>
+        parseOptionalFiniteNumber(x?.displayIndex) ??
+        parseOptionalFiniteNumber(x?.extensions?.display_index) ??
+        parseOptionalFiniteNumber(x?.uid) ??
+        0;
+    const ord = (x) => parseOptionalFiniteNumber(x?.order) ?? 100;
+
+    list.sort((a, b) => {
+        if (mode === 'order') {
+            return (
+                ord(a) - ord(b) ||
+                disp(a) - disp(b) ||
+                compareEntryUidValues(a?.uid, b?.uid)
+            );
+        }
+        if (mode === 'title') {
+            return (
+                compareZhCn(getEntrySortTitle(a), getEntrySortTitle(b)) ||
+                disp(a) - disp(b) ||
+                compareEntryUidValues(a?.uid, b?.uid)
+            );
+        }
+        return (
+            disp(a) - disp(b) ||
+            ord(a) - ord(b) ||
+            compareEntryUidValues(a?.uid, b?.uid)
+        );
+    });
+    return list;
+}
+
+/**
+ * Compute sequential `displayIndex` (and optional ascending `order`) updates
+ * for a full or partial `orderedUids` sequence, preserving unmentioned entries'
+ * relative global slots so filtered drag-reordering never collides with hidden rows.
+ *
+ * @param {Record<string, any> | Array<any>} entries
+ * @param {Array<string | number>} [orderedUids=[]]
+ * @param {{ syncOrder?: boolean }} [options={}]
+ * @returns {{ orderedUids: string[], updatesByUid: Record<string, { key: string, uid: string, displayIndex: number, order?: number }>, updates: Array<{ key: string, uid: string, displayIndex: number, order?: number }>, changed: boolean }}
+ */
+export function computeReorderedEntries(entries, orderedUids = [], { syncOrder = false } = {}) {
+    const rawList = [];
+    const seenUids = new Set();
+
+    const pushRaw = (mapKey, e, idx) => {
+        if (!e || typeof e !== 'object') return;
+        const uid = String(e.uid ?? mapKey ?? idx).trim();
+        if (!uid || seenUids.has(uid)) return;
+        seenUids.add(uid);
+        const hasExplicitDisplay =
+            parseOptionalFiniteNumber(e.displayIndex) !== null ||
+            parseOptionalFiniteNumber(e.extensions?.display_index) !== null;
+        const displayIndex = resolveEntryDisplayIndex(e, mapKey, idx);
+        const orderNum = parseOptionalFiniteNumber(e.order);
+        const order = orderNum !== null ? orderNum : 100;
+        rawList.push({
+            key: String(mapKey),
+            uid,
+            entry: e,
+            displayIndex,
+            order,
+            rawOrder: orderNum,
+            hasExplicitDisplay,
+        });
+    };
+
+    if (Array.isArray(entries)) {
+        entries.forEach((e, idx) => {
+            pushRaw(String(idx), e, idx);
+        });
+    } else if (entries && typeof entries === 'object') {
+        Object.entries(entries).forEach(([mapKey, e], idx) => {
+            pushRaw(mapKey, e, idx);
+        });
+    }
+
+    if (rawList.length === 0) {
+        return { orderedUids: [], updatesByUid: {}, updates: [], changed: false };
+    }
+
+    const globalSorted = [...rawList].sort((a, b) => (
+        a.displayIndex - b.displayIndex ||
+        a.order - b.order ||
+        compareEntryUidValues(a.uid, b.uid)
+    ));
+    const byUid = new Map(globalSorted.map((item) => [item.uid, item]));
+
+    const matchedUids = [];
+    const matchedSet = new Set();
+    for (const rawUid of Array.isArray(orderedUids) ? orderedUids : []) {
+        const uid = String(rawUid ?? '').trim();
+        if (uid && byUid.has(uid) && !matchedSet.has(uid)) {
+            matchedSet.add(uid);
+            matchedUids.push(uid);
+        }
+    }
+
+    if (matchedUids.length === 0) {
+        return { orderedUids: [], updatesByUid: {}, updates: [], changed: false };
+    }
+
+    let cursor = 0;
+    const mergedGlobal = globalSorted.map((item) => {
+        if (!matchedSet.has(item.uid)) return item;
+        const nextItem = byUid.get(matchedUids[cursor]);
+        cursor += 1;
+        return nextItem;
+    });
+
+    const allExplicit = globalSorted.every((x) => x.hasExplicitDisplay);
+    const disps = globalSorted.map((x) => x.displayIndex);
+    const allDistinctNonNeg =
+        new Set(disps).size === globalSorted.length &&
+        disps.every((d) => Number.isFinite(d) && d >= 0);
+    const minDisplayIndex = allExplicit && allDistinctNonNeg ? Math.min(...disps) : 0;
+
+    const finiteNonNegOrders = mergedGlobal
+        .map((x) => x.rawOrder)
+        .filter((n) => n !== null && n >= 0);
+    const baseOrder = finiteNonNegOrders.length > 0 ? Math.min(...finiteNonNegOrders) : 100;
+
+    const updates = [];
+    const updatesByUid = {};
+    let changed = false;
+
+    mergedGlobal.forEach((item, globalIdx) => {
+        const nextDisplayIndex = minDisplayIndex + globalIdx;
+        const nextOrder = syncOrder ? baseOrder + globalIdx : item.order;
+        if (
+            item.displayIndex !== nextDisplayIndex ||
+            !item.hasExplicitDisplay ||
+            (syncOrder && item.order !== nextOrder)
+        ) {
+            changed = true;
+        }
+        const upd = syncOrder
+            ? { key: item.key, uid: item.uid, displayIndex: nextDisplayIndex, order: nextOrder }
+            : { key: item.key, uid: item.uid, displayIndex: nextDisplayIndex };
+        updates.push(upd);
+        updatesByUid[item.uid] = upd;
+    });
+
+    return {
+        orderedUids: mergedGlobal.map((x) => x.uid),
+        updatesByUid,
+        updates,
+        changed,
+    };
+}
+
+/**
+ * Move `draggedUid` before or after `targetUid` and compute the resulting
+ * ordered UID list and `displayIndex` (plus optional `order`) update maps.
+ *
+ * @param {Array<string | any> | Record<string, any>} entries
+ * @param {string | number} draggedUid
+ * @param {string | number} targetUid
+ * @param {boolean | 'before' | 'after'} [insertAfter=false]
+ * @param {{ syncOrder?: boolean }} [options={}]
+ * @returns {{ changed: boolean, orderedUids: string[], displayIndexMap: Record<string, number>, orderMap: Record<string, number> | null, updatesByUid: Record<string, any> }}
+ */
+export function reorderEntryUids(
+    entries,
+    draggedUid,
+    targetUid,
+    insertAfter = false,
+    { syncOrder = false } = {},
+) {
+    const emptyRes = (uids = []) => ({
+        changed: false,
+        orderedUids: uids,
+        displayIndexMap: {},
+        orderMap: syncOrder ? {} : null,
+        updatesByUid: {},
+    });
+
+    let currentUids = [];
+    let isObjectBacked = false;
+
+    if (Array.isArray(entries)) {
+        const hasObjects = entries.some((e) => e && typeof e === 'object');
+        if (hasObjects) {
+            isObjectBacked = true;
+            currentUids = sortEntryListItems(entries.filter((e) => e && typeof e === 'object'), 'custom')
+                .map((e, idx) => String(e.uid ?? idx).trim())
+                .filter(Boolean);
+        } else {
+            const seen = new Set();
+            for (const raw of entries) {
+                const id = String(raw ?? '').trim();
+                if (id && !seen.has(id)) {
+                    seen.add(id);
+                    currentUids.push(id);
+                }
+            }
+        }
+    } else if (entries && typeof entries === 'object') {
+        isObjectBacked = true;
+        const list = Object.entries(entries)
+            .filter(([, e]) => e && typeof e === 'object')
+            .map(([k, e]) => ({
+                ...e,
+                uid: String(e.uid ?? k).trim(),
+                displayIndex: resolveEntryDisplayIndex(e, k, 0),
+            }));
+        currentUids = sortEntryListItems(list, 'custom').map((e) => e.uid);
+    }
+
+    const dragStr = String(draggedUid ?? '').trim();
+    const targetStr = String(targetUid ?? '').trim();
+    if (!dragStr || !targetStr || dragStr === targetStr) {
+        return emptyRes(currentUids);
+    }
+
+    const fromIdx = currentUids.indexOf(dragStr);
+    const rawTargetIdx = currentUids.indexOf(targetStr);
+    if (fromIdx < 0 || rawTargetIdx < 0) {
+        return emptyRes(currentUids);
+    }
+
+    const nextUids = [...currentUids];
+    nextUids.splice(fromIdx, 1);
+    const targetIdx = nextUids.indexOf(targetStr);
+    const after = insertAfter === true || insertAfter === 'after';
+    nextUids.splice(after ? targetIdx + 1 : targetIdx, 0, dragStr);
+
+    const unchanged =
+        nextUids.length === currentUids.length &&
+        nextUids.every((id, idx) => id === currentUids[idx]);
+    if (unchanged) {
+        return emptyRes(currentUids);
+    }
+
+    if (isObjectBacked) {
+        const plan = computeReorderedEntries(entries, nextUids, { syncOrder });
+        const displayIndexMap = {};
+        const orderMap = syncOrder ? {} : null;
+        for (const upd of plan.updates) {
+            displayIndexMap[upd.uid] = upd.displayIndex;
+            if (syncOrder && Number.isFinite(upd.order)) {
+                orderMap[upd.uid] = upd.order;
+            }
+        }
+        return {
+            changed: true,
+            orderedUids: plan.orderedUids,
+            displayIndexMap,
+            orderMap,
+            updatesByUid: plan.updatesByUid,
+        };
+    }
+
+    const displayIndexMap = {};
+    const orderMap = syncOrder ? {} : null;
+    const updatesByUid = {};
+    nextUids.forEach((uid, idx) => {
+        displayIndexMap[uid] = idx;
+        if (syncOrder) {
+            orderMap[uid] = 100 + idx;
+            updatesByUid[uid] = { uid, displayIndex: idx, order: 100 + idx };
+        } else {
+            updatesByUid[uid] = { uid, displayIndex: idx };
+        }
+    });
+
+    return {
+        changed: true,
+        orderedUids: nextUids,
+        displayIndexMap,
+        orderMap,
+        updatesByUid,
+    };
+}
+
+/**
  * Project a worldbook JSON payload into lightweight entry rows for fast list rendering
  * without retaining full large entry bodies or dozens of form controls in DOM.
  * @param {any} payload
- * @returns {{ total: number, enabledCount: number, items: Array<{ uid: string, title: string, keys: string[], keysecondary: string[], constant: boolean, disable: boolean, selective: boolean, position: number, depth: number, order: number, searchText: string }> }}
+ * @returns {{ total: number, enabledCount: number, items: Array<{ uid: string, displayIndex: number, title: string, keys: string[], keysecondary: string[], constant: boolean, disable: boolean, selective: boolean, position: number, depth: number, order: number, searchText: string }> }}
  */
 export function extractEntryListItems(payload) {
     const entriesObj = payload?.entries;
@@ -3234,10 +3968,20 @@ export function extractEntryListItems(payload) {
     }
     const rawList = Object.entries(entriesObj)
         .filter(([, e]) => e && typeof e === 'object')
-        .sort(([, a], [, b]) => (Number(a.displayIndex ?? a.order ?? a.uid ?? 0) - Number(b.displayIndex ?? b.order ?? b.uid ?? 0)));
+        .map(([mapKey, e], rawIdx) => ({
+            mapKey,
+            e,
+            uid: String(e.uid ?? mapKey ?? rawIdx),
+            displayIndex: resolveEntryDisplayIndex(e, mapKey, rawIdx),
+            order: parseOptionalFiniteNumber(e.order) ?? 100,
+        }))
+        .sort((a, b) => (
+            a.displayIndex - b.displayIndex ||
+            a.order - b.order ||
+            compareEntryUidValues(a.uid, b.uid)
+        ));
 
-    const items = rawList.map(([mapKey, e], idx) => {
-        const uid = String(e.uid ?? mapKey ?? idx);
+    const items = rawList.map(({ mapKey, e, uid, displayIndex, order }, idx) => {
         const keys = Array.isArray(e.key) ? e.key.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
         const keysecondary = Array.isArray(e.keysecondary) ? e.keysecondary.map((k) => String(k ?? '').trim()).filter(Boolean) : [];
         const comment = String(e.comment ?? '').trim();
@@ -3249,11 +3993,10 @@ export function extractEntryListItems(payload) {
         const position = posNum !== null && Number.isInteger(posNum) ? posNum : 0;
         const depthNum = parseOptionalFiniteNumber(e.depth);
         const depth = depthNum !== null ? depthNum : 4;
-        const orderNum = parseOptionalFiniteNumber(e.order);
-        const order = orderNum !== null ? orderNum : 100;
         const searchText = [comment, ...keys, ...keysecondary].join('\n').toLowerCase();
         return {
             uid,
+            displayIndex,
             title,
             keys: keys.slice(0, 6),
             keysecondary: keysecondary.slice(0, 4),
@@ -3280,8 +4023,9 @@ export function extractSingleEntryForEdit(payload, uid) {
     if (!entriesObj || typeof entriesObj !== 'object') return null;
     const targetUid = String(uid);
     let raw = null;
-    if (Object.hasOwn(entriesObj, targetUid) && entriesObj[targetUid] && typeof entriesObj[targetUid] === 'object') {
-        raw = entriesObj[targetUid];
+    const direct = Object.hasOwn(entriesObj, targetUid) ? entriesObj[targetUid] : null;
+    if (direct && typeof direct === 'object' && (!Array.isArray(entriesObj) || String(direct.uid ?? targetUid) === targetUid)) {
+        raw = direct;
     } else {
         for (const [k, e] of Object.entries(entriesObj)) {
             if (e && typeof e === 'object' && String(e.uid ?? k) === targetUid) {
