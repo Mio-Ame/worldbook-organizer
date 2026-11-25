@@ -6,13 +6,14 @@
  * - Reads live in-memory state first (`SillyTavern.getContext()` and cached
  *   `/scripts/world-info.js` exports), falling back to a single cached
  *   `/api/settings/get` only when needed.
- * - Optional `loadWorldInfo()` disk reads happen ONLY when the user manually
- *   triggers AI Organize with entry-clue sampling enabled.
+ * - Direct `/api/worldinfo/get` reads happen ONLY on demand (preview, clues, search,
+ *   or rename) without polluting SillyTavern's persistent `worldInfoCache`.
  */
 
 import { MODULE_NAME, charaFileName, isPotentiallySensitiveTitle, migrateSettingsOnWorldRename, normalizeSettings } from './core.js';
 
 const CUSTOM_API_STORAGE_KEY = 'wbo_custom_api_v1';
+const PREVIEW_CONTENT_MAX_CHARS = 1600;
 
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
@@ -20,6 +21,8 @@ let _powerUserModule = null;
 let _powerUserModuleTried = false;
 let _cachedSettingsCharLore = null;
 let _cachedSettingsWorldNames = null;
+/** @type {Array<{ oldName: string, newName: string }>} */
+const _pendingRenamedEvents = [];
 
 /**
  * Return SillyTavern / TauriTavern global context safely.
@@ -337,10 +340,7 @@ export function getCurrentEditorWorldName() {
  * @returns {Promise<{ total: number, enabledCount: number, entries: Array<{ uid: string, title: string, keys: string[], content: string, disabled: boolean, constant: boolean }> }>}
  */
 export async function fetchWorldbookPreviewEntries(worldName) {
-    let data = await fetchWorldInfoUncached(worldName);
-    if (!data || typeof data !== 'object') {
-        data = await loadWorldInfoPayload(worldName);
-    }
+    const data = await fetchWorldInfoUncached(worldName);
     const entriesObj = data?.entries;
     if (!entriesObj || typeof entriesObj !== 'object') {
         return { total: 0, enabledCount: 0, entries: [] };
@@ -352,11 +352,15 @@ export async function fetchWorldbookPreviewEntries(worldName) {
             const keys = Array.isArray(e.key)
                 ? e.key.map((k) => String(k || '').trim()).filter(Boolean)
                 : [];
+            const rawContent = String(e.content || '').trim();
+            const content = rawContent.length > PREVIEW_CONTENT_MAX_CHARS
+                ? `${rawContent.slice(0, PREVIEW_CONTENT_MAX_CHARS)}…（内容较长，完整正文请在编辑器查看）`
+                : rawContent;
             return {
                 uid: String(e.uid ?? idx),
                 title: String(e.comment || '').trim() || keys.slice(0, 2).join(' / ') || `条目 #${idx + 1}`,
                 keys: keys.slice(0, 6),
-                content: String(e.content || '').trim(),
+                content,
                 disabled: Boolean(e.disable),
                 constant: Boolean(e.constant),
             };
@@ -447,10 +451,7 @@ export async function fetchWorldbookCluesOnDemand(
 ) {
     const limit = Math.max(1, Math.min(20, Number(maxClues) || 5));
     const maxSnippet = Math.max(0, Math.min(200, Number(snippetChars) || 0));
-    let data = await fetchWorldInfoUncached(worldName);
-    if (!data || typeof data !== 'object') {
-        data = await loadWorldInfoPayload(worldName);
-    }
+    const data = await fetchWorldInfoUncached(worldName);
     const entriesObj = data?.entries;
     if (!entriesObj || typeof entriesObj !== 'object') return [];
 
@@ -586,12 +587,14 @@ export async function callHostAiForOrganize({ systemPrompt, userPrompt }) {
 
 /**
  * Fetch full character data for a single shallow character on demand (without
- * switching chats). Used ONLY when user clicks "Scan unscanned cards" or imports
- * an embedded worldbook.
+ * switching chats). When `allowUnshallow` is false, fetches a transient JSON copy
+ * via `/api/characters/get` WITHOUT calling `ctx.unshallowCharacter()` so bulk
+ * scans on lazy-loaded libraries never bloat host memory on TT iOS.
  * @param {string} avatar
+ * @param {{ allowUnshallow?: boolean }} [opts]
  * @returns {Promise<any | null>}
  */
-export async function fetchFullCharacterOnDemand(avatar) {
+export async function fetchFullCharacterOnDemand(avatar, { allowUnshallow = true } = {}) {
     const ctx = getHostContext();
     const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
     const chid = list.findIndex((c) => c?.avatar === avatar);
@@ -599,7 +602,7 @@ export async function fetchFullCharacterOnDemand(avatar) {
         return list[chid];
     }
 
-    if (chid >= 0 && typeof ctx?.unshallowCharacter === 'function') {
+    if (allowUnshallow && chid >= 0 && typeof ctx?.unshallowCharacter === 'function') {
         try {
             await ctx.unshallowCharacter(chid);
             return ctx.characters?.[chid] || null;
@@ -625,8 +628,8 @@ export async function fetchFullCharacterOnDemand(avatar) {
 }
 
 /**
- * Scan unscanned shallow characters in small throttled batches (concurrency = 3)
- * to avoid freezing mobile WebViews or TauriTavern.
+ * Scan unscanned shallow characters in small throttled batches (concurrency = 2)
+ * without calling `unshallowCharacter`, so full character JSONs are released to GC immediately.
  *
  * @param {Array<{ chid: number, avatar: string, name: string }>} targets
  * @param {{ onProgress?: (done: number, total: number, currentName: string) => void, signal?: { cancelled: boolean } }} [opts]
@@ -646,7 +649,7 @@ export async function scanShallowCharactersInBatches(targets, { onProgress, sign
         const batch = targets.slice(i, i + step);
         const results = await Promise.all(
             batch.map(async (item) => {
-                const full = await fetchFullCharacterOnDemand(item.avatar);
+                const full = await fetchFullCharacterOnDemand(item.avatar, { allowUnshallow: false });
                 done += 1;
                 onProgress?.(done, total, item.name);
                 if (!full || !full.avatar) return null;
@@ -694,14 +697,14 @@ export async function scanShallowCharactersInBatches(targets, { onProgress, sign
  * NEVER overwrites an existing worldbook with the same name!
  *
  * @param {string} avatar
- * @param {{ worldNamesSet?: Set<string> }} [opts]
+ * @param {{ worldNamesSet?: Set<string>, deferRefresh?: boolean }} [opts]
  * @returns {Promise<{ status: 'imported' | 'exists' | 'nobook' | 'failed', name?: string, error?: string }>}
  */
-export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSet } = {}) {
+export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSet, deferRefresh = false } = {}) {
     const ctx = getHostContext();
     await ensureWorldInfoModule();
 
-    const fullChar = await fetchFullCharacterOnDemand(avatar);
+    const fullChar = await fetchFullCharacterOnDemand(avatar, { allowUnshallow: false });
     const list = Array.isArray(ctx?.characters) ? ctx.characters : [];
     const chid = list.findIndex((c) => c?.avatar === avatar);
     const charObj = (chid >= 0 && !list[chid]?.shallow ? list[chid] : fullChar) || null;
@@ -743,7 +746,7 @@ export async function importEmbeddedWorldbookForCharacter(avatar, { worldNamesSe
             : JSON.parse(JSON.stringify(book));
         const converted = convertFn(clonedBook);
         await saveFn(targetName, converted, true);
-        if (typeof updateListFn === 'function') {
+        if (!deferRefresh && typeof updateListFn === 'function') {
             await updateListFn();
         }
         if (chid >= 0 && boundName !== targetName && typeof ctx?.writeExtensionField === 'function') {
@@ -939,27 +942,6 @@ export async function callCustomApiForOrganize({ baseUrl, apiKey, model, systemP
 }
 
 /**
- * Load a worldbook JSON payload safely across ST 1.14–1.19+ and TauriTavern.
- * @param {string} worldName
- * @returns {Promise<any | null>}
- */
-async function loadWorldInfoPayload(worldName) {
-    const ctx = getHostContext();
-    await ensureWorldInfoModule();
-    const loader = ctx?.loadWorldInfo || _worldInfoModule?.loadWorldInfo;
-    if (typeof loader === 'function') {
-        return await loader(worldName);
-    }
-    const res = await fetch('/api/worldinfo/get', {
-        method: 'POST',
-        headers: buildRequestHeaders(),
-        body: JSON.stringify({ name: worldName }),
-    });
-    if (!res.ok) return null;
-    return await res.json();
-}
-
-/**
  * Fetch a single worldbook payload WITHOUT populating SillyTavern's persistent
  * in-memory `worldInfoCache`, so scanning 300+ worldbooks on mobile / TauriTavern iOS
  * lets GC reclaim every book immediately and prevents OOM crashes!
@@ -973,14 +955,8 @@ async function fetchWorldInfoUncached(worldName) {
             headers: buildRequestHeaders(),
             body: JSON.stringify({ name: worldName }),
         });
-        if (res.ok) {
-            return await res.json();
-        }
-    } catch {
-        // Fallback below if host overrides `/api/worldinfo/get`
-    }
-    try {
-        return await loadWorldInfoPayload(worldName);
+        if (!res.ok) return null;
+        return await res.json();
     } catch {
         return null;
     }
@@ -1073,7 +1049,8 @@ export async function searchWorldbookEntriesStream({
 }
 
 /**
- * Flush SillyTavern's worldbook list once after a batch of file renames/deletes.
+ * Flush SillyTavern's worldbook list once after a batch of file renames/deletes,
+ * and emit any queued `wbo:worldbook-renamed` bridge events strictly AFTER `world_names` refreshes.
  */
 export async function flushWorldInfoListRefresh() {
     const ctx = getHostContext();
@@ -1082,6 +1059,10 @@ export async function flushWorldInfoListRefresh() {
     const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
     if (typeof updateListFn === 'function') {
         try { await updateListFn(); } catch { /* ignore */ }
+    }
+    const pendingRenames = _pendingRenamedEvents.splice(0, _pendingRenamedEvents.length);
+    for (const ev of pendingRenames) {
+        emitBridgeEvent('wbo:worldbook-renamed', ev);
     }
 }
 
@@ -1124,9 +1105,6 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
     // Step 1: Load original worldbook content without bloating host `worldInfoCache`
     // (critical on memory-constrained mobile WebViews like TauriTavern iOS).
     let data = await fetchWorldInfoUncached(cleanOld);
-    if (!data || typeof data !== 'object' || !('entries' in data)) {
-        data = await loadWorldInfoPayload(cleanOld);
-    }
     if (!data || typeof data !== 'object' || !('entries' in data)) {
         return { ok: false, error: `无法读取原世界书「${cleanOld}」` };
     }
@@ -1269,14 +1247,15 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
         existingNamesSet.add(cleanNew);
     }
 
-    if (!deferRefresh) {
+    if (deferRefresh) {
+        _pendingRenamedEvents.push({ oldName: cleanOld, newName: cleanNew });
+    } else {
         const updateListFn = ctx?.updateWorldInfoList || _worldInfoModule?.updateWorldInfoList;
         if (typeof updateListFn === 'function') {
             try { await updateListFn(); } catch { /* ignore */ }
         }
+        emitBridgeEvent('wbo:worldbook-renamed', { oldName: cleanOld, newName: cleanNew });
     }
-
-    emitBridgeEvent('wbo:worldbook-renamed', { oldName: cleanOld, newName: cleanNew });
 
     return { ok: true, migrated };
 }
@@ -1286,9 +1265,10 @@ export async function realRenameWorldbook(oldName, newName, pluginSettings, { de
  * (also works for deleted/orphan character entries!).
  * @param {string} charKeyOrAvatar
  * @param {string} worldName
+ * @param {{ deferSave?: boolean }} [opts]
  * @returns {Promise<{ ok: boolean, error?: string }>}
  */
-export async function unbindExtraWorldbookFromChar(charKeyOrAvatar, worldName) {
+export async function unbindExtraWorldbookFromChar(charKeyOrAvatar, worldName, { deferSave = false } = {}) {
     const cleanWorld = String(worldName ?? '').trim();
     const keyCandidate = charaFileName(String(charKeyOrAvatar ?? '').trim()) || String(charKeyOrAvatar ?? '').trim();
     if (!keyCandidate || !cleanWorld) return { ok: false, error: '参数无效' };
@@ -1318,7 +1298,9 @@ export async function unbindExtraWorldbookFromChar(charKeyOrAvatar, worldName) {
         return { ok: false, error: '未找到对应的附加世界书绑定记录' };
     }
 
-    saveSettings();
+    if (!deferSave) {
+        saveSettings();
+    }
     return { ok: true };
 }
 

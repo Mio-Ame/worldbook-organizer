@@ -1,0 +1,84 @@
+# `worldbook-organizer` 精修交接说明（dev 分支 · v2.34.5）
+
+## 一、本次改动：原来哪里不合理 / 反人类 → 怎么改的
+
+### 1. 交互与双端布局（UX-01 ~ UX-10）
+1. **原生 `window.prompt()` 在 iOS WebView 失效（UX-01）**
+   - **原来**：批量移组「新建分组并移入」、整理预览「整组归入新分组 / 单行新建分组 / 改组名」4 处调用 `globalThis.prompt()`，在 iOS WKWebView 下常被静默拦截返回 `null` 或弹出不合主题的原生输入框。
+   - **现在**：替换为插件内自研轻量输入浮层 `openInlineTextPrompt`，支持预填、一键「清空」、IME 合成态安全的回车确认、透明防误关遮罩，且仅在桌面端宽屏非触控设备自动聚焦（手机端绝不抢弹软键盘）。
+2. **「跟随酒馆」配色下首项激活胶囊丢失高亮（UX-02）**
+   - **原来**：`.wbo-modal[data-wbo-palette="host"] .wbo-pill:first-child` 优先级高于 `.wbo-pill.is-active`，导致「全部 / 非角色书」首项胶囊选中后底色被吞掉。
+   - **现在**：改为 `:first-child:not(.is-active)` 垫底，并为 `[data-wbo-palette="host"] .wbo-pill.is-active` 补充独立高对比实底样式。
+3. **透明 / 毛玻璃主题下弹窗与吸顶标题透字叠字（UX-03）**
+   - **原来**：`host` 配色 `--wbo-bg` 与下拉吸顶分组头 `.wbo-dd-group-head` 直接对半透明 `--SmartThemeBlurTintColor` 做 `color-mix`，且 `.is-isolated:hover` 为 `transparent`，滚动时底层文字透出叠字。
+   - **现在**：为 `host` 配色的弹窗容器、`.wbo-mgr-subbar`、`.wbo-group-header`、`.wbo-preview-group-head`、顶底常驻栏以及 `.wbo-dd-group-head` 全部垫实不透明基色（配合 `linear-gradient` / `rgb(from ... / 1)`），并移除 `.is-isolated:hover` 的透明覆盖。
+4. **3 个子弹窗未锁定高度与顶底常驻（UX-04）**
+   - **原来**：「管理分组」「新建/编辑分组」「搜索世界书条目」未启用 `pinnedLayout: true`，筛选、增删或滚动时搜索栏/页脚被卷走或窗口高度留白/跳动。
+   - **现在**：统一启用 `pinnedLayout: true`，顶部操作/搜索区（`.wbo-pinned-top`）与底部按钮栏（`.wbo-pinned-footer`）常驻固定，仅中间列表滚动；「新建/编辑分组」内的选书列表自适应撑满剩余高度。
+5. **中文输入法（IME）按回车误触发提交或搜索（UX-05）**
+   - **原来**：`#wbo-es-query`、`#wbo-group-name-input`、`#wbo-alias-input`、`#wbo-note-input`、`#wbo-local-rule-grp` 直接判断 `ev.key === 'Enter'`，拼音/日文输入法回车确认候选词时误触发。
+   - **现在**：统一通过 `bindImeSafeEnter` 监听 `compositionstart`/`compositionend` 并检查 `ev.isComposing || ev.keyCode === 229 || composing`。
+6. **390px 手机竖屏多处拥挤、折行挤压与斜角留白（UX-06 / UX-07 / UX-09）**
+   - **原来**：手机端批量操作栏右侧大留白；整理预览单行标题被右侧分类下拉框挤成窄条；长组名表头不换行；设置页同类控件写死 `184px` 折成斜角留白；非全宽页脚靠右不对称；桌面端拖拽抓手图标在手机触屏无效占位。
+   - **现在**：在 `@media (max-width: 680px)` 下拆出「计数+全选」顶行与 2×2 均分操作网格；预览行允许标题占满首行、分类下拉与微调按钮自然落至第二行；预览组头允许换行；设置行控件移动端全宽齐平；移动端自动隐藏 `.wbo-drag-handle` 与 `.wbo-group-drag-handle`；全页脚在移动端自动等宽铺满；`#wbo-mobile-editor-trigger` 保底 `min-width: 96px`。
+7. **抽屉关闭时初始化导致移动端编辑器按钮高度兜底失真（UX-08）**
+   - **原来**：首次初始化时若世界书面板处于关闭状态，无法测量原生高度，`syncMobileEditorTrigger` 后续不再重测。
+   - **现在**：当 `!_nativeAppearanceCache.has(selectEl)` 时自动补测 `mirrorNativeSelectAppearance(selectEl, trigger)`。
+8. **新建/编辑分组未校验重名（UX-10）**
+   - **原来**：允许创建大小写相同或同名分组，后续自动按组名合并时易混淆。
+   - **现在**：提交前忽略自身进行不区分大小写重名校验并提示阻止。
+
+### 2. 移动端低内存与性能优化（MEM-01 ~ MEM-06）
+1. **批量扫描懒加载角色卡不再永久解懒加载（MEM-01）**
+   - **原来**：`scanShallowCharactersInBatches` 通过 `fetchFullCharacterOnDemand` 触发 `ctx.unshallowCharacter(chid)`，将整卡大 JSON 永久写回宿主内存。
+   - **现在**：`fetchFullCharacterOnDemand` 新增 `{ allowUnshallow = true }`，批量扫描与批量导入卡内世界书传 `{ allowUnshallow: false }`，直接请求 `/api/characters/get` 抽取轻量摘要后立即交由 GC 回收。
+2. **彻底去除只读路径上的 `loadWorldInfo` 宿主缓存回退（MEM-02）**
+   - **原来**：`fetchWorldInfoUncached` 及其调用方在 `/api/worldinfo/get` 异常时回退调用 `ctx.loadWorldInfo`，可能污染宿主永久 `worldInfoCache`。
+   - **现在**：移除全部 `loadWorldInfoPayload` 回退，只读路径统一直连 `/api/worldinfo/get`。
+3. **Select2 附加世界书监听器去重（MEM-03）**
+   - **原来**：`enhanceDesktopExtrasSelect2` 每次展开都重复在 `resultsList` 叠加绑定 `mousedown`/`mouseup`/`click`。
+   - **现在**：通过 `dataset.wboExtrasListBound` 幂等绑定一次监听器并动态读取最新状态引用。
+4. **条目预览正文截断与关窗释放（MEM-04）**
+   - **原来**：预览缓存保留整书全部未截断正文，且关闭子弹窗时不清理。
+   - **现在**：单条正文超过 1600 字自动截断提示；关闭子弹窗时保留当前主列表仍展开的预览键、清理其余缓存；移动端/窄屏预览缓存上限降为 3 本。
+5. **批量解绑与批量导入合并保存与列表刷新（MEM-05）**
+   - **原来**：一键清理残留附加绑定与批量导入卡内世界书在循环内逐条触发 `saveSettings()` / `updateWorldInfoList()`。
+   - **现在**：新增 `{ deferSave }` 与 `{ deferRefresh }` 选项，循环结束后统一执行 1 次保存与刷新。
+6. **移除 `data-group-books` DOM 大属性（MEM-06）**
+   - **原来**：每个分组节点序列化整组书名 JSON 写入 DOM 属性并在每次勾选时反序列化。
+   - **现在**：改为内存 `_renderedGroupBooksMap` 按分组 ID O(1) 读取。
+
+### 3. 三件套生态联动与资源版本（INT-01 ~ INT-07）
+1. **修复批量改名事件时序（INT-01）**：`realRenameWorldbook` 在 `deferRefresh: true` 时暂存 `{ oldName, newName }` 队列，严格等到 `flushWorldInfoListRefresh()` 完成 `updateWorldInfoList()` 刷新后再依次派发 `wbo:worldbook-renamed`。
+2. **样式缓存版本号同步（INT-02）**：`manifest.json` 与 `index.js` `STYLE_ASSET_VERSION` 统一升级为 `'2.34.5'`（并加入单测防呆断言）。
+3. **对接条目分组插件（INT-03 / INT-04 / INT-05）**：检测到 `worldbook-entry-groups` 时，在书行标题旁轻量展示只读 `N 组` 标签，并在行内预览头与手机 `···` 菜单提供「条目分组」快捷入口（派发 `weg:open-panel`）；同时监听 `weg:entries-toggled` 自动失效并刷新已展开的条目预览（卸载时在 `onDisable` 清理）。
+4. **声明顺序整理（INT-07）**：将 `_openPanelBridgeHandler` 声明上移至模块顶部状态区。
+
+### 4. 文案合规与单测补强（CMP-01 ~ CMP-04）
+- 清理注释、类名（`.wbo-gr-*` → `.wbo-pop-*`）、外部弹窗选择器集中至中性常量 `ENHANCED_POPOVER_SELECTORS`；替换「甲薄模型」→「内容限制较宽松的模型」、移除生硬词汇与夸张性能表述、修正按钮位置提示。
+- `tests/core.test.mjs` 补齐 `src/core.js` 全部未测导出与边界分支，新增版本号一致性及宿主低内存/事件时序单测（共 19 项全部通过）。
+
+---
+
+## 二、真机验收清单
+
+### A. 桌面端（SillyTavern 1.14–1.19+）
+1. **分组管理主弹窗（素雅纸墨 + 跟随酒馆 + 透明主题）**：
+   - 切到「跟随酒馆」且宿主使用半透明模糊主题时，验证弹窗底色、吸顶分组标题与「全部 / 非角色书」首项激活胶囊均不透明、无底层文字透字叠字，首项选中胶囊有明显高亮底色。
+   - 切换分组胶囊、搜索框输入无匹配词、开启/关闭批量模式，确认弹窗总高度纹丝不动。
+2. **子弹窗与输入体验**：
+   - 打开「管理分组」「新建/编辑分组」「搜索世界书条目」，确认顶部操作/搜索栏与底部按钮栏始终常驻，仅中间列表滚动；尝试输入同名分组应被提示拦截。
+   - 在批量移组「新建分组并移入」或整理预览「改组名 / 新建分组」处点击，确认弹出插件内轻量输入窗（非浏览器原生弹窗），中文输入法拼音候选回车不误提交。
+3. **三件套联动**：
+   - 同时安装「世界书条目分组」时，有分组的书行显示 `N 组` 标签；展开行内预览点击「条目分组」可直接定位打开该书条目分组面板；在条目分组面板开关条目后返回，展开中的预览状态同步刷新。
+   - 执行「真实改名并同步绑定」（含批量改名/回滚），确认「快照管家」与「条目分组」中的书名均同步更新且无旧书名残留。
+
+### B. 移动端 / TauriTavern iOS（390px 竖屏）
+1. **零误触与零弹键盘**：
+   - 打开「新建/编辑分组」「编辑名称与备注」「搜索条目」或内嵌轻量输入窗时，页面不主动 `.focus()` 强弹系统软键盘。
+   - 点击「新建分组并移入」或预览「改组名」，确认可正常弹出主题一致的输入浮层并完成输入。
+2. **390px 排版与触控**：
+   - 批量操作栏显示为「已选 X 本 + 全选当前」顶行 + 2×2 均分按钮；分组与书行不显示无效拖拽抓手图标；整理预览单行书名不再被下拉框挤成窄条；设置页下拉/按钮宽度齐平；所有弹窗页脚按钮对称铺满且全程无横向滚动条。
+   - 首次关闭世界书抽屉启动后打开世界书抽屉，确认 `#wbo-mobile-editor-trigger` 高度与原生效按钮对齐且保持最小可读宽度。
+3. **大库懒加载内存表现**：
+   - 在开启角色卡懒加载的百卡库中执行「扫描角色绑定」，观察设备内存无明显阶梯暴涨，扫描完成后宿主卡片仍保持懒加载态。

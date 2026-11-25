@@ -3,7 +3,7 @@
  *
  * Lifecycle guarantees:
  * - Idempotent boot compatible with both SillyTavern (1.14–1.19+) and TauriTavern
- *   deferred third-party extension activation after `APP_READY`.
+ *   deferred extension activation after `APP_READY`.
  * - Zero polling & zero background disk scanning: builds its index purely from
  *   in-memory character/worldbook state + persistent lazy-load cache, refreshing
  *   only on debounced character/worldbook mutation events or explicit user action.
@@ -50,13 +50,14 @@ import {
 } from './src/native-filter.js';
 import {
     bindPanelCallbacks,
+    invalidatePreviewCache,
     openManagerModal,
     renderEmbeddedPanel,
     syncEmbeddedPanelIndicators,
     teardownPanels,
 } from './src/panel.js';
 
-const STYLE_ASSET_VERSION = '2.34.3';
+export const STYLE_ASSET_VERSION = '2.34.5';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _incrementalAutoScanRunning = false;
@@ -65,6 +66,8 @@ const _autoScanAttemptedAvatars = new Set();
 let _debounceTimer = null;
 let _deferredSaveTimer = null;
 let _classification = null;
+let _openPanelBridgeHandler = null;
+let _wegEntriesToggledHandler = null;
 
 /**
  * Bust stale browser/WebView disk cache on `style.css` after an extension update
@@ -550,12 +553,17 @@ async function init() {
         };
         window.addEventListener('wbo:open-panel', _openPanelBridgeHandler);
     }
+    if (!_wegEntriesToggledHandler && typeof window !== 'undefined') {
+        _wegEntriesToggledHandler = (ev) => {
+            const worldName = String(ev?.detail?.worldName ?? '').trim();
+            invalidatePreviewCache(worldName || null);
+        };
+        window.addEventListener('weg:entries-toggled', _wegEntriesToggledHandler);
+    }
 
     registerSlashCommands(ctx);
     ensureFreshStylesheet();
 }
-
-let _openPanelBridgeHandler = null;
 
 /**
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
@@ -564,6 +572,10 @@ export function onDisable() {
     if (_openPanelBridgeHandler && typeof window !== 'undefined') {
         window.removeEventListener('wbo:open-panel', _openPanelBridgeHandler);
         _openPanelBridgeHandler = null;
+    }
+    if (_wegEntriesToggledHandler && typeof window !== 'undefined') {
+        window.removeEventListener('weg:entries-toggled', _wegEntriesToggledHandler);
+        _wegEntriesToggledHandler = null;
     }
     clearTimeout(_debounceTimer);
     _debounceTimer = null;
@@ -621,7 +633,7 @@ function boot() {
 
     if (typeof globalThis.jQuery === 'function') {
         globalThis.jQuery(() => {
-            // Fallback if APP_READY already fired before deferred third-party activation
+            // Fallback if APP_READY already fired before deferred extension activation
             setTimeout(start, 400);
         });
     } else if (document.readyState === 'loading') {

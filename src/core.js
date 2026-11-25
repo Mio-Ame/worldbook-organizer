@@ -53,7 +53,7 @@ export const LOCAL_ORGANIZE_CATEGORIES = Object.freeze([
         group: 'User 人设',
         defaultEnabled: true,
         prefixRegex: /^(?:人设|user|用户|主角|自设|我方|user人设)$/i,
-        test: (s) => /(?:人设|user|自设|主角设定|我方设定|穿搭|外貌|性格设定|娇妻|软萌)/i.test(s),
+        test: (s) => /(?:人设|user|自设|主角设定|我方设定|穿搭|外貌|性格设定|软萌)/i.test(s),
     },
     {
         id: 'style',
@@ -1649,7 +1649,7 @@ export function parseAiOrganizeResponse(rawText, validWorldNames) {
             isRefusal,
             refusalSnippet: text.slice(0, 140),
             error: isRefusal
-                ? 'AI 触发了内容安全策略并拒绝回复（常见于包含敏感/18+词的世界书或条目摘要）。建议排除敏感书后重试（敏感书可直接手动拖拽分组），或切换甲薄模型 / 仅按书名整理。'
+                ? 'AI 触发了内容安全策略并拒绝回复（常见于包含敏感/18+词的世界书或条目摘要）。建议排除敏感书后重试（敏感书可直接手动拖拽分组），或切换内容限制较宽松的模型 / 仅按书名整理。'
                 : '未能从返回文本中解析出合法 JSON',
         };
     }

@@ -1,23 +1,34 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import {
     DEFAULT_LOCAL_ORGANIZE_CATEGORY_IDS,
+    DEFAULT_SETTINGS,
+    GROUP_COLOR_PALETTE,
     LOCAL_ORGANIZE_CATEGORIES,
+    MODULE_NAME,
     SPECIAL_GROUPS,
     addCustomGroup,
     applyAiOrganizeProposals,
     buildAiOrganizePrompt,
+    buildCharBooksCountMap,
     buildLocalOrganizeProposals,
     buildCharacterBindingIndex,
     buildPersonaBindingIndex,
+    charaFileName,
     classifyWorldbooks,
     cleanupDeletedWorldSettings,
     compareWorldbookEntries,
+    compareZhCn,
+    createApiChannelId,
+    createGroupId,
+    deepClone,
     detectAiRefusal,
     exportConfigData,
     findCardsWithUnimportedBooks,
     findUnscannedShallowCharacters,
+    formatCharacterDisplayTitle,
     importConfigData,
     isBookVisibleInCharBindPopup,
     isBookVisibleInSelector,
@@ -284,7 +295,7 @@ test('AI organize prompt, tolerant JSON parser, apply, and undo work end-to-end'
     const localProps = buildLocalOrganizeProposals({
         books: [
             { realName: '[缝]不因爱失去自我v1.7 (1)' },
-            { realName: '[人设] 娇妻软萌User' },
+            { realName: '[人设] 日常穿搭User' },
             { realName: '约会场景与流程指南' },
             { realName: '名器倒模评测' },
             { realName: '我的咒回设定集 by作者A' },
@@ -756,4 +767,340 @@ test('deleting characters and worldbooks syncs cleanly without stale group or me
     assert.equal(settings.charBookOverrides['已删世界书'], undefined);
     assert.equal(settings.assignments['通用书'], 'g1');
     assert.equal(settings.aliases['通用书'], '通用别名');
+});
+
+test('previously untested core utilities and constants behave reliably', () => {
+    assert.equal(MODULE_NAME, 'worldbook_organizer');
+    assert.ok(Array.isArray(GROUP_COLOR_PALETTE) && GROUP_COLOR_PALETTE.length >= 6);
+    assert.equal(DEFAULT_SETTINGS.themePalette, 'classic');
+
+    // compareZhCn: null/undefined safe and equal fast-path
+    assert.equal(compareZhCn('甲', '甲'), 0);
+    assert.equal(compareZhCn(null, undefined), 0);
+    assert.equal(typeof compareZhCn('艾莉丝', '鲍勃'), 'number');
+
+    // deepClone produces independent deep copies
+    const orig = { nested: { arr: [1, { a: 'x' }] } };
+    const cloned = deepClone(orig);
+    cloned.nested.arr[1].a = 'y';
+    assert.equal(orig.nested.arr[1].a, 'x');
+
+    // charaFileName handles multi-dot, extensionless, and empty inputs
+    assert.equal(charaFileName('a.b.png'), 'a.b');
+    assert.equal(charaFileName('NoExt'), 'NoExt');
+    assert.equal(charaFileName(''), '');
+    assert.equal(charaFileName(null), '');
+
+    // createGroupId and createApiChannelId generate collision-free prefixed IDs
+    const gId1 = createGroupId([{ id: 'grp_taken' }]);
+    assert.match(gId1, /^grp_/);
+    assert.notEqual(gId1, 'grp_taken');
+
+    const apiId1 = createApiChannelId([{ id: 'api_taken' }]);
+    assert.match(apiId1, /^api_/);
+    assert.notEqual(apiId1, 'api_taken');
+
+    // buildCharBooksCountMap & formatCharacterDisplayTitle
+    const bindingMap = new Map([
+        ['主书A', [{ avatar: 'A.png', charName: '角色A', source: 'primary' }]],
+        ['附书A1', [{ avatar: 'A.png', charName: '角色A', source: 'extra' }]],
+        ['附书A2', [{ avatar: 'A.png', charName: '角色A', source: 'extra' }]],
+        ['内嵌B', [{ avatar: 'B.png', charName: '角色B', source: 'embedded' }]],
+        ['主书B', [{ avatar: 'B.png', charName: '角色B', source: 'primary' }]],
+        ['双卡共用', [
+            { avatar: 'A.png', charName: '角色A', source: 'primary' },
+            { avatar: 'B.png', charName: '角色B', source: 'primary' },
+        ]],
+        ['三卡共用', [
+            { avatar: 'A.png', charName: '角色A', source: 'primary' },
+            { avatar: 'B.png', charName: '角色B', source: 'primary' },
+            { avatar: 'C.png', charName: '角色C', source: 'primary' },
+        ]],
+    ]);
+    const perChar = buildCharBooksCountMap(bindingMap);
+    assert.equal(formatCharacterDisplayTitle('无主书', [], perChar), '无主书');
+    assert.equal(formatCharacterDisplayTitle('主书A', bindingMap.get('主书A'), perChar), '角色A');
+    assert.equal(formatCharacterDisplayTitle('附书A1', bindingMap.get('附书A1'), perChar), '角色A · 附加1');
+    assert.equal(formatCharacterDisplayTitle('附书A2', bindingMap.get('附书A2'), perChar), '角色A · 附加2');
+    assert.equal(formatCharacterDisplayTitle('内嵌B', bindingMap.get('内嵌B'), perChar), '角色B · 内嵌');
+    assert.equal(formatCharacterDisplayTitle('双卡共用', bindingMap.get('双卡共用'), perChar), '角色A、角色B');
+    assert.equal(formatCharacterDisplayTitle('三卡共用', bindingMap.get('三卡共用'), perChar), '角色A、角色B 等3卡');
+});
+
+test('normalizeSettings, bindings, and classifyWorldbooks cover edge cases', () => {
+    const normalized = normalizeSettings({
+        apiChannels: [
+            { id: 'c1', name: '旧通道', url: 'https://example.test/v1', key: 'sk-test', model: 'm1' },
+        ],
+        activeApiChannelId: 'missing_channel',
+        themePalette: 'invalid_palette',
+        themeMode: 'invalid_mode',
+        entrySearchHistory: ['a', 'b', 'a', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', ''],
+        groups: [{ id: 'g_new', name: '新组' }],
+        sectionOrder: [SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER],
+    });
+    assert.equal(normalized.apiChannels[0].baseUrl, 'https://example.test/v1');
+    assert.equal(normalized.apiChannels[0].apiKey, 'sk-test');
+    assert.equal(normalized.activeApiChannelId, 'c1');
+    assert.equal(normalized.themePalette, 'classic');
+    assert.equal(normalized.themeMode, 'auto');
+    assert.equal(normalized.entrySearchHistory.length, 10);
+    assert.deepEqual(normalized.entrySearchHistory.slice(0, 3), ['a', 'b', 'c']);
+    assert.deepEqual(normalized.sectionOrder, ['g_new', SPECIAL_GROUPS.UNGROUPED, SPECIAL_GROUPS.CHARACTER]);
+
+    // buildCharacterBindingIndex precedence: embedded < extra < primary & toggles
+    const chars = [
+        {
+            avatar: 'Hero.png',
+            name: '主角',
+            shallow: false,
+            data: {
+                extensions: { world: '同名书' },
+                character_book: { name: '同名书' },
+            },
+        },
+    ];
+    const precedenceMap = buildCharacterBindingIndex({
+        characters: chars,
+        charLore: [{ name: 'Hero', extraBooks: ['同名书', '附加专属'] }],
+        worldNamesSet: new Set(['同名书', '附加专属']),
+        includeExtraCharBooks: true,
+        includeEmbeddedNameMatch: true,
+    });
+    assert.equal(precedenceMap.get('同名书')?.[0]?.source, 'primary');
+    assert.equal(precedenceMap.get('附加专属')?.[0]?.source, 'extra');
+
+    const noExtraNoEmb = buildCharacterBindingIndex({
+        characters: [{ avatar: 'EmbOnly.png', name: '内嵌', shallow: false, data: { character_book: { name: '仅内嵌' } } }],
+        charLore: [{ name: 'EmbOnly', extraBooks: ['仅附加'] }],
+        worldNamesSet: new Set(['仅内嵌', '仅附加']),
+        includeExtraCharBooks: false,
+        includeEmbeddedNameMatch: false,
+    });
+    assert.equal(noExtraNoEmb.size, 0);
+
+    // classifyWorldbooks: exclude_from_char, alias_only, original, duplicate dedup
+    const cls = classifyWorldbooks({
+        worldNames: ['同名书', '同名书', '别名书'],
+        bindingMap: precedenceMap,
+        settings: {
+            charBookOverrides: { '同名书': 'exclude_from_char' },
+            aliases: { '别名书': '简洁别名' },
+            aliasTitleMode: 'alias_only',
+            charBookTitleMode: 'original',
+        },
+    });
+    assert.equal(cls.totalCount, 2);
+    assert.equal(cls.byName.get('同名书')?.groupId, SPECIAL_GROUPS.UNGROUPED);
+    assert.equal(cls.byName.get('别名书')?.primaryTitle, '简洁别名');
+    assert.equal(cls.byName.get('别名书')?.subtitle, '');
+});
+
+test('organize parser, partial apply, local rules, entry search, diff, and import edge cases', () => {
+    // Array root, items wrapper, synonym fields, meta-analysis note filter, empty/zero-match rejection
+    const valid = new Set(['书A', '书B']);
+    const arrParsed = parseAiOrganizeResponse(
+        JSON.stringify([
+            { realName: '书A', displayName: '展示A', category: '分组A', description: '分组分析来自书名判定' },
+            { world: '书B', name: '展示B', folder: '分组B', summary: '实用文风说明' },
+        ]),
+        valid,
+    );
+    assert.equal(arrParsed.ok, true);
+    assert.equal(arrParsed.proposals[0].alias, '展示A');
+    assert.equal(arrParsed.proposals[0].group, '分组A');
+    assert.equal(arrParsed.proposals[0].note, '');
+    assert.equal(arrParsed.proposals[1].note, '实用文风说明');
+
+    const itemsParsed = parseAiOrganizeResponse(
+        JSON.stringify({ items: [{ key: '书A', alias: 'A2', group: 'G2' }] }),
+        valid,
+    );
+    assert.equal(itemsParsed.ok, true);
+    assert.equal(parseAiOrganizeResponse('', valid).ok, false);
+    assert.equal(parseAiOrganizeResponse('{"不存在":{"alias":"x","group":"y"}}', valid).ok, false);
+
+    // applyAiOrganizeProposals partial flags, builtin group reset, alias==realName cleanup, 8-step cap
+    const s = normalizeSettings({
+        groups: [{ id: 'g1', name: '旧组' }],
+        assignments: { '书A': 'g1', '书C': 'g1' },
+        aliases: { '书A': '旧别名' },
+        charBookOverrides: { '书C': 'exclude_from_char' },
+    });
+    applyAiOrganizeProposals(s, [
+        { realName: '书A', alias: '书A', group: '未分组', note: '忽略备注', applyNote: false },
+        { realName: '书C', alias: '新C', group: '角色世界书', applyAlias: false },
+    ]);
+    assert.equal(s.assignments['书A'], undefined);
+    assert.equal(s.aliases['书A'], undefined);
+    assert.equal(s.notes['书A'], undefined);
+    assert.equal(s.assignments['书C'], undefined);
+    assert.equal(s.charBookOverrides['书C'], undefined);
+    assert.equal(s.aliases['书C'], undefined);
+
+    for (let i = 0; i < 10; i += 1) {
+        pushUndoSnapshot(s, { count: i, label: `步${i}` });
+    }
+    assert.equal(s.undoSnapshots.length, 8);
+
+    // buildLocalOrganizeProposals: useAnyBracketPrefix, multi-delimiter custom rules, NSFW priority
+    const localProps = buildLocalOrganizeProposals({
+        books: [
+            { realName: '【自定义标签】测试书' },
+            { realName: '星际远航' },
+            { realName: 'nsfw约会互动指南' },
+        ],
+        useAnyBracketPrefix: true,
+        customRulesText: '星际 -> 科幻区\n远航 = 忽略',
+    });
+    assert.equal(localProps[0].group, '自定义标签');
+    assert.equal(localProps[1].group, '科幻区');
+    assert.equal(localProps[2].group, 'NSFW');
+
+    // searchEntriesInPayload: keysecondary, >2400 char truncation, maxHitsPerBook vs totalMatchesInBook, empty guards
+    const longBody = `前置内容 matchKey ${'字'.repeat(2500)}`;
+    const payload = {
+        entries: {
+            0: { uid: 0, comment: '条目1', key: [], keysecondary: ['副词matchKey'], content: longBody },
+            1: { uid: 1, comment: '条目2 matchKey', key: [], content: '短正文' },
+        },
+    };
+    const searchRes = searchEntriesInPayload(payload, 'matchKey', { maxHitsPerBook: 1 });
+    assert.equal(searchRes.totalMatchesInBook, 2);
+    assert.equal(searchRes.hits.length, 1);
+    assert.ok(searchRes.hits[0].matchedIn.includes('触发词'));
+    assert.ok(searchRes.hits[0].content.endsWith('…'));
+    assert.ok(searchRes.hits[0].content.length <= 2401);
+    assert.deepEqual(searchEntriesInPayload(payload, '').hits, []);
+    assert.deepEqual(searchEntriesInPayload(payload, 'matchKey', { searchTitleAndKeys: false, searchContent: false }).hits, []);
+
+    // compareWorldbookEntries: duplicate title #2 & untitled fallback
+    const diff = compareWorldbookEntries(
+        [
+            { title: '重名', content: '1' },
+            { title: '重名', content: '2' },
+            { title: '', keys: ['k1'], content: 'a' },
+        ],
+        [
+            { title: '重名', content: '1' },
+            { title: '重名', content: '2-改' },
+            { title: '', keys: ['k1'], content: 'a' },
+        ],
+    );
+    assert.equal(diff.sameCount, 2);
+    assert.equal(diff.modified.length, 1);
+
+    // importConfigData edge cases
+    assert.equal(importConfigData(normalizeSettings(null), '{bad json').ok, false);
+    assert.equal(importConfigData(normalizeSettings(null), {}).ok, false);
+    const flatDst = normalizeSettings(null);
+    assert.equal(importConfigData(flatDst, { groups: [{ id: 'gx', name: '扁平组' }] }).ok, true);
+    assert.equal(flatDst.groups[0].name, '扁平组');
+});
+
+test('manifest version strictly matches STYLE_ASSET_VERSION and host memory/bridge guarantees hold', async () => {
+    const manifest = JSON.parse(
+        readFileSync(new URL('../manifest.json', import.meta.url), 'utf8'),
+    );
+    const prevDoc = globalThis.document;
+    globalThis.document = { readyState: 'loading', addEventListener() {} };
+    try {
+        const entryMod = await import('../index.js');
+        assert.equal(entryMod.STYLE_ASSET_VERSION, manifest.version);
+    } finally {
+        if (prevDoc === undefined) delete globalThis.document;
+        else globalThis.document = prevDoc;
+    }
+
+    const hostMod = await import('../src/host.js');
+
+    const prevST = globalThis.SillyTavern;
+    const prevFetch = globalThis.fetch;
+    const prevWin = globalThis.window;
+    const prevCustomEvent = globalThis.CustomEvent;
+
+    let unshallowCalls = 0;
+    let loadWorldInfoCalls = 0;
+    let updateListCalls = 0;
+    const emittedEvents = [];
+
+    const mockCtx = {
+        characters: [{ avatar: 'Lazy.png', name: '懒加载卡', shallow: true }],
+        getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+        unshallowCharacter: async () => { unshallowCalls += 1; },
+        loadWorldInfo: async () => { loadWorldInfoCalls += 1; return { entries: {} }; },
+        getWorldInfoNames: () => ['OldBook'],
+        updateWorldInfoList: async () => { updateListCalls += 1; },
+        extensionSettings: {},
+        saveSettingsDebounced: () => {},
+    };
+    globalThis.SillyTavern = { getContext: () => mockCtx };
+    globalThis.CustomEvent = class MockCustomEvent {
+        constructor(type, init = {}) {
+            this.type = type;
+            this.detail = init.detail;
+        }
+    };
+    globalThis.window = {
+        dispatchEvent: (ev) => {
+            emittedEvents.push({ type: ev.type, detail: ev.detail, updateListCallsAtEmit: updateListCalls });
+            return true;
+        },
+    };
+    globalThis.fetch = async (url) => {
+        if (url === '/api/characters/get') {
+            return {
+                ok: true,
+                json: async () => ({
+                    avatar: 'Lazy.png',
+                    name: '懒加载卡',
+                    data: { extensions: { world: '主书' } },
+                }),
+            };
+        }
+        if (url === '/api/worldinfo/get') {
+            return {
+                ok: true,
+                json: async () => ({
+                    entries: {
+                        0: { uid: 0, comment: '长条', key: ['k'], content: 'A'.repeat(2200), disable: false },
+                    },
+                }),
+            };
+        }
+        if (url === '/api/worldinfo/edit' || url === '/api/worldinfo/delete') {
+            return { ok: true, json: async () => ({}) };
+        }
+        return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    try {
+        // MEM-01: allowUnshallow: false must NEVER invoke ctx.unshallowCharacter
+        const full = await hostMod.fetchFullCharacterOnDemand('Lazy.png', { allowUnshallow: false });
+        assert.equal(full?.data?.extensions?.world, '主书');
+        assert.equal(unshallowCalls, 0);
+
+        // MEM-02 + MEM-04: preview bypasses loadWorldInfo and truncates >1600 char content
+        const preview = await hostMod.fetchWorldbookPreviewEntries('OldBook');
+        assert.equal(loadWorldInfoCalls, 0);
+        assert.equal(preview.entries.length, 1);
+        assert.ok(preview.entries[0].content.length < 1700);
+        assert.ok(preview.entries[0].content.includes('已截断') || preview.entries[0].content.includes('完整正文'));
+
+        // INT-01: deferRefresh: true queues wbo:worldbook-renamed until flushWorldInfoListRefresh completes updateListFn
+        const settings = normalizeSettings(null);
+        const renRes = await hostMod.realRenameWorldbook('OldBook', 'NewBook', settings, { deferRefresh: true });
+        assert.equal(renRes.ok, true);
+        assert.equal(emittedEvents.filter((e) => e.type === 'wbo:worldbook-renamed').length, 0);
+        await hostMod.flushWorldInfoListRefresh();
+        const renameEvents = emittedEvents.filter((e) => e.type === 'wbo:worldbook-renamed');
+        assert.equal(renameEvents.length, 1);
+        assert.deepEqual(renameEvents[0].detail, { oldName: 'OldBook', newName: 'NewBook' });
+        assert.equal(renameEvents[0].updateListCallsAtEmit, 1);
+    } finally {
+        if (prevST === undefined) delete globalThis.SillyTavern; else globalThis.SillyTavern = prevST;
+        if (prevFetch === undefined) delete globalThis.fetch; else globalThis.fetch = prevFetch;
+        if (prevWin === undefined) delete globalThis.window; else globalThis.window = prevWin;
+        if (prevCustomEvent === undefined) delete globalThis.CustomEvent; else globalThis.CustomEvent = prevCustomEvent;
+    }
 });
