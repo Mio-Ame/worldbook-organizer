@@ -2,6 +2,47 @@ import { getCurrentEditorWorldName, getNativeGroupingPreferences } from './host.
 
 const CONTROLS_ID = 'weg-native-entry-controls';
 let currentActions = null;
+let entryObserver = null;
+let entryTargets = new Set();
+let entryFrame = 0;
+
+function stopEntryObserver() {
+    entryObserver?.disconnect();
+    entryObserver = null;
+    entryTargets.clear();
+    if (entryFrame) cancelAnimationFrame(entryFrame);
+    entryFrame = 0;
+}
+
+function watchEntryShell(pagination, list) {
+    if (typeof MutationObserver !== 'function') return;
+    const targets = new Set();
+    // Watch shell children, never the entry list or its individual rows.
+    for (const start of [pagination?.parentElement, list?.parentElement,
+        document.getElementById('world_popup'), document.getElementById('WorldInfo'), document.body]) {
+        for (let node = start; node && node !== document.documentElement; node = node.parentElement) {
+            targets.add(node);
+            if (node === document.body) break;
+        }
+    }
+    if (entryObserver && targets.size === entryTargets.size && [...targets].every((node) => entryTargets.has(node))) return;
+    stopEntryObserver();
+    entryTargets = targets;
+    const observer = new MutationObserver((records) => {
+        if (entryObserver !== observer || !currentActions || entryFrame) return;
+        const anchors = '#WorldInfo, #world_popup, #world_info_pagination, #world_popup_entries_list, #weg-native-entry-controls';
+        const changed = records.some((record) => [...record.addedNodes, ...record.removedNodes].some((node) =>
+            node instanceof Element && (entryTargets.has(node) || node.matches(anchors) || node.querySelector(anchors)),
+        ));
+        if (!changed) return;
+        entryFrame = requestAnimationFrame(() => {
+            entryFrame = 0;
+            if (entryObserver === observer && currentActions) syncNativeEntryPoint(currentActions);
+        });
+    });
+    entryObserver = observer;
+    for (const target of targets) observer.observe(target, { childList: true });
+}
 
 export function revealNativeEntryGroup(worldName, uid) {
     if (getNativeGroupingPreferences().active) currentActions?.revealEntryGroup?.(worldName, uid);
@@ -15,7 +56,13 @@ export function syncNativeEntryPoint(actions) {
     const list = document.getElementById('world_popup_entries_list');
     const anchor = pagination || list;
     let controls = document.getElementById(CONTROLS_ID);
-    if (!anchor || !getCurrentEditorWorldName() || !showButton) {
+    if (!showButton) {
+        stopEntryObserver();
+        controls?.remove();
+        return;
+    }
+    watchEntryShell(pagination, list);
+    if (!anchor || !getCurrentEditorWorldName()) {
         controls?.remove();
         return;
     }
@@ -30,7 +77,7 @@ export function syncNativeEntryPoint(actions) {
         button.title = '条目分组';
         button.setAttribute('aria-label', '打开条目分组面板');
         button.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5M3 16l9 5 9-5"/></svg><span class="weg-native-entry-label">条目分组</span>';
-        button.addEventListener('click', () => void actions.openPanel({ worldName: getCurrentEditorWorldName() }));
+        button.addEventListener('click', () => void currentActions?.openPanel({ worldName: getCurrentEditorWorldName() }));
         const toggle = document.createElement('button');
         toggle.type = 'button';
         toggle.id = 'weg-native-group-enabled';
@@ -63,5 +110,6 @@ export function syncNativeEntryPoint(actions) {
 
 export function removeNativeEntryPoint() {
     currentActions = null;
+    stopEntryObserver();
     document.getElementById(CONTROLS_ID)?.remove();
 }

@@ -2829,6 +2829,11 @@
     display: none !important;
 }
 
+/* Only one renderer owns the global selector while its enhanced display is present. */
+#WIMultiSelector :has(> .gr-select2-display[data-gr-select-id="world_info"]) > .wbo-popup-select-trigger {
+    display: none !important;
+}
+
 .wbo-dd-pill {
     flex: 0 0 auto;
     display: inline-flex !important;
@@ -2903,7 +2908,8 @@
 }
 
 .select2-results__group.wbo-dd-group-head::before,
-.gr-group-label.wbo-dd-group-head::before {
+.gr-group-label.wbo-dd-group-head::before,
+#select2-world_editor_select-results .select2-results__group.wbo-dd-group-head::before {
     content: '' !important;
     display: inline-block;
     flex: 0 0 7px;
@@ -2911,8 +2917,10 @@
     height: 7px;
     box-sizing: border-box;
     margin-inline: 2px 4px;
+    border: 0;
     border-right: 2px solid currentColor;
     border-bottom: 2px solid currentColor;
+    background: none;
     border-radius: 0 0 2px;
     transform: rotate(45deg);
     opacity: 0.72;
@@ -2920,7 +2928,8 @@
 }
 
 li.wbo-dd-collapsed > .select2-results__group.wbo-dd-group-head::before,
-.wbo-pop-section.wbo-dd-collapsed > .gr-group-label.wbo-dd-group-head::before {
+.wbo-pop-section.wbo-dd-collapsed > .gr-group-label.wbo-dd-group-head::before,
+#select2-world_editor_select-results li.wbo-dd-collapsed > .select2-results__group.wbo-dd-group-head::before {
     transform: rotate(-45deg);
 }
 
@@ -6815,6 +6824,27 @@ body.dark-mode :is([data-wbo-enhanced-style], .wbo-enhanced-sticky) .wbo-dd-pill
 body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     background: #2a2a2d !important;
     color: #cfd8dc;
+}
+
+/* The enhanced selector owns its colors unless its separate override is explicitly enabled. */
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    :is(.wbo-enhanced-sticky, .wbo-pop-filter-bar, .gr-group-label.wbo-dd-group-head) {
+    background: var(--wbo-script-bg) !important;
+    color: var(--wbo-script-fg) !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    .gr-group-label.wbo-dd-group-head {
+    color: var(--wbo-script-heading) !important;
+    font-size: var(--wbo-script-heading-size) !important;
+    text-transform: none;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    .wbo-dd-pill.is-active {
+    color: var(--wbo-script-active-fg) !important;
+    background: var(--wbo-script-active-bg) !important;
+    border-color: color-mix(in srgb, var(--wbo-script-active-fg) 35%, transparent) !important;
 }
 
 [data-wbo-enhanced-style] .gr-option.has-pin.wbo-has-pin {

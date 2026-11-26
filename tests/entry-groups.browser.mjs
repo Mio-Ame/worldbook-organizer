@@ -640,6 +640,142 @@ test('an ungrouped-only book starts expanded with a static list header and an in
     }
 });
 
+test('inactive native entry survives early events, delayed pagination and shell replacement without loading row enhancement', async () => {
+    const world = '入口时序测试书';
+    const seed = createDefaultSeed({ characters: [], selected_world_info: [],
+        worldbooks: { [world]: makeBook([makeEntry(0)]) },
+    });
+    const server = createMockStServer();
+    const baseUrl = await server.start();
+    let cdp;
+    try {
+        cdp = await launchEdgeCdp();
+        for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+            await resetAndBoot(cdp, baseUrl, { seed, viewport });
+            await cdp.evalFn(async (book) => {
+                const root = '/scripts/extensions/third-party/worldbook-organizer/src/entry-groups/';
+                const lifecycle = await import(`${root}lifecycle.js`);
+                lifecycle.stopEntryGrouping();
+                window.entryObservers = [];
+                const Original = window.MutationObserver;
+                window.MutationObserver = class extends Original {
+                    constructor(callback) {
+                        super(callback);
+                        this.entryPoint = new Error().stack.includes('/entry-groups/native-entry-point.js');
+                        this.targets = [];
+                        if (this.entryPoint) window.entryObservers.push(this);
+                    }
+                    observe(target, options) {
+                        if (this.entryPoint) this.targets.push({ target, options });
+                        return super.observe(target, options);
+                    }
+                    disconnect() { this.targets = []; return super.disconnect(); }
+                };
+                const query = Element.prototype.querySelectorAll;
+                window.entryRowScans = 0;
+                Element.prototype.querySelectorAll = function (selector) {
+                    if (selector.includes('.world_entry') && /entry-groups\/(?:native-entry-point|lifecycle|native-view)\.js/.test(new Error().stack)) window.entryRowScans++;
+                    return query.call(this, selector);
+                };
+                const getById = Document.prototype.getElementById;
+                window.entrySyncReads = 0;
+                Document.prototype.getElementById = function (id) {
+                    if (id === 'world_info_pagination' && new Error().stack.includes('/entry-groups/native-entry-point.js')) window.entrySyncReads++;
+                    return getById.call(this, id);
+                };
+                await lifecycle.startEntryGrouping('entry-timing-test');
+                const select = document.getElementById('world_editor_select');
+                select.value = [...select.options].find((option) => option.textContent === book).value;
+                const popup = document.getElementById('world_popup');
+                document.getElementById('weg-native-entry-controls')?.remove();
+                document.getElementById('world_info_pagination')?.remove();
+                document.getElementById('world_popup_entries_list').remove();
+                const ctx = SillyTavern.getContext();
+                await ctx.eventSource.emit(ctx.eventTypes.WORLDINFO_ENTRIES_LOADED, book);
+                setTimeout(() => {
+                    const list = document.createElement('div');
+                    list.id = 'world_popup_entries_list';
+                    popup.append(list);
+                }, 100);
+            }, world);
+            await waitForCondition(cdp, () => document.getElementById('weg-native-entry-controls')?.nextElementSibling?.id === 'world_popup_entries_list');
+            await cdp.evalFn(() => {
+                setTimeout(() => {
+                    const pager = document.createElement('div');
+                    pager.id = 'world_info_pagination';
+                    pager.innerHTML = '<select><option>25</option></select>';
+                    document.getElementById('world_popup_entries_list').before(pager);
+                }, 100);
+            });
+            await waitForCondition(cdp, () => document.getElementById('world_info_pagination')?.nextElementSibling?.id === 'weg-native-entry-controls');
+            await cdp.evalFn(() => {
+                const drawer = document.getElementById('WorldInfo');
+                const replacement = drawer.cloneNode(true);
+                replacement.querySelector('#world_editor_select').value = drawer.querySelector('#world_editor_select').value;
+                replacement.querySelector('#weg-native-entry-controls')?.remove();
+                drawer.replaceWith(replacement);
+            });
+            await waitForCondition(cdp, () => document.getElementById('world_info_pagination')?.nextElementSibling?.id === 'weg-native-entry-controls');
+            await cdp.evalFn(() => document.getElementById('weg-native-entry-controls').remove());
+            await waitForCondition(cdp, () => document.getElementById('weg-native-entry-controls'));
+            const idleReads = await cdp.evalFn(async () => {
+                const drawer = document.getElementById('WorldInfo');
+                drawer.classList.remove('openDrawer');
+                drawer.classList.add('closedDrawer');
+                drawer.hidden = true;
+                const frames = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+                await frames();
+                window.entrySyncReads = 0;
+                const notification = document.createElement('div');
+                notification.innerHTML = '<div class="test-notification">测试通知</div>';
+                document.body.append(notification);
+                await frames();
+                notification.remove();
+                await frames();
+                return window.entrySyncReads;
+            });
+            assert.equal(idleReads, 0, 'closed drawer ignores unrelated body additions/removals without rechecking the native entry');
+            const setPreferences = (patch) => cdp.evalFn(async (patch) => {
+                const { getSettings } = await import('/scripts/extensions/third-party/worldbook-organizer/src/entry-groups/host.js');
+                Object.assign(getSettings(), patch);
+                const ctx = SillyTavern.getContext();
+                await ctx.eventSource.emit(ctx.eventTypes.EXTENSION_SETTINGS_LOADED);
+                await new Promise((resolve) => setTimeout(resolve, 100));
+            }, patch);
+            await setPreferences({ showNativeEntryBtn: false });
+            assert.equal(await cdp.evalFn(() => document.getElementById('weg-native-entry-controls')), null);
+            assert.equal(await cdp.evalFn(() => window.entryObservers.some((observer) => observer.targets.length)), false);
+            await cdp.evalFn(() => document.getElementById('world_info_pagination').replaceWith(document.getElementById('world_info_pagination').cloneNode(true)));
+            await setPreferences({ showNativeEntryBtn: true, enableNativeGrouping: false });
+            await waitForCondition(cdp, () => document.getElementById('weg-native-group-enabled')?.disabled);
+            assert.deepEqual(await cdp.evalFn(() => ({
+                imports: performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/entry-groups/native-view.js')).length,
+                rowScans: window.entryRowScans,
+                broadObservers: window.entryObservers.flatMap((observer) => observer.targets).filter(({ target, options }) => options.subtree || target.id === 'world_popup_entries_list' || target.matches('.world_entry')).length,
+                controls: document.querySelectorAll('#weg-native-entry-controls').length,
+                active: document.getElementById('weg-native-group-enabled').getAttribute('aria-checked'),
+            })), { imports: 0, rowScans: 0, broadObservers: 0, controls: 1, active: 'false' });
+            await cdp.evalFn(async () => {
+                const plugin = await import('/scripts/extensions/third-party/worldbook-organizer/index.js');
+                document.getElementById('weg-native-entry-controls').remove();
+                await Promise.resolve();
+                plugin.onDisable();
+                const ctx = SillyTavern.getContext();
+                await ctx.eventSource.emit(ctx.eventTypes.WORLDINFO_ENTRIES_LOADED, '入口时序测试书');
+                const pager = document.getElementById('world_info_pagination');
+                setTimeout(() => pager.replaceWith(pager.cloneNode(true)), 30);
+                await new Promise((resolve) => setTimeout(resolve, 120));
+            });
+            assert.equal(await cdp.evalFn(() => document.getElementById('weg-native-entry-controls')), null);
+            assert.equal(await cdp.evalFn(() => window.entryObservers.some((observer) => observer.targets.length)), false);
+            assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+        }
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});
+
 test('native grouping starts dormant until requested and explains once how to hide its entry', async () => {
     const world = '按需分组测试书';
     const seed = createDefaultSeed({ characters: [], selected_world_info: [],
@@ -1468,7 +1604,9 @@ test('native numeric fields show three digits beside their spinners and the grou
             document.getElementById('world_popup_entries_list').before(toolbar);
         });
         await waitForCondition(cdp, () => document.querySelector('#weg-native-group-enabled[aria-checked="false"]'));
-        await cdp.clickSelector('#weg-native-group-enabled');
+        // The injected pager replaces the old anchor on the next frame. Wait for that move before measuring a click.
+        await waitForCondition(cdp, () => document.getElementById('world_info_pagination')?.nextElementSibling?.id === 'weg-native-entry-controls');
+        assert.equal((await cdp.clickSelector('#weg-native-group-enabled')).hit, true);
         await waitForCondition(cdp, () => document.querySelector('.weg-native-themed'));
         await waitForCondition(cdp, () => document.querySelector('.WIEnteryHeaderControls [name="order"]').offsetWidth > 42);
         const { root } = await cdp.send('DOM.getDocument', { depth: -1, pierce: true });

@@ -323,6 +323,44 @@ function syncEnhancedHostTheme(element, eligible = true) {
         const tone = light ? 'light' : 'dark';
         if (element.dataset.wboEnhancedHostTone !== tone) element.dataset.wboEnhancedHostTone = tone;
     } else element.removeAttribute('data-wbo-enhanced-host-tone');
+    if (eligible && !enabled) syncEnhancedScriptTheme(element);
+}
+
+const SCRIPT_THEME_PROPERTIES = ['bg', 'fg', 'heading', 'heading-size', 'active-bg', 'active-fg'];
+
+function syncEnhancedScriptTheme(container) {
+    if (!container.hasAttribute('data-wbo-enhanced-style')) return;
+    const surface = container.querySelector('.gr-options');
+    if (!surface) return;
+    // Sample one inert row, not every worldbook; never use the host theme as this surface's palette.
+    const probe = document.createElement('div');
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.setProperty('display', 'none', 'important');
+    surface.appendChild(probe);
+    try {
+        let background = getComputedStyle(surface).backgroundColor;
+        for (let node = surface.parentElement; background === 'rgba(0, 0, 0, 0)' && node; node = node.parentElement) {
+            background = getComputedStyle(node).backgroundColor;
+        }
+        const colors = { bg: background };
+        probe.className = 'gr-option';
+        colors.fg = getComputedStyle(probe).color;
+        probe.className = 'gr-option selected';
+        const selected = getComputedStyle(probe);
+        colors['active-bg'] = selected.backgroundColor;
+        colors['active-fg'] = selected.color;
+        probe.className = 'gr-group-label';
+        const heading = getComputedStyle(probe);
+        colors.heading = heading.color;
+        colors['heading-size'] = heading.fontSize;
+        for (const [key, value] of Object.entries(colors)) {
+            const name = `--wbo-script-${key}`;
+            if (container.style.getPropertyValue(name) !== value) container.style.setProperty(name, value);
+        }
+    } finally {
+        probe.remove();
+        _containerObserverMap.get(container)?.takeRecords();
+    }
 }
 
 function hasOpenEnhancedGlobalPicker() {
@@ -566,7 +604,9 @@ function syncEnhancedEditorOptionTitle(row, meta) {
     row.dataset.wboEnhancedWorld = meta.realName;
     let label = row.querySelector(':scope > .wbo-gr-world-title');
     if (!label) {
-        for (const node of [...row.childNodes]) if (node.nodeType === 3) node.remove();
+        const originalText = [...row.childNodes].filter((node) => node.nodeType === 3);
+        _borrowedRowText.set(row, originalText);
+        for (const node of originalText) node.remove();
         label = document.createElement('span');
         label.className = 'wbo-gr-world-title';
         row.prepend(label);
@@ -684,7 +724,7 @@ let _editorSelectObserver = null;
 let _charPopupObserver = null;
 let _resyncTimer = null;
 /** @type {any[]} */
-const _sweepPopoverTimers = [];
+const _sweepPopoverTimers = new Set();
 
 /**
  * Escape HTML safely for Select2 template strings.
@@ -1152,16 +1192,71 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
  * @param {Record<string, any>} patch
  * @returns {boolean} true if patched in place
  */
+const _originalSelect2Options = new WeakMap();
+
 function patchExistingSelect2InPlace($select, patch) {
     try {
         const inst = $select?.data?.('select2');
         const optsObj = inst?.options?.options;
         if (!optsObj || typeof optsObj !== 'object') return false;
-        Object.assign(optsObj, patch);
+        let originals = _originalSelect2Options.get(inst);
+        if (!originals) {
+            originals = new Map();
+            _originalSelect2Options.set(inst, originals);
+        }
+        for (const [key, value] of Object.entries(patch)) {
+            const prior = originals.get(key);
+            if (!prior || optsObj[key] !== prior.applied) {
+                originals.set(key, { own: Object.hasOwn(optsObj, key), value: optsObj[key], applied: value });
+            } else prior.applied = value;
+            optsObj[key] = value;
+        }
         return true;
     } catch {
         return false;
     }
+}
+
+function restoreSelect2Options($select) {
+    const inst = $select?.data?.('select2');
+    const originals = _originalSelect2Options.get(inst);
+    const options = inst?.options?.options;
+    if (!originals || !options) return;
+    for (const [key, original] of originals) {
+        if (options[key] !== original.applied) continue;
+        if (original.own) options[key] = original.value;
+        else delete options[key];
+    }
+    _originalSelect2Options.delete(inst);
+}
+
+let _globalPromptObserver = null;
+let _repairedGlobalPrompts = new WeakMap();
+
+function syncEnhancedGlobalPrompt() {
+    const select = document.getElementById('world_info');
+    if (!select || select.selectedOptions.length) return;
+    const display = select.parentElement?.querySelector('.gr-select2-display[data-gr-select-id="world_info"]');
+    const placeholder = display?.querySelector('.gr-select2-placeholder');
+    if (!placeholder || placeholder.textContent.trim()) return;
+    const inst = globalThis.jQuery?.(select)?.data?.('select2');
+    const setting = inst?.options?.options?.placeholder;
+    const text = (typeof setting === 'string' ? setting : setting?.text)
+        || inst?.$container?.[0]?.querySelector('.select2-search__field')?.getAttribute('placeholder')
+        || inst?.$container?.[0]?.querySelector('.select2-selection__placeholder')?.textContent;
+    if (!text?.trim()) return;
+    _repairedGlobalPrompts.set(placeholder, { before: placeholder.textContent, applied: text });
+    placeholder.textContent = text;
+}
+
+function stopGlobalPromptSync() {
+    _globalPromptObserver?.disconnect();
+    _globalPromptObserver = null;
+    document.querySelectorAll('.gr-select2-placeholder').forEach((placeholder) => {
+        const original = _repairedGlobalPrompts.get(placeholder);
+        if (original && placeholder.textContent === original.applied) placeholder.textContent = original.before;
+    });
+    _repairedGlobalPrompts = new WeakMap();
 }
 
 /**
@@ -1175,12 +1270,20 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     const selectEl = document.getElementById('world_info');
     if (!selectEl) return;
 
+    const $select = $ ? $(selectEl) : null;
+    const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
+    // Keep a fallback ready even if an enhanced display temporarily owns visibility.
+    if (!hasSelect2) {
+        attachGroupedSelectControl(selectEl, {
+            multiple: true,
+            role: 'global',
+            placeholder: selectEl.getAttribute('data-placeholder') || '没有激活的世界书。点击这里选择。',
+        });
+    }
+
     const sig = computeSelectSignature(selectEl, _globalDetachedMap, classification, settings, 'global');
     if (sig === _lastGlobalSignature) return;
     _lastGlobalSignature = sig;
-
-    const $select = $ ? $(selectEl) : null;
-    const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
 
     restoreSelectOptions(selectEl, _globalDetachedMap);
     syncSelectOptionsWithLiveWorldNames(selectEl, _globalDetachedMap);
@@ -2280,7 +2383,7 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
     _latestSettings = settings;
     document.querySelectorAll('.gr-select2-display[data-gr-select-id="world_info"], .gr-select2-display[data-gr-select-id="world_editor_select"]')
         .forEach((element) => syncEnhancedHostTheme(element));
-    document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => {
+    document.querySelectorAll('[data-wbo-enhanced-host-theme], [data-wbo-enhanced-style]').forEach((element) => {
         if (!element.classList.contains('gr-select2-display')) syncEnhancedHostTheme(element, Boolean(detectEnhancedPopoverRole(element)));
     });
     if (force) {
@@ -2846,6 +2949,7 @@ export function attachGroupedSelectControl(
     selectEl,
     {
         multiple = false,
+        role = null,
         currentAvatar = null,
         collapseCharByDefault = true,
         prioritizeCharGroup = false,
@@ -2919,19 +3023,21 @@ export function attachGroupedSelectControl(
         flushPinDirtyOnClose();
         return true;
     };
-    const popoverCloserEntry = () => closePopover();
+    const popoverCloserEntry = ({ except } = {}) => {
+        if (!role || except !== role) closePopover();
+    };
 
     const openPopover = () => {
         if (openOverlay) {
             closePopover();
             return;
         }
-        closeAllOpenWorldDropdowns();
+        closeAllOpenWorldDropdowns({ except: role });
 
         const { bareBooks, sections } = buildPopupGroupedSections(selectEl, {
             currentAvatar,
             prioritizeCharGroup,
-            pinSelectedSection: multiple,
+            pinSelectedSection: multiple && role !== 'global',
         });
         const selection = lastSelection?.value === selectEl.value ? lastSelection : null;
         const selectionGroup = selection && sections.find((section) => section.books.some((book) => book.value === selection.value));
@@ -2964,10 +3070,10 @@ export function attachGroupedSelectControl(
                 </div>
                 ${panelRoot ? '' : `<button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${getSelectedValSet().size > 0 ? '' : ' hidden'}>清除</button>`}
             </div>
-            <div class="wbo-mp-pills-row"${sections.length < 2 ? ' hidden' : ''}>
+            <div class="wbo-mp-pills-row">
                 <div class="wbo-pills-rail">
                     <div class="wbo-pills" id="wbo-pop-pills"></div>
-                    <button type="button" class="wbo-pill-expand-btn" id="wbo-pop-expand" title="展开全部分组"${sections.length < 3 ? ' hidden' : ''}>
+                    <button type="button" class="wbo-pill-expand-btn" id="wbo-pop-expand" title="展开全部分组" hidden>
                         <i class="fa-solid fa-chevron-down"></i>
                     </button>
                 </div>
@@ -3405,7 +3511,7 @@ export function attachGroupedSelectControl(
     mirrorNativeSelectAppearance(selectEl, trigger);
     selectEl.classList.add('wbo-mobile-select-hidden');
     selectEl.addEventListener('change', syncTriggerText);
-    groupedSelectControls.set(selectEl, { syncTriggerText, closePopover });
+    groupedSelectControls.set(selectEl, { syncTriggerText, closePopover, trigger });
     syncTriggerText();
 }
 
@@ -3416,11 +3522,33 @@ export function attachGroupedSelectControl(
  * @param {HTMLSelectElement} extrasSelect
  * @param {string | null} currentAvatar
  */
+const _extrasCleanups = new Map();
+const _extrasWaitTimers = new Set();
+
 function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
     const $ = globalThis.jQuery;
-    if (!$ || !extrasSelect) return;
+    if (!$ || !extrasSelect || !_observersActive) return;
     const $sel = $(extrasSelect);
     if (!$sel.data('select2')) return;
+    _extrasCleanups.get(extrasSelect)?.();
+    let active = true;
+    let frame = null;
+    let dropdownCleanup = null;
+    const clearDropdown = () => {
+        if (frame !== null) cancelAnimationFrame(frame);
+        frame = null;
+        dropdownCleanup?.();
+        dropdownCleanup = null;
+    };
+    const dispose = () => {
+        active = false;
+        clearDropdown();
+        $sel.off('.wboExtras');
+        restoreSelect2Options($sel);
+        for (const group of extrasSelect.querySelectorAll('optgroup[data-wbo-group]')) group.replaceWith(...group.children);
+        _extrasCleanups.delete(extrasSelect);
+    };
+    _extrasCleanups.set(extrasSelect, dispose);
 
     const rebuildExtrasOptgroups = () => {
         // First unwrap any existing optgroups without losing option.selected
@@ -3492,23 +3620,46 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
 
     $sel.off('select2:opening.wboExtras select2:open.wboExtras')
         .on('select2:opening.wboExtras', () => {
+            if (!active || !_observersActive) return;
             rebuildExtrasOptgroups();
         })
+        .on('select2:close.wboExtras', clearDropdown)
         .on('select2:open.wboExtras', () => {
-        requestAnimationFrame(() => {
+        clearDropdown();
+        frame = requestAnimationFrame(() => {
+            frame = null;
+            if (!active || !_observersActive || !extrasSelect.isConnected) return;
             const inst = $sel.data('select2');
             const dropdownEl = inst?.$dropdown?.[0];
             if (!(dropdownEl instanceof HTMLElement)) return;
             const resultsList = dropdownEl.querySelector('.select2-results__options');
             if (!(resultsList instanceof HTMLElement)) return;
+            const cleanups = [];
+            const listen = (target, type, handler, options) => {
+                target.addEventListener(type, handler, options);
+                cleanups.push(() => target.removeEventListener(type, handler, options));
+            };
+            dropdownCleanup = () => {
+                for (const cleanup of cleanups) cleanup();
+                dropdownEl.querySelectorAll('.wbo-dd-filter-bar, .wbo-s2-pin-btn').forEach((node) => node.remove());
+                for (const node of [resultsList, ...resultsList.querySelectorAll('[data-wbo-dd-group]')]) {
+                    node.classList.remove('wbo-s2-li-flex', 'wbo-dd-group-head', 'is-isolated', 'wbo-dd-group-hidden', 'wbo-dd-collapsed');
+                    delete node.dataset.wboDdGroup;
+                }
+                delete resultsList.dataset.wboExtrasPinBound;
+                delete resultsList.dataset.wboExtrasListBound;
+                delete resultsList._wboExtrasState;
+                unbindDrawerSafeBubbleGuard(dropdownEl);
+            };
 
             ensureSelect2RowsHavePinBtn(resultsList);
             if (resultsList.dataset.wboExtrasPinBound !== '1') {
                 resultsList.dataset.wboExtrasPinBound = '1';
                 bindDrawerSafeBubbleGuard(dropdownEl);
-                bindSelect2PinHandlers(resultsList);
+                cleanups.push(bindSelect2PinHandlers(resultsList));
                 const pinObs = new MutationObserver(() => ensureSelect2RowsHavePinBtn(resultsList));
-                pinObs.observe(resultsList, { childList: true, subtree: true });
+                pinObs.observe(resultsList, { childList: true });
+                cleanups.push(() => pinObs.disconnect());
             }
 
             const labelToId = new Map();
@@ -3567,8 +3718,7 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
             if (resultsList.dataset.wboExtrasListBound !== '1') {
                 resultsList.dataset.wboExtrasListBound = '1';
                 bindDrawerSafeBubbleGuard(dropdownEl);
-                bindSelect2PinHandlers(resultsList);
-                resultsList.addEventListener('mousedown', (ev) => {
+                listen(resultsList, 'mousedown', (ev) => {
                     const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
                     if (!head) return;
                     ev.preventDefault();
@@ -3580,13 +3730,13 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
                     st.localCollapsed[gid] = !st.localCollapsed[gid];
                     st.syncGroups();
                 }, true);
-                resultsList.addEventListener('mouseup', (ev) => {
+                listen(resultsList, 'mouseup', (ev) => {
                     if (ev.target instanceof Element && ev.target.closest('.wbo-dd-group-head')) {
                         ev.preventDefault();
                         ev.stopPropagation();
                     }
                 }, true);
-                resultsList.addEventListener('click', (ev) => {
+                listen(resultsList, 'click', (ev) => {
                     if (ev.target instanceof Element && ev.target.closest('.wbo-dd-group-head')) {
                         ev.preventDefault();
                         ev.stopPropagation();
@@ -3601,7 +3751,18 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
             const searchField = extrasSelect.parentElement?.querySelector('.select2-search__field');
             if (searchField instanceof HTMLInputElement && searchField.dataset.wboExtrasSearch !== '1') {
                 searchField.dataset.wboExtrasSearch = '1';
-                searchField.addEventListener('input', () => requestAnimationFrame(syncGroups));
+                let searchFrame = null;
+                listen(searchField, 'input', () => {
+                    if (searchFrame !== null) cancelAnimationFrame(searchFrame);
+                    searchFrame = requestAnimationFrame(() => {
+                        searchFrame = null;
+                        if (active && _observersActive) syncGroups();
+                    });
+                });
+                cleanups.push(() => {
+                    if (searchFrame !== null) cancelAnimationFrame(searchFrame);
+                    delete searchField.dataset.wboExtrasSearch;
+                });
             }
             syncGroups();
         });
@@ -3659,8 +3820,12 @@ function enhanceCharBindPopup(charWorldEl) {
             });
         } else {
             let attempts = 0;
+            const later = (delay) => {
+                const timer = setTimeout(() => { _extrasWaitTimers.delete(timer); waitDesktopSelect2(); }, delay);
+                _extrasWaitTimers.add(timer);
+            };
             const waitDesktopSelect2 = () => {
-                if (!extrasSelect.isConnected) return;
+                if (!_observersActive || !extrasSelect.isConnected) return;
                 const $ = globalThis.jQuery;
                 const hasS2 = Boolean($ && ($(extrasSelect).data('select2') || $(extrasSelect).hasClass('select2-hidden-accessible')));
                 if (hasS2) {
@@ -3669,10 +3834,10 @@ function enhanceCharBindPopup(charWorldEl) {
                 }
                 if (attempts < 10) {
                     attempts += 1;
-                    setTimeout(waitDesktopSelect2, 60);
+                    later(60);
                 }
             };
-            setTimeout(waitDesktopSelect2, 40);
+            later(40);
         }
     }
 }
@@ -3886,7 +4051,7 @@ function bindDropdownPillsExpansion(pills, button, { expandedEl = pills, remembe
                 pillsObserver.disconnect();
             }
         });
-        pillsObserver.observe(pills, { childList: true });
+        pillsObserver.observe(pills, { childList: true, subtree: true, characterData: true });
         sizeObserver.observe(pills);
     } else {
         requestAnimationFrame(sync);
@@ -4190,9 +4355,14 @@ function enhanceOpenEditorDropdown() {
     resultsList.addEventListener('pointerdown', onOptionPointerDown, true);
     resultsList.addEventListener('mousedown', onOptionPointerDown, true);
 
+    let searchFrame = null;
     const onSearchInput = () => {
         cancelRestore();
-        requestAnimationFrame(decorateGroupItems);
+        if (searchFrame !== null) cancelAnimationFrame(searchFrame);
+        searchFrame = requestAnimationFrame(() => {
+            searchFrame = null;
+            if (_observersActive && _openDropdownCleanup === cleanup) decorateGroupItems();
+        });
     };
     if (searchInput instanceof HTMLInputElement) {
         searchInput.addEventListener('input', onSearchInput);
@@ -4224,7 +4394,9 @@ function enhanceOpenEditorDropdown() {
         }, 180),
     );
 
-    _openDropdownCleanup = () => {
+    const cleanup = () => {
+        if (searchFrame !== null) cancelAnimationFrame(searchFrame);
+        searchFrame = null;
         cancelRestore();
         // Only snapshot scroll if the list is still visibly laid out (never overwrite with 0 when hidden!)
         if (!isSearching() && scrollHost.isConnected && scrollHost.clientHeight > 0) {
@@ -4247,6 +4419,7 @@ function enhanceOpenEditorDropdown() {
         }
         filterBar?.remove();
     };
+    _openDropdownCleanup = cleanup;
 
     decorateGroupItems();
     requestAnimationFrame(applySavedScrollPositions);
@@ -4443,7 +4616,73 @@ const _activePopoverRestoreTimers = new Set();
 const _pendingContainerEnhance = new Map();
 /** @type {Set<any>} */
 const _activeEnhancedRafs = new Set();
+const _borrowedListeners = new WeakMap();
+const _borrowedLayouts = new WeakMap();
+const _borrowedRowText = new WeakMap();
 let _observersActive = false;
+
+function listenOnBorrowed(target, type, listener, options) {
+    target.addEventListener(type, listener, options);
+    let listeners = _borrowedListeners.get(target);
+    if (!listeners) _borrowedListeners.set(target, listeners = []);
+    listeners.push([type, listener, options]);
+    target.dataset.wboBorrowedListeners = '1';
+}
+
+function rememberBorrowedLayout(host) {
+    const rows = new Set(getEnhancedOptionNodes(host));
+    const previous = _borrowedLayouts.get(host);
+    if (previous && [...rows].every((row) => previous.rows.has(row))) return;
+    let children = [...host.childNodes];
+    if (previous && [...rows].some((row) => previous.rows.has(row))) {
+        const added = children.filter((node) => !previous.children.includes(node)
+            && !(node instanceof Element && node.matches('.wbo-pop-section, [data-wbo-ui]')));
+        children = [...previous.children.filter((node) => !previous.rows.has(node) || rows.has(node)), ...added];
+    }
+    _borrowedLayouts.set(host, { rows, children });
+    host.dataset.wboBorrowedLayout = '1';
+}
+
+function restoreBorrowedPopover(container) {
+    container._wboPopState?.cancelRestore?.();
+    for (const host of container.querySelectorAll('[data-wbo-borrowed-layout]')) restoreBorrowedLayout(host);
+    if (container.hasAttribute('data-wbo-borrowed-layout')) restoreBorrowedLayout(container);
+    container.querySelectorAll('.wbo-pop-filter-bar, .wbo-preset-filter-bar, .wbo-pop-search, .wbo-enhanced-picker-clear, .wbo-s2-right, [data-wbo-editing-badge]').forEach((node) => node.remove());
+    container.querySelectorAll('.wbo-enhanced-sticky').forEach((node) => node.replaceWith(...node.children));
+    for (const row of getEnhancedOptionNodes(container)) {
+        const originalText = _borrowedRowText.get(row);
+        if (originalText) {
+            row.querySelector('.wbo-gr-world-title')?.replaceWith(...originalText);
+            _borrowedRowText.delete(row);
+        }
+    }
+    for (const node of [container, ...container.querySelectorAll('*')]) {
+        for (const [type, listener, options] of _borrowedListeners.get(node) || []) node.removeEventListener(type, listener, options);
+        _borrowedListeners.delete(node);
+        unbindDrawerSafeBubbleGuard(node);
+        for (const cls of ['wbo-has-pin', 'wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'wbo-preset-group-hidden', 'wbo-enhanced-clear-option']) node.classList.remove(cls);
+        for (const key of Object.keys(node.dataset || {})) if (key.startsWith('wbo')) delete node.dataset[key];
+        for (const key of SCRIPT_THEME_PROPERTIES) node.style?.removeProperty?.(`--wbo-script-${key}`);
+        node.style?.removeProperty?.('--wbo-enhanced-toolbar-height');
+    }
+    delete container._wboPopState;
+    delete container._wboOnPinChanged;
+}
+
+function restoreBorrowedLayout(host) {
+    const layout = _borrowedLayouts.get(host);
+    if (!layout) return;
+    const live = new Set(getEnhancedOptionNodes(host));
+    // Restore only this render generation; never resurrect options removed by the host.
+    for (const child of layout.children) {
+        if (live.has(child) || (child instanceof Element && child.matches('.gr-group-label') && [...layout.rows].some((row) => live.has(row)))) host.appendChild(child);
+    }
+    host.querySelectorAll(':scope > .wbo-pop-section').forEach((section) => {
+        for (const row of getEnhancedOptionNodes(section)) host.appendChild(row);
+        section.remove();
+    });
+    _borrowedLayouts.delete(host);
+}
 
 function scheduleEnhancedRaf(cb) {
     if (!_observersActive || typeof requestAnimationFrame !== 'function') return null;
@@ -4640,8 +4879,12 @@ function enhanceCustomDropdownPopover(containerEl) {
     const optionsHost = existingSec?.parentElement || optionNodes[0].parentElement;
     if (!(optionsHost instanceof HTMLElement)) return;
     observedHost = optionsHost;
+    rememberBorrowedLayout(optionsHost);
     const useEnhancedStyle = optionsHost.classList.contains('gr-options-container');
-    if (useEnhancedStyle) containerEl.dataset.wboEnhancedStyle = '1';
+    if (useEnhancedStyle) {
+        containerEl.dataset.wboEnhancedStyle = '1';
+        syncEnhancedHostTheme(containerEl, true);
+    }
     const previousGlobalScrollTop = isGlobalPopover ? findScrollableListEl(optionsHost, containerEl).scrollTop : 0;
 
     const globalNamesByValue = new Map();
@@ -4688,12 +4931,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             });
             containerEl._wboOnPinChanged?.({ worldName, isPinned: nextPinned });
         };
-        containerEl.addEventListener('pointerdown', blockPinEvt, true);
-        containerEl.addEventListener('mousedown', blockPinEvt, true);
-        containerEl.addEventListener('mouseup', blockPinEvt, true);
-        containerEl.addEventListener('touchstart', blockPinEvt, { capture: true, passive: false });
-        containerEl.addEventListener('touchend', onGrPinClick, { capture: true, passive: false });
-        containerEl.addEventListener('click', onGrPinClick, true);
+        listenOnBorrowed(containerEl, 'pointerdown', blockPinEvt, true);
+        listenOnBorrowed(containerEl, 'mousedown', blockPinEvt, true);
+        listenOnBorrowed(containerEl, 'mouseup', blockPinEvt, true);
+        listenOnBorrowed(containerEl, 'touchstart', blockPinEvt, { capture: true, passive: false });
+        listenOnBorrowed(containerEl, 'touchend', onGrPinClick, { capture: true, passive: false });
+        listenOnBorrowed(containerEl, 'click', onGrPinClick, true);
     }
 
     // Watch `optionsHost` so if the host re-renders `.gr-option` items on subsequent opens without recreating `containerEl`,
@@ -5197,7 +5440,7 @@ function enhanceCustomDropdownPopover(containerEl) {
 
     if (optionsHost.dataset.wboHostListenersBound !== '1') {
         optionsHost.dataset.wboHostListenersBound = '1';
-        optionsHost.addEventListener('mousedown', (ev) => {
+        listenOnBorrowed(optionsHost, 'mousedown', (ev) => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
@@ -5206,7 +5449,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             ev.stopPropagation();
         }, true);
 
-        optionsHost.addEventListener('click', (ev) => {
+        listenOnBorrowed(optionsHost, 'click', (ev) => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
@@ -5245,8 +5488,8 @@ function enhanceCustomDropdownPopover(containerEl) {
                 }
             }
         };
-        optionsHost.addEventListener('pointerdown', onPopoverOptionPointerDown, true);
-        optionsHost.addEventListener('mousedown', onPopoverOptionPointerDown, true);
+        listenOnBorrowed(optionsHost, 'pointerdown', onPopoverOptionPointerDown, true);
+        listenOnBorrowed(optionsHost, 'mousedown', onPopoverOptionPointerDown, true);
     }
 
     const initialPopPinnedCount = initialPopPinned;
@@ -5310,7 +5553,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     for (const st of scrollTargets) {
         if (st.dataset.wboScrollBound === '1') continue;
         st.dataset.wboScrollBound = '1';
-        st.addEventListener('scroll', () => {
+        listenOnBorrowed(st, 'scroll', () => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             const pState = containerEl._wboPopState;
@@ -5319,12 +5562,12 @@ function enhanceCustomDropdownPopover(containerEl) {
                 _dropdownMemory.scrollTopByGroup[pState.getActivePillId()] = st.scrollTop;
             }
         }, { passive: true });
-        st.addEventListener('wheel', () => {
+        listenOnBorrowed(st, 'wheel', () => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             containerEl._wboPopState?.cancelRestore();
         }, { passive: true });
-        st.addEventListener('touchmove', () => {
+        listenOnBorrowed(st, 'touchmove', () => {
             const role = containerEl.dataset.wboPopoverRole;
             if (role !== 'global' && role !== 'editor') return;
             containerEl._wboPopState?.cancelRestore();
@@ -5339,10 +5582,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             const pState = containerEl._wboPopState;
             if (!pState) return;
             pState.cancelRestore();
-            requestAnimationFrame(pState.syncSections);
+            scheduleEnhancedRaf(() => {
+                if (containerEl._wboPopState === pState) pState.syncSections();
+            });
         };
-        searchInput.addEventListener('compositionend', syncSearch);
-        searchInput.addEventListener('input', (ev) => {
+        listenOnBorrowed(searchInput, 'compositionend', syncSearch);
+        listenOnBorrowed(searchInput, 'input', (ev) => {
             if (!ev.isComposing) syncSearch();
         });
     }
@@ -5443,12 +5688,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         }
         const select = target.closest('select');
         if (!select) return;
-        const nativeSort = select.id === 'world_info_sort_order';
-        if (!nativeSort && !select.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')) return;
-        if (nativeSort) {
-            closeAllOpenWorldDropdowns();
-            return;
-        }
+        if (!select.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')) return;
         event.stopPropagation();
     };
     for (const event of selectEvents) globalThis.addEventListener?.(event, prepareDropdownGesture, true);
@@ -5512,8 +5752,8 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         enhancedStyleObserver.observe(document.head, { childList: true });
     }
     enhancedHostThemeObserver = new MutationObserver(() => {
-        if (_latestSettings?.overrideEnhancedDropdownStyle !== true) return;
-        document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => syncEnhancedHostTheme(element));
+        document.querySelectorAll('[data-wbo-enhanced-host-theme], [data-wbo-enhanced-style]')
+            .forEach((element) => syncEnhancedHostTheme(element));
     });
     for (const element of [document.documentElement, document.body]) {
         if (element) enhancedHostThemeObserver.observe(element, { attributes: true, attributeFilter: ['style', 'class'] });
@@ -5535,6 +5775,11 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         _globalSelectObserver = new MutationObserver(scheduleResync);
         // Observe direct childList ONLY (zero subtree cost)
         _globalSelectObserver.observe(globalEl, { childList: true, subtree: false });
+        if (globalEl.parentElement) {
+            _globalPromptObserver = new MutationObserver(syncEnhancedGlobalPrompt);
+            _globalPromptObserver.observe(globalEl.parentElement, { childList: true, subtree: true });
+            syncEnhancedGlobalPrompt();
+        }
     }
 
     const editorEl = document.getElementById('world_editor_select');
@@ -5669,10 +5914,13 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     const schedulePopoverSweep = () => {
         if (!_observersActive) return;
         scheduleEnhancedRaf(sweepOpenEnhancedPopovers);
-        _sweepPopoverTimers.push(
-            setTimeout(sweepOpenEnhancedPopovers, 35),
-            setTimeout(sweepOpenEnhancedPopovers, 110),
-        );
+        for (const delay of [35, 110]) {
+            const timer = setTimeout(() => {
+                _sweepPopoverTimers.delete(timer);
+                sweepOpenEnhancedPopovers();
+            }, delay);
+            _sweepPopoverTimers.add(timer);
+        }
     };
 
     _docDrawerGuardMouseDown = (ev) => {
@@ -5759,6 +6007,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
 
     // Lightweight popup observer: inspects only newly added top-level dialog/popup/custom-dropdown nodes
     _charPopupObserver = new MutationObserver((mutations) => {
+        for (const [select, cleanup] of _extrasCleanups) if (!select.isConnected) cleanup();
         for (const mutation of mutations) {
             for (const node of mutation.addedNodes) {
                 if (!(node instanceof HTMLElement)) continue;
@@ -5813,6 +6062,11 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
  * Stop observers cleanly.
  */
 export function stopNativeObservers() {
+    for (const timer of _extrasWaitTimers) clearTimeout(timer);
+    _extrasWaitTimers.clear();
+    for (const cleanup of [..._extrasCleanups.values()]) cleanup();
+    stopGlobalPromptSync();
+    _pinDirtyOnClose = false;
     removePluginSelectIsolation?.();
     removePluginSelectIsolation = null;
     if (typeof document !== 'undefined') clearEnhancedPresetGroups(document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId));
@@ -5834,7 +6088,8 @@ export function stopNativeObservers() {
     _openCustomPickerClosers.clear();
     clearTimeout(_resyncTimer);
     _resyncTimer = null;
-    while (_sweepPopoverTimers.length) clearTimeout(_sweepPopoverTimers.pop());
+    for (const timer of _sweepPopoverTimers) clearTimeout(timer);
+    _sweepPopoverTimers.clear();
     for (const tid of _activePopoverRestoreTimers) clearTimeout(tid);
     _activePopoverRestoreTimers.clear();
     for (const handle of _pendingContainerEnhance.values()) {
@@ -5926,6 +6181,9 @@ export function stopNativeObservers() {
  * (used on extension disable / clean).
  */
 export function teardownNativeFilters() {
+    document.querySelectorAll('[data-wbo-enhanced-style]').forEach((element) => {
+        for (const key of SCRIPT_THEME_PROPERTIES) element.style.removeProperty(`--wbo-script-${key}`);
+    });
     document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => {
         element.removeAttribute('data-wbo-enhanced-host-theme');
         element.removeAttribute('data-wbo-enhanced-host-tone');
@@ -5933,6 +6191,16 @@ export function teardownNativeFilters() {
     clearTimeout(_deferredGlobalTimer);
     _deferredGlobalTimer = null;
     stopNativeObservers();
+    document.querySelectorAll(ENHANCED_POPOVER_SELECTORS.containerSelector).forEach(restoreBorrowedPopover);
+    document.querySelectorAll('[data-wbo-grouped-control]').forEach((select) => {
+        const control = groupedSelectControls.get(select);
+        control?.closePopover();
+        control?.trigger?.remove();
+        if (control) select.removeEventListener('change', control.syncTriggerText);
+        groupedSelectControls.delete(select);
+        select.classList.remove('wbo-mobile-select-hidden');
+        delete select.dataset.wboGroupedControl;
+    });
     _currentlyEditingWorld = null;
     _pendingClearedEditingWorld = false;
     _lastGlobalSignature = null;
@@ -5948,10 +6216,9 @@ export function teardownNativeFilters() {
             if (!sel) continue;
             delete sel.dataset.wboS2Ready;
             const $sel = $ ? $(sel) : null;
-            const hadS2 = Boolean($sel && ($sel.data('select2') || $sel.hasClass('select2-hidden-accessible')));
-            if (hadS2) {
-                try { $sel.select2('destroy'); } catch { /* ignore */ }
-            }
+            const selected = new Set([...sel.selectedOptions]);
+            if ($sel?.data('select2')?.isOpen?.()) $sel.select2('close');
+            restoreSelect2Options($sel);
             restoreSelectOptions(sel, detachedMap);
             const placeholders = [];
             const rest = [];
@@ -5961,32 +6228,22 @@ export function teardownNativeFilters() {
             }
             sortByNativeValue(rest);
             for (const opt of [...placeholders, ...rest]) sel.appendChild(opt);
-
-            if (hadS2 && $sel) {
-                try {
-                    if (id === 'world_info') {
-                        $sel.select2({
-                            width: '100%',
-                            placeholder: 'No Worlds active. Click here to select.',
-                            allowClear: true,
-                            closeOnSelect: false,
-                        });
-                    } else {
-                        $sel.select2({
-                            placeholder: '--- Pick to Edit ---',
-                            allowClear: true,
-                            closeOnSelect: true,
-                            multiple: false,
-                        });
-                    }
-                } catch { /* ignore */ }
+            for (const opt of [...sel.options]) {
+                opt.selected = selected.has(opt);
+                delete opt.dataset.wboEditing;
             }
+            if (!selected.size) sel.selectedIndex = -1;
+            if ($sel?.data('select2')) $sel.trigger('change.select2');
         }
+        if ($) document.querySelectorAll('select').forEach((select) => restoreSelect2Options($(select)));
+        document.querySelectorAll('[data-wbo-bubble-guarded]').forEach(unbindDrawerSafeBubbleGuard);
         document.querySelectorAll('.wbo-charpopup-bar').forEach((el) => el.remove());
         document.getElementById(MOBILE_TRIGGER_ID)?.remove();
         document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
         document.getElementById('world_editor_select')?.classList.remove('wbo-mobile-select-hidden');
     } finally {
+        _latestClassification = null;
+        _latestSettings = null;
         _isApplying = false;
     }
 }

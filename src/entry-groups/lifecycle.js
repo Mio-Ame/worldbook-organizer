@@ -122,8 +122,9 @@ function stopNativeEditorObserver() {
 }
 
 function syncNativeEditorIntegration() {
+    if (!_initialized) return;
     syncAllNativeEntryPoints();
-    if (!_initialized || !getNativeGroupingPreferences().active) {
+    if (!getNativeGroupingPreferences().active) {
         _mountJob?.();
         _mountJob = null;
         stopNativeEditorObserver();
@@ -134,10 +135,6 @@ function syncNativeEditorIntegration() {
 
 function scheduleNativeEntrySync() {
     if (!_initialized) return;
-    if (!getNativeGroupingPreferences().active) {
-        syncNativeEditorIntegration();
-        return;
-    }
     if (_mountJob) return;
     const run = () => {
         _mountJob = null;

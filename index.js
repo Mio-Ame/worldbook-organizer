@@ -62,8 +62,12 @@ import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.10';
+export const STYLE_ASSET_VERSION = '2.35.11';
 let _initialized = false;
+let _disabled = false;
+let _bootCleanup = null;
+let _chatImportTimer = null;
+let _waitCharsTimer = null;
 let _initialAutoScanRunning = false;
 let _initialAutoScanTimer = null;
 let _incrementalAutoScanRunning = false;
@@ -301,6 +305,7 @@ function scheduleIdleAutoScanCatchUp(settings, characters) {
  * @param {{ save?: boolean }} [opts]
  */
 function recomputeAndRender({ save = false, deferGlobal = false, backgroundCatchUp = false } = {}) {
+    if (_disabled) return;
     const settings = getSettings();
     const characters = getCharactersInMemory();
 
@@ -583,11 +588,12 @@ function registerSlashCommands(ctx) {
  * Main idempotent initialization routine.
  */
 async function init() {
-    if (_initialized) return;
+    if (_initialized || _disabled) return;
     _initialized = true;
     setNativeScrollEnabled(true);
 
     await waitForTauriReadyIfPresent();
+    if (_disabled) return;
     const ctx = getHostContext();
     if (!ctx) {
         _initialized = false;
@@ -615,8 +621,11 @@ async function init() {
 
     // Load in-memory world-info & power-user modules once (with ST 1.14 fallbacks)
     await ensureWorldInfoModule();
+    if (_disabled) return;
     await ensurePowerUserModule();
+    if (_disabled) return;
     await syncFallbackSettingsData(false);
+    if (_disabled) return;
 
     bindPanelCallbacks({
         getState: () => ({
@@ -716,12 +725,17 @@ async function init() {
     // its missing embedded lorebook if user enabled that setting.
     trackHostEvent(eventSource, et.CHAT_CHANGED, () => {
         scheduleRefresh(220);
+        clearTimeout(_chatImportTimer);
+        _chatImportTimer = null;
         const curSettings = getSettings();
         if (curSettings.autoImportMissingCharBook) {
-            setTimeout(async () => {
+            _chatImportTimer = setTimeout(async () => {
+                _chatImportTimer = null;
+                if (_disabled) return;
                 const avatar = getCurrentCharacterAvatar();
                 if (!avatar) return;
                 const res = await importEmbeddedWorldbookForCharacter(avatar);
+                if (_disabled) return;
                 if (res.status === 'imported') {
                     showToast('info', `已自动导入角色内嵌世界书「${res.name}」并归入角色分组`);
                     recomputeAndRender({ save: true });
@@ -734,6 +748,7 @@ async function init() {
     if (getCharactersInMemory().length === 0) {
         let retries = 0;
         const waitCharsOnce = () => {
+            _waitCharsTimer = null;
             if (!_initialized) return;
             if (getCharactersInMemory().length > 0) {
                 recomputeAndRender({ save: false });
@@ -741,10 +756,10 @@ async function init() {
             }
             if (retries < 6) {
                 retries += 1;
-                setTimeout(waitCharsOnce, 700);
+                _waitCharsTimer = setTimeout(waitCharsOnce, 700);
             }
         };
-        setTimeout(waitCharsOnce, 700);
+        _waitCharsTimer = setTimeout(waitCharsOnce, 700);
     }
 
     if (!_openPanelBridgeHandler && typeof window !== 'undefined') {
@@ -771,6 +786,13 @@ async function init() {
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
  */
 export function onDisable() {
+    _disabled = true;
+    _bootCleanup?.();
+    _bootCleanup = null;
+    clearTimeout(_chatImportTimer);
+    _chatImportTimer = null;
+    clearTimeout(_waitCharsTimer);
+    _waitCharsTimer = null;
     setNativeScrollEnabled(false);
     globalThis.document?.removeEventListener?.('change', captureWorldbookImport, true);
     worldbookImports.clear();
@@ -824,6 +846,10 @@ export function onDisable() {
     stopEntryGrouping();
     teardownNativeFilters();
     teardownPanels();
+    const assetRoot = new URL('./', import.meta.url).href;
+    document.querySelectorAll('link[rel="stylesheet"]').forEach((link) => {
+        if (link.href.startsWith(assetRoot)) link.remove();
+    });
     _initialized = false;
 }
 
@@ -831,17 +857,38 @@ export const onClean = onDisable;
 
 // Schedule deferred boot cleanly on both SillyTavern (1.14–1.19+) and TauriTavern
 function boot() {
+    const timers = new Set();
+    let idle = null;
+    const later = (fn, delay) => {
+        const id = setTimeout(() => {
+            timers.delete(id);
+            if (!_disabled) fn();
+        }, delay);
+        timers.add(id);
+    };
     const start = () => {
+        if (_disabled) return;
         if (typeof globalThis.requestIdleCallback === 'function') {
-            globalThis.requestIdleCallback(() => { void init(); }, { timeout: 1500 });
+            if (idle !== null) return;
+            idle = globalThis.requestIdleCallback(() => { idle = null; void init(); }, { timeout: 1500 });
         } else {
-            setTimeout(() => { void init(); }, 250);
+            later(() => { void init(); }, 250);
         }
     };
 
     const ctx = getHostContext();
     const eventSource = ctx?.eventSource;
     const et = ctx?.eventTypes || ctx?.event_types;
+
+    _bootCleanup = () => {
+        for (const id of timers) clearTimeout(id);
+        timers.clear();
+        if (idle !== null) globalThis.cancelIdleCallback?.(idle);
+        idle = null;
+        document.removeEventListener('DOMContentLoaded', start);
+        const off = eventSource?.removeListener || eventSource?.off;
+        if (et?.APP_READY && typeof off === 'function') off.call(eventSource, et.APP_READY, start);
+    };
 
     if (eventSource && et?.APP_READY) {
         eventSource.once(et.APP_READY, start);
@@ -850,7 +897,7 @@ function boot() {
     if (typeof globalThis.jQuery === 'function') {
         globalThis.jQuery(() => {
             // Fallback if APP_READY already fired before deferred extension activation
-            setTimeout(start, 400);
+            if (!_disabled) later(start, 400);
         });
     } else if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', start, { once: true });

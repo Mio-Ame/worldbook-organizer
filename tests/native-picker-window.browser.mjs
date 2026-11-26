@@ -359,7 +359,8 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
             document.body.classList.remove('dark-mode');
             return { day, night };
         });
-        assert.ok(theme.day.every((color, index) => color !== theme.night[index]), JSON.stringify(theme));
+        assert.deepEqual(theme.day, ['rgb(40, 57, 75)', 'rgb(40, 57, 75)', 'rgb(255, 255, 255)'], 'headers use the actual script surface, including its opaque parent background');
+        assert.deepEqual(theme.night, theme.day, 'a host theme change must not override an unchanged script palette');
         const pin = '#gr-global-dropdown-container [data-pin-world="普通测试书"]';
         assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .gr-options-container > .gr-option .wbo-gr-pin-btn')?.getAttribute('data-pin-world')), '全局测试书');
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelectorAll('.gr-option-pin').length, pin), 1);
