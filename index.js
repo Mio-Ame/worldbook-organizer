@@ -58,10 +58,11 @@ import {
     teardownPanels,
 } from './src/panel.js';
 import { startEntryGrouping, stopEntryGrouping } from './src/entry-groups/lifecycle.js';
+import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.9';
+export const STYLE_ASSET_VERSION = '2.35.10';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _initialAutoScanTimer = null;
@@ -584,6 +585,7 @@ function registerSlashCommands(ctx) {
 async function init() {
     if (_initialized) return;
     _initialized = true;
+    setNativeScrollEnabled(true);
 
     await waitForTauriReadyIfPresent();
     const ctx = getHostContext();
@@ -769,6 +771,7 @@ async function init() {
  * Cleanly remove all listeners, observers, and DOM mounts, restoring native selects.
  */
 export function onDisable() {
+    setNativeScrollEnabled(false);
     globalThis.document?.removeEventListener?.('change', captureWorldbookImport, true);
     worldbookImports.clear();
     importsAwaitingCharacterScan.clear();

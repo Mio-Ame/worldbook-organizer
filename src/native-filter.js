@@ -561,27 +561,6 @@ function syncEnhancedPinButton(button, pinned) {
     if (!button.querySelector('svg')) button.textContent = pinned ? '★' : '☆';
 }
 
-function adoptEnhancedPinIcon(row, button) {
-    const original = row.querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)');
-    if (!original) return;
-    const icon = original.querySelector('svg');
-    const path = icon?.querySelector('path')?.getAttribute('d');
-    if (path && !button.querySelector('svg')) {
-        const ns = 'http://www.w3.org/2000/svg';
-        const glyph = document.createElementNS(ns, 'svg');
-        glyph.setAttribute('viewBox', icon.getAttribute('viewBox') || '0 0 24 24');
-        glyph.setAttribute('width', '13');
-        glyph.setAttribute('height', '13');
-        glyph.setAttribute('fill', 'currentColor');
-        glyph.setAttribute('aria-hidden', 'true');
-        const stroke = document.createElementNS(ns, 'path');
-        stroke.setAttribute('d', path);
-        glyph.appendChild(stroke);
-        button.replaceChildren(glyph);
-    }
-    original.remove();
-}
-
 function syncEnhancedEditorOptionTitle(row, meta) {
     if (!meta?.isCharBound && !meta?.isInCharGroup) return;
     row.dataset.wboEnhancedWorld = meta.realName;
@@ -4820,11 +4799,10 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (!pinBtn) {
             pinBtn = document.createElement('button');
             pinBtn.type = 'button';
-            pinBtn.className = `${ENHANCED_POPOVER_SELECTORS.pinClass} wbo-s2-pin-btn wbo-gr-pin-btn${isPinned ? ' is-pinned' : ''}`;
+            pinBtn.className = `wbo-s2-pin-btn wbo-gr-pin-btn${isPinned ? ' is-pinned' : ''}`;
             pinBtn.setAttribute('data-pin-world', worldName);
             pinBtn.setAttribute('data-wbo-gr-pin', worldName);
         }
-        if (useEnhancedStyle && isGlobalPopover) adoptEnhancedPinIcon(optEl, pinBtn);
         syncEnhancedPinButton(pinBtn, isPinned);
 
         let rightWrap = optEl.querySelector(':scope > .wbo-s2-right');
@@ -4869,6 +4847,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         const meta = _latestClassification.byName.get(text);
         const worldName = meta?.realName || text;
         const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
+        if (isGlobalPopover && optEl.querySelector('.gr-option-pin.pinned:not(.wbo-gr-pin-btn)')) {
+            bareEditorMeta.set(optEl, { groupId: gid });
+            bareEditorItems.push(optEl);
+            continue;
+        }
         if (!isGlobalPopover) {
             const isEditingRow = Boolean(activeEditName && worldName === activeEditName);
             const isCurrentChatCharBook = Boolean(
@@ -4920,7 +4903,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     }
 
-    if (bareEditorItems.length > 1) {
+    if (!isGlobalPopover && bareEditorItems.length > 1) {
         bareEditorItems.sort((a, b) => {
             const ma = bareEditorMeta.get(a);
             const mb = bareEditorMeta.get(b);
@@ -4940,7 +4923,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const orderedSections = orderSectionsForExternalDropdown(_latestClassification.orderedSections || []).filter(
-        (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0,
+        (sec) => (bucketByGroup.get(sec.id)?.length || 0) > 0
+            || (isGlobalPopover && bareEditorItems.some((row) => bareEditorMeta.get(row)?.groupId === sec.id)),
     );
     const getPopoverPinnedCount = () => {
         let cnt = 0;
@@ -5110,7 +5094,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         const isIsolated = applyGroupFilter && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
         const searchTerms = filterGlobalSearch ? searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean) : [];
         for (const o of bareEditorItems) {
-            if (searching) {
+            if (filterGlobalSearch) {
+                const name = getOptionText(o);
+                const text = _latestClassification.byName.get(name)?.searchableText || name.toLowerCase();
+                o.classList.toggle('wbo-pop-search-hidden', !searchTerms.every((term) => text.includes(term)));
+            }
+            if (searching && !isGlobalPopover) {
                 o.classList.remove('wbo-dd-pin-hidden');
             } else if (isPinFilter) {
                 const name = getOptionText(o);
@@ -5269,7 +5258,9 @@ function enhanceCustomDropdownPopover(containerEl) {
                     : []),
                 ...orderedSections.map((sec) => ({
                     id: sec.id,
-                    label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length + (isGlobalPopover ? pinnedGlobalItems.filter((el) => el.dataset.wboOrigGroup === sec.id).length : 0)}`,
+                    label: `${sec.name} ${(bucketByGroup.get(sec.id) || []).length + (isGlobalPopover
+                        ? pinnedGlobalItems.filter((el) => el.dataset.wboOrigGroup === sec.id).length
+                            + bareEditorItems.filter((el) => bareEditorMeta.get(el)?.groupId === sec.id).length : 0)}`,
                 })),
             ],
             activePillGroupId,
@@ -5454,7 +5445,10 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         if (!select) return;
         const nativeSort = select.id === 'world_info_sort_order';
         if (!nativeSort && !select.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')) return;
-        if (nativeSort) closeAllOpenWorldDropdowns();
+        if (nativeSort) {
+            closeAllOpenWorldDropdowns();
+            return;
+        }
         event.stopPropagation();
     };
     for (const event of selectEvents) globalThis.addEventListener?.(event, prepareDropdownGesture, true);

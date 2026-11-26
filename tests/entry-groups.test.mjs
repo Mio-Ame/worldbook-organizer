@@ -241,6 +241,66 @@ test('Emoji-decorated full-book section layers (——🐰🐰...🦊🦊——)
     assert.deepEqual(proposals[2].uids, ['301', '302']);
 });
 
+test('decorated choice headers keep their topic, radio mode and section boundaries', () => {
+    const titles = [
+        '☯۰•↓多选一·玩家身份↓•۰☯', '【身份】选项甲', '【身份】选项乙', '【身份】选项丙',
+        '☯۰•↓三选一·玩家属性↓•۰☯', '属性甲', '属性乙', '属性丙',
+        '☯۰•↓可选，补丁区域，自行选开↓•۰☯', '补丁甲', '补丁乙',
+        '☯۰•↓可选，剧情走向，多选一开↓•۰☯', '日常向(多选一开)', '仙侠向（多选一开）',
+        '=== 其他设定 ===', '其他正文',
+    ];
+    const entries = extractWorldbookEntrySummaries({ entries: titles.map((comment, uid) => ({
+        uid, displayIndex: uid, comment, content: /↓|===/.test(comment) ? '' : '中性正文', key: [],
+    })) });
+    for (const strategy of ['smart', 'divider']) {
+        const proposals = detectAutoGroups(entries, { strategy });
+        const byName = new Map(proposals.map((group) => [group.name, group]));
+        assert.deepEqual(byName.get('玩家身份')?.uids, ['1', '2', '3']);
+        assert.equal(byName.get('玩家身份')?.suggestedMode, GROUP_MODES.RADIO);
+        assert.deepEqual(byName.get('玩家属性')?.uids, ['5', '6', '7']);
+        assert.equal(byName.get('玩家属性')?.suggestedMode, GROUP_MODES.RADIO);
+        assert.deepEqual(byName.get('补丁区域')?.uids, ['9', '10']);
+        assert.equal(byName.get('补丁区域')?.suggestedMode, GROUP_MODES.NORMAL);
+        assert.deepEqual(byName.get('剧情走向')?.uids, ['12', '13']);
+        assert.equal(byName.get('剧情走向')?.suggestedMode, GROUP_MODES.RADIO);
+        const repair = detectAutoGroups(entries, { strategy, existingAssignments: { 1: 'manual', 2: 'manual', 12: 'manual' } });
+        assert.deepEqual(repair.find((group) => group.name === '玩家身份')?.uids, ['3']);
+        assert.equal(repair.find((group) => group.name === '玩家身份')?.suggestedMode, GROUP_MODES.RADIO);
+        assert.deepEqual(repair.find((group) => group.name === '剧情走向')?.uids, ['13']);
+        assert.equal(repair.find((group) => group.name === '剧情走向')?.suggestedMode, GROUP_MODES.RADIO);
+    }
+    const custom = detectAutoGroups(entries, { customRules: [{ group: '三选一·手动方案名', keywords: ['属性'] }] });
+    assert.equal(custom[0].name, '三选一·手动方案名');
+});
+
+test('an explicit choice header wins over matching title prefixes and stops at the next plain section', () => {
+    const titles = ['↓多选一·身份↓•۰☯', '【身份】甲', '【身份】乙', '=== 后续说明 ===', '说明正文'];
+    const entries = extractWorldbookEntrySummaries({ entries: titles.map((comment, uid) => ({
+        uid, displayIndex: uid, comment, content: uid === 0 || uid === 3 ? '' : '正文', key: [],
+    })) });
+    const group = detectAutoGroups(entries).find((item) => item.name === '身份');
+    assert.deepEqual(group?.uids, ['1', '2']);
+    assert.equal(group?.suggestedMode, GROUP_MODES.RADIO);
+    const saved = { groups: [{ id: 'manual', name: '三选一·我的命名', mode: 'normal' }], assignments: { 4: 'manual' } };
+    const next = applyAutoGroupProposals(saved, detectAutoGroups(entries, { existingAssignments: saved.assignments }));
+    assert.deepEqual(next.groups.find((item) => item.id === 'manual'), normalizeBookConfig(saved).groups[0]);
+    assert.equal(next.assignments['4'], 'manual');
+});
+
+test('a lone choice section is recognized with a single remaining ungrouped member', () => {
+    const entries = extractWorldbookEntrySummaries({ entries: [
+        { uid: 0, comment: '↓三选一·测试身份↓•۰☯', content: '', key: [] },
+        { uid: 1, comment: '【角色】选项甲', content: '正文', key: [] },
+        { uid: 2, comment: '【角色】选项乙', content: '正文', key: [] },
+        { uid: 3, comment: '【角色】选项丙', content: '正文', key: [] },
+    ] });
+    for (const strategy of ['smart', 'divider']) {
+        const proposals = detectAutoGroups(entries, { strategy, existingAssignments: { 1: 'manual', 2: 'manual' } });
+        assert.deepEqual(proposals.map(({ name, suggestedMode, uids }) => ({ name, suggestedMode, uids })),
+            [{ name: '测试身份', suggestedMode: GROUP_MODES.RADIO, uids: ['3'] }]);
+    }
+});
+
 test('Overlapping greeting lore presets (shared common lore + distinct route lore) switch cleanly without losing common lore', () => {
     const summaries = extractWorldbookEntrySummaries(createSamplePayload());
     const greetIdx = buildGreetingCoordinationIndex({

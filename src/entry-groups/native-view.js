@@ -6,7 +6,7 @@ import { getNativeGroupOrder } from './entry-reorder.js';
 const BUTTON_ID = 'weg-native-group-manager';
 const HEADING_CLASS = 'weg-native-group-heading';
 const COLLAPSED_CLASS = 'weg-native-group-collapsed';
-const NATIVE_UNDO_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2.7 8.4"/><path d="M3 4v6h6"/></svg>';
+const NATIVE_UNDO_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 14-5-5 5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-2"/></svg>';
 let visibleBook = null;
 let decoratedList = null;
 let nativeLayout = null;
@@ -33,14 +33,18 @@ function syncNativeLayout(list, pagination, button) {
     const row = [...(list?.querySelectorAll('.world_entry:not(.weg-native-group-collapsed)') || [])]
         .find((entry) => entry.querySelector('textarea[name="comment"]'));
     const sizeControl = pagination?.querySelector('select');
-    if (nativeLayout?.heading === heading && nativeLayout?.row === row && nativeLayout?.sizeControl === sizeControl && nativeLayout?.button === button) {
+    if (nativeLayout?.list === list && nativeLayout?.heading === heading && nativeLayout?.row === row && nativeLayout?.sizeControl === sizeControl && nativeLayout?.button === button) {
         nativeLayout.update();
         return;
     }
     clearNativeLayout();
-    if ((!heading || !row) && (!sizeControl || !button)) return;
+    if (!list && (!sizeControl || !button)) return;
     const columns = [...(heading?.children || [])].map((label) => [label, row?.querySelector(nativeColumnControls.get(label.getAttribute('data-i18n')) || ':not(*)')]);
     const update = () => {
+        // Contain gestures only when this list actually owns a scroll range.
+        list?.classList.toggle('weg-native-scroll-boundary', list.clientHeight > 0
+            && list.scrollHeight > list.clientHeight
+            && /^(auto|scroll|overlay)$/.test(getComputedStyle(list).overflowY));
         if (heading?.clientWidth && row?.offsetWidth && columns.length) {
             const headerLeft = heading.getBoundingClientRect().left;
             const scale = heading.getBoundingClientRect().width / heading.offsetWidth || 1;
@@ -71,13 +75,14 @@ function syncNativeLayout(list, pagination, button) {
     if (sizeControl) observer?.observe(sizeControl);
     const styleObserver = typeof MutationObserver === 'function' && list ? new MutationObserver(update) : null;
     styleObserver?.observe(list, { attributes: true, attributeFilter: ['style'] });
-    nativeLayout = { heading, row, sizeControl, button, observer, styleObserver, update };
+    nativeLayout = { list, heading, row, sizeControl, button, observer, styleObserver, update };
     update();
 }
 
 function clearNativeLayout() {
     nativeLayout?.observer?.disconnect();
     nativeLayout?.styleObserver?.disconnect();
+    nativeLayout?.list?.classList.remove('weg-native-scroll-boundary');
     nativeLayout?.heading?.classList.remove('weg-native-aligned-columns');
     for (const label of nativeLayout?.heading?.children || []) {
         label.removeAttribute('data-weg-column-hidden');

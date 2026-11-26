@@ -38,6 +38,7 @@ import { findScrollableContent, scrollNativeWorldEntry } from '../content-scroll
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
 let _selfWriteGuardUntil = 0;
+let _nativeGroupingRequested = false;
 
 /** @type {Map<string, Record<string, number>>} chatKey -> (groupId -> remainingCooldownTurns) */
 const _sceneCooldownByChat = new Map();
@@ -113,7 +114,13 @@ function getSettingsContainer() {
 
 export function getNativeGroupingPreferences() {
     const settings = getSettingsContainer()?.[MODULE_NAME];
-    return { enabled: settings?.enableNativeGrouping !== false, showButton: settings?.showNativeEntryBtn !== false };
+    const enabled = settings?.enableNativeGrouping !== false;
+    return { enabled, active: enabled && _nativeGroupingRequested,
+        showButton: settings?.showNativeEntryBtn !== false, hintSeen: settings?.nativeEntryHintSeen === true };
+}
+
+export function setNativeGroupingRequested(active) {
+    _nativeGroupingRequested = Boolean(active) && getNativeGroupingPreferences().enabled;
 }
 
 export function getNativeGroupingState(worldName) {

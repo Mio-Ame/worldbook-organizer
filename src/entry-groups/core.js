@@ -267,6 +267,7 @@ export function normalizeSettings(raw) {
         followNativeTheme: src.followNativeTheme !== false,
         enableNativeGrouping: src.enableNativeGrouping !== false,
         showNativeEntryBtn: src.showNativeEntryBtn !== false,
+        nativeEntryHintSeen: src.nativeEntryHintSeen === true,
         showWandMenuEntry: src.showWandMenuEntry !== false,
         closeOnLocate: src.closeOnLocate !== false,
         syncGreetingTags: src.syncGreetingTags !== false,
@@ -319,19 +320,34 @@ function cleanDividerLabelText(rawInner) {
         .replace(/^[【\[「(（\s]+|[】\]」)）\s]+$/g, '')
         // Strip leading & trailing decorative emoji runs while keeping CJK / ASCII / numbers intact
         .replace(/^[\p{Extended_Pictographic}\s]+|[\p{Extended_Pictographic}\s]+$/gu, '')
+        .replace(/^[۰•☯\s]+|[۰•☯\s]+$/g, '')
         .replace(/^(?:以下是|下面是|以上是|上面是)\s*/, '')
         .replace(/\s*(?:结束|到此为止|分割线|分隔线)$/, '')
         .replace(/\s+/g, ' ')
         .trim();
 
     // Trim long parenthetical author instructions in divider headers like `常规信息，以下所有除了选开都别动`
-    if (s.length > 10 && /[，,（(]/.test(s)) {
-        const headPart = s.split(/[，,（(]/)[0].trim();
+    if (s.includes('，') || s.includes(',')) {
+        const parts = s.split(/[，,]/).map((part) => part.trim());
+        const topics = parts.filter((part) => part && !/^(?:可选|选开)$/.test(part)
+            && !/^(?:以下|下面|自行|要玩|必须|请勿|默认)/.test(part));
+        if (topics.length) s = topics.join('，');
+    }
+    if (s.length > 10 && /[（(]/.test(s)) {
+        const headPart = s.split(/[（(]/)[0].trim();
         if (headPart.length >= 2) {
             s = headPart;
         }
     }
     return s;
+}
+
+function suggestedDividerName(label) {
+    const topic = label
+        .replace(/^(?:多|[二三四])选一(?:开)?\s*[·:：，,、\s]+/, '')
+        .replace(/[·:：，,、\s]+(?:多|[二三四])选一(?:开)?$/, '')
+        .trim();
+    return topic || label;
 }
 
 /**
@@ -2197,7 +2213,7 @@ export function detectAutoGroups(entries, {
         }
     }
 
-    const detectFromDividers = (claimedSet, { boundedOnly = false, pairedOnly = false } = {}) => {
+    const detectFromDividers = (claimedSet, { boundedOnly = false, pairedOnly = false, explicitChoiceOnly = false } = {}) => {
         const rawBlocks = [];
         let currentBlock = null;
 
@@ -2215,7 +2231,9 @@ export function detectAutoGroups(entries, {
                     continue;
                 }
                 const closer = pairedOpeners.get(entry.uid);
-                if (!closer && (pairedOnly || (boundedOnly && entry.dividerKind !== 'start'))) {
+                if ((explicitChoiceOnly && !RADIO_SECTION_HINT_REGEX.test(entry.dividerLabel))
+                    || (!closer && (pairedOnly || (boundedOnly && entry.dividerKind !== 'start')))) {
+                    if (entry.dividerLabel) currentBlock = null;
                     continue;
                 }
                 if (entry.dividerLabel) {
@@ -2239,7 +2257,7 @@ export function detectAutoGroups(entries, {
         }
 
         const meaningful = rawBlocks.filter((b) => b.entries.length >= 1);
-        if (!boundedOnly && meaningful.length < 2 && !meaningful.some((block) => block.closer)) return [];
+        if (!boundedOnly && !explicitChoiceOnly && meaningful.length < 2 && !meaningful.some((block) => block.closer)) return [];
 
         const mergedByLabel = new Map();
         for (const b of meaningful) {
@@ -2254,7 +2272,7 @@ export function detectAutoGroups(entries, {
         for (const [label, { entries: memberEntries, paired }] of mergedByLabel) {
             // In smart mode, if a bounded block's entries ALREADY share a cleaner `【前缀】` (like `⬇️⬇️神女线⬇️⬇️` containing `【神女线】...`),
             // let prefix clustering handle prefixed ones UNLESS the entries lack prefixes (like `USER身份自选` -> `高门贵女user` / `公主user`)!
-            if (boundedOnly && !paired) {
+            if (boundedOnly && !paired && !RADIO_SECTION_HINT_REGEX.test(label)) {
                 const unprefixed = memberEntries.filter((e) => !extractEntryTitlePrefix(e.rawComment || e.title));
                 if (unprefixed.length === 0) continue;
             }
@@ -2263,7 +2281,7 @@ export function detectAutoGroups(entries, {
             for (const uid of uids) claimedSet.add(uid);
             out.push({
                 key: `divider_${idx++}_${label}`,
-                name: label,
+                name: suggestedDividerName(label),
                 suggestedMode: inferSuggestedGroupMode(label, memberEntries),
                 uids,
                 source: 'divider',
@@ -2375,7 +2393,10 @@ export function detectAutoGroups(entries, {
     const claimed = new Set();
     if (strategy === 'scene') return detectNsfwSceneGroup(claimed);
     if (strategy === 'greeting') return detectFromGreetings(claimed);
-    if (strategy === 'divider') return detectFromDividers(claimed);
+    if (strategy === 'divider') return [
+        ...detectFromDividers(claimed, { explicitChoiceOnly: true }),
+        ...detectFromDividers(claimed),
+    ];
     if (strategy === 'prefix') return detectFromPrefixes(claimed);
 
     // Smart combined strategy:
@@ -2398,6 +2419,7 @@ export function detectAutoGroups(entries, {
     // Otherwise:
     // 1) Extract standalone NSFW entries first -> 2) Bounded `⬇️...⬆️` unprefixed blocks (like `USER身份自选`)
     // -> 3) Prefix clusters (`【通用线】`, `【将军线】`, `【神女线】`) -> 4) Remaining section dividers / greeting branches
+    results.push(...detectFromDividers(claimed, { explicitChoiceOnly: true }));
     results.push(...detectNsfwSceneGroup(claimed));
     results.push(...detectFromDividers(claimed, { boundedOnly: true }));
     results.push(...detectFromPrefixes(claimed));

@@ -1,3 +1,48 @@
+let nativeScrollBoundary = null;
+let nativeScrollEnabled = true;
+
+export function setNativeScrollEnabled(enabled) {
+    nativeScrollEnabled = Boolean(enabled);
+    if (!nativeScrollEnabled) clearNativeScrollBoundary();
+}
+
+export function clearNativeScrollBoundary() {
+    const state = nativeScrollBoundary;
+    if (!state) return;
+    nativeScrollBoundary = null;
+    state.resize?.disconnect();
+    state.mutations?.disconnect();
+    if (state.frame) cancelAnimationFrame(state.frame);
+    state.scroller.classList.remove('wbo-native-scroll-boundary', 'wbo-native-contained-scroll');
+    state.scroller.style.removeProperty('--wbo-native-entry-list-space');
+    state.scroller.style.removeProperty('--wbo-native-entry-list-top');
+}
+
+function containNativeScroll(scroller) {
+    if (nativeScrollBoundary?.scroller === scroller) return;
+    clearNativeScrollBoundary();
+    const state = { scroller, frame: 0, resize: null, mutations: null };
+    nativeScrollBoundary = state;
+    scroller.classList.add('wbo-native-scroll-boundary');
+    // Only watch the content explicitly navigated to; release once it stops scrolling.
+    const schedule = () => {
+        if (state.frame || nativeScrollBoundary !== state) return;
+        state.frame = requestAnimationFrame(() => {
+            state.frame = 0;
+            if (!scroller.isConnected || scroller.clientHeight <= 0 || scroller.scrollHeight <= scroller.clientHeight
+                || !/^(auto|scroll|overlay)$/.test(getComputedStyle(scroller).overflowY)) clearNativeScrollBoundary();
+        });
+    };
+    if (typeof ResizeObserver === 'function') {
+        state.resize = new ResizeObserver(schedule);
+        state.resize.observe(scroller);
+    }
+    if (typeof MutationObserver === 'function') {
+        state.mutations = new MutationObserver(schedule);
+        state.mutations.observe(scroller, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    }
+}
+
 export function findScrollableContent(target, boundary) {
     for (let node = target?.parentElement; node && node !== boundary; node = node.parentElement) {
         if (node === document.body || node === document.documentElement) break;
@@ -31,6 +76,7 @@ export function restoreContentAnchor(scroller, item, offset) {
 }
 
 export function scrollNativeWorldEntry(entry) {
+    if (!nativeScrollEnabled) return;
     const drawer = document.getElementById('WorldInfo');
     const list = document.getElementById('world_popup_entries_list');
     if (!list?.contains?.(entry)) return;
@@ -49,5 +95,6 @@ export function scrollNativeWorldEntry(entry) {
         list.classList.add('wbo-native-contained-scroll');
         scroller = list;
     }
+    containNativeScroll(scroller);
     scrollContentToItem(scroller, entry, { align: 'start' });
 }

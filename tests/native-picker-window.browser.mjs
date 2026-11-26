@@ -217,6 +217,13 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
                 if (selectId === 'world_info') {
                     row.classList.add('has-pin');
                     row.insertAdjacentHTML('beforeend', '<span class="gr-option-pin"><svg viewBox="0 0 12 12"><path d="M0 0H12V12Z"/></svg></span>');
+                    const nativePin = row.querySelector('.gr-option-pin');
+                    nativePin.classList.toggle('pinned', option.textContent === '全局测试书');
+                    nativePin.addEventListener('mousedown', (event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        nativePin.classList.toggle('pinned');
+                    });
                 }
                 options.append(row);
             }
@@ -354,10 +361,22 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
         });
         assert.ok(theme.day.every((color, index) => color !== theme.night[index]), JSON.stringify(theme));
         const pin = '#gr-global-dropdown-container [data-pin-world="普通测试书"]';
+        assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .gr-options-container > .gr-option .wbo-gr-pin-btn')?.getAttribute('data-pin-world')), '全局测试书');
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelectorAll('.gr-option-pin').length, pin), 1);
-        assert.equal(await cdp.evalFn((selector) => document.querySelector(`${selector} svg path`).getAttribute('d'), pin), 'M0 0H12V12Z');
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).textContent, pin), '☆');
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn) svg path')?.getAttribute('d'), pin), 'M0 0H12V12Z');
+        await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })), pin);
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)')?.classList.contains('pinned'), pin), true);
+        const alignment = await cdp.evalFn((selector) => {
+            const favorite = document.querySelector(selector).getBoundingClientRect();
+            const native = document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)').getBoundingClientRect();
+            return { separate: native.right <= favorite.left, aligned: Math.abs(native.top + native.height / 2 - favorite.top - favorite.height / 2) < 2 };
+        }, pin);
+        assert.deepEqual(alignment, { separate: true, aligned: true });
+        assert.equal(await cdp.evalFn(() => SillyTavern.getContext().extensionSettings.worldbook_organizer.pinnedBooks.includes('普通测试书')), false);
         await cdp.evalFn((selector) => document.querySelector(selector).click(), pin);
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('aria-pressed'), pin), 'true');
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)')?.classList.contains('pinned'), pin), true);
 
         await cdp.evalFn(() => {
             const source = document.getElementById('world_editor_select');
@@ -386,9 +405,24 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
 });
 
 test('native sort can open and switch repeatedly without dismissing the world editor', async () => {
+    const fixture = seed(['排序回归书']);
+    fixture.worldbooks['排序回归书'] = { entries: {
+        0: { uid: 0, comment: 'Z', order: 100, displayIndex: 0 },
+        1: { uid: 1, comment: 'A', order: 50, displayIndex: 1 },
+        2: { uid: 2, comment: 'M', order: 0, displayIndex: 2 },
+    } };
     for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
         await withHost(viewport, async (cdp) => {
             await cdp.evalFn(() => {
+                const select = document.getElementById('world_editor_select');
+                select.value = [...select.options].find((option) => option.textContent === '排序回归书').value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            await waitForCondition(cdp, () => document.querySelectorAll('#world_popup_entries_list .world_entry').length === 3);
+            await cdp.evalFn(() => {
+                const style = document.createElement('style');
+                style.dataset.grDropdownStyle = '1';
+                document.head.append(style);
                 const drawer = document.getElementById('WorldInfo');
                 drawer.classList.add('openDrawer');
                 drawer.classList.remove('closedDrawer');
@@ -449,37 +483,42 @@ test('native sort can open and switch repeatedly without dismissing the world ed
                     value: document.getElementById('world_info_sort_order').value,
                     changes: window.fixtureSortChanges,
                 })), { open: true, value, changes: index + 1 });
+                const expected = [['1', '2', '0'], ['2', '1', '0'], ['0', '1', '2']][index];
+                await waitForCondition(cdp, () => [...document.querySelectorAll('#world_popup_entries_list .world_entry')]
+                    .map((row) => row.getAttribute('uid')).join(',') === ({ 1: '1,2,0', 0: '2,1,0', 2: '0,1,2' })[document.getElementById('world_info_sort_order').value]);
+                assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#world_popup_entries_list .world_entry')].map((row) => row.getAttribute('uid'))), expected);
             }
             await cdp.clickSelector('#host-outside-blank');
             assert.equal(await cdp.evalFn(() => document.getElementById('WorldInfo').classList.contains('closedDrawer')), true);
-        });
+        }, [], fixture);
     }
 });
 
-test('a running dropdown script leaves the native sort available to mouse, touch and keyboard', async () => {
+test('native sort gestures reach host opening handlers even when compatible styling is active', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
-        const protectedEvents = await cdp.evalFn(() => {
+        const deliveredEvents = await cdp.evalFn(() => {
             const style = document.createElement('style');
             style.dataset.grDropdownStyle = '1';
             document.head.append(style);
             const sort = document.getElementById('world_info_sort_order');
             sort.value = '2';
+            const delivered = [];
             for (const type of ['mousedown', 'touchend', 'keydown']) {
-                document.addEventListener(type, (event) => {
+                sort.addEventListener(type, (event) => {
                     if (event.target === sort && (event.type !== 'keydown' || ['Enter', ' '].includes(event.key))) {
-                        event.preventDefault();
+                        delivered.push(event.type);
                     }
-                }, true);
+                });
             }
-            const pass = [
+            [
                 new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
                 new Event('touchend', { bubbles: true, cancelable: true }),
                 new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
             ].map((event) => sort.dispatchEvent(event));
             sort.focus({ preventScroll: true });
-            return pass;
+            return delivered;
         });
-        assert.deepEqual(protectedEvents, [true, true, true]);
+        assert.deepEqual(deliveredEvents, ['mousedown', 'touchend', 'keydown']);
         for (const expected of ['1', '0']) {
             await cdp.pressKey('ArrowUp', 'ArrowUp', 38);
             assert.equal(await cdp.evalFn(() => document.getElementById('world_info_sort_order').value), expected);
@@ -752,6 +791,12 @@ test('selecting a book in a long editor list restores its original visible posit
                 return rowEl.getBoundingClientRect().top - listEl.getBoundingClientRect().top;
             }, list, row, move);
             await open();
+            // Real user scrolling cancels the opening restore jobs before choosing a new position.
+            const scrollPoint = await cdp.evalFn((selector) => {
+                const rect = document.querySelector(selector).getBoundingClientRect();
+                return { x: rect.left + rect.width / 2, y: rect.top + Math.min(80, rect.height / 2) };
+            }, list);
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...scrollPoint, deltaX: 0, deltaY: 1 });
             const offset = await readOffset(true);
             assert.ok(typeof offset === 'number' && offset >= 90 && offset <= 155, `${viewport.name} available offset ${offset}`);
             await cdp.clickSelector(`${list} ${row}`, { scroll: false });

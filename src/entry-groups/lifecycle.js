@@ -123,7 +123,7 @@ function stopNativeEditorObserver() {
 
 function syncNativeEditorIntegration() {
     syncAllNativeEntryPoints();
-    if (!_initialized || !getNativeGroupingPreferences().enabled) {
+    if (!_initialized || !getNativeGroupingPreferences().active) {
         _mountJob?.();
         _mountJob = null;
         stopNativeEditorObserver();
@@ -134,7 +134,7 @@ function syncNativeEditorIntegration() {
 
 function scheduleNativeEntrySync() {
     if (!_initialized) return;
-    if (!getNativeGroupingPreferences().enabled) {
+    if (!getNativeGroupingPreferences().active) {
         syncNativeEditorIntegration();
         return;
     }
@@ -245,6 +245,7 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
 
     bindPanelCallbacks({
         onRevealNativeEditor,
+        onNativeDisplayChanged: syncNativeEditorIntegration,
         onSettingsChanged: () => {
             saveSettings();
             syncNativeEditorIntegration();

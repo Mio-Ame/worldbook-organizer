@@ -532,8 +532,11 @@
 }
 
 #world_popup_entries_list {
-    overscroll-behavior-y: contain;
     scrollbar-gutter: stable;
+}
+
+.wbo-native-scroll-boundary {
+    overscroll-behavior-y: contain;
 }
 
 #WorldInfo {
@@ -544,6 +547,7 @@
     max-height: min(var(--wbo-native-entry-list-space), calc(100dvh - var(--wbo-native-entry-list-top) - 8px));
     min-height: 56px;
     overflow-y: auto;
+    overscroll-behavior-y: contain;
 }
 
 /* Native inline char-worldbook visibility icon merged seamlessly into `#world_popup` toolbar */
@@ -6815,6 +6819,22 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
 
 [data-wbo-enhanced-style] .gr-option.has-pin.wbo-has-pin {
     padding-right: 8px !important;
+}
+
+[data-wbo-enhanced-style] .gr-option.wbo-has-pin > .gr-option-pin:not(.wbo-gr-pin-btn) {
+    position: static;
+    transform: none !important;
+    order: 1;
+    flex-shrink: 0;
+    margin-inline-start: auto;
+    min-width: 25px;
+    min-height: 23px;
+    justify-content: center;
+}
+
+[data-wbo-enhanced-style] .gr-option.has-pin.wbo-has-pin > .wbo-s2-right {
+    order: 2;
+    margin-inline-start: 0;
 }
 
 [data-wbo-enhanced-style] .wbo-gr-pin-btn {

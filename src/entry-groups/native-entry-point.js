@@ -4,13 +4,13 @@ const CONTROLS_ID = 'weg-native-entry-controls';
 let currentActions = null;
 
 export function revealNativeEntryGroup(worldName, uid) {
-    if (getNativeGroupingPreferences().enabled) currentActions?.revealEntryGroup?.(worldName, uid);
+    if (getNativeGroupingPreferences().active) currentActions?.revealEntryGroup?.(worldName, uid);
 }
 
 // Keep the entry point available without importing the native list enhancement.
 export function syncNativeEntryPoint(actions) {
     currentActions = actions;
-    const { enabled, showButton } = getNativeGroupingPreferences();
+    const { enabled, active, showButton } = getNativeGroupingPreferences();
     const pagination = document.getElementById('world_info_pagination');
     const list = document.getElementById('world_popup_entries_list');
     const anchor = pagination || list;
@@ -38,14 +38,15 @@ export function syncNativeEntryPoint(actions) {
         toggle.setAttribute('role', 'switch');
         toggle.setAttribute('aria-label', '在原生编辑器显示条目分组');
         toggle.innerHTML = '<span aria-hidden="true"></span>';
-        toggle.addEventListener('click', () => actions.setEnabled(!getNativeGroupingPreferences().enabled));
+        toggle.addEventListener('click', () => currentActions?.setActive(!getNativeGroupingPreferences().active));
         controls.append(button, toggle);
         for (const type of ['mousedown', 'touchstart', 'click']) controls.addEventListener(type, (event) => event.stopPropagation());
     }
     const toggle = controls.querySelector('#weg-native-group-enabled');
-    const checked = String(enabled);
+    toggle.disabled = !enabled;
+    const checked = String(active);
     if (toggle.getAttribute('aria-checked') !== checked) toggle.setAttribute('aria-checked', checked);
-    toggle.title = enabled ? '关闭原生条目分组显示' : '开启原生条目分组显示';
+    toggle.title = !enabled ? '请先在条目分组设置中允许原生分组显示' : active ? '关闭原生条目分组显示' : '开启原生条目分组显示';
     const size = pagination?.querySelector('select');
     if (size?.offsetHeight) {
         controls.style.setProperty('--weg-native-page-height', `${size.getBoundingClientRect().height}px`);

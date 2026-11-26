@@ -49,6 +49,7 @@ import {
     getActiveChatBoundProfile,
     getCurrentChatSaveContext,
     getNativeGroupingPreferences,
+    setNativeGroupingRequested,
     getPreferredDefaultBook,
     getSettings,
     getWorldNames,
@@ -240,19 +241,32 @@ export function canConfigureNativeGrouping() {
 export function setNativeGroupingEnabled(enabled) {
     if (!_callbacks) return;
     getSettings().enableNativeGrouping = Boolean(enabled);
+    if (!enabled) setNativeGroupingRequested(false);
     notifySettingsChanged();
     document.querySelectorAll('input[data-entry-native-grouping]').forEach((input) => { input.checked = Boolean(enabled); });
     if (_submodal?.type === 'settings') renderSubmodalHost();
+}
+
+function setNativeGroupingActive(active) {
+    if (!_callbacks || !getNativeGroupingPreferences().enabled) return;
+    setNativeGroupingRequested(active);
+    if (!getNativeGroupingPreferences().hintSeen) {
+        getSettings().nativeEntryHintSeen = true;
+        showToast('info', '不想显示此按钮，可到「条目分组 → 设置」，关闭「显示原生编辑器分组入口」。');
+        notifySettingsChanged();
+    } else {
+        _callbacks.onNativeDisplayChanged?.();
+    }
 }
 
 export function syncAllNativeEntryPoints() {
     if (!_callbacks) return;
     syncNativeEntryPoint({
         openPanel: openEntryGroupsModal,
-        setEnabled: setNativeGroupingEnabled,
+        setActive: setNativeGroupingActive,
         revealEntryGroup: (worldName, uid) => _nativeView?.revealNativeEntryGroup(worldName, uid),
     });
-    if (!getNativeGroupingPreferences().enabled) {
+    if (!getNativeGroupingPreferences().active) {
         _nativeView?.removeNativeEntryGroups();
         return;
     }
@@ -260,7 +274,7 @@ export function syncAllNativeEntryPoints() {
         _nativeViewJob ||= import('./native-view.js').then((view) => {
             _nativeView = view;
             _nativeViewJob = null;
-            if (_callbacks && getNativeGroupingPreferences().enabled) syncAllNativeEntryPoints();
+            if (_callbacks && getNativeGroupingPreferences().active) syncAllNativeEntryPoints();
         }).catch((error) => {
             _nativeViewJob = null;
             console.error('[worldbook-organizer] Native grouping load failed', error);
@@ -331,7 +345,7 @@ function applyModalThemeAttributes(modalEl) {
 
 export function syncEntryGroupsTheme() {
     document.querySelectorAll('.weg-modal, .weg-floating-menu, .weg-minimized-pill').forEach(applyModalThemeAttributes);
-    if (getNativeGroupingPreferences().enabled) _nativeView?.syncNativeEntryGroupsTheme();
+    if (getNativeGroupingPreferences().active) _nativeView?.syncNativeEntryGroupsTheme();
 }
 
 function closeFloatingMenu() {
@@ -1325,6 +1339,7 @@ export function closeEntryGroupsModal() {
 }
 
 export function teardownPanels() {
+    setNativeGroupingRequested(false);
     _callbacks = null;
     closeEntryGroupsModal();
     if (_windowInteractCleanup) {
@@ -3227,7 +3242,7 @@ function executeLocateForEntry(worldName, uid, hint) {
         closeEntryGroupsModal();
     }
     if (narrow) _callbacks?.onRevealNativeEditor?.();
-    if (getNativeGroupingPreferences().enabled) _nativeView?.revealNativeEntryGroup(worldName, uid);
+    if (getNativeGroupingPreferences().active) _nativeView?.revealNativeEntryGroup(worldName, uid);
     void locateEntryInNativeEditor(worldName, uid, hint).then((ok) => {
         if (!ok) showToast('info', `未能定位「${worldName}」的条目 #${uid}`);
     });
@@ -3493,7 +3508,7 @@ function applyBulkAutoGroups(state) {
     closeSubmodal();
     renderModalContents();
     showToast(booksChanged ? 'success' : 'info', booksChanged
-        ? `已为 ${booksChanged} 本世界书应用 ${groupsApplied} 个分组，可在各书撤销分组操作。`
+        ? `已为 ${booksChanged} 本世界书应用 ${groupsApplied} 个分组，可在各书撤销分组操作。如需全部还原，可在条目分组设置中点击「解散全部」，将所有世界书的条目恢复为未分组。`
         : '所选条目分组没有变化。');
 }
 
@@ -3870,7 +3885,7 @@ function renderSubmodalHost() {
             <p role="status" class="weg-detect-status">已扫描 ${bulk.done} 本，有 ${bulk.plans.size} 本可分组。${bulk.failed.length ? ` ${bulk.failed.length} 本读取失败。` : ''}</p>
             ${bulk.failed.length ? `<details class="weg-detect-status"><summary>查看读取失败的世界书</summary><ul>${bulk.failed.map((name) => `<li>${esc(name)}</li>`).join('')}</ul></details>` : ''}
             ${bulk.plans.size ? `<label class="weg-detect-book-result">
-                <span>预览世界书</span>
+                <span>预览世界书${bulk.plans.size > 1 ? `（共 ${bulk.plans.size} 本，点击切换）` : ''}</span>
                 <select id="weg-detect-preview-book" class="weg-select">${[...bulk.plans].map(([world, items]) =>
                     `<option value="${esc(world)}" ${bulk.activeBook === world ? 'selected' : ''}>${esc(world)}（${items.filter((item) => item.checked).length}/${items.length} 组）</option>`
                 ).join('')}</select>
@@ -3982,7 +3997,7 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name" id="weg-native-grouping-label">在原生编辑器显示条目分组</div>
-                            <div class="weg-setting-desc">关闭后恢复原生列表，不影响本面板的分组和记录。</div>
+                            <div class="weg-setting-desc">允许后，点击原生页码旁的开关才显示分组；关闭不影响本面板的分组和记录。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.enableNativeGrouping ? ' is-on' : ''}" id="weg-set-native-grouping" role="switch" aria-labelledby="weg-native-grouping-label" aria-checked="${settings.enableNativeGrouping}">
                             <span class="weg-switch-thumb"></span>
@@ -4364,7 +4379,7 @@ function wireAutoDetectSubmodal(host) {
         saveBookConfigWithCleanEmpty(settings, _currentBook, nextCfg);
         closeSubmodal();
         renderModalContents();
-        showToast('success', `已生成 ${chosen.length} 个条目分组，可在底部撤销分组操作。`);
+        showToast('success', `已生成 ${chosen.length} 个条目分组，可在底部撤销分组操作。如需全部还原，可在条目分组设置中点击「解散全部」，将所有世界书的条目恢复为未分组。`);
     });
 }
 
