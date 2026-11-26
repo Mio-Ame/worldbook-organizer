@@ -4918,7 +4918,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (role !== 'global' && role !== 'editor') return;
             const pinBtn = ev.target instanceof Element ? ev.target.closest('.wbo-gr-pin-btn') : null;
             if (!pinBtn) return;
-            if (ev.type !== 'touchstart') ev.preventDefault();
+            // Keep native tap/scroll detection, but never deliver a star's
+            // touchend to an option row that selects before the click arrives.
+            if (ev.type !== 'touchstart' && ev.type !== 'touchend') ev.preventDefault();
             ev.stopPropagation();
             ev.stopImmediatePropagation();
         };
@@ -4944,6 +4946,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         listenOnBorrowed(containerEl, 'mousedown', blockPinEvt, true);
         listenOnBorrowed(containerEl, 'mouseup', blockPinEvt, true);
         listenOnBorrowed(containerEl, 'touchstart', blockPinEvt, { capture: true, passive: false });
+        listenOnBorrowed(containerEl, 'touchend', blockPinEvt, { capture: true, passive: false });
         listenOnBorrowed(containerEl, 'click', onGrPinClick, true);
     }
 

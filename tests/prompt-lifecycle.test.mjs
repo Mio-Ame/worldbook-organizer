@@ -4,7 +4,7 @@ import { inspect } from 'node:util';
 import vm from 'node:vm';
 import test from 'node:test';
 
-const source = readFileSync(new URL('../src/panel-window.js', import.meta.url), 'utf8');
+const source = readFileSync(new URL('../src/panel-window.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 // Execute the real prompt, close path and window-cleanup ownership without a browser.
 const lifecycle = source.slice(source.indexOf('function cleanupOverlayWindowControls('),
     source.indexOf('\n/**\n * Create a sub-modal', source.indexOf('function openInlineTextPrompt(')));
