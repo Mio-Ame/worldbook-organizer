@@ -19,6 +19,7 @@ import {
     ensureWorldInfoModule,
     getCurrentCharacterPrimaryWorldName,
     getHostContext,
+    getNativeGroupingPreferences,
     getSettings,
     isWithinSelfWriteWindow,
     saveSettings,
@@ -112,6 +113,43 @@ function scheduleChatSaveRouteSync(reason, delayMs) {
             void refreshOpenModalBook({ silent: true, reason });
         }
     }, delayMs);
+}
+
+function stopNativeEditorObserver() {
+    _nativeMountObserver?.disconnect();
+    _nativeMountObserver = null;
+    _nativeMountTarget = null;
+}
+
+function syncNativeEditorIntegration() {
+    syncAllNativeEntryPoints();
+    if (!_initialized || !getNativeGroupingPreferences().enabled) {
+        _mountJob?.();
+        _mountJob = null;
+        stopNativeEditorObserver();
+        return;
+    }
+    startNativeEditorObserver(scheduleNativeEntrySync);
+}
+
+function scheduleNativeEntrySync() {
+    if (!_initialized) return;
+    if (!getNativeGroupingPreferences().enabled) {
+        syncNativeEditorIntegration();
+        return;
+    }
+    if (_mountJob) return;
+    const run = () => {
+        _mountJob = null;
+        if (_initialized) syncNativeEditorIntegration();
+    };
+    if (typeof globalThis.requestAnimationFrame === 'function') {
+        const id = globalThis.requestAnimationFrame(run);
+        _mountJob = () => globalThis.cancelAnimationFrame?.(id);
+    } else {
+        const id = setTimeout(run, 16);
+        _mountJob = () => clearTimeout(id);
+    }
 }
 
 function startNativeEditorObserver(scheduleSync) {
@@ -209,11 +247,12 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
         onRevealNativeEditor,
         onSettingsChanged: () => {
             saveSettings();
-            syncAllNativeEntryPoints();
+            syncNativeEditorIntegration();
         },
     });
 
-    syncAllNativeEntryPoints();
+    await syncAllNativeEntryPoints();
+    if (!_initialized || epoch !== _lifecycleEpoch) return;
 
     if (typeof window !== 'undefined') {
         window.addEventListener('wbo:panel-theme-changed', syncEntryGroupsTheme);
@@ -298,32 +337,16 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
     const eventSource = ctx.eventSource;
     const et = ctx.eventTypes || ctx.event_types || {};
 
-    const syncEntryPointsIdle = () => {
-        if (_mountJob) return;
-        const run = () => {
-            _mountJob = null;
-            if (!_initialized) return;
-            syncAllNativeEntryPoints();
-            startNativeEditorObserver(syncEntryPointsIdle);
-        };
-        if (typeof globalThis.requestAnimationFrame === 'function') {
-            const id = globalThis.requestAnimationFrame(run);
-            _mountJob = () => globalThis.cancelAnimationFrame?.(id);
-        } else {
-            const id = setTimeout(run, 16);
-            _mountJob = () => clearTimeout(id);
-        }
-    };
-    startNativeEditorObserver(syncEntryPointsIdle);
+    syncNativeEditorIntegration();
 
-    trackHostEvent(eventSource, et.APP_READY, syncEntryPointsIdle);
-    trackHostEvent(eventSource, et.EXTENSION_SETTINGS_LOADED, syncEntryPointsIdle);
+    trackHostEvent(eventSource, et.APP_READY, scheduleNativeEntrySync);
+    trackHostEvent(eventSource, et.EXTENSION_SETTINGS_LOADED, scheduleNativeEntrySync);
     trackHostEvent(eventSource, et.WORLDINFO_SETTINGS_UPDATED, () => {
         if (isEntryGroupsModalOpen() && !isWithinSelfWriteWindow()) {
             scheduleOpenModalSync(380);
         }
     });
-    trackHostEvent(eventSource, et.WORLDINFO_ENTRIES_LOADED, syncEntryPointsIdle);
+    trackHostEvent(eventSource, et.WORLDINFO_ENTRIES_LOADED, scheduleNativeEntrySync);
     trackHostEvent(eventSource, et.WORLDINFO_UPDATED, (worldName) => {
         const cleanUpdated = worldName ? String(worldName).trim() : '';
         if (cleanUpdated) clearRuntimeBookSnapshots(cleanUpdated);
@@ -364,7 +387,7 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
         _suppressExternalFollowUntil = Date.now() + 900;
         clearTimeout(_externalFollowTimer);
         _externalFollowTimer = null;
-        syncEntryPointsIdle();
+        scheduleNativeEntrySync();
         scheduleChatSaveRouteSync('chat-changed', 650);
     });
 
@@ -396,11 +419,7 @@ export function stopEntryGrouping() {
     clearTimeout(_wboEntriesTimer);
     _wboEntriesTimer = null;
 
-    if (_nativeMountObserver) {
-        _nativeMountObserver.disconnect();
-        _nativeMountObserver = null;
-    }
-    _nativeMountTarget = null;
+    stopNativeEditorObserver();
 
     if (typeof window !== 'undefined') {
         window.removeEventListener('wbo:panel-theme-changed', syncEntryGroupsTheme);

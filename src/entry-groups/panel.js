@@ -48,6 +48,7 @@ import {
     detectHostColorScheme,
     getActiveChatBoundProfile,
     getCurrentChatSaveContext,
+    getNativeGroupingPreferences,
     getPreferredDefaultBook,
     getSettings,
     getWorldNames,
@@ -60,7 +61,7 @@ import {
     saveWorldbookEntryEdit,
     showToast,
 } from './host.js';
-import { removeNativeEntryGroups, revealNativeEntryGroup, syncNativeEntryGroups, syncNativeEntryGroupsTheme } from './native-view.js';
+import { removeNativeEntryPoint, syncNativeEntryPoint } from './native-entry-point.js';
 import { attachGroupedSelectControl, closeGroupedSelectControl } from '../native-filter.js';
 import { saveWorldbookEntriesOrderDirect } from '../host.js';
 import { bindEntryGroupReordering, planEntryGroupOrder, planNativeGroupMove } from './entry-reorder.js';
@@ -73,6 +74,8 @@ const MAX_UNDO_STEPS = 15;
 const INCREMENTAL_RENDER_STEP = 60;
 
 let _callbacks = null;
+let _nativeView = null;
+let _nativeViewJob = null;
 
 let _isOpen = false;
 let _isMinimized = false;
@@ -230,9 +233,42 @@ function getUndoLabel(worldName) {
     return _undoStacks.get(worldName)?.at(-1)?.togglePlan ? '撤销整组开关' : '撤销分组操作';
 }
 
+export function canConfigureNativeGrouping() {
+    return Boolean(_callbacks);
+}
+
+export function setNativeGroupingEnabled(enabled) {
+    if (!_callbacks) return;
+    getSettings().enableNativeGrouping = Boolean(enabled);
+    notifySettingsChanged();
+    document.querySelectorAll('input[data-entry-native-grouping]').forEach((input) => { input.checked = Boolean(enabled); });
+    if (_submodal?.type === 'settings') renderSubmodalHost();
+}
+
 export function syncAllNativeEntryPoints() {
     if (!_callbacks) return;
-    syncNativeEntryGroups({
+    syncNativeEntryPoint({
+        openPanel: openEntryGroupsModal,
+        setEnabled: setNativeGroupingEnabled,
+        revealEntryGroup: (worldName, uid) => _nativeView?.revealNativeEntryGroup(worldName, uid),
+    });
+    if (!getNativeGroupingPreferences().enabled) {
+        _nativeView?.removeNativeEntryGroups();
+        return;
+    }
+    if (!_nativeView) {
+        _nativeViewJob ||= import('./native-view.js').then((view) => {
+            _nativeView = view;
+            _nativeViewJob = null;
+            if (_callbacks && getNativeGroupingPreferences().enabled) syncAllNativeEntryPoints();
+        }).catch((error) => {
+            _nativeViewJob = null;
+            console.error('[worldbook-organizer] Native grouping load failed', error);
+            if (_callbacks) showToast('error', '无法加载原生条目分组，请重试。');
+        });
+        return _nativeViewJob;
+    }
+    _nativeView.syncNativeEntryGroups({
         openPanel: openEntryGroupsModal,
         toggleGroup: toggleWorldbookGroup,
         undo: undoWorldbookGroupChange,
@@ -295,7 +331,7 @@ function applyModalThemeAttributes(modalEl) {
 
 export function syncEntryGroupsTheme() {
     document.querySelectorAll('.weg-modal, .weg-floating-menu, .weg-minimized-pill').forEach(applyModalThemeAttributes);
-    syncNativeEntryGroupsTheme();
+    if (getNativeGroupingPreferences().enabled) _nativeView?.syncNativeEntryGroupsTheme();
 }
 
 function closeFloatingMenu() {
@@ -1302,7 +1338,8 @@ export function teardownPanels() {
     _undoStacks.clear();
     if (typeof document !== 'undefined') {
         document.getElementById(MODAL_BACKDROP_ID)?.remove();
-        removeNativeEntryGroups();
+        _nativeView?.removeNativeEntryGroups();
+        removeNativeEntryPoint();
     }
 }
 
@@ -3190,7 +3227,7 @@ function executeLocateForEntry(worldName, uid, hint) {
         closeEntryGroupsModal();
     }
     if (narrow) _callbacks?.onRevealNativeEditor?.();
-    revealNativeEntryGroup(worldName, uid);
+    if (getNativeGroupingPreferences().enabled) _nativeView?.revealNativeEntryGroup(worldName, uid);
     void locateEntryInNativeEditor(worldName, uid, hint).then((ok) => {
         if (!ok) showToast('info', `未能定位「${worldName}」的条目 #${uid}`);
     });
@@ -3944,7 +3981,17 @@ function renderSubmodalHost() {
 
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
-                            <div class="weg-setting-name">显示原生编辑器分组按钮</div>
+                            <div class="weg-setting-name" id="weg-native-grouping-label">在原生编辑器显示条目分组</div>
+                            <div class="weg-setting-desc">关闭后恢复原生列表，不影响本面板的分组和记录。</div>
+                        </div>
+                        <button type="button" class="weg-switch${settings.enableNativeGrouping ? ' is-on' : ''}" id="weg-set-native-grouping" role="switch" aria-labelledby="weg-native-grouping-label" aria-checked="${settings.enableNativeGrouping}">
+                            <span class="weg-switch-thumb"></span>
+                        </button>
+                    </div>
+
+                    <div class="weg-setting-row">
+                        <div class="weg-setting-text">
+                            <div class="weg-setting-name">显示原生编辑器分组入口</div>
                             <div class="weg-setting-desc">在原生编辑器页码旁打开条目分组管理</div>
                         </div>
                         <button type="button" class="weg-switch${settings.showNativeEntryBtn !== false ? ' is-on' : ''}" id="weg-set-native-btn" role="switch" aria-checked="${settings.showNativeEntryBtn !== false}">
@@ -4330,6 +4377,7 @@ function wireSettingsSubmodal(host) {
     const paletteSel = host.querySelector('#weg-set-palette');
     const modeSel = host.querySelector('#weg-set-colormode');
     const nativeBtnSwitch = host.querySelector('#weg-set-native-btn');
+    const nativeGroupingSwitch = host.querySelector('#weg-set-native-grouping');
     const nativeThemeSwitch = host.querySelector('#weg-set-native-theme');
     const closeLocateSwitch = host.querySelector('#weg-set-close-locate');
     const clearBookBtn = host.querySelector('#weg-set-clear-book');
@@ -4366,6 +4414,7 @@ function wireSettingsSubmodal(host) {
     bindSwitch(autoChatSwitch, 'autoSwitchOnChatChange');
     bindSwitch(sceneAutoSwitch, 'enableSceneAutoToggle');
     bindSwitch(nativeBtnSwitch, 'showNativeEntryBtn');
+    nativeGroupingSwitch?.addEventListener('click', () => setNativeGroupingEnabled(!getNativeGroupingPreferences().enabled));
     bindSwitch(nativeThemeSwitch, 'followNativeTheme');
     bindSwitch(closeLocateSwitch, 'closeOnLocate');
 

@@ -593,6 +593,113 @@ test('an ungrouped-only book starts expanded with a static list header and an in
     }
 });
 
+test('native grouping can stay unloaded, toggles without row observers when off, and preserves the separate panel', async () => {
+    const world = '开关测试书';
+    const fixture = createDefaultSeed({ characters: [], selected_world_info: [],
+        worldbooks: { [world]: makeBook(Array.from({ length: 5 }, (_, uid) => makeEntry(uid, { displayIndex: uid }))) },
+        extraPluginSettingsKey: { worldbook_entry_groups: { enableNativeGrouping: false, books: { [world]: {
+            groups: [{ id: 'a', name: '甲组' }, { id: 'b', name: '乙组' }], assignments: { 0: 'a', 1: 'b', 2: 'a', 3: 'b' },
+        } } } },
+    });
+    const server = createMockStServer();
+    const baseUrl = await server.start();
+    let cdp;
+    try {
+        cdp = await launchEdgeCdp();
+        for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+            await resetAndBoot(cdp, baseUrl, { seed: fixture, viewport });
+            await cdp.evalFn((book) => {
+                document.getElementById('WorldInfo').style.display = 'block';
+                const select = document.getElementById('world_editor_select');
+                select.value = [...select.options].find((option) => option.textContent === book).value;
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }, world);
+            await waitForCondition(cdp, () => document.querySelectorAll('.world_entry').length === 5);
+            const resources = () => cdp.evalFn(() => performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/entry-groups/native-view.js')).length);
+            assert.equal(await resources(), 0, 'disabled at boot must not fetch the native list enhancement');
+            const nativeNumberWidth = () => cdp.evalFn(() => document.querySelector('.WIEnteryHeaderControls [name="order"]').getBoundingClientRect().width);
+            await cdp.evalFn(() => {
+                const fields = document.createElement('div');
+                fields.className = 'WIEnteryHeaderControls';
+                fields.innerHTML = '<input type="number" name="order" value="125" style="width:42px">';
+                document.querySelector('.world_entry').append(fields);
+            });
+            assert.equal(await nativeNumberWidth(), 42, 'disabled grouping must leave native field dimensions alone');
+            const toggle = '#weg-native-group-enabled';
+            await waitForCondition(cdp, () => document.querySelector('#weg-native-group-enabled[aria-checked="false"]'));
+            assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-heading, .weg-native-list-sticky, .weg-native-themed').length), 0);
+            await cdp.clickSelector('#weg-native-group-manager');
+            await waitForCondition(cdp, () => document.querySelector('[data-weg-group-card="a"]'));
+            assert.equal(await resources(), 0, 'opening the standalone panel must not load native enhancement either');
+            await cdp.clickSelector('#weg-btn-settings');
+            assert.equal(await cdp.evalFn(() => document.querySelector('#weg-set-native-grouping')?.getAttribute('aria-checked')), 'false');
+            await cdp.evalFn(() => {
+                window.nativeGroupingObservers = [];
+                for (const type of ['MutationObserver', 'ResizeObserver']) {
+                    const Original = window[type];
+                    window[type] = class extends Original {
+                        constructor(callback) {
+                            super(callback);
+                            this.groupingObserver = /entry-groups\/(?:native-view|lifecycle)\.js/.test(new Error().stack);
+                        }
+                        observe(...args) {
+                            if (this.groupingObserver && !window.nativeGroupingObservers.includes(this)) window.nativeGroupingObservers.push(this);
+                            this.groupingActive = true;
+                            return super.observe(...args);
+                        }
+                        disconnect() { this.groupingActive = false; return super.disconnect(); }
+                    };
+                }
+            });
+            await cdp.clickSelector('#weg-set-native-grouping');
+            await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 3);
+            assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('aria-checked'), toggle), 'true');
+            await cdp.clickSelector('#weg-submodal-host [data-weg-sub-close]');
+            await cdp.clickSelector('#weg-btn-close');
+            assert.ok((await cdp.clickSelector(toggle)).hit);
+            await waitForCondition(cdp, () => document.querySelector('#weg-native-group-enabled[aria-checked="false"]'));
+            assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-heading, .weg-native-list-sticky, .weg-native-themed, .weg-native-sorted-groups').length), 0);
+            assert.equal(await cdp.evalFn(() => window.nativeGroupingObservers.filter((observer) => observer.groupingActive).length), 0);
+            assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('.world_entry')].every((row) => !row.style.getPropertyValue('--weg-native-group-rank'))), true);
+            assert.equal(await nativeNumberWidth(), 42, 'turning grouping off must remove its numeric-field sizing');
+            await cdp.evalFn((book) => window.__ST_HOST_RUNTIME__.reloadEditor(book), world);
+            assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-heading').length), 0);
+            assert.equal(await cdp.evalFn(() => window.nativeGroupingObservers.filter((observer) => observer.groupingActive).length), 0);
+            const geometry = await cdp.evalFn(() => {
+                const manager = document.getElementById('weg-native-group-manager').getBoundingClientRect();
+                const toggle = document.getElementById('weg-native-group-enabled').getBoundingClientRect();
+                const controls = document.getElementById('weg-native-entry-controls');
+                return { aligned: Math.abs(manager.top - toggle.top) <= 1 && Math.abs(manager.height - toggle.height) <= 1,
+                    inside: toggle.right <= innerWidth && manager.left >= 0, overflow: controls.scrollWidth > controls.clientWidth };
+            });
+            assert.deepEqual(geometry, { aligned: true, inside: true, overflow: false });
+            await cdp.clickSelector(toggle);
+            await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 3);
+            await cdp.clickSelector(toggle);
+            await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 0);
+            await openManager(cdp);
+            await cdp.clickSelector('[data-action="open-settings-modal"]');
+            await cdp.clickSelector('[data-settings-tab="appearance"]');
+            const mainSetting = 'input[data-entry-native-grouping]';
+            assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, mainSetting), false);
+            await cdp.clickSelector(mainSetting);
+            await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 3);
+            await cdp.clickSelector(mainSetting);
+            await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 0);
+            await waitForCondition(cdp, async () => (await fetch('/__test/state').then((res) => res.json())).extension_settings.worldbook_entry_groups.enableNativeGrouping === false);
+            assert.deepEqual((await getServerState(baseUrl)).worldbooks[world], fixture.worldbooks[world]);
+            assert.equal(await cdp.evalFn((book) => SillyTavern.getContext().extensionSettings.worldbook_entry_groups.books[book].assignments['0'], world), 'a');
+            await cdp.reload();
+            await waitForCondition(cdp, () => !!document.getElementById('wbo-wand-entry'));
+            assert.equal(await resources(), 0, 'the persisted off preference must skip the enhancement on restart');
+            assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+        }
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});
+
 test('native group pins and pointer reordering change display only and share undo', async () => {
     const world = '显示排序测试书';
     const fixture = createDefaultSeed({ characters: [], selected_world_info: [],
@@ -620,20 +727,22 @@ test('native group pins and pointer reordering change display only and share und
             await cdp.evalFn(() => { window.nativeOriginalRows = [...document.querySelectorAll('.world_entry[uid]')]; });
             const displayOrder = () => cdp.evalFn(() => [...document.querySelectorAll('.world_entry[uid]')]
                 .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((row) => row.getAttribute('uid')));
+            assert.deepEqual(await displayOrder(), ['0', '2', '1', '3', '4'], 'same-group entries stay together before any pin or drag');
+            assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-continuation').length), 0);
             const pin = '.weg-native-group-heading[data-group-id="b"] .weg-native-group-pin';
             await cdp.clickSelector(pin);
             await waitForCondition(cdp, () => document.querySelector('.weg-native-group-heading[data-group-id="b"] .weg-native-group-pin')?.getAttribute('aria-pressed') === 'true');
             assert.deepEqual(await displayOrder(), ['1', '3', '0', '2', '4']);
             await cdp.clickSelector('.weg-native-group-heading[data-group-id="b"] .weg-native-group-undo');
             await waitForCondition(cdp, () => document.querySelector('.weg-native-group-heading[data-group-id="b"] .weg-native-group-pin')?.getAttribute('aria-pressed') === 'false');
-            assert.deepEqual(await displayOrder(), ['0', '1', '2', '3', '4']);
+            assert.deepEqual(await displayOrder(), ['0', '2', '1', '3', '4']);
             const points = await cdp.evalFn(() => {
                 const source = document.querySelector('.weg-native-group-heading[data-group-id="b"] [data-weg-native-group-drag]').getBoundingClientRect();
                 const target = document.querySelector('.weg-native-group-heading[data-group-id="a"]').getBoundingClientRect();
                 return [source.left + source.width / 2, source.top + source.height / 2, target.left + target.width / 2, target.top + 3];
             });
             await cdp.mouseDrag(...points);
-            await waitForCondition(cdp, () => document.getElementById('world_popup_entries_list').classList.contains('weg-native-sorted-groups'));
+            await waitForCondition(cdp, () => SillyTavern.getContext().extensionSettings.worldbook_entry_groups.books['显示排序测试书'].nativeGroupOrder?.[0] === 'b');
             assert.deepEqual(await displayOrder(), ['1', '3', '0', '2', '4']);
             assert.deepEqual(await cdp.evalFn(async (name) => {
                 const { buildInitialProfileFromFloorZero } = await import('/scripts/extensions/third-party/worldbook-organizer/src/entry-groups/core.js');
@@ -643,8 +752,8 @@ test('native group pins and pointer reordering change display only and share und
             }, world), { businessOrder: ['a', 'b'], ifGroup: 'a' });
             assert.equal(await cdp.evalFn(() => window.nativeOriginalRows.every((node, index) => node === document.querySelectorAll('.world_entry[uid]')[index])), true);
             await cdp.clickSelector('.weg-native-group-heading[data-group-id="b"] .weg-native-group-undo');
-            await waitForCondition(cdp, () => !document.getElementById('world_popup_entries_list').classList.contains('weg-native-sorted-groups'));
-            assert.deepEqual(await displayOrder(), ['0', '1', '2', '3', '4']);
+            await waitForCondition(cdp, () => !SillyTavern.getContext().extensionSettings.worldbook_entry_groups.books['显示排序测试书'].nativeGroupOrder?.length);
+            assert.deepEqual(await displayOrder(), ['0', '2', '1', '3', '4']);
             assert.deepEqual((await getServerState(baseUrl)).worldbooks[world], fixture.worldbooks[world]);
             assert.deepEqual(cdp.getErrors().runtimeErrors, []);
         }
@@ -728,6 +837,16 @@ test('native group controls stay reachable while scrolling and undo restores mix
                 const panel = await import('/scripts/extensions/third-party/worldbook-organizer/src/entry-groups/panel.js');
                 panel.syncAllNativeEntryPoints();
             });
+            assert.equal(await cdp.evalFn(() => !!document.getElementById('weg-native-undo')), false, 'no standalone undo above the groups');
+            const measureTop = () => cdp.evalFn(() => {
+                const list = document.getElementById('world_popup_entries_list');
+                return {
+                    firstRow: list.querySelector('.world_entry').getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop,
+                    stickyHeight: document.querySelector('.weg-native-list-sticky').getBoundingClientRect().height,
+                };
+            });
+            const initialTop = await measureTop();
+            assert.equal(initialTop.stickyHeight, 0);
             assert.equal(await cdp.evalFn(() => {
                 const group = document.querySelector('.weg-native-group-heading');
                 return group.querySelector('.weg-native-group-switch').nextElementSibling.matches('.weg-native-group-undo:disabled')
@@ -739,7 +858,7 @@ test('native group controls stay reachable while scrolling and undo restores mix
             }));
             assert.ok(switchGeometry.filter(([width]) => width > 0).every(([width, height]) => width === 28 && height === 16));
             const sticky = '.weg-native-sticky-group';
-            const nativeUndo = '#weg-native-undo';
+            const nativeUndo = `${sticky} .weg-native-group-undo`;
             const scrollTo = (uid) => cdp.evalFn((id) => {
                 const list = document.querySelector('#world_popup_entries_list');
                 const row = list.querySelector(`.world_entry[uid="${id}"]`);
@@ -769,13 +888,14 @@ test('native group controls stay reachable while scrolling and undo restores mix
             await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-switch:enabled'));
             assert.deepEqual((await getServerState(baseUrl)).worldbooks[world], seed.worldbooks[world]);
             assert.ok((await cdp.clickSelector(`${sticky} .weg-native-group-switch`, { scroll: false })).hit);
-            await waitForCondition(cdp, () => !!document.querySelector('#weg-native-undo:not([hidden]):enabled'));
+            await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group:not([hidden]) .weg-native-group-undo:enabled'));
             assert.equal(await cdp.evalFn(() => {
                 const list = document.querySelector('#world_popup_entries_list');
-                const button = document.querySelector('#weg-native-undo');
+                const button = document.querySelector('.weg-native-sticky-group .weg-native-group-undo');
                 return list.contains(button) && list.scrollTop > 1000 && button.getAttribute('aria-label') === '撤销整组开关'
-                    && Boolean(button.querySelector('svg'));
+                    && button.previousElementSibling.matches('.weg-native-group-switch') && Boolean(button.querySelector('svg'));
             }), true);
+            assert.deepEqual(await measureTop(), initialTop, 'undo history must not insert a toolbar row or shift entries');
             if (viewport === VIEWPORTS.desktop) assert.equal(await cdp.evalFn(() => window.wegReadTestPage()), 2);
             let actual = (await getServerState(baseUrl)).worldbooks[world];
             for (let uid = 0; uid < entries.length; uid++) {
@@ -785,12 +905,12 @@ test('native group controls stay reachable while scrolling and undo restores mix
             await scrollTo(56);
             await waitForCondition(cdp, () => document.querySelector('.weg-native-sticky-group:not([hidden])')?.querySelector('span')?.textContent === '未分组');
             assert.ok((await cdp.clickSelector(nativeUndo, { scroll: false })).hit);
-            await waitForCondition(cdp, () => document.querySelector('#weg-native-undo')?.hidden);
+            await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-undo:disabled'));
             actual = (await getServerState(baseUrl)).worldbooks[world];
             assert.deepEqual(actual, seed.worldbooks[world]);
 
             assert.ok((await cdp.clickSelector(`${sticky} .weg-native-group-switch`, { scroll: false })).hit);
-            await waitForCondition(cdp, () => !!document.querySelector('#weg-native-undo:not([hidden]):enabled'));
+            await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-undo:enabled'));
             actual = (await getServerState(baseUrl)).worldbooks[world];
             assert.ok([54, 55, 56, 57, 58, 59].every((uid) => !actual.entries[uid].disable));
             for (let index = 0; index < 4; index++) {
@@ -801,7 +921,7 @@ test('native group controls stay reachable while scrolling and undo restores mix
             }
             for (let index = 0; index < 4; index++) {
                 assert.ok((await cdp.clickSelector(nativeUndo, { scroll: false })).hit);
-                await waitForCondition(cdp, () => !!document.querySelector('#weg-native-undo:enabled'));
+                await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-undo:enabled'));
             }
             await cdp.evalFn((book) => window.dispatchEvent(new CustomEvent('weg:open-panel', { detail: { worldName: book } })), world);
             await waitForCondition(cdp, () => Boolean(document.querySelector('[data-weg-footer-action="undo"]:not([hidden]):enabled')));
@@ -861,7 +981,9 @@ test('mobile native locate clears both panels and native group folding preserves
         await waitForCondition(cdp, () => document.querySelectorAll('.weg-native-group-heading').length === 2);
         const continuation = '.world_entry[uid="0"] .weg-native-group-continuation';
         assert.deepEqual(await nativeOrder(), [['1', '第一组'], ['2', '第二组'], ['0', null]]);
-        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.textContent, continuation), '第一组（续）');
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector), continuation), null);
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('.world_entry[uid]')]
+            .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top).map((row) => row.getAttribute('uid'))), ['1', '0', '2']);
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-heading .weg-native-group-chevron').length), 2);
         const switching = await cdp.evalFn(async (firstBook, secondBook) => {
             const pick = document.getElementById('world_editor_select');
@@ -895,13 +1017,13 @@ test('mobile native locate clears both panels and native group folding preserves
             form.innerHTML = '<div><select name="$"><option>原生选项</option><option>第二选项</option></select></div>';
             list.querySelector('.world_entry[uid="2"]').append(form);
         });
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#world_info_pagination + #weg-native-group-manager')));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#world_info_pagination + #weg-native-entry-controls #weg-native-group-manager')));
         assert.equal(await cdp.evalFn(() => document.querySelector('.world_entry[uid="2"] > form > div select[name="$"]').options.length), 2);
         await cdp.clickSelector('.world_entry[uid="1"] .weg-native-group-disclosure');
         assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('.weg-native-group-heading[data-group-id="g1"] .weg-native-group-disclosure')].map((button) => button.getAttribute('aria-expanded'))), ['false']);
         assert.equal(await cdp.evalFn(() => document.querySelector('.world_entry[uid="0"] .we-title').getBoundingClientRect().height), 0);
         await cdp.clickSelector('.world_entry[uid="1"] .weg-native-group-disclosure');
-        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.textContent, continuation), '第一组（续）');
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector), continuation), null);
         for (let index = 0; index < 4; index++) {
             assert.ok((await cdp.clickSelector('.world_entry[uid="1"] .weg-native-group-disclosure')).hit);
             assert.equal(await cdp.evalFn(() => document.querySelector('.world_entry[uid="1"] .weg-native-group-disclosure').getAttribute('aria-expanded')), String(index % 2 === 1));

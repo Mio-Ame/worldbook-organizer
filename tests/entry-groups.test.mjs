@@ -1438,6 +1438,15 @@ test('estimateEntryTokens and applyTextareaTabIndent handle CJK/ASCII, multi-lin
     assert.equal(outNewline.selectionStart, 0);
 });
 
+test('native grouping stays enabled by default and remembers an explicit opt-out without losing groups', () => {
+    assert.equal(normalizeSettings(null).enableNativeGrouping, true);
+    const settings = normalizeSettings({ enableNativeGrouping: false, books: { '设置测试书': {
+        groups: [{ id: 'g1', name: '测试组' }], assignments: { 0: 'g1' },
+    } } });
+    assert.equal(normalizeSettings(settings).enableNativeGrouping, false);
+    assert.equal(settings.books['设置测试书'].assignments['0'], 'g1');
+});
+
 test('experimental automations default off and upgrading settings pauses both once', () => {
     const flags = (settings) => [settings.autoSwitchOnChatChange, settings.enableSceneAutoToggle];
     assert.deepEqual(flags(normalizeSettings(null)), [false, false]);

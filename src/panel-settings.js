@@ -17,6 +17,8 @@ import {
 import { showToast } from './host.js';
 import { hasCompatibleDropdownScript } from './native-filter.js';
 import { openImportRulesModal } from './panel-import-rules.js';
+import { getNativeGroupingPreferences } from './entry-groups/host.js';
+import { canConfigureNativeGrouping, setNativeGroupingEnabled } from './entry-groups/panel.js';
 
 // ==================== Settings Modal & Extension Settings Panel ====================
 
@@ -241,6 +243,10 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="showNativeCharToggleBtn">
                         <span>显示编辑下拉框旁「角色书显隐」按钮</span>
                     </label>
+                    ${canConfigureNativeGrouping() ? `<label class="wbo-check-line">
+                        <input type="checkbox" data-entry-native-grouping${getNativeGroupingPreferences().enabled ? ' checked' : ''}>
+                        <span>在原生编辑器显示条目分组</span>
+                    </label>` : ''}
                     <div class="wbo-subtle-tip">默认「三合一按钮」仅占 1 个图标位（内含全局组合、排除分组与搜条目直达）；也可切换为分开显示或完全隐藏。</div>
                 </div>
             </div>
@@ -453,6 +459,9 @@ function openSettingsModal() {
 
     syncSettingControlsInPlace(modal, settings);
     bindSettingControlListeners(modal);
+    modal.querySelector('input[data-entry-native-grouping]')?.addEventListener('change', (event) => {
+        setNativeGroupingEnabled(event.target.checked);
+    });
 
     const syncExcludeChips = () => {
         const cur = _callbacks?.getState?.()?.settings || settings;

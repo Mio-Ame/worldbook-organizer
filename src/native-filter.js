@@ -34,7 +34,7 @@ import {
 } from './core.js';
 import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
 import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
-import { revealNativeEntryGroup } from './entry-groups/native-view.js';
+import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
 
 /** @type {WeakMap<HTMLElement, () => void>} */

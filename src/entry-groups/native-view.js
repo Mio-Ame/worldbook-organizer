@@ -1,13 +1,12 @@
 import { GROUP_MODES, SPECIAL_GROUP_UNGROUPED } from './core.js';
 import { detectHostColorScheme, getCurrentEditorWorldName, getNativeGroupingState, locateEntryInNativeEditor, showToast } from './host.js';
 import { findScrollableContent, restoreContentAnchor } from '../content-scroll.js';
-import { UNDO_SVG } from '../panel-window.js';
 import { getNativeGroupOrder } from './entry-reorder.js';
 
 const BUTTON_ID = 'weg-native-group-manager';
 const HEADING_CLASS = 'weg-native-group-heading';
-const CONTINUATION_CLASS = 'weg-native-group-continuation';
 const COLLAPSED_CLASS = 'weg-native-group-collapsed';
+const NATIVE_UNDO_SVG = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 10a9 9 0 1 1 2.7 8.4"/><path d="M3 4v6h6"/></svg>';
 let visibleBook = null;
 let decoratedList = null;
 let nativeLayout = null;
@@ -133,7 +132,7 @@ function makeNativeUndoButton() {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'weg-native-group-undo';
-    button.innerHTML = UNDO_SVG;
+    button.innerHTML = NATIVE_UNDO_SVG;
     button.addEventListener('click', (event) => {
         event.stopPropagation();
         if (visibleBook) void nativeActions?.undo(visibleBook);
@@ -296,7 +295,8 @@ function updateStickyGroup() {
     stickyFrame = 0;
     if (!stickyBar?.isConnected) return;
     const controls = stickyBar.querySelector('.weg-native-sticky-group');
-    if (!controls?.querySelector('.weg-native-group-disclosure')) {
+    if (!controls?.querySelector('.weg-native-group-disclosure > span')
+        || !controls.querySelector('.weg-native-group-switch > i') || !controls.querySelector('.weg-native-group-undo > svg')) {
         syncStickyBar(decoratedList);
         return;
     }
@@ -312,6 +312,7 @@ function updateStickyGroup() {
     const heading = groupHeadings.get(id);
     const show = Boolean(heading && !collapsedGroups.has(id));
     controls.hidden = !show;
+    updateNativeUndoButton(controls.querySelector('.weg-native-group-undo'));
     if (!show) return;
     if (controls.dataset.groupId !== id) controls.dataset.groupId = id;
     const sourceDisclosure = heading.querySelector('.weg-native-group-disclosure');
@@ -333,8 +334,9 @@ function updateStickyGroup() {
 
 function syncStickyBar(list) {
     if (!list?.isConnected) return;
-    if (!stickyBar?.isConnected || !stickyBar.querySelector('#weg-native-undo')
-        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-switch')) {
+    if (!stickyBar?.isConnected || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-disclosure > span')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-switch > i')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-undo > svg')) {
         stickyBar?.remove();
         stickyBar = document.createElement('div');
         stickyBar.className = 'weg-native-list-sticky';
@@ -343,9 +345,8 @@ function syncStickyBar(list) {
         controls.className = 'weg-native-sticky-group';
         controls.hidden = true;
         makeGroupControls(controls, () => controls.dataset.groupId, { withUndo: false });
-        const undo = makeNativeUndoButton();
-        undo.id = 'weg-native-undo';
-        bar.append(controls, undo);
+        controls.append(makeNativeUndoButton());
+        bar.append(controls);
         stickyBar.append(bar);
         document.addEventListener('scroll', handleNativeScroll, { capture: true, passive: true });
         window.addEventListener('resize', scheduleStickyUpdate, { passive: true });
@@ -353,10 +354,7 @@ function syncStickyBar(list) {
     const columns = list.querySelector(':scope > #WIEntryHeaderTitlesPC');
     if (columns && columns.nextElementSibling !== stickyBar) columns.after(stickyBar);
     else if (!columns && list.firstElementChild !== stickyBar) list.prepend(stickyBar);
-    const undo = stickyBar.querySelector('#weg-native-undo');
-    const label = updateNativeUndoButton(undo);
-    undo.hidden = !label;
-    stickyBar.classList.toggle('has-undo', Boolean(label));
+    updateNativeUndoButton(stickyBar.querySelector('.weg-native-group-undo'));
     scheduleStickyUpdate();
 }
 
@@ -405,7 +403,7 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         const assigned = config?.assignments?.[uid];
         return groups.has(assigned) ? assigned : SPECIAL_GROUP_UNGROUPED;
     };
-    const sortGroups = Boolean(config?.nativeGroupOrder?.length || config?.pinnedGroupIds?.length);
+    const sortGroups = groups.size > 0 || Boolean(config?.nativeGroupOrder?.length || config?.pinnedGroupIds?.length);
     const ranks = new Map(getNativeGroupOrder(config).map((id, index) => [id, index]));
     list.classList.toggle('weg-native-sorted-groups', sortGroups);
     for (const row of rows) {
@@ -435,42 +433,21 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
     groupMarkers = [];
     groupHeadings.clear();
     const seen = new Set();
-    let previousId = null;
-    let previousParent = null;
     for (const row of rows) {
         const groupId = getGroupId(row.getAttribute('uid'));
         const collapsed = collapsedGroups.has(groupId);
-        const startsGroupRun = groupId !== previousId || row.parentElement !== previousParent;
         const firstRun = !seen.has(groupId);
-        const showContinuation = startsGroupRun && !firstRun && !collapsed;
         seen.add(groupId);
-        row.classList.toggle('weg-native-group-start', firstRun || showContinuation);
+        row.classList.toggle('weg-native-group-start', firstRun);
         row.classList.toggle(COLLAPSED_CLASS, collapsed);
-        previousId = groupId;
-        previousParent = row.parentElement;
 
         let heading = row.querySelector(`:scope > .${HEADING_CLASS}`);
-        let continuation = row.querySelector(`:scope > .${CONTINUATION_CLASS}`);
         const group = groups.get(groupId);
         const name = group?.name || '未分组';
         if (!firstRun) {
             heading?.remove();
-            if (showContinuation) {
-                if (!continuation) {
-                    continuation = document.createElement('span');
-                    continuation.className = CONTINUATION_CLASS;
-                    row.prepend(continuation);
-                }
-                if (continuation.dataset.groupId !== groupId) continuation.dataset.groupId = groupId;
-                const label = `${name}（续）`;
-                if (continuation.textContent !== label) continuation.textContent = label;
-                groupMarkers.push(continuation);
-            } else {
-                continuation?.remove();
-            }
             continue;
         }
-        continuation?.remove();
         if (!heading) {
             heading = document.createElement('div');
             heading.className = HEADING_CLASS;
@@ -506,30 +483,7 @@ export function syncNativeEntryGroups(actions) {
         collapsedGroups.clear();
     }
 
-    let button = document.getElementById(BUTTON_ID);
-    const anchor = pagination || list;
-    if (anchor && worldName && state.showButton) {
-        if (!button) {
-            button = document.createElement('button');
-            button.id = BUTTON_ID;
-            button.type = 'button';
-            button.className = 'menu_button';
-            button.textContent = '条目分组';
-            button.addEventListener('click', (event) => {
-                event.stopPropagation();
-                void nativeActions?.openPanel({ worldName: getCurrentEditorWorldName() });
-            });
-        }
-        if (pagination && pagination.nextElementSibling !== button) pagination.after(button);
-        if (!pagination) {
-            const pinned = document.getElementById('weg-native-pinned-entries');
-            const before = pinned && pinned.nextElementSibling === list ? pinned : list;
-            if (before.previousElementSibling !== button) before.before(button);
-        }
-    } else {
-        button?.remove();
-    }
-
+    const button = document.getElementById(BUTTON_ID);
     syncGroupRows(list, state);
     syncNativeLayout(list, pagination, button);
     syncNativePinnedEntries(list, worldName, state.config);
@@ -563,7 +517,7 @@ function clearNativeGroupRows() {
     stickyBar = null;
     groupMarkers = [];
     groupHeadings.clear();
-    decoratedList.querySelectorAll(`.${HEADING_CLASS}, .${CONTINUATION_CLASS}`).forEach((heading) => heading.remove());
+    decoratedList.querySelectorAll(`.${HEADING_CLASS}`).forEach((heading) => heading.remove());
     decoratedList.querySelectorAll(`.${COLLAPSED_CLASS}, .weg-native-group-start`).forEach((row) => {
         row.classList.remove(COLLAPSED_CLASS, 'weg-native-group-start');
     });
@@ -572,7 +526,6 @@ function clearNativeGroupRows() {
 
 export function removeNativeEntryGroups() {
     if (typeof document === 'undefined') return;
-    document.getElementById(BUTTON_ID)?.remove();
     document.getElementById('weg-native-pinned-entries')?.remove();
     clearNativeLayout();
     clearNativeGroupRows();

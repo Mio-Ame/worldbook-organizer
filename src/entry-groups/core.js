@@ -265,6 +265,7 @@ export function normalizeSettings(raw) {
         followMainPalette: typeof src.followMainPalette === 'boolean' ? src.followMainPalette : palette === 'paper',
         followMainColorMode: typeof src.followMainColorMode === 'boolean' ? src.followMainColorMode : colorMode === 'auto',
         followNativeTheme: src.followNativeTheme !== false,
+        enableNativeGrouping: src.enableNativeGrouping !== false,
         showNativeEntryBtn: src.showNativeEntryBtn !== false,
         showWandMenuEntry: src.showWandMenuEntry !== false,
         closeOnLocate: src.closeOnLocate !== false,

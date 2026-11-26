@@ -111,6 +111,11 @@ function getSettingsContainer() {
     return ctx?.extensionSettings || globalThis.extension_settings;
 }
 
+export function getNativeGroupingPreferences() {
+    const settings = getSettingsContainer()?.[MODULE_NAME];
+    return { enabled: settings?.enableNativeGrouping !== false, showButton: settings?.showNativeEntryBtn !== false };
+}
+
 export function getNativeGroupingState(worldName) {
     const settings = getSettingsContainer()?.[MODULE_NAME];
     const disabledByUid = _knownEntryDisabledByBook.get(worldName);
