@@ -8,7 +8,7 @@ if (!suite) throw new Error('Set WBO_E2E_SUITE to the retained browser regressio
 const load = (name) => import(pathToFileURL(resolve(suite, 'lib', name)).href);
 const { createMockStServer } = await load('mock-server.mjs');
 const { VIEWPORTS, launchEdgeCdp } = await load('cdp.mjs');
-const { createDefaultSeed, makeBook, makeEntry } = await load('fixtures.mjs');
+const { createDefaultSeed, makeBook, makeEntry } = await import('./entry-groups-fixtures.mjs');
 const { getServerState, resetAndBoot, waitForCondition } = await load('assert-helpers.mjs');
 
 for (const device of ['desktop', 'mobile']) {
@@ -33,6 +33,8 @@ for (const device of ['desktop', 'mobile']) {
             }, world);
             await waitForCondition(cdp, () => document.querySelector('#weg-native-group-enabled:enabled'));
             await cdp.clickSelector('#weg-native-group-enabled');
+            await waitForCondition(cdp, () => document.querySelector('[data-weg-native-entry-choice="use"]'));
+            await cdp.clickSelector('[data-weg-native-entry-choice="use"]');
             await waitForCondition(cdp, () => document.querySelector('#weg-native-pinned-entries button'));
             const read = () => cdp.evalFn(() => ({
                 headings: document.querySelectorAll('.weg-native-group-heading, .weg-native-list-sticky').length,

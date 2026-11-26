@@ -115,8 +115,9 @@ function getSettingsContainer() {
 export function getNativeGroupingPreferences() {
     const settings = getSettingsContainer()?.[MODULE_NAME];
     const enabled = settings?.enableNativeGrouping !== false;
-    return { enabled, active: enabled && _nativeGroupingRequested,
-        showButton: settings?.showNativeEntryBtn !== false, hintSeen: settings?.nativeEntryHintSeen === true };
+    const showButton = enabled && settings?.showNativeEntryBtn !== false;
+    return { enabled, active: showButton && _nativeGroupingRequested,
+        showButton, hintSeen: settings?.nativeEntryHintSeen === true };
 }
 
 export function setNativeGroupingRequested(active) {
@@ -128,7 +129,7 @@ export function getNativeGroupingState(worldName) {
     const disabledByUid = _knownEntryDisabledByBook.get(worldName);
     return {
         config: settings?.books?.[worldName],
-        showButton: settings?.showNativeEntryBtn !== false,
+        showButton: getNativeGroupingPreferences().showButton,
         themeSettings: settings,
         disabledByUid,
         banners: _bannersByDisabledSnapshot.get(disabledByUid),
@@ -889,7 +890,11 @@ export async function resolveGreetingCoordinationForBook(worldName, { allowFetch
  * - Only inspects `chat[0]` header (~1.2KB slice) when `chat.length === 1` (freshly created 1-message save).
  * - Once bound in `chatMetadata` (e.g. `18岁线`, or later switched to `30岁线` mid-save), restores `chatMetadata` directly!
  */
-export async function syncWorldbookForActiveChat({ reason = 'chat-changed', silentToast = false } = {}) {
+export async function syncWorldbookForActiveChat({ reason = 'chat-changed', silentToast = false, isCurrent = () => true } = {}) {
+    const stopped = (worldName = '', routeLabel = '') => ({
+        synced: false, changedCount: 0, routeLabel, worldName, cancelled: true,
+    });
+    if (!isCurrent()) return stopped();
     const settings = getSettings();
     if (reason !== 'manual' && settings.autoSwitchOnChatChange === false) {
         return { synced: false, changedCount: 0, routeLabel: '', worldName: '' };
@@ -913,6 +918,7 @@ export async function syncWorldbookForActiveChat({ reason = 'chat-changed', sile
         const floorZeroHeader = String(ctx.chat?.[0]?.mes ?? '').slice(0, 1200);
         if (floorZeroHeader.includes('<!--')) {
             const { greetingIndex } = await resolveGreetingCoordinationForBook(worldName, { allowFetchShallow: false });
+            if (!isCurrent()) return stopped(worldName, profile?.routeLabel || '');
             const initial = buildInitialProfileFromFloorZero({
                 worldName,
                 floorZeroMes: floorZeroHeader,
@@ -931,6 +937,7 @@ export async function syncWorldbookForActiveChat({ reason = 'chat-changed', sile
     }
 
     const readRes = await loadWorldbookSummariesUncached(worldName);
+    if (!isCurrent()) return stopped(worldName, profile.routeLabel);
     if (!readRes.ok || readRes.summaries.length === 0) {
         return { synced: false, changedCount: 0, routeLabel: profile.routeLabel, worldName };
     }
@@ -940,8 +947,16 @@ export async function syncWorldbookForActiveChat({ reason = 'chat-changed', sile
         return { synced: true, changedCount: 0, routeLabel: profile.routeLabel, worldName };
     }
 
-    const writeRes = await applyWorldbookTogglePlan(worldName, restorePlan);
-    if (writeRes.ok && writeRes.changedCount > 0 && !silentToast) {
+    let cancelledBeforeWrite = false;
+    const writeRes = await applyWorldbookTogglePlan(worldName, (summaries) => {
+        if (!isCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        const freshPlan = computeChatProfileRestorePlan(summaries, bookConfig, profile);
+        if (!isCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        return freshPlan;
+    });
+    if (cancelledBeforeWrite) return stopped(worldName, profile.routeLabel);
+    // A write already sent cannot be cancelled; only suppress a stale success toast.
+    if (writeRes.ok && writeRes.changedCount > 0 && !silentToast && isCurrent()) {
         showToast('info', `已按当前存档切换至「${profile.routeLabel}」`);
     }
 
@@ -960,9 +975,15 @@ export async function syncWorldbookForActiveChat({ reason = 'chat-changed', sile
  * @param {string} groupNameQuery
  * @returns {Promise<{ matched: boolean, groupName?: string, error?: string }>}
  */
-export async function switchNamedGroupInActiveChat(groupNameQuery) {
+export async function switchNamedGroupInActiveChat(groupNameQuery, { isCurrent = () => true } = {}) {
     const query = String(groupNameQuery ?? '').trim();
     if (!query) return { matched: false };
+    const chatKey = getCurrentChatSaveContext()?.chatKey || '';
+    const stillCurrent = () => isCurrent() && (getCurrentChatSaveContext()?.chatKey || '') === chatKey;
+    const stopped = (groupName = '') => ({
+        matched: Boolean(groupName), ...(groupName ? { groupName } : {}), cancelled: true, error: '操作已停止',
+    });
+    if (!stillCurrent()) return stopped();
 
     const worldName = getCurrentCharacterPrimaryWorldName();
     if (!worldName) return { matched: false };
@@ -976,23 +997,33 @@ export async function switchNamedGroupInActiveChat(groupNameQuery) {
     if (!targetGrp) return { matched: false };
 
     const readRes = await loadWorldbookSummariesUncached(worldName);
+    if (!stillCurrent()) return stopped(targetGrp.name);
     if (!readRes.ok) return { matched: true, groupName: targetGrp.name, error: readRes.error };
 
     const plan = computeGroupTogglePlan(readRes.summaries, bookCfg, targetGrp.id, true);
     let latestSummaries = readRes.summaries;
     if (plan.size > 0) {
-        const writeRes = await applyWorldbookTogglePlan(worldName, plan);
+        let cancelledBeforeWrite = false;
+        const writeRes = await applyWorldbookTogglePlan(worldName, (summaries) => {
+            if (!stillCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+            const freshPlan = computeGroupTogglePlan(summaries, bookCfg, targetGrp.id, true);
+            if (!stillCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+            return freshPlan;
+        });
+        if (cancelledBeforeWrite) return stopped(targetGrp.name);
         if (!writeRes.ok) return { matched: true, groupName: targetGrp.name, error: writeRes.error };
         latestSummaries = writeRes.summaries;
     }
 
-    recordStateIntoActiveChatIfMatching(worldName, latestSummaries, {
-        preferredIfGroupId: targetGrp.mode === GROUP_MODES.IF_LINE ? targetGrp.id : '',
-        customLabel: targetGrp.name,
-        force: true,
-    });
+    if (stillCurrent()) {
+        recordStateIntoActiveChatIfMatching(worldName, latestSummaries, {
+            preferredIfGroupId: targetGrp.mode === GROUP_MODES.IF_LINE ? targetGrp.id : '',
+            customLabel: targetGrp.name,
+            force: true,
+        });
+    }
 
-    showToast('success', `已切换本档至「${targetGrp.name}」`);
+    if (stillCurrent()) showToast('success', `已切换本档至「${targetGrp.name}」`);
     return { matched: true, groupName: targetGrp.name };
 }
 
@@ -1004,8 +1035,10 @@ export async function switchNamedGroupInActiveChat(groupNameQuery) {
  *
  * Fast-path: 0ms & 0 I/O when no `scene` groups exist or when state requires no transition!
  */
-export async function syncSceneGroupsBeforeGeneration(type, dryRun = false) {
+export async function syncSceneGroupsBeforeGeneration(type, dryRun = false, { isCurrent = () => true } = {}) {
     if (dryRun || type === 'quiet') return { changedCount: 0 };
+    const stopped = () => ({ changedCount: 0, cancelled: true });
+    if (!isCurrent()) return stopped();
 
     const settings = getSettings();
     if (settings.enableSceneAutoToggle === false) return { changedCount: 0 };
@@ -1013,6 +1046,7 @@ export async function syncSceneGroupsBeforeGeneration(type, dryRun = false) {
     const ctx = getHostContext();
     const saveCtx = getCurrentChatSaveContext();
     if (!ctx || !saveCtx || !saveCtx.primaryWorldName) return { changedCount: 0 };
+    const stillCurrent = () => isCurrent() && getCurrentChatSaveContext()?.chatKey === saveCtx.chatKey;
 
     const worldName = saveCtx.primaryWorldName;
     const bookConfig = normalizeBookConfig(settings.books?.[worldName]);
@@ -1032,6 +1066,7 @@ export async function syncSceneGroupsBeforeGeneration(type, dryRun = false) {
 
     // Use lightweight in-memory disabled snapshot (or `worldInfoCache`) first to avoid `fetch` on idle turns!
     await ensureWorldInfoModule();
+    if (!stillCurrent()) return stopped();
     let probeEntries = null;
     const hostCache = _worldInfoModule?.worldInfoCache;
     if (hostCache instanceof Map && hostCache.has(worldName)) {
@@ -1049,25 +1084,35 @@ export async function syncSceneGroupsBeforeGeneration(type, dryRun = false) {
 
     if (!probeEntries) {
         const readRes = await loadWorldbookSummariesUncached(worldName);
+        if (!stillCurrent()) return stopped();
         if (!readRes.ok) return { changedCount: 0 };
         probeEntries = readRes.summaries;
     }
 
     const prevCooldown = _sceneCooldownByChat.get(saveCtx.chatKey) || {};
-    const evalRes = evaluateSceneAutoToggle({
+    let evalRes = evaluateSceneAutoToggle({
         entries: probeEntries,
         bookConfig,
         recentText,
         cooldownByGroupId: prevCooldown,
     });
-    _sceneCooldownByChat.set(saveCtx.chatKey, evalRes.nextCooldownByGroupId);
-
     if (evalRes.togglePlan.size === 0) {
+        _sceneCooldownByChat.set(saveCtx.chatKey, evalRes.nextCooldownByGroupId);
         return { changedCount: 0 };
     }
 
-    const writeRes = await applyWorldbookTogglePlan(worldName, evalRes.togglePlan);
-    if (writeRes.ok && writeRes.changedCount > 0) {
+    let cancelledBeforeWrite = false;
+    const writeRes = await applyWorldbookTogglePlan(worldName, (summaries) => {
+        if (!stillCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        evalRes = evaluateSceneAutoToggle({
+            entries: summaries, bookConfig, recentText, cooldownByGroupId: prevCooldown,
+        });
+        if (!stillCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        return evalRes.togglePlan;
+    });
+    if (cancelledBeforeWrite) return stopped();
+    if (stillCurrent()) _sceneCooldownByChat.set(saveCtx.chatKey, evalRes.nextCooldownByGroupId);
+    if (writeRes.ok && writeRes.changedCount > 0 && stillCurrent()) {
         if (evalRes.activatedGroups.length > 0) {
             showToast('info', `检测到剧情信号，已临时开启「${evalRes.activatedGroups.join('、')}」`);
         } else if (evalRes.deactivatedGroups.length > 0) {
@@ -1129,36 +1174,53 @@ export async function captureExternalWorldbookSwitchForActiveChat(worldName = ''
  * Apply a character card's greeting preset (`<!-- lore / exclude -->`) in 1 single disk write
  * and lock the resulting multi-group entry combination onto the active chat save!
  */
-export async function applyGreetingPresetToWorldbook(worldName, greetingIndex, swipeIndex) {
+export async function applyGreetingPresetToWorldbook(worldName, greetingIndex, swipeIndex, { isCurrent = () => true } = {}) {
     const cleanWorld = String(worldName ?? '').trim();
     if (!cleanWorld || !greetingIndex) {
-        return { ok: false, error: '缺少开场白联动方案数据' };
+        return { ok: false, error: '没有可用的开场方案' };
     }
+    const stopped = () => ({ ok: false, cancelled: true, error: '操作已停止' });
+    if (!isCurrent()) return stopped();
+    const { saveCtx, profile: undoProfileBefore } = getActiveChatBoundProfile(cleanWorld);
+    const chatKey = saveCtx?.chatKey || '';
 
     const readRes = await loadWorldbookSummariesUncached(cleanWorld);
+    if (!isCurrent()) return stopped();
     if (!readRes.ok) {
         return { ok: false, error: readRes.error };
     }
 
     const preset = computeGreetingPresetPlan(readRes.summaries, greetingIndex, swipeIndex);
     if (!preset) {
-        return { ok: false, error: '该开场白未配置世界书联动标签' };
+        return { ok: false, error: '作者未在这条开场白中标记条目' };
     }
 
-    const writeRes = await applyWorldbookTogglePlan(cleanWorld, preset.plan);
+    let cancelledBeforeWrite = false;
+    const writeRes = await applyWorldbookTogglePlan(cleanWorld, (summaries) => {
+        if (!isCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        const freshPreset = computeGreetingPresetPlan(summaries, greetingIndex, swipeIndex);
+        if (!isCurrent()) { cancelledBeforeWrite = true; return new Map(); }
+        return freshPreset.plan;
+    });
+    if (cancelledBeforeWrite) return stopped();
     if (!writeRes.ok) {
         return { ok: false, error: writeRes.error };
     }
 
-    recordStateIntoActiveChatIfMatching(cleanWorld, writeRes.summaries, {
-        customLabel: preset.routeLabel,
-        force: true,
-    });
+    const profile = isCurrent() && chatKey && getCurrentChatSaveContext()?.chatKey === chatKey
+        ? recordStateIntoActiveChatIfMatching(cleanWorld, writeRes.summaries, {
+            customLabel: preset.routeLabel,
+            force: true,
+        }) : null;
 
     return {
         ok: true,
         changedCount: writeRes.changedCount,
+        appliedChanges: writeRes.appliedChanges,
+        undoProfileBefore,
         routeLabel: preset.routeLabel,
+        savedToChat: Boolean(profile),
+        boundChatKey: profile ? chatKey : '',
         summaries: writeRes.summaries,
     };
 }

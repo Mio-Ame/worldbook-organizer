@@ -304,7 +304,10 @@ function openScanAndImportModal({ initialTab = '' } = {}) {
                 label: '多卡共用书',
                 count: coverage.sharedBooks.length,
                 rowsHtml: `
-                    <p class="wbo-cov-pane-note">多张角色卡共用了同一本世界书。</p>
+                    <div class="wbo-cov-pane-note wbo-cov-shared-note">
+                        <p>多张角色卡共用了同一本世界书。</p>
+                        <p class="wbo-cov-shared-reason">原因可能是多次存入同一张角色卡、角色卡新旧版本（但只更新了开场白）。</p>
+                    </div>
                     ${renderCovTable(rowsHtml, '角色名')}
                 `,
             });

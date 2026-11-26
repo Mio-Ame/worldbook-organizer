@@ -632,6 +632,7 @@ test('preset group switching is offered only when the compatible script is detec
         await openSettings();
         assert.equal(await cdp.evalFn((selector) => Boolean(document.querySelector(selector)), setting), false);
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]'))), false);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-dropdown-script-settings]'))), false);
         await closeSettings();
 
         await cdp.evalFn(() => {
@@ -641,6 +642,12 @@ test('preset group switching is offered only when the compatible script is detec
         await openSettings();
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]')?.checked), false);
+        assert.deepEqual(await cdp.evalFn(() => {
+            const card = document.querySelector('[data-dropdown-script-settings]');
+            return { title: card?.querySelector('.wbo-ai-section-head')?.textContent.trim(),
+                options: [...(card?.querySelectorAll('[data-setting]') || [])].map((input) => input.dataset.setting),
+                isolated: !card?.querySelector('[data-setting="adaptCharBindPopup"]') };
+        }), { title: '下拉框美化酒馆脚本适配', options: ['adaptEnhancedPresetGroups', 'overrideEnhancedDropdownStyle'], isolated: true });
         await closeSettings();
 
         const openPreset = () => cdp.evalFn(() => {

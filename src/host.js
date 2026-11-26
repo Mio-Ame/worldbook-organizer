@@ -1075,7 +1075,7 @@ export async function fetchFullCharacterOnDemand(avatar, { allowUnshallow = true
 }
 
 /**
- * Scan unscanned shallow characters in small throttled batches (concurrency = 2)
+ * Scan shallow characters in small batches, one card at a time on touch or narrow screens.
  * without calling `unshallowCharacter`, so full character JSONs are released to GC immediately.
  *
  * @param {Array<{ chid: number, avatar: string, name: string }>} targets
@@ -1085,8 +1085,10 @@ export async function fetchFullCharacterOnDemand(avatar, { allowUnshallow = true
 export async function scanShallowCharactersInBatches(targets, { onProgress, signal, batchSize = 2, yieldMs = 30 } = {}) {
     const scanned = [];
     const total = targets.length;
-    const step = Math.max(1, Math.min(3, Number(batchSize) || 2));
-    const pauseMs = Math.max(16, Number(yieldMs) || 30);
+    const width = Number(globalThis.innerWidth) || 0;
+    const mobile = (width > 0 && width <= 680) || globalThis.matchMedia?.('(pointer: coarse)').matches === true;
+    const step = Math.max(1, Math.min(mobile ? 1 : 3, Number(batchSize) || 2));
+    const pauseMs = Math.max(mobile ? 80 : 16, Number(yieldMs) || 30);
     let done = 0;
 
     for (let i = 0; i < total; i += step) {

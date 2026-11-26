@@ -41,6 +41,7 @@ import {
     teardownPanels,
 } from './panel.js';
 import { hasEnabledLegacyGrouping, isLegacyGroupingMounted } from './legacy.js';
+import { isEntryGroupingEnabled } from './feature-gate.js';
 
 let _initialized = false;
 let _lifecycleEpoch = 0;
@@ -63,7 +64,8 @@ let _onWboEntriesUpdated = null;
 let _onWegOpenPanel = null;
 
 export function isEntryGroupingAvailable() {
-    return _initialized || isLegacyGroupingMounted();
+    return isEntryGroupingEnabled(getHostContext()?.extensionSettings?.worldbook_organizer)
+        && (_initialized || isLegacyGroupingMounted());
 }
 
 function trackHostEvent(eventSource, eventName, handler) {
@@ -94,6 +96,7 @@ function scheduleChatSaveRouteSync(reason, delayMs) {
     _chatSwitchSyncTimer = setTimeout(async () => {
         _chatSwitchSyncTimer = null;
         if (!_initialized) return;
+        const epoch = _lifecycleEpoch;
         const settings = getSettings();
         if (settings.autoSwitchOnChatChange === false) {
             syncAllNativeEntryPoints();
@@ -106,9 +109,10 @@ function scheduleChatSaveRouteSync(reason, delayMs) {
         await syncWorldbookForActiveChat({
             reason,
             silentToast: reason === 'floor0-swipe',
+            isCurrent: () => _initialized && epoch === _lifecycleEpoch,
         });
 
-        if (!_initialized) return;
+        if (!_initialized || epoch !== _lifecycleEpoch) return;
         syncAllNativeEntryPoints();
         if (isEntryGroupsModalOpen()) {
             void refreshOpenModalBook({ silent: true, reason });
@@ -189,13 +193,15 @@ function registerSlashCommand(ctx) {
             SlashCommand.fromProps({
                 name: 'weg',
                 callback: async (_namedArgs, unnamedArgs) => {
-                    if (!_initialized) return '';
+                    if (!_initialized || !isEntryGroupingAvailable()) return '';
+                    const epoch = _lifecycleEpoch;
                     const arg = String(unnamedArgs ?? '').trim();
                     if (!arg) {
                         await openEntryGroupsModal();
                         return 'opened';
                     }
-                    const switched = await switchNamedGroupInActiveChat(arg);
+                    const switched = await switchNamedGroupInActiveChat(arg, { isCurrent: () => _initialized && epoch === _lifecycleEpoch });
+                    if (!_initialized || epoch !== _lifecycleEpoch) return '';
                     if (switched.matched) {
                         syncAllNativeEntryPoints();
                         if (isEntryGroupsModalOpen()) {
@@ -223,13 +229,17 @@ function registerSlashCommand(ctx) {
 }
 
 export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } = {}) {
-    if (_initialized) return;
     const ctx = getHostContext();
+    if (!isEntryGroupingEnabled(ctx?.extensionSettings?.worldbook_organizer)) return;
+    if (_initialized) return;
     if (!ctx || typeof document === 'undefined') return;
     const epoch = ++_lifecycleEpoch;
-    if (await hasEnabledLegacyGrouping(ctx) || epoch !== _lifecycleEpoch) return;
+    if (await hasEnabledLegacyGrouping(ctx) || epoch !== _lifecycleEpoch
+        || !isEntryGroupingEnabled(getHostContext()?.extensionSettings?.worldbook_organizer)) return;
     await ensureWorldInfoModule();
-    if (epoch !== _lifecycleEpoch || isLegacyGroupingMounted(ctx)) return;
+    if (epoch !== _lifecycleEpoch
+        || !isEntryGroupingEnabled(getHostContext()?.extensionSettings?.worldbook_organizer)
+        || isLegacyGroupingMounted(ctx)) return;
     _initialized = true;
     getSettings();
 
@@ -252,6 +262,10 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
 
     await syncAllNativeEntryPoints();
     if (!_initialized || epoch !== _lifecycleEpoch) return;
+    if (!isEntryGroupingEnabled(getHostContext()?.extensionSettings?.worldbook_organizer)) {
+        stopEntryGrouping();
+        return;
+    }
 
     if (typeof window !== 'undefined') {
         window.addEventListener('wbo:panel-theme-changed', syncEntryGroupsTheme);
@@ -405,7 +419,9 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
 
     // Awaited pre-WorldInfo hook: turns `scene` (NSFW) groups ON/OFF right before prompt assembly!
     trackHostEvent(eventSource, et.GENERATION_AFTER_COMMANDS, async (type, _opts, dryRun) => {
-        const res = await syncSceneGroupsBeforeGeneration(type, Boolean(dryRun));
+        const epoch = _lifecycleEpoch;
+        const res = await syncSceneGroupsBeforeGeneration(type, Boolean(dryRun), { isCurrent: () => _initialized && epoch === _lifecycleEpoch });
+        if (!_initialized || epoch !== _lifecycleEpoch) return;
         if (res.changedCount > 0 && isEntryGroupsModalOpen()) {
             void refreshOpenModalBook({ silent: true, reason: 'scene-auto' });
         }

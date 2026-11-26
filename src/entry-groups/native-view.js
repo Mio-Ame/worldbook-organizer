@@ -18,6 +18,9 @@ let groupMarkers = [];
 const groupHeadings = new Map();
 const collapsedGroups = new Set();
 let groupDrag = null;
+let rowGroupIds = new WeakMap();
+let nativeBackupLabel = '';
+let nativeSession = 0;
 
 const nativeColumnControls = new Map([
     ['Title/Memo', 'textarea[name="comment"]'],
@@ -154,6 +157,52 @@ function updateNativeUndoButton(button) {
     return label;
 }
 
+function makeNativeGroupMenu(resolveGroup, withPin = true) {
+    const menu = document.createElement('details');
+    menu.className = 'weg-native-group-menu';
+    const summary = document.createElement('summary');
+    summary.setAttribute('aria-label', '更多分组操作');
+    summary.title = '更多分组操作';
+    summary.innerHTML = '<i class="fa-solid fa-ellipsis" aria-hidden="true"></i>';
+    const items = document.createElement('div');
+    items.className = 'weg-native-group-menu-items';
+    menu.append(summary, items);
+    for (const type of ['mousedown', 'touchstart', 'click']) menu.addEventListener(type, (event) => event.stopPropagation());
+    if (withPin) {
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'weg-native-group-pin';
+        pin.innerHTML = '<i class="fa-regular fa-star" aria-hidden="true"></i><span></span>';
+        pin.addEventListener('click', () => {
+            menu.open = false;
+            if (visibleBook) nativeActions?.pinGroup?.(visibleBook, resolveGroup());
+        });
+        items.append(pin);
+    }
+    const restore = document.createElement('button');
+    restore.type = 'button';
+    restore.className = 'weg-native-restore-backup';
+    restore.addEventListener('click', () => {
+        menu.open = false;
+        if (visibleBook && nativeBackupLabel && !nativeActions?.busy) nativeActions?.restoreBackup?.(visibleBook);
+    });
+    items.append(restore);
+    updateNativeGroupMenu(menu);
+    return menu;
+}
+
+function updateNativeGroupMenu(menu) {
+    const restore = menu.querySelector('.weg-native-restore-backup');
+    const label = nativeBackupLabel || '暂无操作前备份';
+    if (restore.textContent !== label) restore.textContent = label;
+    setAttributeIfChanged(restore, 'title', label);
+    setAttributeIfChanged(restore, 'aria-label', label);
+    const disabled = !nativeBackupLabel || Boolean(nativeActions?.busy);
+    if (restore.disabled !== disabled) restore.disabled = disabled;
+    const hidden = !nativeBackupLabel && !menu.querySelector('.weg-native-group-pin');
+    if (menu.hidden !== hidden) menu.hidden = hidden;
+}
+
 function makeGroupControls(parent, resolveGroup, { withUndo = true } = {}) {
     if (withUndo) {
         const handle = document.createElement('button');
@@ -194,26 +243,18 @@ function makeGroupControls(parent, resolveGroup, { withUndo = true } = {}) {
     const toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = 'weg-native-group-switch';
+    toggle.dataset.wegNativeGroupToggle = '1';
     toggle.setAttribute('role', 'checkbox');
-    const toggleIcon = document.createElement('i');
-    toggleIcon.setAttribute('aria-hidden', 'true');
-    toggle.append(toggleIcon);
+    const count = document.createElement('span');
+    count.className = 'weg-native-group-count';
     toggle.addEventListener('click', (event) => {
         event.stopPropagation();
         const groupId = resolveGroup();
         if (visibleBook && groupId) void nativeActions?.toggleGroup(visibleBook, groupId);
     });
-    parent.append(button, toggle);
+    parent.append(button, count, toggle);
     if (withUndo) {
-        const pin = document.createElement('button');
-        pin.type = 'button';
-        pin.className = 'weg-native-group-pin';
-        pin.innerHTML = '<i class="fa-regular fa-star" aria-hidden="true"></i>';
-        pin.addEventListener('click', (event) => {
-            event.stopPropagation();
-            if (visibleBook) nativeActions?.pinGroup(visibleBook, resolveGroup());
-        });
-        parent.append(makeNativeUndoButton(), pin);
+        parent.append(makeNativeUndoButton(), makeNativeGroupMenu(resolveGroup));
     }
 }
 
@@ -231,12 +272,15 @@ function updateGroupControls(parent, name, collapsed, canFold, total, enabled, r
     const on = total > 0 && (radio ? enabled > 0 : enabled === total);
     const state = partial ? 'mixed' : on ? 'true' : enabled > 0 ? 'mixed' : 'false';
     setAttributeIfChanged(toggle, 'aria-checked', state);
-    const action = partial ? '切换整组条目' : enabled > 0 ? '关闭整组并记住搭配' : paused ? '恢复上次搭配' : '开启整组条目';
+    const action = enabled > 0 ? '关闭整组并记住搭配' : paused ? '恢复上次搭配' : '开启整组条目';
     const label = `${action}：${name}`;
     setAttributeIfChanged(toggle, 'aria-label', label);
     setAttributeIfChanged(toggle, 'title', label);
-    const icon = `fa-solid ${state === 'mixed' ? 'fa-circle-half-stroke' : on ? 'fa-toggle-on' : 'fa-toggle-off'}`;
-    if (toggle.firstElementChild.className !== icon) toggle.firstElementChild.className = icon;
+    const text = enabled > 0 ? '关闭本组' : paused ? '恢复本组' : '开启本组';
+    if (toggle.textContent !== text) toggle.textContent = text;
+    const count = parent.querySelector('.weg-native-group-count');
+    const counts = `已开 ${enabled}/${total} 条`;
+    if (count.textContent !== counts) count.textContent = counts;
     const disabled = total === 0 || Boolean(nativeActions?.busy);
     if (toggle.disabled !== disabled) toggle.disabled = disabled;
     updateNativeUndoButton(parent.querySelector('.weg-native-group-undo'));
@@ -246,31 +290,83 @@ function updateGroupControls(parent, name, collapsed, canFold, total, enabled, r
     setAttributeIfChanged(pin, 'aria-label', pinned ? '取消收藏分组' : '收藏分组');
     setAttributeIfChanged(pin, 'title', pinned ? '取消收藏分组' : '收藏分组');
     pin.firstElementChild.className = `${pinned ? 'fa-solid' : 'fa-regular'} fa-star`;
+    const pinText = pinned ? '取消收藏分组' : '收藏分组';
+    if (pin.lastElementChild.textContent !== pinText) pin.lastElementChild.textContent = pinText;
+    updateNativeGroupMenu(parent.querySelector('.weg-native-group-menu'));
     parent.querySelector('.weg-native-group-drag').disabled = !canFold || Boolean(nativeActions?.busy);
 }
 
 function finishGroupDrag(event) {
     if (!groupDrag || (event && event.pointerId !== groupDrag.pointerId)) return;
-    const { source, target, after, pointerId, book } = groupDrag;
+    const { source, target, after, pointerId, book, entryUid, targetGroupId, targetUid } = groupDrag;
     groupDrag = null;
     source.classList.remove('weg-native-group-dragging');
     target?.classList.remove('weg-native-drop-before', 'weg-native-drop-after');
     if (source.hasPointerCapture(pointerId)) source.releasePointerCapture(pointerId);
-    if (event?.type === 'pointerup' && target && visibleBook === book && !nativeActions?.busy) {
-        nativeActions?.moveGroup(book, source.dataset.groupId, target.dataset.groupId, after);
+    if (event?.type === 'pointerup' && target?.isConnected && source.isConnected && visibleBook === book && !nativeActions?.busy) {
+        if (entryUid !== undefined) void commitNativeEntryMove(decoratedList, book, entryUid, targetGroupId, targetUid, after);
+        else nativeActions?.moveGroup(book, source.dataset.groupId, targetGroupId, after);
     }
 }
 
+async function commitNativeEntryMove(list, book, uid, groupId, targetUid, after) {
+    const session = nativeSession;
+    try {
+        const result = await nativeActions?.moveEntry?.(book, uid, groupId, targetUid, after);
+        if (session === nativeSession && list === decoratedList && list?.isConnected && visibleBook === book && Array.isArray(result?.orderedUids)) {
+            applyNativeEntryOrder(book, result.orderedUids);
+        }
+    } catch (error) {
+        showToast('error', `移动条目失败：${error?.message || ''}`);
+    }
+}
+
+// Only commit an explicitly saved order; ordinary group rendering leaves host DOM order alone.
+export function applyNativeEntryOrder(worldName, orderedUids) {
+    const list = decoratedList;
+    if (visibleBook !== worldName || !list?.isConnected || !Array.isArray(orderedUids)) return;
+    const rows = [...list.querySelectorAll(':scope > .world_entry[uid]:not(.ui-sortable-helper):not(.ui-sortable-placeholder)')];
+    const byUid = new Map(rows.map((row) => [row.getAttribute('uid'), row]));
+    const ordered = [];
+    for (const uid of orderedUids) {
+        const row = byUid.get(String(uid));
+        if (!row) continue;
+        ordered.push(row);
+        byUid.delete(String(uid));
+    }
+    ordered.push(...byUid.values());
+    if (!ordered.some((row, index) => rows[index] !== row)) return;
+    const scroller = findScrollableContent(rows[0], document.getElementById('WorldInfo')?.parentElement);
+    const scrollTop = scroller?.scrollTop;
+    const fragment = document.createDocumentFragment();
+    fragment.append(...ordered);
+    list.append(fragment);
+    refreshNativeRows();
+    if (scroller) scroller.scrollTop = scrollTop;
+}
+
 function startGroupDrag(event) {
-    const handle = event.target.closest?.('[data-weg-native-group-drag]');
+    const handle = event.target.closest?.('[data-weg-native-group-drag], .drag-handle');
     if (!handle || handle.disabled || event.button !== 0 || !event.isPrimary) return;
+    const entry = handle.matches('.drag-handle') ? handle.closest('.world_entry[uid]') : null;
+    const source = entry || handle.closest(`.${HEADING_CLASS}`);
+    if (!source || !decoratedList?.contains(source) || nativeActions?.busy || (entry && !rowGroupIds.has(entry))) return;
+    finishGroupDrag();
     event.preventDefault();
     event.stopPropagation();
-    const source = handle.closest(`.${HEADING_CLASS}`);
     groupDrag = { source, book: visibleBook, pointerId: event.pointerId,
+        entryUid: entry?.getAttribute('uid'),
         pinned: new Set(getNativeGroupingState(visibleBook).config?.pinnedGroupIds || []) };
     source.classList.add('weg-native-group-dragging');
     source.setPointerCapture(event.pointerId);
+}
+
+function blockHostDrag(event) {
+    // The grouped list uses CSS order, while the host sortable writes DOM order.
+    // Keep the original row in flow instead of creating an order:0 placeholder.
+    if (!groupDrag || !event.target.closest?.('.drag-handle, [data-weg-native-group-drag]')) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
 }
 
 function moveGroupDrag(event) {
@@ -278,13 +374,29 @@ function moveGroupDrag(event) {
     const { source } = groupDrag;
     groupDrag.target?.classList.remove('weg-native-drop-before', 'weg-native-drop-after');
     groupDrag.target = null;
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(`.${HEADING_CLASS}`);
-    if (!target || target === source || !decoratedList.contains(target)) return;
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const heading = hit?.closest(`.${HEADING_CLASS}, .weg-native-sticky-group`);
+    const row = hit?.closest('.world_entry[uid]');
+    const id = heading?.dataset.groupId ?? rowGroupIds.get(row);
+    const target = heading || row;
+    if (!target || target === source || !decoratedList.contains(target) || !groupHeadings.has(id)) return;
+    if (groupDrag.entryUid !== undefined) {
+        if (row === source && !heading) return;
+        groupDrag.target = target;
+        groupDrag.targetGroupId = id;
+        groupDrag.targetUid = heading ? null : row.getAttribute('uid');
+        groupDrag.after = Boolean(heading) || event.clientY > row.getBoundingClientRect().top + row.getBoundingClientRect().height / 2;
+        target.classList.add(groupDrag.after ? 'weg-native-drop-after' : 'weg-native-drop-before');
+        return;
+    }
+    if (id === source.dataset.groupId) return;
     const { pinned } = groupDrag;
-    if (pinned.has(source.dataset.groupId) !== pinned.has(target.dataset.groupId)) return;
+    if (pinned.has(source.dataset.groupId) !== pinned.has(id)) return;
     const rect = target.getBoundingClientRect();
     groupDrag.target = target;
-    groupDrag.after = event.clientY > rect.top + rect.height / 2;
+    groupDrag.targetGroupId = id;
+    groupDrag.after = heading ? event.clientY > rect.top + rect.height / 2
+        : groupMarkers.indexOf(source) < groupMarkers.indexOf(groupHeadings.get(id));
     target.classList.add(groupDrag.after ? 'weg-native-drop-after' : 'weg-native-drop-before');
 }
 
@@ -301,7 +413,8 @@ function updateStickyGroup() {
     if (!stickyBar?.isConnected) return;
     const controls = stickyBar.querySelector('.weg-native-sticky-group');
     if (!controls?.querySelector('.weg-native-group-disclosure > span')
-        || !controls.querySelector('.weg-native-group-switch > i') || !controls.querySelector('.weg-native-group-undo > svg')) {
+        || !controls.querySelector('[data-weg-native-group-toggle]') || !controls.querySelector('.weg-native-group-count')
+        || !controls.querySelector('.weg-native-group-undo > svg') || !controls.querySelector('.weg-native-restore-backup')) {
         syncStickyBar(decoratedList);
         return;
     }
@@ -318,11 +431,13 @@ function updateStickyGroup() {
     const show = Boolean(heading && !collapsedGroups.has(id));
     controls.hidden = !show;
     updateNativeUndoButton(controls.querySelector('.weg-native-group-undo'));
+    updateNativeGroupMenu(controls.querySelector('.weg-native-group-menu'));
     if (!show) return;
     if (controls.dataset.groupId !== id) controls.dataset.groupId = id;
     const sourceDisclosure = heading.querySelector('.weg-native-group-disclosure');
     const sourceToggle = heading.querySelector('.weg-native-group-switch');
-    const [disclosure, toggle] = controls.children;
+    const disclosure = controls.querySelector('.weg-native-group-disclosure');
+    const toggle = controls.querySelector('.weg-native-group-switch');
     const name = sourceDisclosure.lastElementChild.textContent;
     if (disclosure.lastElementChild.textContent !== name) disclosure.lastElementChild.textContent = name;
     disclosure.disabled = sourceDisclosure.disabled;
@@ -332,16 +447,19 @@ function updateStickyGroup() {
     for (const name of ['aria-checked', 'aria-label', 'title']) {
         setAttributeIfChanged(toggle, name, sourceToggle.getAttribute(name));
     }
-    if (toggle.firstElementChild.className !== sourceToggle.firstElementChild.className) {
-        toggle.firstElementChild.className = sourceToggle.firstElementChild.className;
-    }
+    if (toggle.textContent !== sourceToggle.textContent) toggle.textContent = sourceToggle.textContent;
+    const count = controls.querySelector('.weg-native-group-count');
+    const sourceCount = heading.querySelector('.weg-native-group-count').textContent;
+    if (count.textContent !== sourceCount) count.textContent = sourceCount;
 }
 
 function syncStickyBar(list) {
     if (!list?.isConnected) return;
     if (!stickyBar?.isConnected || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-disclosure > span')
-        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-switch > i')
-        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-undo > svg')) {
+        || !stickyBar.querySelector('.weg-native-sticky-group > [data-weg-native-group-toggle]')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-count')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-undo > svg')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-menu .weg-native-restore-backup')) {
         stickyBar?.remove();
         stickyBar = document.createElement('div');
         stickyBar.className = 'weg-native-list-sticky';
@@ -350,7 +468,7 @@ function syncStickyBar(list) {
         controls.className = 'weg-native-sticky-group';
         controls.hidden = true;
         makeGroupControls(controls, () => controls.dataset.groupId, { withUndo: false });
-        controls.append(makeNativeUndoButton());
+        controls.append(makeNativeUndoButton(), makeNativeGroupMenu(() => controls.dataset.groupId, false));
         bar.append(controls);
         stickyBar.append(bar);
         document.addEventListener('scroll', handleNativeScroll, { capture: true, passive: true });
@@ -389,7 +507,7 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         clearNativeGroupRows();
         return;
     }
-    const rows = [...(list?.querySelectorAll('.world_entry[uid]') || [])];
+    const rows = [...(list?.querySelectorAll('.world_entry[uid]:not(.ui-sortable-helper):not(.ui-sortable-placeholder)') || [])];
     if (!visibleBook || !rows?.length) {
         clearNativeGroupRows();
         return;
@@ -398,7 +516,9 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         clearNativeGroupRows();
         decoratedList = list;
         list.addEventListener('click', handleNativeEntryToggle);
-        list.addEventListener('pointerdown', startGroupDrag);
+        list.addEventListener('pointerdown', startGroupDrag, true);
+        list.addEventListener('mousedown', blockHostDrag, true);
+        list.addEventListener('touchstart', blockHostDrag, { capture: true, passive: false });
         list.addEventListener('pointermove', moveGroupDrag);
         for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) list.addEventListener(type, finishGroupDrag);
         if (typeof MutationObserver === 'function') {
@@ -414,8 +534,10 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
     };
     const sortGroups = groups.size > 0 || Boolean(config?.nativeGroupOrder?.length || config?.pinnedGroupIds?.length);
     const ranks = new Map(getNativeGroupOrder(config).map((id, index) => [id, index]));
+    rowGroupIds = new WeakMap();
     list.classList.toggle('weg-native-sorted-groups', sortGroups);
     for (const row of rows) {
+        rowGroupIds.set(row, getGroupId(row.getAttribute('uid')));
         if (sortGroups) row.style.setProperty('--weg-native-group-rank', ranks.get(getGroupId(row.getAttribute('uid'))));
         else row.style.removeProperty('--weg-native-group-rank');
     }
@@ -463,9 +585,11 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
             row.prepend(heading);
         }
         if (!heading.querySelector(':scope > .weg-native-group-disclosure > span')
-            || !heading.querySelector(':scope > .weg-native-group-switch > i')
+            || !heading.querySelector(':scope > [data-weg-native-group-toggle]')
+            || !heading.querySelector(':scope > .weg-native-group-count')
             || !heading.querySelector(':scope > .weg-native-group-undo > svg')
-            || !heading.querySelector(':scope > .weg-native-group-pin > i')) {
+            || !heading.querySelector(':scope > .weg-native-group-menu .weg-native-group-pin > span')
+            || !heading.querySelector(':scope > .weg-native-group-menu .weg-native-restore-backup')) {
             heading.replaceChildren();
             makeGroupControls(heading, () => heading.dataset.groupId);
         }
@@ -485,6 +609,8 @@ export function syncNativeEntryGroups(actions) {
     const pagination = document.getElementById('world_info_pagination');
     const list = document.getElementById('world_popup_entries_list');
     const worldName = getCurrentEditorWorldName();
+    // Compute once per explicit sync, never normalize all settings on scroll.
+    nativeBackupLabel = actions.backupLabel?.(worldName) || '';
     const state = getNativeGroupingState(worldName);
     if (visibleBook !== worldName) {
         clearNativeGroupRows();
@@ -506,6 +632,7 @@ export function revealNativeEntryGroup(worldName, uid) {
 }
 
 function clearNativeGroupRows() {
+    nativeSession++;
     if (!decoratedList) return;
     finishGroupDrag();
     nativeThemeObserver?.disconnect();
@@ -513,7 +640,9 @@ function clearNativeGroupRows() {
     decoratedList.classList.remove('weg-native-themed', 'weg-theme-light', 'weg-theme-dark');
     decoratedList.removeAttribute('data-weg-palette');
     decoratedList.removeEventListener('click', handleNativeEntryToggle);
-    decoratedList.removeEventListener('pointerdown', startGroupDrag);
+    decoratedList.removeEventListener('pointerdown', startGroupDrag, true);
+    decoratedList.removeEventListener('mousedown', blockHostDrag, true);
+    decoratedList.removeEventListener('touchstart', blockHostDrag, true);
     decoratedList.removeEventListener('pointermove', moveGroupDrag);
     for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) decoratedList.removeEventListener(type, finishGroupDrag);
     decoratedList.classList.remove('weg-native-sorted-groups');
@@ -526,6 +655,7 @@ function clearNativeGroupRows() {
     stickyBar = null;
     groupMarkers = [];
     groupHeadings.clear();
+    rowGroupIds = new WeakMap();
     decoratedList.querySelectorAll(`.${HEADING_CLASS}`).forEach((heading) => heading.remove());
     decoratedList.querySelectorAll(`.${COLLAPSED_CLASS}, .weg-native-group-start`).forEach((row) => {
         row.classList.remove(COLLAPSED_CLASS, 'weg-native-group-start');
@@ -540,5 +670,6 @@ export function removeNativeEntryGroups() {
     clearNativeGroupRows();
     visibleBook = null;
     nativeActions = null;
+    nativeBackupLabel = '';
     collapsedGroups.clear();
 }

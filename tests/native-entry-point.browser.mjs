@@ -8,7 +8,7 @@ if (!suite) throw new Error('Set WBO_E2E_SUITE to the retained browser regressio
 const load = (name) => import(pathToFileURL(resolve(suite, 'lib', name)).href);
 const { createMockStServer } = await load('mock-server.mjs');
 const { VIEWPORTS, launchEdgeCdp } = await load('cdp.mjs');
-const { createDefaultSeed, makeBook, makeEntry } = await load('fixtures.mjs');
+const { createDefaultSeed, makeBook, makeEntry } = await import('./entry-groups-fixtures.mjs');
 const { resetAndBoot, waitForCondition } = await load('assert-helpers.mjs');
 
 async function withHost(viewport, verify) {
@@ -117,6 +117,42 @@ async function assertDormant(cdp) {
 }
 
 for (const device of ['desktop', 'mobile']) {
+    test(`${device} page size and grouping stay paired across pagination widths and rerenders`, async () => {
+        await withHost(VIEWPORTS[device], async (cdp) => {
+            await changeSelection(cdp, 'native');
+            for (const width of [540, 360, 320, 540]) {
+                await cdp.evalFn((width) => {
+                    const pager = window.entryAudit.pager;
+                    pager.style.cssText = `width:${width}px;max-width:100%;display:block`;
+                    pager.innerHTML = '<div class="paginationjs" style="display:flex;flex-wrap:wrap;gap:8px"><div class="paginationjs-pages" style="flex:1 0 210px;height:28px">1　2　3　4　5</div><div class="paginationjs-size-changer" style="width:70px"><select style="height:28px;font-size:14px;width:60px"><option>25</option><option>50</option></select></div></div>';
+                }, width);
+                await waitForCondition(cdp, () => document.querySelectorAll('#weg-native-entry-controls').length === 1);
+                const layout = await cdp.evalFn(() => {
+                    const size = window.entryAudit.pager.querySelector('select').getBoundingClientRect();
+                    const manager = document.getElementById('weg-native-group-manager').getBoundingClientRect();
+                    const toggle = document.getElementById('weg-native-group-enabled').getBoundingClientRect();
+                    return { sizeTop: size.top, top: manager.top, height: manager.height, sizeHeight: size.height,
+                        toggleTop: toggle.top, right: toggle.right, viewport: innerWidth };
+                });
+                assert.ok(Math.abs(layout.sizeTop - layout.top) <= 1, `page size and grouping must share a row: ${JSON.stringify(layout)}`);
+                assert.ok(Math.abs(layout.toggleTop - layout.top) <= 1);
+                assert.ok(Math.abs(layout.height - layout.sizeHeight) <= 1);
+                assert.ok(layout.right <= layout.viewport);
+                await assertDormant(cdp);
+            }
+            const cleanup = await cdp.evalFn(async () => {
+                const pager = window.entryAudit.pager;
+                const parent = pager.querySelector('.paginationjs-size-changer');
+                const select = parent.querySelector('select');
+                const { stopEntryGrouping } = await import('/scripts/extensions/third-party/worldbook-organizer/src/entry-groups/lifecycle.js');
+                stopEntryGrouping();
+                return { sameSelect: select === parent.querySelector('select'), nativeClass: parent.className, width: parent.style.width,
+                    entry: Boolean(document.getElementById('weg-native-entry-controls')) };
+            });
+            assert.deepEqual(cleanup, { sameSelect: true, nativeClass: 'paginationjs-size-changer', width: '70px', entry: false }, 'stop restores the borrowed page-size shell');
+        });
+    });
+
     for (const method of ['native', 'jquery']) {
         test(`${device} ${method} selection mounts dormant entry without editor-loaded event and cleans up on disable`, async () => {
             await withHost(VIEWPORTS[device], async (cdp) => {
@@ -137,8 +173,8 @@ for (const device of ['desktop', 'mobile']) {
                 await cdp.evalFn(() => new Promise((resolve) => setTimeout(resolve, 80)));
                 assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('weg-native-entry-controls'))), false, 'hidden entry stays hidden after selection and pagination rendering');
                 await setPreferences(cdp, { showNativeEntryBtn: true, enableNativeGrouping: false });
-                await waitForCondition(cdp, () => document.getElementById('weg-native-group-enabled')?.disabled);
-                assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('weg-native-group-manager'))), true, 'permission disables enhancement, not its manager entry');
+                await waitForCondition(cdp, () => !document.getElementById('weg-native-entry-controls'));
+                assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('weg-native-group-manager'))), false, 'the old disabled preference remains off without a stranded entry');
                 await assertDormant(cdp);
                 const idleReads = await cdp.evalFn(async () => {
                     const drawer = document.getElementById('WorldInfo');
@@ -182,6 +218,25 @@ for (const device of ['desktop', 'mobile']) {
             });
         });
     }
+    test(`${device} pagination wrapper receives a delayed page-size shell without row enhancement`, async () => {
+        await withHost(VIEWPORTS[device], async (cdp) => {
+            await changeSelection(cdp, 'native');
+            await cdp.evalFn(() => {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'paginationjs';
+                window.entryAudit.pager.replaceChildren(wrapper);
+            });
+            await cdp.evalFn(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+            await cdp.evalFn(() => {
+                const shell = document.createElement('div');
+                shell.className = 'paginationjs-size-changer';
+                shell.innerHTML = '<select style="height:32px;font-size:14px"><option>50</option></select>';
+                window.entryAudit.pager.querySelector('.paginationjs').append(shell);
+            });
+            await waitForCondition(cdp, () => document.querySelector('.paginationjs-size-changer > #weg-native-entry-controls'), 1200);
+            await assertDormant(cdp);
+        });
+    });
     test(`${device} existing pagination observes delayed internal page-size rendering without row enhancement`, async () => {
         await withHost(VIEWPORTS[device], async (cdp) => {
             await changeSelection(cdp, 'native');

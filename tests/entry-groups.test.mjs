@@ -313,7 +313,7 @@ test('Overlapping greeting lore presets (shared common lore + distinct route lor
 
     const preset2 = computeGreetingPresetPlan(summaries, greetIdx, 2);
     assert.ok(preset2);
-    assert.equal(preset2.routeLabel, '#2 重逢酒会');
+    assert.equal(preset2.routeLabel, '第 3 条开场白 重逢酒会');
     // Common lore 1 & 2 stay ENABLED (`disabled = false`), 20 & 21 ENABLED, while 10 & 11 turn OFF (`disabled = true`)!
     assert.equal(preset2.plan.get('1'), false);
     assert.equal(preset2.plan.get('2'), false);
@@ -483,6 +483,442 @@ test('Zero chat-history scan + external script auto-follow + greeting preset loc
         globalThis.SillyTavern = origST;
     }
 });
+
+for (const scenario of [
+    { name: 'primary worldbook in an active chat', chatId: 'fixture-chat', primaryWorld: '测试主书', saved: true },
+    { name: 'no active chat', chatId: '', primaryWorld: '测试主书', saved: false },
+    { name: 'non-primary worldbook in an active chat', chatId: 'fixture-chat', primaryWorld: '其它主书', saved: false },
+]) {
+    test(`greeting preset reports chat save truthfully: ${scenario.name}`, async (t) => {
+        clearRuntimeBookSnapshots();
+        t.after(clearRuntimeBookSnapshots);
+        const profileBefore = {
+            worldName: '测试主书', routeLabel: '先前方案', ifGroupId: '',
+            entryDisabledMap: { 1: true }, updatedAt: 123,
+        };
+        const context = {
+            extensionSettings: { worldbook_entry_groups: normalizeSettings(null) },
+            characterId: 0,
+            characters: [{ avatar: 'fixture.png', data: { extensions: { world: scenario.primaryWorld } } }],
+            getCurrentChatId: () => scenario.chatId,
+            chatMetadata: scenario.saved ? { worldbook_entry_groups: structuredClone(profileBefore) } : {},
+            chat: [],
+            saveSettingsDebounced: () => {},
+            saveMetadataDebounced: t.mock.fn(),
+        };
+        const previous = globalThis.SillyTavern;
+        globalThis.SillyTavern = { getContext: () => context };
+        t.after(() => { globalThis.SillyTavern = previous; });
+        let payload = { entries: { 1: { uid: 1, comment: '基础资料', key: [], content: '资料', disable: true } } };
+        let writes = 0;
+        t.mock.method(globalThis, 'fetch', async (url, init) => {
+            const body = JSON.parse(init.body);
+            assert.equal(body.name, '测试主书');
+            if (url === '/api/worldinfo/get') {
+                return { ok: true, json: async () => structuredClone(payload) };
+            }
+            assert.equal(url, '/api/worldinfo/edit');
+            payload = structuredClone(body.data);
+            writes++;
+            return { ok: true, json: async () => ({ ok: true }) };
+        });
+        const index = buildGreetingCoordinationIndex({ firstMes: '<!-- lore: 1 -->' });
+        const result = await applyGreetingPresetToWorldbook('测试主书', index, 0);
+        assert.equal(result.ok, true);
+        assert.equal(result.changedCount, 1);
+        assert.equal(writes, 1);
+        assert.equal(payload.entries[1].disable, false);
+        assert.equal(result.routeLabel, '第 1 条开场白');
+        assert.equal(context.saveMetadataDebounced.mock.callCount(), scenario.saved ? 1 : 0);
+        if (scenario.saved) {
+            assert.equal(context.chatMetadata.worldbook_entry_groups.entryDisabledMap['1'], false);
+            assert.equal(context.chatMetadata.worldbook_entry_groups.routeLabel, result.routeLabel);
+        } else {
+            assert.deepEqual(context.chatMetadata, {});
+        }
+        assert.equal(result.savedToChat, scenario.saved);
+        assert.equal(result.boundChatKey, scenario.saved ? 'fixture.png::fixture-chat' : '');
+        assert.deepEqual(result.appliedChanges, [{ uid: '1', disabled: false }]);
+        assert.deepEqual(result.undoProfileBefore, scenario.saved ? profileBefore : null);
+    });
+}
+
+test('greeting preset recomputes referenced UIDs from the fresh write payload', async (t) => {
+    clearRuntimeBookSnapshots();
+    t.after(clearRuntimeBookSnapshots);
+    const previous = globalThis.SillyTavern;
+    globalThis.SillyTavern = { getContext: () => null };
+    t.after(() => { globalThis.SillyTavern = previous; });
+    const original = { entries: {
+        1: { uid: 1, comment: '基础资料', key: [], content: '资料', disable: true },
+        3: { uid: 3, comment: '独立资料', key: [], content: '原文', disable: false },
+    } };
+    const fresh = structuredClone(original);
+    fresh.entries[2] = { uid: 2, comment: '新增资料', key: [], content: '新增原文', disable: true };
+    let reads = 0;
+    let writes = 0;
+    let written;
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.name, '测试主书');
+        if (url === '/api/worldinfo/get') {
+            const payload = ++reads === 1 ? original : fresh;
+            return { ok: true, json: async () => structuredClone(payload) };
+        }
+        assert.equal(url, '/api/worldinfo/edit');
+        writes++;
+        written = body.data;
+        return { ok: true, json: async () => ({ ok: true }) };
+    });
+    const index = buildGreetingCoordinationIndex({ firstMes: '<!-- lore: 1,2 -->' });
+    const result = await applyGreetingPresetToWorldbook('测试主书', index, 0);
+    assert.equal(result.ok, true);
+    assert.equal(reads, 2);
+    assert.equal(writes, 1);
+    assert.equal(result.changedCount, 2);
+    assert.deepEqual(result.appliedChanges, [
+        { uid: '1', disabled: false }, { uid: '2', disabled: false },
+    ]);
+    const expected = structuredClone(fresh);
+    expected.entries[1].disable = false;
+    expected.entries[2].disable = false;
+    assert.deepEqual(written, expected);
+    assert.equal(result.summaries.find((entry) => entry.uid === '2').disabled, false);
+    assert.equal(result.savedToChat, false);
+    assert.equal(result.undoProfileBefore, null);
+});
+
+function installGreetingGuardFixture(t, { interruptAt, switchChat = false, initiallyDisabled = true } = {}) {
+    clearRuntimeBookSnapshots();
+    t.after(clearRuntimeBookSnapshots);
+    const previousProfile = {
+        worldName: '测试主书', routeLabel: '先前方案', ifGroupId: '',
+        entryDisabledMap: { 1: initiallyDisabled }, updatedAt: 123,
+    };
+    const metadataA = { worldbook_entry_groups: structuredClone(previousProfile) };
+    const metadataB = {};
+    const context = {
+        extensionSettings: { worldbook_entry_groups: normalizeSettings(null) },
+        characterId: 0,
+        characters: [{ avatar: 'fixture.png', data: { extensions: { world: '测试主书' } } }],
+        getCurrentChatId: () => chatId,
+        chatMetadata: metadataA, chat: [],
+        saveSettingsDebounced: () => {}, saveMetadataDebounced: t.mock.fn(),
+    };
+    let chatId = 'A';
+    let current = interruptAt !== 'start';
+    let reads = 0;
+    let writes = 0;
+    let payload = { entries: { 1: { uid: 1, comment: '资料', content: '保留正文', disable: initiallyDisabled } } };
+    const previous = globalThis.SillyTavern;
+    globalThis.SillyTavern = { getContext: () => context };
+    t.after(() => { globalThis.SillyTavern = previous; });
+    const interrupt = (phase) => {
+        if (phase !== interruptAt) return;
+        if (switchChat) { chatId = 'B'; context.chatMetadata = metadataB; }
+        else current = false;
+    };
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.name, '测试主书');
+        if (url === '/api/worldinfo/get') {
+            const phase = ++reads === 1 ? 'first-read' : 'fresh-read';
+            return { ok: true, json: async () => { interrupt(phase); return structuredClone(payload); } };
+        }
+        assert.equal(url, '/api/worldinfo/edit');
+        writes++;
+        payload = structuredClone(body.data);
+        interrupt('write-sent');
+        return { ok: true, json: async () => ({ ok: true }) };
+    });
+    return {
+        run: () => applyGreetingPresetToWorldbook('测试主书', buildGreetingCoordinationIndex({ firstMes: '<!-- lore: 1 -->' }), 0, { isCurrent: () => current }),
+        context, metadataA, metadataB, previousProfile,
+        counts: () => ({ reads, writes }),
+    };
+}
+
+for (const interruptAt of ['first-read', 'fresh-read', 'write-sent']) {
+    test(`greeting preset never binds another chat after switching at ${interruptAt}`, async (t) => {
+        const fixture = installGreetingGuardFixture(t, { interruptAt, switchChat: true });
+        const result = await fixture.run();
+        assert.equal(result.ok, true);
+        assert.equal(result.changedCount, 1);
+        assert.deepEqual(result.appliedChanges, [{ uid: '1', disabled: false }]);
+        assert.equal(result.savedToChat, false);
+        assert.equal(result.boundChatKey, '');
+        assert.deepEqual(result.undoProfileBefore, fixture.previousProfile);
+        assert.deepEqual(fixture.metadataA, { worldbook_entry_groups: fixture.previousProfile });
+        assert.deepEqual(fixture.metadataB, {});
+        assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+        assert.equal(fixture.counts().writes, 1);
+    });
+}
+
+for (const interruptAt of ['start', 'first-read', 'fresh-read', 'write-sent']) {
+    test(`greeting preset respects stop at ${interruptAt} without pretending a sent write was cancelled`, async (t) => {
+        const fixture = installGreetingGuardFixture(t, { interruptAt });
+        const result = await fixture.run();
+        if (interruptAt === 'write-sent') {
+            assert.equal(result.ok, true);
+            assert.notEqual(result.cancelled, true);
+            assert.equal(result.changedCount, 1);
+            assert.deepEqual(result.appliedChanges, [{ uid: '1', disabled: false }]);
+            assert.equal(fixture.counts().writes, 1);
+            assert.equal(result.savedToChat, false);
+            assert.equal(result.boundChatKey, '');
+        } else {
+            assert.equal(result.ok, false);
+            assert.equal(result.cancelled, true);
+            assert.equal(fixture.counts().writes, 0);
+            if (interruptAt === 'start') assert.equal(fixture.counts().reads, 0);
+            if (interruptAt === 'first-read') assert.equal(fixture.counts().reads, 1);
+        }
+        assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+        assert.deepEqual(fixture.metadataA, { worldbook_entry_groups: fixture.previousProfile });
+    });
+}
+
+test('greeting preset returns metadata undo context even when no entry switch changes', async (t) => {
+    const fixture = installGreetingGuardFixture(t, { initiallyDisabled: false });
+    const result = await fixture.run();
+    assert.equal(result.ok, true);
+    assert.equal(result.changedCount, 0);
+    assert.deepEqual(result.appliedChanges, []);
+    assert.equal(result.savedToChat, true);
+    assert.equal(result.boundChatKey, 'fixture.png::A');
+    assert.deepEqual(result.undoProfileBefore, fixture.previousProfile);
+    assert.equal(fixture.context.chatMetadata.worldbook_entry_groups.routeLabel, '第 1 条开场白');
+    assert.equal(fixture.counts().writes, 0);
+});
+
+test('greeting preset errors explain an unavailable opening', async () => {
+    assert.deepEqual(await applyGreetingPresetToWorldbook('', null, 0), {
+        ok: false, error: '没有可用的开场方案',
+    });
+});
+
+test('greeting preset errors explain an unmarked opening', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => ({ entries: {} }) }));
+    const index = buildGreetingCoordinationIndex({ firstMes: '未标记的开场' });
+    assert.deepEqual(await applyGreetingPresetToWorldbook('测试主书', index, 0), {
+        ok: false, error: '作者未在这条开场白中标记条目',
+    });
+});
+
+function installAutomaticRestoreGuardFixture(t, { interruptAt, floorZero = false } = {}) {
+    clearRuntimeBookSnapshots();
+    t.after(clearRuntimeBookSnapshots);
+    const profile = {
+        worldName: '测试主书', routeLabel: '先前方案', ifGroupId: '',
+        entryDisabledMap: { 1: false }, updatedAt: 123,
+    };
+    const settings = normalizeSettings({ version: 2, autoSwitchOnChatChange: true });
+    const metadata = { worldbook_entry_groups: structuredClone(profile) };
+    const context = {
+        extensionSettings: { worldbook_entry_groups: settings },
+        characterId: 0,
+        characters: [{ avatar: 'fixture.png', first_mes: '<!-- lore: 1 -->', data: { extensions: { world: '测试主书' } } }],
+        getCurrentChatId: () => 'A',
+        chatMetadata: metadata,
+        chat: floorZero ? [{ mes: '<!-- lore: 1 -->' }] : [{}, {}],
+        saveSettingsDebounced: t.mock.fn(), saveMetadataDebounced: t.mock.fn(),
+    };
+    let current = interruptAt !== 'start';
+    let reads = 0;
+    let writes = 0;
+    let payload = { entries: { 1: { uid: 1, comment: '基础资料', content: '保留正文', disable: true } } };
+    const previous = globalThis.SillyTavern;
+    const previousToastr = globalThis.toastr;
+    const toast = t.mock.fn();
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info: toast };
+    t.after(() => { globalThis.SillyTavern = previous; globalThis.toastr = previousToastr; });
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.name, '测试主书');
+        if (url === '/api/worldinfo/get') {
+            const phase = ++reads === 1 ? 'first-read' : 'fresh-read';
+            return { ok: true, json: async () => {
+                if (interruptAt === phase) current = false;
+                return structuredClone(payload);
+            } };
+        }
+        assert.equal(url, '/api/worldinfo/edit');
+        writes++;
+        payload = structuredClone(body.data);
+        if (interruptAt === 'write-sent') current = false;
+        return { ok: true };
+    });
+    return {
+        run: () => syncWorldbookForActiveChat({
+            reason: floorZero ? 'floor0-swipe' : 'chat-changed', isCurrent: () => current,
+        }),
+        stop: () => { current = false; },
+        counts: () => ({ reads, writes }),
+        context, metadata, profile, settings, toast,
+    };
+}
+
+for (const interruptAt of ['start', 'first-read', 'fresh-read', 'write-sent']) {
+    test(`automatic chat route restore respects stop at ${interruptAt}`, async (t) => {
+        const fixture = installAutomaticRestoreGuardFixture(t, { interruptAt });
+        const result = await fixture.run();
+        if (interruptAt === 'write-sent') {
+            assert.equal(result.synced, true);
+            assert.equal(result.changedCount, 1);
+            assert.notEqual(result.cancelled, true);
+            assert.deepEqual(fixture.counts(), { reads: 2, writes: 1 });
+        } else {
+            assert.equal(result.synced, false);
+            assert.equal(result.cancelled, true);
+            assert.equal(result.changedCount, 0);
+            assert.deepEqual(fixture.counts(), {
+                reads: interruptAt === 'start' ? 0 : interruptAt === 'first-read' ? 1 : 2,
+                writes: 0,
+            });
+        }
+        assert.equal(fixture.toast.mock.callCount(), 0);
+        assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+        assert.deepEqual(fixture.metadata, { worldbook_entry_groups: fixture.profile });
+    });
+}
+
+test('automatic chat route restore still applies the saved combination while current', async (t) => {
+    const fixture = installAutomaticRestoreGuardFixture(t);
+    const result = await fixture.run();
+    assert.equal(result.synced, true);
+    assert.equal(result.changedCount, 1);
+    assert.deepEqual(fixture.counts(), { reads: 2, writes: 1 });
+    assert.equal(fixture.toast.mock.callCount(), 1);
+});
+
+test('automatic chat route restore does not save a floor-zero profile after stop during greeting resolution', async (t) => {
+    const fixture = installAutomaticRestoreGuardFixture(t, { floorZero: true });
+    const pending = fixture.run();
+    fixture.stop();
+    const result = await pending;
+    assert.equal(result.synced, false);
+    assert.equal(result.cancelled, true);
+    assert.deepEqual(fixture.counts(), { reads: 0, writes: 0 });
+    assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+    assert.equal(fixture.context.saveSettingsDebounced.mock.callCount(), 0);
+    assert.deepEqual(fixture.metadata, { worldbook_entry_groups: fixture.profile });
+    assert.deepEqual(fixture.settings.chatProfiles, {});
+});
+
+function installChatActionGuardFixture(t, { action, interruptAt, switchChat = false, initiallyDisabled = true } = {}) {
+    clearRuntimeBookSnapshots();
+    t.after(clearRuntimeBookSnapshots);
+    const settings = normalizeSettings({
+        version: 2, enableSceneAutoToggle: true,
+        books: { 测试主书: {
+            groups: [{ id: 'g', name: '目标组', mode: action === 'scene' ? GROUP_MODES.SCENE : GROUP_MODES.NORMAL, sceneKeywords: ['场景信号'] }],
+            assignments: { 1: 'g' },
+        } },
+    });
+    const metadataA = {};
+    const metadataB = {};
+    let chatId = 'A';
+    let current = interruptAt !== 'start';
+    const context = {
+        extensionSettings: { worldbook_entry_groups: settings },
+        characterId: 0,
+        characters: [{ avatar: 'fixture.png', data: { extensions: { world: '测试主书' } } }],
+        getCurrentChatId: () => chatId, chat: [{ mes: '场景信号' }], chatMetadata: metadataA,
+        saveMetadataDebounced: t.mock.fn(), saveSettingsDebounced: t.mock.fn(),
+    };
+    let reads = 0;
+    let writes = 0;
+    const payload = { entries: { 1: { uid: 1, comment: '资料', content: '保留正文', disable: initiallyDisabled } } };
+    const previous = globalThis.SillyTavern;
+    const previousToastr = globalThis.toastr;
+    const toast = t.mock.fn();
+    globalThis.SillyTavern = { getContext: () => context };
+    globalThis.toastr = { info: toast, success: toast };
+    t.after(() => { globalThis.SillyTavern = previous; globalThis.toastr = previousToastr; });
+    const interrupt = (phase) => {
+        if (interruptAt !== phase) return;
+        if (switchChat) { chatId = 'B'; context.chatMetadata = metadataB; }
+        else current = false;
+    };
+    t.mock.method(globalThis, 'fetch', async (url, init) => {
+        const body = JSON.parse(init.body);
+        assert.equal(body.name, '测试主书');
+        if (url === '/api/worldinfo/get') {
+            const phase = ++reads === 1 ? 'first-read' : 'fresh-read';
+            return { ok: true, json: async () => { interrupt(phase); return structuredClone(payload); } };
+        }
+        assert.equal(url, '/api/worldinfo/edit');
+        writes++;
+        interrupt('write-sent');
+        return { ok: true };
+    });
+    return {
+        run: () => action === 'scene'
+            ? syncSceneGroupsBeforeGeneration('normal', false, { isCurrent: () => current })
+            : switchNamedGroupInActiveChat('目标组', { isCurrent: () => current }),
+        stop: () => { current = false; },
+        counts: () => ({ reads, writes }), context, metadataA, metadataB, settings, toast,
+    };
+}
+
+for (const action of ['scene', 'named']) {
+    for (const switchChat of [false, true]) {
+        for (const interruptAt of switchChat ? ['first-read', 'fresh-read', 'write-sent'] : ['start', 'first-read', 'fresh-read', 'write-sent']) {
+            test(`${action} chat action guards ${switchChat ? 'chat change' : 'stop'} at ${interruptAt}`, async (t) => {
+                const fixture = installChatActionGuardFixture(t, { action, interruptAt, switchChat });
+                const result = await fixture.run();
+                if (interruptAt === 'write-sent') {
+                    assert.notEqual(result.cancelled, true);
+                    assert.equal(fixture.counts().writes, 1);
+                    if (action === 'scene') assert.equal(result.changedCount, 1);
+                    else assert.equal(result.matched, true);
+                } else {
+                    assert.equal(result.cancelled, true);
+                    assert.deepEqual(fixture.counts(), {
+                        reads: interruptAt === 'start' ? 0 : interruptAt === 'first-read' ? 1 : 2,
+                        writes: 0,
+                    });
+                }
+                assert.equal(fixture.toast.mock.callCount(), 0);
+                assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+                assert.equal(fixture.context.saveSettingsDebounced.mock.callCount(), 0);
+                assert.deepEqual(fixture.metadataA, {});
+                assert.deepEqual(fixture.metadataB, {});
+                assert.deepEqual(fixture.settings.chatProfiles, {});
+            });
+        }
+    }
+    test(`${action} chat action preserves normal writes while current`, async (t) => {
+        const fixture = installChatActionGuardFixture(t, { action });
+        const result = await fixture.run();
+        assert.notEqual(result.cancelled, true);
+        assert.deepEqual(fixture.counts(), { reads: 2, writes: 1 });
+        assert.equal(fixture.toast.mock.callCount(), 1);
+        assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), action === 'named' ? 1 : 0);
+    });
+}
+
+test('scene chat action stops before book I/O after its module await', async (t) => {
+    const fixture = installChatActionGuardFixture(t, { action: 'scene' });
+    const pending = fixture.run();
+    fixture.stop();
+    assert.equal((await pending).cancelled, true);
+    assert.deepEqual(fixture.counts(), { reads: 0, writes: 0 });
+});
+
+for (const switchChat of [false, true]) {
+    test(`named chat action does not bind no-op state after ${switchChat ? 'chat change' : 'stop'}`, async (t) => {
+        const fixture = installChatActionGuardFixture(t, { action: 'named', interruptAt: 'first-read', switchChat, initiallyDisabled: false });
+        assert.equal((await fixture.run()).cancelled, true);
+        assert.deepEqual(fixture.counts(), { reads: 1, writes: 0 });
+        assert.deepEqual(fixture.metadataA, {});
+        assert.deepEqual(fixture.metadataB, {});
+        assert.equal(fixture.context.saveMetadataDebounced.mock.callCount(), 0);
+        assert.equal(fixture.toast.mock.callCount(), 0);
+    });
+}
 
 test('automatic chat route restore leaves a worldbook with no saved grouping or route alone', async (t) => {
     const context = {

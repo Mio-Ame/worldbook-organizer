@@ -3,7 +3,7 @@
  */
 
 import { attachModalWindowControls, closeSubModal, createSubModal, getPanelTheme, isDesktopAutoFocusAllowed, UNDO_SVG } from '../panel-window.js';
-import { restoreContentAnchor } from '../content-scroll.js';
+import { restoreContentAnchor, scrollContentToItem } from '../content-scroll.js';
 
 import {
     ENTRY_ACTIVATION_MODES,
@@ -24,6 +24,7 @@ import {
     createTextareaHistory,
     detectAutoGroups,
     estimateEntryTokens,
+    extractWorldbookEntrySummaries,
     findNextMatchInText,
     formatGreetingCommentTag,
     formatOrphanedDraftText,
@@ -49,6 +50,7 @@ import {
     getActiveChatBoundProfile,
     getCurrentChatSaveContext,
     getNativeGroupingPreferences,
+    getNativeGroupingState,
     setNativeGroupingRequested,
     getPreferredDefaultBook,
     getSettings,
@@ -65,8 +67,10 @@ import {
 import { removeNativeEntryPoint, syncNativeEntryPoint } from './native-entry-point.js';
 import { attachGroupedSelectControl, closeGroupedSelectControl } from '../native-filter.js';
 import { saveWorldbookEntriesOrderDirect } from '../host.js';
-import { bindEntryGroupReordering, planEntryGroupOrder, planNativeGroupMove } from './entry-reorder.js';
+import { bindEntryGroupReordering, planEntryGroupOrder, planNativeEntryMove, planNativeGroupMove } from './entry-reorder.js';
 import { scanWorldbooksForEntryGroups } from './bulk-auto-group.js';
+import { captureTogglePreset, computeTogglePresetPlan, upsertTogglePreset } from './toggle-presets.js';
+import { renderTogglePresetResult, renderTogglePresetsPage } from './toggle-presets-view.js';
 
 const MODAL_BACKDROP_ID = 'weg-modal-backdrop';
 const MINIMIZE_PILL_ID = 'weg-minimized-pill';
@@ -91,6 +95,11 @@ let _loadError = '';
 let _loadedSummaries = [];
 let _greetingCharName = '';
 let _greetingIndex = null;
+let _activePage = 'entries';
+let _presetResult = null;
+let _presetChangeFilter = 'enabled';
+let _presetChangeLimit = 60;
+let _editingPresetId = '';
 
 let _searchQuery = '';
 let _isComposing = false;
@@ -105,9 +114,13 @@ const _selectedUids = new Set();
 const _undoStacks = new Map();
 
 let _submodal = null;
+let _lastSettingsTab = 'appearance';
 let _windowInteractCleanup = null;
 let _floatingMenuCleanup = null;
 let _modalKeydownCleanup = null;
+let _groupNavigationCleanup = null;
+let _navigationSections = [];
+let _navigationGroupId = '';
 
 let _editorLoadCounter = 0;
 /** @type {Map<string, any>} */
@@ -232,7 +245,7 @@ function getUndoCount(worldName) {
 }
 
 function getUndoLabel(worldName) {
-    return _undoStacks.get(worldName)?.at(-1)?.togglePlan ? '撤销整组开关' : '撤销分组操作';
+    return _undoStacks.get(worldName)?.at(-1)?.label || '撤回上一步';
 }
 
 export function canConfigureNativeGrouping() {
@@ -240,20 +253,32 @@ export function canConfigureNativeGrouping() {
 }
 
 export function setNativeGroupingEnabled(enabled) {
+    setNativeEntryButtonVisible(enabled);
+}
+
+export function setNativeEntryButtonVisible(visible) {
     if (!_callbacks) return;
-    getSettings().enableNativeGrouping = Boolean(enabled);
-    if (!enabled) setNativeGroupingRequested(false);
+    const settings = getSettings();
+    settings.showNativeEntryBtn = Boolean(visible);
+    settings.enableNativeGrouping = Boolean(visible);
+    settings.nativeEntryChoiceSeen = true;
+    setNativeGroupingRequested(visible);
     notifySettingsChanged();
-    document.querySelectorAll('input[data-entry-native-grouping]').forEach((input) => { input.checked = Boolean(enabled); });
+    document.querySelectorAll('input[data-entry-native-button]').forEach((input) => { input.checked = Boolean(visible); });
     if (_submodal?.type === 'settings') renderSubmodalHost();
 }
 
 function setNativeGroupingActive(active) {
     if (!_callbacks || !getNativeGroupingPreferences().enabled) return;
+    confirmNativeEntryUse(() => applyNativeGroupingActive(active));
+}
+
+function applyNativeGroupingActive(active) {
+    if (!_callbacks || !getNativeGroupingPreferences().enabled) return;
     setNativeGroupingRequested(active);
     if (!getNativeGroupingPreferences().hintSeen) {
         getSettings().nativeEntryHintSeen = true;
-        showToast('info', '不想显示此按钮，可到「条目分组 → 设置」，关闭「显示原生编辑器分组入口」。');
+        showToast('info', '入口开关：插件面板 → 设置 → 外观与入口 → 条目分组。');
         notifySettingsChanged();
     } else {
         _callbacks.onNativeDisplayChanged?.();
@@ -261,18 +286,23 @@ function setNativeGroupingActive(active) {
 }
 
 function openNativeEntryManager(options) {
+    confirmNativeEntryUse(() => void openEntryGroupsModal(options));
+}
+
+function confirmNativeEntryUse(onUse) {
     if (!_callbacks) return;
-    if (getSettings().nativeEntryChoiceSeen) return openEntryGroupsModal(options);
+    if (getSettings().nativeEntryChoiceSeen) return onUse();
     if (_nativeEntryChoiceOverlay?.isConnected) return;
     const callbacks = _callbacks;
     const { overlay, modal } = createSubModal('条目分组', `
-        <p>是否使用条目分组？</p>
+        <p>是否使用条目分组功能？</p>
+        <p class="wbo-subtle-tip">可在「插件面板 → 设置 → 外观与入口 → 条目分组」开启或隐藏入口。</p>
         <div class="wbo-native-entry-choice-actions">
-            <button type="button" class="wbo-btn wbo-btn-primary" data-weg-native-entry-choice="use">使用条目分组</button>
+            <button type="button" class="wbo-btn wbo-btn-primary" data-weg-native-entry-choice="use">确定使用</button>
             <button type="button" class="wbo-btn" data-weg-native-entry-choice="hide">不需要，隐藏入口</button>
         </div>
-    `, { stack: true });
-    modal.classList.add('wbo-prompt-modal', 'wbo-native-entry-choice');
+    `, { stack: true, prompt: true });
+    modal.classList.add('wbo-native-entry-choice');
     _nativeEntryChoiceOverlay = overlay;
     modal.querySelector('.wbo-modal-close')?.addEventListener('click', () => {
         if (_nativeEntryChoiceOverlay === overlay) _nativeEntryChoiceOverlay = null;
@@ -285,9 +315,13 @@ function openNativeEntryManager(options) {
             const hide = button.dataset.wegNativeEntryChoice === 'hide';
             const settings = getSettings();
             settings.nativeEntryChoiceSeen = true;
-            if (hide) settings.showNativeEntryBtn = false;
-            notifySettingsChanged();
-            if (!hide && _callbacks === callbacks) void openEntryGroupsModal(options);
+            if (hide) {
+                setNativeEntryButtonVisible(false);
+                showToast('info', '已隐藏入口。重新开启：插件面板 → 设置 → 外观与入口 → 条目分组。');
+            } else {
+                setNativeEntryButtonVisible(true);
+                if (_callbacks === callbacks) onUse();
+            }
         });
     });
 }
@@ -329,7 +363,57 @@ export function syncAllNativeEntryPoints() {
             config.nativeGroupOrder = order;
             return true;
         }),
+        moveEntry: moveNativeEntry,
+        restoreBackup: (worldName) => {
+            const backup = normalizeBookConfig(getSettings().books?.[worldName]).toggleBackup;
+            if (backup) void applyUserTogglePreset(worldName, { id: 'backup', name: '操作前备份', states: backup.states });
+        },
+        backupLabel: (worldName) => {
+            const backup = getNativeGroupingState(worldName).config?.toggleBackup;
+            return backup ? `恢复操作前状态（${new Date(backup.createdAt).toLocaleString()}）` : '';
+        },
     });
+}
+
+async function moveNativeEntry(worldName, uid, targetGroupId, targetUid, after) {
+    if (!worldName || _writingToggle || _savingEntryOrder) return;
+    const callbacks = _callbacks;
+    let beforeConfig;
+    let previousOrder;
+    let moved = false;
+    try {
+        _savingEntryOrder = true;
+        setGroupToggleBusy(true);
+        const result = await saveWorldbookEntriesOrderDirect(worldName, (entries) => {
+            if (_callbacks !== callbacks) return [];
+            beforeConfig = cloneBookConfig(getSettings().books?.[worldName]);
+            previousOrder = extractWorldbookEntrySummaries({ entries }).map(({ uid }) => uid);
+            const order = planNativeEntryMove(entries, beforeConfig, uid, targetGroupId, targetUid, after);
+            moved = order.length > 0;
+            return order;
+        });
+        if (_callbacks !== callbacks) return;
+        if (!result.ok) { showToast('error', result.error || '移动条目失败'); return; }
+        if (!moved) return;
+        const settings = getSettings();
+        const config = getBookConfigMutable(settings, worldName);
+        if (targetGroupId === SPECIAL_GROUP_UNGROUPED) delete config.assignments[uid];
+        else config.assignments[uid] = targetGroupId;
+        pushUndoAction(worldName, { config: beforeConfig, orderUids: previousOrder, label: '撤回条目移动' });
+        saveBookConfigWithCleanEmpty(settings, worldName, config);
+        if (_isOpen && _currentBook === worldName && result.orderedUids) {
+            const rank = new Map(result.orderedUids.map((id, index) => [id, index]));
+            _loadedSummaries.sort((a, b) => (rank.get(a.uid) ?? Infinity) - (rank.get(b.uid) ?? Infinity));
+        }
+        showToast('success', '已保存条目分组和显示顺序');
+        return { orderedUids: result.orderedUids };
+    } catch (error) { showToast('error', `移动条目失败：${error?.message || ''}`); }
+    finally {
+        if (_callbacks === callbacks) {
+            _savingEntryOrder = false;
+            setGroupToggleBusy(false, worldName);
+        }
+    }
 }
 
 function changeNativeGroupDisplay(worldName, change) {
@@ -468,7 +552,14 @@ async function loadBookIntoModal(worldName, { silent = false, preserveSelection 
     const clean = String(worldName ?? '').trim();
     const bookChanged = _currentBook !== clean;
     _currentBook = clean;
-    if (bookChanged) _filteredCollapsed.clear();
+    if (bookChanged) {
+        _presetResult = null;
+        _editingPresetId = '';
+        const presetInput = document.getElementById('weg-preset-name');
+        if (presetInput) presetInput.value = '';
+        _filteredCollapsed.clear();
+        _navigationGroupId = '';
+    }
     _loadError = '';
     if (!preserveSelection) {
         _selectedUids.clear();
@@ -632,7 +723,13 @@ export async function handleExternalEntriesUpdated(worldName, { showToastOnCompl
 
 export function handleExternalWorldbookRenamed(oldName, newName) {
     if (_undoStacks.has(oldName)) {
-        _undoStacks.set(newName, _undoStacks.get(oldName));
+        const actions = _undoStacks.get(oldName);
+        for (const action of actions) {
+            if (action.previousProfile?.worldName === oldName) {
+                action.previousProfile = { ...action.previousProfile, worldName: newName };
+            }
+        }
+        _undoStacks.set(newName, actions);
         _undoStacks.delete(oldName);
     }
     if (_currentBook === oldName) {
@@ -721,6 +818,11 @@ function ensureModalShell() {
                 </div>
             </header>
 
+            <nav class="weg-page-tabs" role="tablist" aria-label="条目管理页面">
+                <button type="button" class="weg-filter-pill is-active" data-weg-page="entries" id="weg-page-entries" role="tab" aria-selected="true" aria-controls="weg-body">条目分组</button>
+                <button type="button" class="weg-filter-pill" data-weg-page="presets" id="weg-page-presets" role="tab" aria-selected="false" aria-controls="weg-save-bar">开关方案</button>
+            </nav>
+
             <div class="weg-toolbar">
                 <div class="weg-book-bar">
                     <select class="weg-select weg-book-select" id="weg-book-select" aria-label="选择世界书"></select>
@@ -734,9 +836,6 @@ function ensureModalShell() {
                         <input type="search" class="weg-input weg-search-input" id="weg-search-input" aria-label="搜索条目" placeholder="搜索条目标题、触发词、正文或 UID…" autocomplete="off" spellcheck="false" />
                         <button type="button" class="weg-clear-input-btn" id="weg-search-clear" title="清空搜索词" hidden>清空</button>
                     </div>
-                    <button type="button" class="weg-btn weg-batch-toggle" data-weg-footer-action="enter-batch" aria-pressed="false">
-                        <i class="fa-solid fa-list-check" aria-hidden="true"></i> 多选
-                    </button>
                 </div>
             </div>
 
@@ -747,6 +846,9 @@ function ensureModalShell() {
                     </button>
                     <button type="button" class="weg-btn weg-btn-primary" id="weg-btn-new-group">
                         <i class="fa-solid fa-folder-plus" aria-hidden="true"></i> 新建分组
+                    </button>
+                    <button type="button" class="weg-btn weg-batch-toggle" data-weg-footer-action="enter-batch" aria-pressed="false">
+                        <i class="fa-solid fa-list-check" aria-hidden="true"></i> 多选
                     </button>
                 </div>
                 <div class="weg-filter-tools">
@@ -766,7 +868,12 @@ function ensureModalShell() {
                 </div>
             </div>
 
-            <div class="weg-save-bar" id="weg-save-bar"></div>
+            <nav class="weg-group-navigation" id="weg-group-navigation" aria-label="定位到分组" hidden>
+                <div class="weg-group-nav-list" id="weg-group-nav-list"></div>
+                <button type="button" class="weg-icon-btn weg-group-nav-expand" id="weg-group-nav-expand" aria-label="展开所有分组" title="展开所有分组" aria-expanded="false" aria-controls="weg-group-nav-list" hidden><i class="fa-solid fa-angles-down" aria-hidden="true"></i></button>
+            </nav>
+
+            <div class="weg-save-bar" id="weg-save-bar" role="tabpanel" aria-labelledby="weg-page-presets" hidden></div>
 
             <main class="weg-body" id="weg-body"></main>
 
@@ -863,6 +970,15 @@ function requestCloseEntryGroupsModal() {
 }
 
 function wireShellEvents(modal) {
+    modal.querySelector('.weg-page-tabs')?.addEventListener('click', (ev) => {
+        const button = ev.target.closest?.('[data-weg-page]');
+        if (!button) return;
+        closeFloatingMenu();
+        _activePage = button.dataset.wegPage;
+        getSettings().lastEntryPage = _activePage;
+        notifySettingsChanged();
+        syncEntryPage(modal);
+    });
     const closeBtn = modal.querySelector('#weg-btn-close');
     const minimizeBtn = modal.querySelector('#weg-btn-minimize');
     const newGroupBtn = modal.querySelector('#weg-btn-new-group');
@@ -1012,7 +1128,30 @@ function wireShellEvents(modal) {
         renderBodyAndFooterOnly();
     });
 
-    // Pure metadata per-chat save bar actions + 1-click greeting preset selector
+    modal.querySelector('#weg-group-navigation')?.addEventListener('click', (ev) => {
+        const target = ev.target instanceof Element ? ev.target : null;
+        const nav = modal.querySelector('#weg-group-navigation');
+        if (target?.closest('#weg-group-nav-expand')) {
+            nav.classList.toggle('is-expanded');
+            measureGroupNavigation();
+            return;
+        }
+        const button = target?.closest('[data-weg-group-nav]');
+        if (!button) return;
+        navigateToGroup(button.getAttribute('data-weg-group-nav'));
+    });
+
+    saveBarEl?.addEventListener('click', (ev) => {
+        const button = ev.target.closest?.('[data-weg-preset-action], [data-weg-change-filter]');
+        if (!button || button.disabled) return;
+        if (button.dataset.wegChangeFilter) {
+            _presetChangeFilter = button.dataset.wegChangeFilter;
+            _presetChangeLimit = 60;
+            renderSaveBindingBar(saveBarEl);
+        } else void handlePresetAction(button);
+    });
+
+    // Author presets remain separate from user-owned switch snapshots.
     saveBarEl?.addEventListener('change', async (ev) => {
         const sel = ev.target instanceof HTMLSelectElement ? ev.target : null;
         if (!sel || sel.id !== 'weg-preset-greeting-select' || sel.value === '') return;
@@ -1021,27 +1160,25 @@ function wireShellEvents(modal) {
         if (!Number.isInteger(swipeIdx) || !_currentBook || !_greetingIndex || _writingToggle) return;
 
         const targetBook = _currentBook;
+        const callbacks = _callbacks;
+        const chatKey = getCurrentChatSaveContext()?.chatKey;
+        const previousProfile = getActiveChatBoundProfile(targetBook).profile;
         _writingToggle = true;
         renderBodyAndFooterOnly();
-        const res = await applyGreetingPresetToWorldbook(targetBook, _greetingIndex, swipeIdx);
-        _writingToggle = false;
-
-        if (!_isOpen || _currentBook !== targetBook) {
-            if (_isOpen) {
-                renderBodyAndFooterOnly();
+        try {
+            const res = await applyGreetingPresetToWorldbook(targetBook, _greetingIndex, swipeIdx, { isCurrent: () => _callbacks === callbacks });
+            if (_callbacks !== callbacks) return;
+            if (!res.ok) {
+                showToast('error', res.error || '套用开场方案失败');
+                return;
             }
-            return;
+            rememberPresetSwitch(targetBook, res, res.routeLabel, { chatKey: res.boundChatKey || (res.savedToChat ? chatKey : ''), previousProfile: res.undoProfileBefore ?? previousProfile });
+            showToast('success', `已套用「${res.routeLabel}」${res.savedToChat ? '，并保存聊天快照' : ''}`);
+        } catch (error) {
+            showToast('error', `切换失败：${error?.message || ''}`);
+        } finally {
+            if (_callbacks === callbacks) setGroupToggleBusy(false, targetBook);
         }
-
-        if (!res.ok) {
-            showToast('error', res.error || '套用开场白方案失败');
-            renderBodyAndFooterOnly();
-            return;
-        }
-        _loadedSummaries = res.summaries;
-        syncAllNativeEntryPoints();
-        renderModalContents();
-        showToast('success', `已套用方案「${res.routeLabel}」并记住到本存档`);
     });
 
     saveBarEl?.addEventListener('click', (ev) => {
@@ -1060,13 +1197,13 @@ function wireShellEvents(modal) {
             if (prof) {
                 syncAllNativeEntryPoints();
                 renderBodyAndFooterOnly();
-                showToast('success', `已将当前状态记住到本存档（${prof.routeLabel}）`);
+                showToast('success', '已保存当前聊天快照');
             }
         } else if (action === 'unbind-current') {
             saveActiveChatBoundProfile(null);
             syncAllNativeEntryPoints();
             renderBodyAndFooterOnly();
-            showToast('info', '已解除当前聊天存档的路线绑定');
+            showToast('info', '已清除聊天快照，当前开关不变');
         }
     });
 
@@ -1289,6 +1426,7 @@ export async function openEntryGroupsModal(opts = {}) {
     }
 
     const settings = getSettings();
+    _activePage = settings.lastEntryPage === 'presets' ? 'presets' : 'entries';
     const backdrop = ensureModalShell();
     const modal = backdrop.querySelector('.weg-modal');
     _isMinimized = false;
@@ -1305,6 +1443,19 @@ export async function openEntryGroupsModal(opts = {}) {
     const reopening = !_isOpen;
     _isOpen = true;
     backdrop.hidden = false;
+    if (!_groupNavigationCleanup) {
+        const navigation = backdrop.querySelector('#weg-group-navigation');
+        let frame = 0;
+        const resize = typeof ResizeObserver === 'function' ? new ResizeObserver(() => {
+            if (frame) return;
+            frame = requestAnimationFrame(() => { frame = 0; measureGroupNavigation(); });
+        }) : null;
+        resize?.observe(navigation);
+        _groupNavigationCleanup = () => {
+            resize?.disconnect();
+            if (frame) cancelAnimationFrame(frame);
+        };
+    }
     if (modal instanceof HTMLElement && !_windowInteractCleanup) {
         _windowInteractCleanup = attachModalWindowControls(modal, modal.querySelector('[data-weg-drag-handle]'));
     } else if (reopening) {
@@ -1323,7 +1474,7 @@ export async function openEntryGroupsModal(opts = {}) {
 
     await loadBookIntoModal(targetBook, { silent: false, preserveSelection: false });
 
-    if (!isNarrowViewport()) {
+    if (!isNarrowViewport() && _activePage === 'entries') {
         const searchInput = backdrop.querySelector('#weg-search-input');
         if (searchInput instanceof HTMLInputElement) {
             requestAnimationFrame(() => {
@@ -1346,12 +1497,18 @@ export function closeEntryGroupsModal() {
     _loadedSummaries = [];
     _greetingCharName = '';
     _greetingIndex = null;
+    _presetResult = null;
+    _editingPresetId = '';
     _batchMode = false;
     _filteredCollapsed.clear();
     _selectedUids.clear();
     _visibleRenderLimit = INCREMENTAL_RENDER_STEP;
     _freezePinnedOrder = false;
     _sessionGroupOrder = [];
+    _groupNavigationCleanup?.();
+    _groupNavigationCleanup = null;
+    _navigationSections = [];
+    _navigationGroupId = '';
     clearAllEditors();
 
     if (typeof document !== 'undefined') {
@@ -1361,6 +1518,12 @@ export function closeEntryGroupsModal() {
             backdrop.hidden = true;
             const bodyEl = backdrop.querySelector('#weg-body');
             if (bodyEl) bodyEl.innerHTML = '';
+            const navigation = backdrop.querySelector('#weg-group-navigation');
+            if (navigation) {
+                navigation.hidden = true;
+                navigation.classList.remove('is-expanded');
+                navigation.querySelector('#weg-group-nav-list').innerHTML = '';
+            }
             const subHost = backdrop.querySelector('#weg-submodal-host');
             if (subHost instanceof HTMLElement) {
                 subHost.hidden = true;
@@ -1373,6 +1536,8 @@ export function closeEntryGroupsModal() {
 export function teardownPanels() {
     setNativeGroupingRequested(false);
     _callbacks = null;
+    _writingToggle = false;
+    _savingEntryOrder = false;
     closeEntryGroupsModal();
     if (_windowInteractCleanup) {
         _windowInteractCleanup();
@@ -1392,36 +1557,97 @@ export function teardownPanels() {
     }
 }
 
+function measureGroupNavigation() {
+    if (!_isOpen || _isMinimized) return;
+    const nav = document.getElementById('weg-group-navigation');
+    if (!nav || nav.hidden || nav.clientWidth === 0) return;
+    const list = nav.querySelector('#weg-group-nav-list');
+    const button = nav.querySelector('#weg-group-nav-expand');
+    const gap = parseFloat(getComputedStyle(list).columnGap) || 0;
+    const items = [...list.children];
+    const singleRowWidth = items.reduce((width, item) => width + item.getBoundingClientRect().width, 0)
+        + Math.max(0, items.length - 1) * gap;
+    const style = getComputedStyle(nav);
+    const available = nav.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const overflowing = singleRowWidth > available + 1;
+    button.hidden = !overflowing;
+    if (!overflowing) nav.classList.remove('is-expanded');
+    const expanded = nav.classList.contains('is-expanded');
+    button.setAttribute('aria-expanded', String(expanded));
+    button.setAttribute('aria-label', expanded ? '收起分组导航' : '展开所有分组');
+    button.title = expanded ? '收起分组导航' : '展开所有分组';
+    button.querySelector('i').classList.toggle('fa-angles-up', expanded);
+    button.querySelector('i').classList.toggle('fa-angles-down', !expanded);
+}
+
+function renderGroupNavigation(sections) {
+    _navigationSections = sections.filter((section) => section.visibleEntries.length > 0);
+    const nav = document.getElementById('weg-group-navigation');
+    if (!nav) return;
+    nav.hidden = _navigationSections.length < 2;
+    if (!_navigationSections.some(({ id }) => id === _navigationGroupId)) _navigationGroupId = '';
+    const list = nav.querySelector('#weg-group-nav-list');
+    const scrollLeft = list.scrollLeft;
+    list.innerHTML = _navigationSections.map(({ id, name }) => `<button type="button" class="weg-group-nav-pill" data-weg-group-nav="${esc(id)}" aria-controls="weg-body" ${id === _navigationGroupId ? 'aria-current="true"' : ''} title="${esc(name)}">${esc(name)}</button>`).join('');
+    list.scrollLeft = scrollLeft;
+    measureGroupNavigation();
+    const current = list.querySelector('[aria-current="true"]');
+    if (!nav.hidden && current && !nav.classList.contains('is-expanded')) {
+        const itemBox = current.getBoundingClientRect();
+        const listBox = list.getBoundingClientRect();
+        const delta = itemBox.left < listBox.left ? itemBox.left - listBox.left : Math.max(0, itemBox.right - listBox.right);
+        if (delta) list.scrollLeft += delta;
+    }
+}
+
+function navigateToGroup(groupId) {
+    const target = _navigationSections.find(({ id }) => id === groupId);
+    if (!target || !_currentBook) return;
+    const settings = getSettings();
+    const bookCfg = getBookConfigMutable(settings, _currentBook);
+    const filtering = Boolean(_searchQuery.trim()) || _statusFilter !== 'all';
+    if (filtering) _filteredCollapsed.delete(groupId);
+    else {
+        if (groupId === SPECIAL_GROUP_UNGROUPED) bookCfg.ungroupedCollapsed = false;
+        else {
+            const group = bookCfg.groups.find(({ id }) => id === groupId);
+            if (!group) return;
+            group.collapsed = false;
+        }
+        if (target.effectiveCollapsed) saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
+    }
+    // Include only the destination's first batch, not every preceding group.
+    _navigationGroupId = groupId;
+    document.getElementById('weg-group-navigation')?.classList.remove('is-expanded');
+    renderBodyAndFooterOnly();
+    const body = document.getElementById('weg-body');
+    const card = body?.querySelector(`[data-weg-group-card="${cssEsc(groupId)}"]`);
+    if (body && card) scrollContentToItem(body, card, { align: 'start', margin: parseFloat(getComputedStyle(body).paddingTop) || 0 });
+}
+
 function toggleGroupCollapse(groupId, heading) {
     if (!_currentBook) return;
     const scroller = heading?.closest('#weg-body');
     const offset = scroller ? heading.getBoundingClientRect().top - scroller.getBoundingClientRect().top : 0;
     const settings = getSettings();
     const bookCfg = getBookConfigMutable(settings, _currentBook);
-    let collapsed;
-    let name = '未分组';
     const filtering = Boolean(_searchQuery.trim()) || _statusFilter !== 'all';
 
     if (filtering) {
-        collapsed = !_filteredCollapsed.has(groupId);
-        if (collapsed) _filteredCollapsed.add(groupId);
+        if (!_filteredCollapsed.has(groupId)) _filteredCollapsed.add(groupId);
         else _filteredCollapsed.delete(groupId);
-        name = bookCfg.groups.find((group) => group.id === groupId)?.name || name;
     } else if (groupId === SPECIAL_GROUP_UNGROUPED) {
         if (!bookCfg.groups.length) return;
         bookCfg.ungroupedCollapsed = !bookCfg.ungroupedCollapsed;
-        collapsed = bookCfg.ungroupedCollapsed;
     } else {
         const grp = bookCfg.groups.find((g) => g.id === groupId);
         if (!grp) return;
         grp.collapsed = !grp.collapsed;
-        collapsed = grp.collapsed;
-        name = grp.name;
     }
     if (!filtering) saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
     renderBodyAndFooterOnly();
     const current = scroller?.querySelector(`[data-weg-group-header="${cssEsc(groupId)}"]`);
-    if (restoreContentAnchor(scroller, current, offset) > 8 && collapsed) showToast('info', `已折叠「${name}」`);
+    restoreContentAnchor(scroller, current, offset);
 }
 
 function toggleCollapseAllGroups(groupIds, collapsed) {
@@ -1446,10 +1672,25 @@ async function undoWorldbookGroupChange(worldName) {
     const action = stack?.at(-1);
     if (!action || _writingToggle || (_loadingBook && _currentBook === worldName)) return;
     if (action.config) {
+        if (action.orderUids) {
+            const callbacks = _callbacks;
+            setGroupToggleBusy(true);
+            try {
+                const result = await saveWorldbookEntriesOrderDirect(worldName, () => _callbacks === callbacks ? action.orderUids : []);
+                if (_callbacks !== callbacks) return;
+                if (!result.ok) { showToast('error', result.error || '撤回条目移动失败'); return; }
+                if (_currentBook === worldName) {
+                    const rank = new Map(action.orderUids.map((uid, index) => [uid, index]));
+                    _loadedSummaries.sort((a, b) => (rank.get(a.uid) ?? Infinity) - (rank.get(b.uid) ?? Infinity));
+                }
+            } finally { if (_callbacks === callbacks) setGroupToggleBusy(false); }
+        }
         stack.pop();
         if (_currentBook === worldName) _freezePinnedOrder = false;
-        saveBookConfigWithCleanEmpty(getSettings(), worldName, action.config);
+        const current = normalizeBookConfig(getSettings().books?.[worldName]);
+        saveBookConfigWithCleanEmpty(getSettings(), worldName, { ...action.config, togglePresets: current.togglePresets, toggleBackup: current.toggleBackup });
         syncAllNativeEntryPoints();
+        if (action.orderUids) _nativeView?.applyNativeEntryOrder(worldName, action.orderUids);
         if (_isOpen && _currentBook === worldName) renderModalContents();
         showToast('info', '已撤销上一步分组操作');
         return;
@@ -1475,16 +1716,20 @@ async function undoWorldbookGroupChange(worldName) {
         }
         adoptGroupToggleSummaries(worldName, result.summaries);
         if (action.chatKey && action.chatKey === getCurrentChatSaveContext()?.chatKey) {
-            recordStateIntoActiveChatIfMatching(worldName, result.summaries, {
+            if (action.presetSwitch) saveActiveChatBoundProfile(action.previousProfile || null);
+            else recordStateIntoActiveChatIfMatching(worldName, result.summaries, {
                 greetingIndex: _currentBook === worldName ? _greetingIndex : null,
                 force: action.forceBindChat,
             });
         }
-        showToast('info', '已恢复整组开关前的条目状态');
+        if (action.presetSwitch && _currentBook === worldName && _presetResult) {
+            _presetResult = { ..._presetResult, undone: true, changes: [] };
+        }
+        showToast('info', '已撤回上一步开关操作');
     } catch (error) {
         showToast('error', `撤销未完成，请重试。${error?.message || ''}`);
     } finally {
-        setGroupToggleBusy(false, worldName);
+        if (_callbacks === callbacks) setGroupToggleBusy(false, worldName);
     }
 }
 
@@ -1532,6 +1777,7 @@ async function toggleWorldbookGroup(worldName, groupId, targetEnabled, { forceBi
             config.pausedGroupStates = action.pausedGroupStates;
             saveBookConfigWithCleanEmpty(settings, worldName, config);
         }
+        ensureOperationBackup(worldName, result);
         adoptGroupToggleSummaries(worldName, result.summaries);
 
         const activatingRoute = group?.mode === GROUP_MODES.IF_LINE && targetEnabled
@@ -1562,7 +1808,7 @@ async function toggleWorldbookGroup(worldName, groupId, targetEnabled, { forceBi
     } catch (error) {
         showToast('error', `整组切换未完成，请重试。${error?.message || ''}`);
     } finally {
-        setGroupToggleBusy(false, worldName);
+        if (_callbacks === callbacks) setGroupToggleBusy(false, worldName);
     }
 }
 
@@ -1854,13 +2100,13 @@ function openGroupActionsMenu(anchorEl, groupId) {
             onClick: () => toggleSelectedEntries(groupUids),
         },
         {
-            label: '复制开场白联动标签',
+            label: '复制开场白条目标记',
             icon: 'fa-copy',
             disabled: groupUids.length === 0,
             onClick: async () => {
                 const tag = formatGreetingCommentTag(groupUids, 'lore');
                 if (!tag) {
-                    showToast('warning', '本组没有可导出数字 UID 的条目');
+                    showToast('warning', '本组没有可复制标记的条目');
                     return;
                 }
                 const ok = await copyTextToClipboard(tag);
@@ -1957,7 +2203,7 @@ function openEntryActionsMenu(anchorEl, uid) {
             },
         }] : []),
         {
-            label: '复制条目联动注释',
+            label: '复制开场白条目标记',
             icon: 'fa-copy',
             onClick: async () => {
                 const tag = formatGreetingCommentTag([uid], 'lore');
@@ -1998,63 +2244,153 @@ function renderModalContents() {
     renderSubmodalHost();
 }
 
+function syncEntryPage(modal) {
+    const presets = _activePage === 'presets';
+    modal.querySelectorAll('[data-weg-page]').forEach((button) => {
+        const active = button.dataset.wegPage === _activePage;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-selected', String(active));
+    });
+    for (const selector of ['.weg-filter-bar', '.weg-list-tools', '#weg-body', '#weg-footer']) {
+        const element = modal.querySelector(selector);
+        if (element) element.hidden = presets;
+    }
+    const nav = modal.querySelector('#weg-group-navigation');
+    if (nav) nav.hidden = presets || _navigationSections.length < 2;
+    modal.querySelector('#weg-save-bar').hidden = !presets;
+    if (!presets) measureGroupNavigation();
+}
+
 function renderSaveBindingBar(saveBarEl) {
     if (!(saveBarEl instanceof HTMLElement)) return;
-
-    const presetGreets = _greetingIndex?.presetGreetings || [];
-    const presetSelectHtml = presetGreets.length > 0 ? `
-        <select class="weg-mini-select" id="weg-preset-greeting-select" aria-label="套用开场白联动方案" ${_writingToggle ? 'disabled' : ''}>
-            <option value="">套用开场方案 (${presetGreets.length})…</option>
-            ${presetGreets.map((g) => `<option value="${g.swipeIndex}">${esc(g.title ? `${g.label} ${g.title}` : `开场白 ${g.label}`)}（${g.loreUids.length}条）</option>`).join('')}
-        </select>
-    ` : '';
-
+    const nameDraft = saveBarEl.querySelector('#weg-preset-name')?.value || '';
+    const expanded = saveBarEl.querySelector('#weg-preset-result details')?.open === true;
     const { saveCtx, profile } = getActiveChatBoundProfile(_currentBook);
-    if (!saveCtx) {
-        saveBarEl.innerHTML = `
-            <span class="weg-save-bar-text is-muted">当前未进入聊天存档（进入对话后，切换路线或脚本改书会自动记住本档阶段）</span>
-            ${presetSelectHtml ? `<div class="weg-save-bar-actions">${presetSelectHtml}</div>` : ''}
-        `;
+    const chatAvailable = Boolean(saveCtx && saveCtx.primaryWorldName === _currentBook);
+    const chatHint = !saveCtx ? '进入角色聊天后可保存聊天快照。'
+        : !chatAvailable ? '选择当前聊天的主世界书后可保存聊天快照。' : '';
+    const action = _undoStacks.get(_currentBook)?.at(-1);
+    const undoHtml = getUndoCount(_currentBook) ? `<button type="button" class="weg-btn weg-btn-primary weg-preset-undo" data-weg-preset-action="undo" ${_writingToggle ? 'disabled' : ''}>${UNDO_SVG}<span>${action?.presetSwitch ? '撤回切换' : '撤回上一步'}</span></button>` : '';
+    saveBarEl.innerHTML = renderTogglePresetsPage({
+        presets: normalizeBookConfig(getSettings().books?.[_currentBook]).togglePresets,
+        greetings: _greetingIndex?.presetGreetings || [], chatHint, profile, chatAvailable,
+        busy: _writingToggle || _loadingBook,
+        ready: Boolean(_currentBook && _loadedSummaries.length && !_loadError),
+        nameDraft, editingId: _editingPresetId, undoHtml,
+        backup: normalizeBookConfig(getSettings().books?.[_currentBook]).toggleBackup,
+        resultHtml: renderTogglePresetResult(_presetResult, { undoHtml, expanded, filter: _presetChangeFilter, limit: _presetChangeLimit }),
+    });
+}
+
+function rememberPresetSwitch(worldName, result, name, extra = {}) {
+    ensureOperationBackup(worldName, result);
+    if (result.changedCount > 0 || result.savedToChat) {
+        pushUndoAction(worldName, {
+            togglePlan: new Map(result.appliedChanges.map(({ uid, disabled }) => [uid, !disabled])),
+            presetSwitch: true, label: '撤回切换', ...extra,
+        });
+    }
+    if (_currentBook === worldName && _isOpen) {
+        const byUid = new Map(result.summaries.map((entry) => [entry.uid, entry]));
+        _presetResult = { name, changes: result.appliedChanges.map(({ uid, disabled }) => ({ uid, disabled,
+            title: byUid.get(uid)?.rawComment || byUid.get(uid)?.keys?.[0] || `条目 #${uid}` })) };
+        _presetChangeFilter = result.appliedChanges.some(({ disabled }) => !disabled) ? 'enabled' : 'disabled';
+        _presetChangeLimit = 60;
+        const page = document.getElementById('weg-save-bar');
+        if (page) page.scrollTop = 0;
+    }
+    adoptGroupToggleSummaries(worldName, result.summaries);
+    syncAllNativeEntryPoints();
+}
+
+function ensureOperationBackup(worldName, result) {
+    if (!result.changedCount) return;
+    const settings = getSettings();
+    const config = getBookConfigMutable(settings, worldName);
+    if (config.toggleBackup) return;
+    const changes = new Map(result.appliedChanges.map(({ uid, disabled }) => [uid, !disabled]));
+    const snapshot = captureTogglePreset('backup', '操作前', result.summaries.map((entry) =>
+        changes.has(entry.uid) ? { ...entry, disabled: changes.get(entry.uid) } : entry));
+    config.toggleBackup = { createdAt: Date.now(), states: snapshot.states };
+    saveBookConfigWithCleanEmpty(settings, worldName, config);
+}
+
+async function handlePresetAction(button) {
+    if (!_currentBook || _writingToggle || _loadingBook) return;
+    const action = button.dataset.wegPresetAction;
+    const worldName = _currentBook;
+    const settings = getSettings();
+    const config = getBookConfigMutable(settings, worldName);
+    const preset = config.togglePresets.find((item) => item.id === button.dataset.presetId);
+    const input = document.getElementById('weg-preset-name');
+    const refresh = () => renderSaveBindingBar(document.getElementById('weg-save-bar'));
+    if (action === 'undo') return undoWorldbookGroupChange(worldName);
+    if (action === 'more-changes') { _presetChangeLimit += 60; refresh(); return; }
+    if (action === 'cancel-rename') { _editingPresetId = ''; if (input) input.value = ''; refresh(); return; }
+    if (action === 'save-new') {
+        const name = input?.value.trim();
+        if (!name) { showToast('warning', '请填写方案名称'); return; }
+        if (!_editingPresetId && config.togglePresets.length >= 50) { showToast('warning', '本书最多保存 50 套方案，请先删除不需要的方案'); return; }
+        const existing = config.togglePresets.find((item) => item.id === _editingPresetId);
+        const saved = existing ? { ...existing, name } : captureTogglePreset(createGroupId('preset'), name, _loadedSummaries);
+        config.togglePresets = upsertTogglePreset(config.togglePresets, saved);
+        saveBookConfigWithCleanEmpty(settings, worldName, config);
+        _editingPresetId = '';
+        if (input) input.value = '';
+        refresh();
+        showToast('success', '已保存方案');
         return;
     }
-
-    if (saveCtx.primaryWorldName !== _currentBook) {
-        const hint = saveCtx.primaryWorldName
-            ? `当前聊天角色主书为「${saveCtx.primaryWorldName}」，切回该书可管理本档路线`
-            : '当前聊天角色尚未绑定主世界书';
-        saveBarEl.innerHTML = `
-            <span class="weg-save-bar-text is-muted">${esc(hint)}</span>
-            ${presetSelectHtml ? `<div class="weg-save-bar-actions">${presetSelectHtml}</div>` : ''}
-        `;
+    if (action === 'restore-backup') {
+        if (!config.toggleBackup) return;
+        return applyUserTogglePreset(worldName, { id: 'backup', name: '操作前备份', states: config.toggleBackup.states });
+    }
+    if (action === 'replace-backup') {
+        if (!globalThis.confirm('用当前条目开关替换操作前备份？旧备份会被覆盖。')) return;
+        config.toggleBackup = { createdAt: Date.now(), states: captureTogglePreset('backup', '操作前', _loadedSummaries).states };
+        saveBookConfigWithCleanEmpty(settings, worldName, config); refresh(); return;
+    }
+    if (!preset) return;
+    if (action === 'menu') {
+        openFloatingMenu(button, [
+            { label: '用当前开关更新方案', icon: 'fa-floppy-disk', onClick: () => {
+                if (!globalThis.confirm(`用当前条目开关更新「${preset.name}」？`)) return;
+                const current = getBookConfigMutable(getSettings(), worldName);
+                current.togglePresets = upsertTogglePreset(current.togglePresets, captureTogglePreset(preset.id, preset.name, _loadedSummaries));
+                saveBookConfigWithCleanEmpty(getSettings(), worldName, current); refresh();
+                showToast('success', '已更新方案');
+            } },
+            { label: '重命名', icon: 'fa-pen', onClick: () => {
+                _editingPresetId = preset.id;
+                const field = document.getElementById('weg-preset-name');
+                if (field) field.value = preset.name;
+                refresh();
+                document.getElementById('weg-save-bar').scrollTop = 0;
+            } },
+            { label: '删除方案', icon: 'fa-trash', onClick: () => {
+                if (!globalThis.confirm(`删除方案「${preset.name}」？当前条目开关不会改变。`)) return;
+                const current = getBookConfigMutable(getSettings(), worldName);
+                current.togglePresets = current.togglePresets.filter((item) => item.id !== preset.id);
+                saveBookConfigWithCleanEmpty(getSettings(), worldName, current); refresh();
+            } },
+        ]);
         return;
     }
+    if (action !== 'apply') return;
+    return applyUserTogglePreset(worldName, preset);
+}
 
-    const shortChatId = saveCtx.chatId.length > 20 ? `${saveCtx.chatId.slice(0, 20)}…` : saveCtx.chatId;
-
-    if (profile) {
-        saveBarEl.innerHTML = `
-            <div class="weg-save-bar-info" title="仅存储于当前存档元数据，不扫描聊天记录；本档用面板或角色卡脚本切线都会自动同步更新">
-                <i class="fa-solid fa-bookmark weg-save-icon is-bound" aria-hidden="true"></i>
-                <span class="weg-save-bar-text">本档当前阶段：<strong>${esc(profile.routeLabel)}</strong> <span class="weg-save-chatid">(${esc(shortChatId)})</span></span>
-            </div>
-            <div class="weg-save-bar-actions">
-                ${presetSelectHtml}
-                <button type="button" class="weg-mini-btn" data-weg-save-action="bind-current" title="将当前开关组合更新为本档记忆">更新本档</button>
-                <button type="button" class="weg-mini-btn is-muted" data-weg-save-action="unbind-current" title="解除本存档绑定">解除</button>
-            </div>
-        `;
-    } else {
-        saveBarEl.innerHTML = `
-            <div class="weg-save-bar-info" title="聊天存档：${esc(saveCtx.chatId)}">
-                <i class="fa-regular fa-bookmark weg-save-icon" aria-hidden="true"></i>
-                <span class="weg-save-bar-text is-muted">当前存档（${esc(shortChatId)}）暂未锁线，切换路线、套用方案或点右侧即可记住</span>
-            </div>
-            <div class="weg-save-bar-actions">
-                ${presetSelectHtml}
-                <button type="button" class="weg-mini-btn is-primary" data-weg-save-action="bind-current" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>锁定本档</button>
-            </div>
-        `;
-    }
+async function applyUserTogglePreset(worldName, preset) {
+    const callbacks = _callbacks;
+    try {
+        setGroupToggleBusy(true);
+        const result = await applyWorldbookTogglePlan(worldName, (summaries) =>
+            _callbacks === callbacks ? computeTogglePresetPlan(summaries, preset) : new Map(), { preserveNativePosition: true });
+        if (_callbacks !== callbacks) return;
+        if (!result.ok) { showToast('error', result.error || '切换失败'); return; }
+        rememberPresetSwitch(worldName, result, preset.name);
+    } catch (error) { showToast('error', `切换失败：${error?.message || ''}`); }
+    finally { if (_callbacks === callbacks) setGroupToggleBusy(false, worldName); }
 }
 
 function applySessionOrderToGroupedView(grouped) {
@@ -2083,6 +2419,7 @@ function renderBodyAndFooterOnly() {
 
     const prevScrollTop = bodyEl.scrollTop;
     const collapseTargets = [];
+    let navigationSections = [];
     const settings = getSettings();
     const bookCfg = _currentBook ? getBookConfigMutable(settings, _currentBook) : normalizeBookConfig(null);
 
@@ -2216,10 +2553,15 @@ function renderBodyAndFooterOnly() {
                 candidateSections.push(candidate);
                 if (canCollapse) collapseTargets.push(candidate);
             }
+            navigationSections = candidateSections;
 
             const sliced = sliceGroupedSectionsForRender(candidateSections, {
                 limit: _visibleRenderLimit,
-                alwaysIncludeUids: new Set(_openEditors.keys()),
+                alwaysIncludeUids: new Set([
+                    ..._openEditors.keys(),
+                    ...(candidateSections.find(({ id }) => id === _navigationGroupId)?.visibleEntries || [])
+                        .slice(0, INCREMENTAL_RENDER_STEP).map(({ uid }) => uid),
+                ]),
                 isFiltering,
             });
 
@@ -2317,7 +2659,7 @@ function renderBodyAndFooterOnly() {
                     <span class="weg-load-more-info">已显示 ${sliced.shownCount} / ${sliced.totalCount} 条（还有 ${sliced.hiddenCount} 条未展开）</span>
                     <div class="weg-load-more-actions">
                         <button type="button" class="weg-btn weg-btn-subtle" id="weg-btn-load-more-60">继续加载 ${Math.min(INCREMENTAL_RENDER_STEP, sliced.hiddenCount)} 条</button>
-                        <button type="button" class="weg-btn weg-btn-subtle" id="weg-btn-load-all">展开全部（剩余 ${sliced.hiddenCount} 条）</button>
+                        <button type="button" class="weg-btn weg-btn-subtle" id="weg-btn-load-all"${sliced.hiddenCount <= INCREMENTAL_RENDER_STEP ? ' hidden' : ''}>展开全部（剩余 ${sliced.hiddenCount} 条）</button>
                     </div>
                 </div>
             ` : '';
@@ -2374,6 +2716,7 @@ function renderBodyAndFooterOnly() {
     }
 
     for (const check of bodyEl.querySelectorAll('[data-weg-group-mixed]')) check.indeterminate = true;
+    renderGroupNavigation(navigationSections);
     bodyEl.scrollTop = prevScrollTop;
 
     const undoCount = getUndoCount(_currentBook);
@@ -2414,6 +2757,7 @@ function renderBodyAndFooterOnly() {
             <div class="weg-footer-status-wrap"><div class="weg-footer-status">${esc(statusText)}</div>${undoHtml}</div>
         `;
     }
+    syncEntryPage(backdrop.querySelector('.weg-modal'));
 }
 
 function buildEntryRowInnerHtml(entry, isPinned = false) {
@@ -2438,13 +2782,13 @@ function buildEntryRowInnerHtml(entry, isPinned = false) {
         if (incList.length > 0) {
             const first = incList[0];
             const shortText = incList.length === 1
-                ? (first.title ? `${first.label} ${first.title.slice(0, 8)}` : `开场白 ${first.label}`)
-                : `开场白 ×${incList.length}`;
-            const fullTip = `关联开场白注释（开启于：${incList.map((g) => (g.title ? `${g.label} ${g.title}` : g.label)).join('、')}）`;
+                ? `被${first.label}引用`
+                : `被 ${incList.length} 条开场白引用`;
+            const fullTip = `被以下开场白引用：${incList.map((g) => (g.title ? `${g.label} · ${g.title}` : g.label)).join('、')}。套用对应开场方案时开启此条目。`;
             greetingBadgeHtml = `<span class="weg-greet-tag" title="${esc(fullTip)}">${esc(shortText)}</span>`;
         } else if (excList.length > 0) {
-            const fullTip = `在开场白 ${excList.map((g) => (g.title ? `${g.label} ${g.title}` : g.label)).join('、')} 中自动排除关闭`;
-            greetingBadgeHtml = `<span class="weg-greet-tag is-exclude" title="${esc(fullTip)}">排除联动</span>`;
+            const fullTip = `套用${excList.map((g) => (g.title ? `${g.label} · ${g.title}` : g.label)).join('、')}的方案时关闭此条目。`;
+            greetingBadgeHtml = `<span class="weg-greet-tag is-exclude" title="${esc(fullTip)}">指定开场方案中关闭</span>`;
         }
     }
 
@@ -3504,44 +3848,56 @@ function selectedProposalCount(state) {
     return count;
 }
 
-async function runAutoGroupScan(state, host) {
+async function runAutoGroupScan(state, host, { continuing = false } = {}) {
+    if (_submodal !== state || state.bulk?.phase === 'scanning') return;
     state.bulk?.controller.abort();
-    const worldNames = [...new Set(getWorldNames())];
     const previous = state.bulk;
-    const bulk = {
+    const worldNames = continuing && previous?.worldNames ? previous.worldNames : [...new Set(getWorldNames())];
+    const bulk = continuing ? previous : {
         phase: 'scanning',
-        controller: new AbortController(),
         plans: new Map(),
         strategy: previous?.strategy ?? state.strategy,
         onlyUngrouped: previous?.onlyUngrouped ?? state.onlyUngrouped,
+        worldNames,
         total: worldNames.length,
         done: 0,
         failed: [],
     };
+    if (!bulk) return;
+    bulk.controller = new AbortController();
+    bulk.phase = 'scanning';
     const settings = getSettings();
     state.bulk = bulk;
-    renderSubmodalHost();
     const { signal } = bulk.controller;
-    const { plans, failed } = await scanWorldbooksForEntryGroups(worldNames, {
-        bookConfigs: settings.books,
-        strategy: bulk.strategy,
-        customRules: getAutoGroupRules(settings, bulk.strategy),
-        onlyUngrouped: bulk.onlyUngrouped,
-        signal,
-        onProgress(done) {
-            bulk.done = done;
-            const meter = host.querySelector('#weg-detect-progress');
-            if (meter) meter.textContent = `正在扫描 ${done} / ${bulk.total} 本世界书`;
-        },
-    });
-    if (signal.aborted || _submodal !== state || state.bulk !== bulk) return;
-    Object.assign(bulk, {
-        phase: 'ready',
-        plans,
-        failed,
-        activeBook: plans.has(_currentBook) ? _currentBook : plans.keys().next().value,
-    });
+    do {
+        renderSubmodalHost();
+        const result = await scanWorldbooksForEntryGroups(worldNames, {
+            bookConfigs: settings.books,
+            strategy: bulk.strategy,
+            customRules: getAutoGroupRules(settings, bulk.strategy),
+            onlyUngrouped: bulk.onlyUngrouped,
+            startIndex: bulk.done,
+            batchSize: settings.autoGroupBatchSize ?? 20,
+            signal,
+            onProgress(done) {
+                if (_submodal !== state || state.bulk !== bulk) return;
+                bulk.done = done;
+                const meter = host.querySelector('#weg-detect-progress');
+                if (meter) meter.textContent = `正在扫描 ${done} / ${bulk.total} 本世界书`;
+            },
+        });
+        if (_submodal !== state || state.bulk !== bulk) return;
+        for (const [world, plans] of result.plans) bulk.plans.set(world, plans);
+        bulk.failed.push(...result.failed);
+        bulk.done = result.nextIndex;
+        if (signal.aborted || settings.autoGroupAutoContinue === false || bulk.done >= bulk.total) break;
+    } while (bulk.done < bulk.total);
+    bulk.phase = 'ready';
+    bulk.activeBook = bulk.plans.has(bulk.activeBook) ? bulk.activeBook
+        : bulk.plans.has(_currentBook) ? _currentBook : bulk.plans.keys().next().value;
     renderSubmodalHost();
+    const body = host.querySelector('.weg-submodal-body');
+    if (body) body.scrollTop = 0;
 }
 
 function selectedAutoGroups(proposals, assignments, onlyUngrouped) {
@@ -3578,7 +3934,7 @@ function applyBulkAutoGroups(state) {
 }
 
 function invalidateBulkPreview(bulk, strategy, onlyUngrouped) {
-    Object.assign(bulk, { phase: 'idle', strategy, onlyUngrouped, plans: new Map(), failed: [], activeBook: '' });
+    Object.assign(bulk, { phase: 'idle', strategy, onlyUngrouped, plans: new Map(), failed: [], activeBook: '', worldNames: null, done: 0, total: 0 });
 }
 
 function openSettingsSubmodal() {
@@ -3909,8 +4265,11 @@ function renderSubmodalHost() {
         const { bulk } = state;
         const active = bulk || state;
         const scanning = bulk?.phase === 'scanning';
+        const scanReady = bulk?.phase === 'ready';
+        const settings = getSettings();
         const proposals = bulk ? (bulk.plans.get(bulk.activeBook) || []) : state.proposals;
         const checkedCount = selectedProposalCount(state);
+        const titles = new Map(_loadedSummaries.map(({ uid, title }) => [uid, title]));
         const sourceLabelMap = {
             scene: '情境识别',
             greeting: '开场白标签',
@@ -3924,7 +4283,9 @@ function renderSubmodalHost() {
                 <p class="weg-empty-title">未识别到可自动归类的分组</p>
                 <p class="weg-empty-desc">可尝试切换上方识别方式，或取消勾选「仅识别未分组条目」。</p>
                </div>`
-            : proposals.map((p, idx) => `
+            : proposals.map((p, idx) => {
+                const examples = p.examples || p.uids.slice(0, 3).map((uid) => ({ uid, title: titles.get(uid) || `条目 #${uid}` }));
+                return `
                 <div class="weg-detect-row">
                     <label class="weg-detect-check-label">
                         <input type="checkbox" data-weg-detect-idx="${idx}" ${p.checked ? 'checked' : ''} />
@@ -3938,23 +4299,29 @@ function renderSubmodalHost() {
                         <option value="${GROUP_MODES.SCENE}" ${p.mode === GROUP_MODES.SCENE ? 'selected' : ''}>情境按需</option>
                         <option value="${GROUP_MODES.RADIO}" ${p.mode === GROUP_MODES.RADIO ? 'selected' : ''}>组内单选</option>
                     </select>
+                    <div class="weg-detect-examples"><span>条目示例${p.uids.length > examples.length ? `（前 ${examples.length} 条）` : ''}</span><ul>${examples.map(({ title }) => `<li>${esc(title)}</li>`).join('')}</ul></div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
 
         const title = bulk ? '所有世界书 · 自动分组' : '自动分组预览';
         const customOptions = getSettings().autoGroupSchemes.map(({ id, name }) => {
             const value = `custom:${id}`;
             return `<option value="${esc(value)}" ${active.strategy === value ? 'selected' : ''}>${esc(name)}</option>`;
         }).join('');
-        const resultsHeader = bulk?.phase === 'ready' ? `
-            <p role="status" class="weg-detect-status">已扫描 ${bulk.done} 本，有 ${bulk.plans.size} 本可分组。${bulk.failed.length ? ` ${bulk.failed.length} 本读取失败。` : ''}</p>
+        const proposalCount = bulk ? [...bulk.plans.values()].reduce((count, items) => count + items.length, 0) : proposals.length;
+        const resultsHeader = scanReady ? `<section class="weg-detect-results">
+            <p role="status" class="weg-detect-status">已扫描 ${bulk.done} / ${bulk.total} 本 · ${bulk.plans.size} 本有建议 · ${proposalCount} 个分组${bulk.failed.length ? ` · ${bulk.failed.length} 本读取失败。` : ''}</p>
             ${bulk.failed.length ? `<details class="weg-detect-status"><summary>查看读取失败的世界书</summary><ul>${bulk.failed.map((name) => `<li>${esc(name)}</li>`).join('')}</ul></details>` : ''}
             ${bulk.plans.size ? `<label class="weg-detect-book-result">
-                <span>预览世界书${bulk.plans.size > 1 ? `（共 ${bulk.plans.size} 本，点击切换）` : ''}</span>
+                <span>查看哪本书的分组建议${bulk.plans.size > 1 ? `（共 ${bulk.plans.size} 本，点击切换）` : ''}</span>
                 <select id="weg-detect-preview-book" class="weg-select">${[...bulk.plans].map(([world, items]) =>
                     `<option value="${esc(world)}" ${bulk.activeBook === world ? 'selected' : ''}>${esc(world)}（${items.filter((item) => item.checked).length}/${items.length} 组）</option>`
                 ).join('')}</select>
             </label>` : ''}
+            <p class="weg-detect-preview-note">以下仅为预览，点击「应用所选分组」后才生效。</p>
+            <h3 class="weg-detect-result-heading">${bulk.activeBook ? `「${esc(bulk.activeBook)}」的分组建议` : '分组建议'}</h3>
+            </section>
         ` : '';
 
         host.innerHTML = `
@@ -3964,22 +4331,33 @@ function renderSubmodalHost() {
                     <button type="button" class="weg-icon-btn" data-weg-sub-close="1" aria-label="返回"><i class="fa-solid fa-xmark"></i></button>
                 </div>
                 <div class="weg-submodal-body">
+                    ${scanReady ? '<details class="weg-detect-options"><summary>调整扫描设置</summary>' : ''}
                     <div class="weg-detect-controls">
-                        <select class="weg-select" id="weg-detect-strategy" aria-label="分组方案" ${scanning ? 'disabled' : ''}>
+                        <div class="weg-detect-strategy-field">
+                            <div class="weg-detect-strategy-caption"><label for="weg-detect-strategy">识别方案</label><span aria-hidden="true">·</span><small id="weg-detect-strategy-hint">点击切换</small></div>
+                            <select class="weg-select" id="weg-detect-strategy" aria-describedby="weg-detect-strategy-hint" ${scanning ? 'disabled' : ''}>
                             <option value="smart" ${active.strategy === 'smart' ? 'selected' : ''}>智能综合识别（含 NSFW / 前缀 / 分隔条）</option>
                             <option value="scene" ${active.strategy === 'scene' ? 'selected' : ''}>仅识别亲密剧情 (NSFW) 条目</option>
                             <option value="prefix" ${active.strategy === 'prefix' ? 'selected' : ''}>仅按标题前缀（如【世界观】/ 18岁线-）</option>
                             <option value="divider" ${active.strategy === 'divider' ? 'selected' : ''}>仅按分隔条区间（如 === 设定 ===）</option>
-                            <option value="greeting" ${active.strategy === 'greeting' ? 'selected' : ''}>仅按角色开场白联动注释</option>
+                            <option value="greeting" ${active.strategy === 'greeting' ? 'selected' : ''}>仅按作者在开场白中标记的条目</option>
                             ${customOptions}
-                        </select>
+                            </select>
+                        </div>
                         <label class="weg-inline-check">
                             <input type="checkbox" id="weg-detect-only-ungrouped" ${active.onlyUngrouped ? 'checked' : ''} ${scanning ? 'disabled' : ''} />
                             <span>仅识别未分组条目</span>
                         </label>
                     </div>
+                    <div class="weg-detect-batch-controls">
+                        <label for="weg-detect-batch-size">每批扫描 <select class="weg-select" id="weg-detect-batch-size" ${scanning ? 'disabled' : ''}>${[5, 10, 20, 50].map((size) => `<option value="${size}" ${(settings.autoGroupBatchSize ?? 20) === size ? 'selected' : ''}>${size} 本</option>`).join('')}</select></label>
+                        <label class="weg-inline-check"><input type="checkbox" id="weg-detect-auto-continue" ${settings.autoGroupAutoContinue !== false ? 'checked' : ''} ${scanning ? 'disabled' : ''}>分批自动继续</label>
+                    </div>
+                    ${scanReady ? '</details>' : ''}
                     <div class="weg-detect-actions">
                         <button type="button" class="weg-btn" id="weg-detect-scan-all" ${scanning ? 'disabled' : ''}><i class="fa-solid fa-layer-group" aria-hidden="true"></i>${bulk?.phase === 'ready' ? '重新扫描所有世界书' : '扫描所有世界书'}</button>
+                        ${scanReady && bulk.done < bulk.total ? '<button type="button" class="weg-btn weg-btn-primary" id="weg-detect-continue">继续扫描下一批</button>' : ''}
+                        ${scanning ? '<button type="button" class="weg-btn" id="weg-detect-stop">停止扫描</button>' : ''}
                         <button type="button" class="weg-btn" id="weg-detect-manage-schemes" ${scanning ? 'disabled' : ''}><i class="fa-solid fa-sliders" aria-hidden="true"></i> 管理自定义方案</button>
                     </div>
                     ${scanning ? `<p id="weg-detect-progress" class="weg-detect-status" role="status">正在扫描 ${bulk.done} / ${bulk.total} 本世界书</p>` : resultsHeader}
@@ -3990,7 +4368,7 @@ function renderSubmodalHost() {
                 <div class="weg-submodal-footer">
                     ${bulk ? `<button type="button" class="weg-btn" id="weg-detect-back">${scanning ? '取消扫描' : '返回当前书'}</button>`
                     : '<button type="button" class="weg-btn weg-btn-subtle" data-weg-sub-close="1">取消</button>'}
-                    <button type="button" class="weg-btn weg-btn-primary" id="weg-detect-apply-btn" ${checkedCount === 0 ? 'disabled' : ''}>应用所选分组 (${checkedCount})</button>
+                    <button type="button" class="weg-btn weg-btn-primary" id="weg-detect-apply-btn" ${scanning || checkedCount === 0 ? 'disabled' : ''}>应用所选分组 (${checkedCount})</button>
                 </div>
             </div>
         `;
@@ -4004,19 +4382,22 @@ function renderSubmodalHost() {
         const hasLibraryGroups = Object.values(settings.books).some((config) => config.groups.length > 0);
         const palette = settings.followMainPalette ? 'follow' : settings.palette;
         const colorMode = settings.followMainColorMode ? 'follow' : settings.colorMode;
+        const tabs = [['appearance', '外观'], ['native', '原生编辑器'], ['chat', '聊天联动'], ['reset', '重置与清理']];
         host.innerHTML = `
-            <div class="weg-submodal-card" role="dialog" aria-label="面板设置">
+            <div class="weg-submodal-card weg-settings-card" role="dialog" aria-label="条目分组设置">
                 <div class="weg-submodal-header">
-                    <span class="weg-submodal-title">外观与联动设置</span>
+                    <span class="weg-submodal-title">条目分组设置</span>
                     <button type="button" class="weg-icon-btn" data-weg-sub-close="1" aria-label="返回"><i class="fa-solid fa-xmark"></i></button>
                 </div>
+                <div class="weg-settings-tabs" role="tablist" aria-label="设置分类">
+                    ${tabs.map(([id, title]) => `<button type="button" class="weg-settings-tab${_lastSettingsTab === id ? ' is-active' : ''}" id="weg-settings-tab-${id}" data-weg-settings-tab="${id}" role="tab" aria-controls="weg-settings-pane-${id}" aria-selected="${_lastSettingsTab === id}" tabindex="${_lastSettingsTab === id ? '0' : '-1'}">${title}</button>`).join('')}
+                </div>
                 <div class="weg-submodal-body weg-settings-list">
-                    <section class="weg-settings-section" aria-labelledby="weg-settings-appearance-title">
+                    <section class="weg-settings-section" id="weg-settings-pane-appearance" data-weg-settings-pane="appearance" role="tabpanel" aria-labelledby="weg-settings-tab-appearance"${_lastSettingsTab === 'appearance' ? '' : ' hidden'}>
                     <h3 class="weg-settings-section-title" id="weg-settings-appearance-title">外观</h3>
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">弹窗配色方案</div>
-                            <div class="weg-setting-desc">可跟随世界书分组主面板，也可单独设置</div>
                         </div>
                         <select class="weg-select weg-setting-control" id="weg-set-palette">
                             <option value="follow" ${palette === 'follow' ? 'selected' : ''}>跟随主面板</option>
@@ -4031,7 +4412,6 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">明暗模式</div>
-                            <div class="weg-setting-desc">可单独选择跟随主面板、酒馆或固定明暗</div>
                         </div>
                         <select class="weg-select weg-setting-control" id="weg-set-colormode">
                             <option value="follow" ${colorMode === 'follow' ? 'selected' : ''}>跟随主面板</option>
@@ -4042,24 +4422,14 @@ function renderSubmodalHost() {
                     </div>
                     </section>
 
-                    <section class="weg-settings-section" aria-labelledby="weg-settings-native-title">
+                    <section class="weg-settings-section" id="weg-settings-pane-native" data-weg-settings-pane="native" role="tabpanel" aria-labelledby="weg-settings-tab-native"${_lastSettingsTab === 'native' ? '' : ' hidden'}>
                     <h3 class="weg-settings-section-title" id="weg-settings-native-title">原生编辑器</h3>
-                    <div class="weg-setting-row">
+                    <div class="weg-setting-row weg-setting-featured">
                         <div class="weg-setting-text">
-                            <div class="weg-setting-name" id="weg-native-grouping-label">在原生编辑器显示条目分组</div>
-                            <div class="weg-setting-desc">允许后，点击原生页码旁的开关才显示分组；关闭不影响本面板的分组和记录。</div>
+                            <div class="weg-setting-name" id="weg-native-btn-label">使用条目分组</div>
+                            <div class="weg-setting-desc">关闭后隐藏入口，保留分组记录。</div>
                         </div>
-                        <button type="button" class="weg-switch${settings.enableNativeGrouping ? ' is-on' : ''}" id="weg-set-native-grouping" role="switch" aria-labelledby="weg-native-grouping-label" aria-checked="${settings.enableNativeGrouping}">
-                            <span class="weg-switch-thumb"></span>
-                        </button>
-                    </div>
-
-                    <div class="weg-setting-row">
-                        <div class="weg-setting-text">
-                            <div class="weg-setting-name">显示原生编辑器分组入口</div>
-                            <div class="weg-setting-desc">在原生编辑器页码旁打开条目分组管理</div>
-                        </div>
-                        <button type="button" class="weg-switch${settings.showNativeEntryBtn !== false ? ' is-on' : ''}" id="weg-set-native-btn" role="switch" aria-checked="${settings.showNativeEntryBtn !== false}">
+                        <button type="button" class="weg-switch${getNativeGroupingPreferences().showButton ? ' is-on' : ''}" id="weg-set-native-btn" role="switch" aria-labelledby="weg-native-btn-label" aria-checked="${getNativeGroupingPreferences().showButton}">
                             <span class="weg-switch-thumb"></span>
                         </button>
                     </div>
@@ -4067,7 +4437,7 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name" id="weg-native-theme-label">原生分组跟随酒馆主题</div>
-                            <div class="weg-setting-desc">关闭后使用本面板的配色与明暗设置。</div>
+                            <div class="weg-setting-desc">关闭后跟随本面板配色。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.followNativeTheme ? ' is-on' : ''}" id="weg-set-native-theme" role="switch" aria-labelledby="weg-native-theme-label" aria-checked="${settings.followNativeTheme}">
                             <span class="weg-switch-thumb"></span>
@@ -4085,12 +4455,12 @@ function renderSubmodalHost() {
                     </div>
                     </section>
 
-                    <section class="weg-settings-section" aria-labelledby="weg-settings-chat-title">
+                    <section class="weg-settings-section" id="weg-settings-pane-chat" data-weg-settings-pane="chat" role="tabpanel" aria-labelledby="weg-settings-tab-chat"${_lastSettingsTab === 'chat' ? '' : ' hidden'}>
                     <h3 class="weg-settings-section-title" id="weg-settings-chat-title">聊天联动</h3>
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">切换聊天存档时自动恢复本档路线 <span class="weg-test-feature">测试功能</span></div>
-                            <div class="weg-setting-desc">开启后，切换存档时按本档记录恢复 IF 线。</div>
+                            <div class="weg-setting-desc">按本档记录恢复 IF 线。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.autoSwitchOnChatChange !== false ? ' is-on' : ''}" id="weg-set-auto-chat-switch" role="switch" aria-checked="${settings.autoSwitchOnChatChange !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -4100,7 +4470,7 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">按最近对话自动开关情境组（如 NSFW） <span class="weg-test-feature">测试功能</span></div>
-                            <div class="weg-setting-desc">开启后，按最近 1～2 条消息判断何时开关情境组。</div>
+                            <div class="weg-setting-desc">按最近 1～2 条消息判断。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.enableSceneAutoToggle !== false ? ' is-on' : ''}" id="weg-set-scene-auto" role="switch" aria-checked="${settings.enableSceneAutoToggle !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -4108,12 +4478,12 @@ function renderSubmodalHost() {
                     </div>
                     </section>
 
-                    <section class="weg-settings-section" aria-labelledby="weg-settings-reset-title">
+                    <section class="weg-settings-section" id="weg-settings-pane-reset" data-weg-settings-pane="reset" role="tabpanel" aria-labelledby="weg-settings-tab-reset"${_lastSettingsTab === 'reset' ? '' : ' hidden'}>
                     <h3 class="weg-settings-section-title" id="weg-settings-reset-title">重置与清理</h3>
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">${_currentBook ? `重置「${esc(_currentBook)}」的分组与置顶` : '重置本书分组与置顶'}</div>
-                            <div class="weg-setting-desc">仅清除这一本书的分组和置顶记录。世界书和条目原样保留。</div>
+                            <div class="weg-setting-desc">仅清除此书分组和置顶，保留条目。</div>
                         </div>
                         <button type="button" class="weg-btn weg-btn-danger weg-setting-control" id="weg-set-clear-book" ${hasBookGroups ? '' : 'disabled'}>重置本书</button>
                     </div>
@@ -4399,6 +4769,18 @@ function wireAutoDetectSubmodal(host) {
     strategySelect?.addEventListener('change', recomputeProposals);
     onlyUngroupedCheck?.addEventListener('change', recomputeProposals);
     host.querySelector('#weg-detect-scan-all')?.addEventListener('click', () => { void runAutoGroupScan(state, host); });
+    host.querySelector('#weg-detect-continue')?.addEventListener('click', () => { void runAutoGroupScan(state, host, { continuing: true }); });
+    host.querySelector('#weg-detect-stop')?.addEventListener('click', () => { bulk.controller.abort(); });
+    host.querySelector('#weg-detect-batch-size')?.addEventListener('change', (event) => {
+        const size = Number(event.target.value);
+        if (![5, 10, 20, 50].includes(size)) return;
+        getSettings().autoGroupBatchSize = size;
+        notifySettingsChanged();
+    });
+    host.querySelector('#weg-detect-auto-continue')?.addEventListener('change', (event) => {
+        getSettings().autoGroupAutoContinue = event.target.checked;
+        notifySettingsChanged();
+    });
     host.querySelector('#weg-detect-back')?.addEventListener('click', () => {
         bulk.controller.abort();
         delete state.bulk;
@@ -4463,13 +4845,40 @@ function wireAutoDetectSubmodal(host) {
 function wireSettingsSubmodal(host) {
     wireCommonSubmodalClose(host);
     const settings = getSettings();
+    const tabs = [...host.querySelectorAll('[data-weg-settings-tab]')];
+    const selectTab = (tab) => {
+        _lastSettingsTab = tab.dataset.wegSettingsTab;
+        for (const button of tabs) {
+            const active = button === tab;
+            button.classList.toggle('is-active', active);
+            button.setAttribute('aria-selected', String(active));
+            button.tabIndex = active ? 0 : -1;
+        }
+        host.querySelectorAll('[data-weg-settings-pane]').forEach((pane) => {
+            pane.hidden = pane.dataset.wegSettingsPane !== _lastSettingsTab;
+        });
+        host.querySelector('.weg-submodal-body').scrollTop = 0;
+    };
+    tabs.forEach((tab, index) => {
+        tab.addEventListener('click', () => selectTab(tab));
+        tab.addEventListener('keydown', (event) => {
+            let next;
+            if (event.key === 'ArrowRight') next = tabs[(index + 1) % tabs.length];
+            else if (event.key === 'ArrowLeft') next = tabs[(index + tabs.length - 1) % tabs.length];
+            else if (event.key === 'Home') next = tabs[0];
+            else if (event.key === 'End') next = tabs.at(-1);
+            if (!next) return;
+            event.preventDefault();
+            selectTab(next);
+            if (isDesktopAutoFocusAllowed()) next.focus({ preventScroll: true });
+        });
+    });
 
     const autoChatSwitch = host.querySelector('#weg-set-auto-chat-switch');
     const sceneAutoSwitch = host.querySelector('#weg-set-scene-auto');
     const paletteSel = host.querySelector('#weg-set-palette');
     const modeSel = host.querySelector('#weg-set-colormode');
     const nativeBtnSwitch = host.querySelector('#weg-set-native-btn');
-    const nativeGroupingSwitch = host.querySelector('#weg-set-native-grouping');
     const nativeThemeSwitch = host.querySelector('#weg-set-native-theme');
     const closeLocateSwitch = host.querySelector('#weg-set-close-locate');
     const clearBookBtn = host.querySelector('#weg-set-clear-book');
@@ -4505,16 +4914,15 @@ function wireSettingsSubmodal(host) {
 
     bindSwitch(autoChatSwitch, 'autoSwitchOnChatChange');
     bindSwitch(sceneAutoSwitch, 'enableSceneAutoToggle');
-    bindSwitch(nativeBtnSwitch, 'showNativeEntryBtn');
-    nativeGroupingSwitch?.addEventListener('click', () => setNativeGroupingEnabled(!getNativeGroupingPreferences().enabled));
+    nativeBtnSwitch?.addEventListener('click', () => setNativeEntryButtonVisible(!getNativeGroupingPreferences().showButton));
     bindSwitch(nativeThemeSwitch, 'followNativeTheme');
     bindSwitch(closeLocateSwitch, 'closeOnLocate');
 
     clearBookBtn?.addEventListener('click', () => {
         if (!_currentBook || !settings.books?.[_currentBook]) return;
         pushUndoSnapshot(_currentBook, settings.books[_currentBook]);
-        delete settings.books[_currentBook];
-        notifySettingsChanged();
+        const current = settings.books[_currentBook];
+        saveBookConfigWithCleanEmpty(settings, _currentBook, { togglePresets: current.togglePresets, toggleBackup: current.toggleBackup });
         closeSubmodal();
         renderModalContents();
         showToast('info', `已重置「${_currentBook}」的分组和置顶，点底部撤销可恢复。`);

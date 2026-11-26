@@ -9,7 +9,7 @@ if (!suite) throw new Error('Set WBO_E2E_SUITE to the retained browser regressio
 const load = (name) => import(pathToFileURL(resolve(suite, 'lib', name)).href);
 const { createMockStServer } = await load('mock-server.mjs');
 const { VIEWPORTS, launchEdgeCdp } = await load('cdp.mjs');
-const { createDefaultSeed } = await load('fixtures.mjs');
+const { createDefaultSeed } = await import('./entry-groups-fixtures.mjs');
 const { getServerState, resetAndBoot, waitForCondition } = await load('assert-helpers.mjs');
 
 const enhancement = JSON.parse(readFileSync(resolve('..', '参考仓库', '下拉框美化.json'), 'utf8')).content;
@@ -18,6 +18,187 @@ const instanceFlag = enhancement.match(/const INSTANCE_FLAG = '([^']+)'/)?.[1];
 assert.ok(storageKey && instanceFlag, 'the checked-in reference fixture must expose its lifecycle keys');
 
 const runnerKey = 'wbo-test-dropdown-runner-enabled';
+
+for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+test(`editor keeps single-category records while native category chrome stays hidden after script disable at ${viewport.name}`, async () => {
+    const server = createMockStServer();
+    const baseUrl = await server.start();
+    let cdp;
+    try {
+        cdp = await launchEdgeCdp();
+        await resetAndBoot(cdp, baseUrl, { viewport, seed: createDefaultSeed({
+            characters: [], selected_world_info: [],
+            worldbooks: { '测试书甲': { entries: {} }, '测试书乙': { entries: {} } },
+            pluginSettings: {
+                autoScanNewCharacters: false, showNativeOptgroups: true,
+                globalHiddenGroupIds: [], editorHiddenGroupIds: [], pinnedBooks: ['测试书甲'],
+                groups: [{ id: 'test-a', name: '测试分组甲' }],
+                assignments: { '测试书甲': 'test-a', '测试书乙': 'test-a' },
+            },
+        }) });
+        const expected = await cdp.evalFn(() => {
+            const settings = SillyTavern.getContext().extensionSettings.worldbook_organizer;
+            return { groups: settings.groups, assignments: settings.assignments, pinned: settings.pinnedBooks };
+        });
+        await cdp.evalFn((key, code) => {
+            const rendered = jQuery('#world_editor_select').data('select2')?.$container?.[0]?.querySelector('.select2-selection__rendered');
+            if (rendered) rendered.id = 'select2-world_editor_select-container';
+            localStorage.setItem(key, JSON.stringify({ settings: {}, pinned: {}, meta: { welcomePopupShown: true } }));
+            (0, eval)(code);
+            document.getElementById('world_editor_select').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        }, storageKey, enhancement);
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container [data-wbo-pill="test-a"]'));
+        await cdp.evalFn((flag) => window[flag]?.(), instanceFlag);
+        const assertNative = async () => {
+            await cdp.evalFn(() => {
+                const drawer = document.getElementById('WorldInfo');
+                drawer.style.display = 'block';
+                drawer.classList.add('openDrawer');
+                drawer.classList.remove('closedDrawer');
+            });
+            if (viewport.mobile) {
+                assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-mobile-editor-trigger'))), false,
+                    'a sole native category intentionally keeps the standard mobile selector');
+                assert.equal(await cdp.evalFn(() => document.getElementById('world_editor_select').getBoundingClientRect().height > 0), true);
+            } else {
+                await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+                await waitForCondition(cdp, () => document.querySelector('.select2-dropdown'));
+                // The native popup mounts before our next-frame filter decoration.
+                await waitForCondition(cdp, () => document.querySelector('.select2-dropdown [data-wbo-pill="__pinned__"]'));
+                assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown [data-wbo-pill="test-a"]'))), false,
+                    'a sole native category intentionally has no category pill');
+                assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown [data-wbo-pill="__pinned__"]'))), true,
+                    'the separate favorite filter remains available');
+                await cdp.evalFn(() => jQuery('#world_editor_select').select2('close'));
+            }
+            assert.deepEqual(await cdp.evalFn(() => {
+                const settings = SillyTavern.getContext().extensionSettings.worldbook_organizer;
+                return { groups: settings.groups, assignments: settings.assignments, pinned: settings.pinnedBooks };
+            }), expected, 'hiding single-category chrome must not erase grouping records');
+            assert.deepEqual(await cdp.evalFn(() => [...document.getElementById('world_editor_select').options]
+                .filter((option) => option.value).map((option) => option.textContent).sort()), ['测试书乙', '测试书甲'].sort());
+        };
+        await assertNative();
+        await cdp.reload();
+        await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-wand-entry')));
+        await assertNative();
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});
+}
+
+for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+test(`editor groups survive enhancement toggles and disabled reloads at ${viewport.name}`, async (t) => {
+    const server = createMockStServer();
+    const baseUrl = await server.start();
+    let cdp;
+    try {
+        cdp = await launchEdgeCdp();
+        await resetAndBoot(cdp, baseUrl, { viewport, seed: createDefaultSeed({
+            characters: [], selected_world_info: [],
+            worldbooks: { '测试书甲': { entries: {} }, '测试书乙': { entries: {} } },
+            pluginSettings: {
+                autoScanNewCharacters: false, hideCharBooksByDefault: false,
+                globalHiddenGroupIds: [], editorHiddenGroupIds: [],
+                groups: [{ id: 'test-a', name: '测试分组甲' }, { id: 'test-b', name: '测试分组乙' }],
+                assignments: { '测试书甲': 'test-a', '测试书乙': 'test-b' },
+            },
+        }) });
+        await cdp.evalFn((key) => localStorage.setItem(key, JSON.stringify({
+            settings: {}, pinned: {}, meta: { welcomePopupShown: true },
+        })), storageKey);
+        const tap = async (selector) => {
+            const point = await cdp.evalFn((selector) => {
+                const r = document.querySelector(selector).getBoundingClientRect();
+                return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+            }, selector);
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+            await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+        };
+        const openNative = async (label) => {
+            await cdp.evalFn(() => {
+                const rendered = jQuery('#world_editor_select').data('select2')?.$container?.[0]?.querySelector('.select2-selection__rendered');
+                if (rendered) rendered.id = 'select2-world_editor_select-container';
+                const drawer = document.getElementById('WorldInfo');
+                drawer.classList.add('openDrawer');
+                drawer.classList.remove('closedDrawer');
+                drawer.style.display = 'block';
+            });
+            if (viewport.mobile) await tap('#wbo-mobile-editor-trigger');
+            else await cdp.clickSelector('#world_editor_select + .select2-container .select2-selection');
+            try {
+                await waitForCondition(cdp, () => Boolean(document.querySelector('#wbo-mobile-picker-overlay, .select2-dropdown')));
+            } catch (error) {
+                t.diagnostic(await cdp.evalFn(() => document.getElementById('world_editor_select').parentElement.outerHTML));
+                throw error;
+            }
+            const state = await cdp.evalFn((mobile) => ({
+                pills: [...document.querySelectorAll(mobile ? '[data-mp-pill]' : '.select2-dropdown [data-wbo-pill]')]
+                    .map((el) => mobile ? el.dataset.mpPill : el.dataset.wboPill),
+                groups: [...document.querySelectorAll('#world_editor_select optgroup')].map((el) => el.dataset.wboGroup),
+                selected: document.getElementById('world_editor_select').selectedOptions[0]?.textContent,
+            }), viewport.mobile);
+            t.diagnostic(`${label}: ${JSON.stringify(state)}`);
+            assert.ok(state.pills.includes('test-a') && state.pills.includes('test-b'), `${label}: editor pills missing`);
+            const allSelector = viewport.mobile ? '[data-mp-pill="__all__"]' : '.select2-dropdown [data-wbo-pill="__all__"]';
+            if (viewport.mobile) await tap(allSelector);
+            else await cdp.clickSelector(allSelector);
+            const groupSelector = viewport.mobile ? '[data-mp-pill="test-b"]' : '.select2-dropdown [data-wbo-pill="test-b"]';
+            if (viewport.mobile) await tap(groupSelector);
+            else await cdp.clickSelector(groupSelector);
+            await waitForCondition(cdp, () => {
+                const rows = [...document.querySelectorAll('#wbo-mp-list [data-mp-world], .select2-dropdown [data-wbo-world]')]
+                    .filter((el) => el.getBoundingClientRect().height > 0);
+                return rows.length === 1 && (rows[0].dataset.mpWorld || rows[0].dataset.wboWorld) === '测试书乙';
+            });
+            const names = await cdp.evalFn((mobile) => [...document.querySelectorAll(mobile
+                ? '#wbo-mp-list [data-mp-world]' : '.select2-dropdown [data-wbo-world]')]
+                .filter((el) => el.getBoundingClientRect().height > 0)
+                .map((el) => mobile ? el.dataset.mpWorld : el.dataset.wboWorld), viewport.mobile);
+            assert.deepEqual(names, ['测试书乙'], `${label}: editor group filter must work`);
+            if (viewport.mobile) await tap('#wbo-mobile-editor-trigger');
+            else await cdp.evalFn(() => jQuery('#world_editor_select').select2('close'));
+        };
+        const snapshot = () => cdp.evalFn(() => {
+            const settings = SillyTavern.getContext().extensionSettings.worldbook_organizer;
+            return { groups: settings.groups, assignments: settings.assignments, hidden: settings.editorHiddenGroupIds };
+        });
+        const expected = await snapshot();
+        await openNative('baseline');
+        for (let cycle = 1; cycle <= 3; cycle++) {
+            await cdp.evalFn((code) => (0, eval)(code), enhancement);
+            await waitForCondition(cdp, () => document.querySelector('style[data-gr-dropdown-style]'));
+            if (!viewport.mobile) {
+                await cdp.clickSelector('#world_editor_select + .select2-container .select2-selection');
+                try {
+                    await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar'));
+                } catch (error) {
+                    t.diagnostic(JSON.stringify(await cdp.evalFn(() => ({
+                        popover: document.getElementById('gr-global-dropdown-container')?.outerHTML,
+                        parent: document.getElementById('world_editor_select').parentElement.outerHTML,
+                    }))));
+                    throw error;
+                }
+                assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container').dataset.wboSourceRole), 'editor');
+            }
+            await cdp.evalFn((flag) => window[flag]?.(), instanceFlag);
+            await openNative(`disabled ${cycle}`);
+            assert.deepEqual(await snapshot(), expected);
+            await cdp.reload();
+            await waitForCondition(cdp, () => Boolean(document.querySelector('#wbo-mobile-editor-trigger, #world_editor_select + .select2-container')));
+            await openNative(`disabled reload ${cycle}`);
+            assert.deepEqual(await snapshot(), expected);
+        }
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});
+}
 
 test('mobile fallback is available after an already-running enhancement is disabled without reload', async () => {
     const server = createMockStServer();

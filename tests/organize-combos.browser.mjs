@@ -26,6 +26,18 @@ async function withMockHost(seed, workflow, viewport = VIEWPORTS.desktop) {
     }
 }
 
+test('AI sensitive grouping uses the requested new-group label', async () => {
+    await withMockHost(createDefaultSeed({
+        characters: [], selected_world_info: [], worldbooks: { '成人向测试书': { entries: {} } },
+        pluginSettings: { organizeLastTab: 'organize', autoScanNewCharacters: false, groups: [], assignments: {} },
+    }), async (cdp) => {
+        await openManager(cdp);
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        await cdp.clickSelector('[data-ai-book-tab="sensitive"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-sens-target-group option[value="__new_nsfw__"]').textContent), '新建：「NSFW」分组');
+    }, VIEWPORTS.mobile);
+});
+
 test('AI picks can be restored in bulk, switched by category, grouped explicitly and undone', async () => {
     const sensitive = '成人向测试书';
     const warning = '已勾选了疑似敏感世界书，发送可能会触发AI拒绝回答。';

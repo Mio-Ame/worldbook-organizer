@@ -84,6 +84,7 @@ import { openCharacterBindingModal } from './panel-binding.js';
 import { openScanAndImportModal } from './panel-scan.js';
 import { openSettingsModal } from './panel-settings.js';
 import { isEntryGroupingAvailable } from './entry-groups/lifecycle.js';
+import { ENTRY_GROUPING_STATE_CHANGED } from './entry-groups/feature-gate.js';
 
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
@@ -109,6 +110,14 @@ const _renderedGroupBooksMap = new Map();
 
 /** @type {Map<string, any>} */
 const _activePreviewControllers = new Map();
+
+function syncPreviewEntryGrouping() {
+    const available = isEntryGroupingAvailable();
+    for (const [bookName, controller] of _activePreviewControllers) {
+        controller.setEntryGroupingAction?.(available ? () => openEntryGroupsForBook(bookName) : null);
+    }
+    if (!available) document.querySelector('.wbo-book-more-popover [data-more-act="entry-groups"]')?.remove();
+}
 
 let _hasPendingPinResort = false;
 
@@ -774,6 +783,7 @@ function minimizeManagerModal() {
 }
 
 function closeManagerModal() {
+    window.removeEventListener(ENTRY_GROUPING_STATE_CHANGED, syncPreviewEntryGrouping);
     removeRestorePill();
     closeFloatingGroupManager();
     destroyAllPreviewControllers();
@@ -1324,6 +1334,7 @@ async function confirmAndDeleteWorldbooks(bookNames, { stack = false, onComplete
  */
 function openManagerModal() {
     if (!_callbacks) return;
+    window.addEventListener(ENTRY_GROUPING_STATE_CHANGED, syncPreviewEntryGrouping);
     const triggerPanelCatchupScanIfNeeded = () => {
         const curSettings = _callbacks?.getState?.()?.settings;
         if (!curSettings || curSettings.autoScanNewCharacters === false) return;
@@ -2345,6 +2356,8 @@ function syncManagerPillsExpansion(overlay, preferExpanded) {
     if (overlay.hidden || !subbar || !pills || !toggle) return;
 
     const { scrollLeft, scrollTop } = pills;
+    const scrollHost = getManagerScrollHost(overlay.querySelector('#wbo-mgr-groups-list'));
+    const hostScrollTop = scrollHost?.scrollTop;
     // Compare against the single row's full width before reserving room for the toggle.
     subbar.classList.remove('is-pills-expanded');
     pills.classList.remove('is-expanded');
@@ -2362,6 +2375,8 @@ function syncManagerPillsExpansion(overlay, preferExpanded) {
     pills.classList.toggle('is-expanded', expanded);
     if (expanded) pills.scrollTop = scrollTop;
     else pills.scrollLeft = scrollLeft;
+    // The temporary single-row measurement can clamp the small window's outer scroll.
+    if (scrollHost) scrollHost.scrollTop = hostScrollTop;
 }
 
 /**

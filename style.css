@@ -1272,6 +1272,12 @@
     z-index: 10025;
 }
 
+.wbo-modal-overlay.wbo-prompt-overlay {
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+}
+
 .wbo-prompt-modal {
     width: min(420px, 100%);
     height: auto !important;
@@ -3536,6 +3542,14 @@ details[open] > summary .wbo-details-chev {
     background: var(--wbo-surface);
 }
 
+.wbo-card.wbo-entry-settings-card {
+    border-color: var(--wbo-accent);
+}
+
+.wbo-entry-settings-card .wbo-ai-section-head {
+    font-weight: 600;
+}
+
 .wbo-ai-step {
     flex: 1 1 0% !important;
     min-height: 0 !important;
@@ -4973,6 +4987,20 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-cov-pane-note {
     margin: 0;
+}
+
+.wbo-cov-shared-note > p {
+    margin: 0;
+    line-height: 1.5;
+}
+
+.wbo-cov-shared-note > p:first-child {
+    color: var(--wbo-fg);
+}
+
+.wbo-cov-shared-note .wbo-cov-shared-reason {
+    margin-top: 4px;
+    font-size: 11.5px;
 }
 
 .wbo-cov-drawer {
@@ -6591,7 +6619,7 @@ details[open] > summary .wbo-details-chev {
         min-width: 0 !important;
         width: 100% !important;
     }
-    .wbo-prompt-overlay {
+    .wbo-modal-overlay.wbo-submodal-overlay.wbo-prompt-overlay {
         align-items: center;
         justify-content: center;
         padding: 12px;
@@ -7859,6 +7887,7 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
         padding: 8px 10px 12px;
     }
     .wbo-group-header {
+        top: -8px;
         padding: 6px 8px;
     }
     .wbo-group-actions .wbo-icon-btn {

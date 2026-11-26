@@ -28,6 +28,20 @@ export function planEntryGroupOrder(entries, config, draggedUid, targetUid, afte
     return summaries.map(({ uid }) => memberSet.has(uid) ? reordered.orderedUids[index++] : uid);
 }
 
+export function planNativeEntryMove(entries, config, draggedUid, targetGroupId, targetUid, after) {
+    if (targetGroupId !== SPECIAL_GROUP_UNGROUPED && !config.groups.some(({ id }) => id === targetGroupId)) return [];
+    const summaries = extractWorldbookEntrySummaries({ entries });
+    const uids = summaries.map(({ uid }) => uid);
+    if (!uids.includes(draggedUid)) return [];
+    const groupOf = (uid) => config.assignments[uid] || SPECIAL_GROUP_UNGROUPED;
+    if (targetUid && (targetUid === draggedUid || !uids.includes(targetUid) || groupOf(targetUid) !== targetGroupId)) return [];
+    const members = uids.filter((uid) => uid !== draggedUid && groupOf(uid) === targetGroupId);
+    const anchor = targetUid || members.at(-1);
+    if (!anchor) return groupOf(draggedUid) === targetGroupId ? [] : [...uids.filter((uid) => uid !== draggedUid), draggedUid];
+    const result = reorderEntryUids(uids, draggedUid, anchor, targetUid ? after : true);
+    return result.changed || groupOf(draggedUid) !== targetGroupId ? result.orderedUids : [];
+}
+
 export function bindEntryGroupReordering(list, { isAllowed, onMove }) {
     let drag = null;
 

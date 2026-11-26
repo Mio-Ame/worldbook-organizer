@@ -52,6 +52,13 @@ test('scan compares full text in three columns, confirms deletion, and links to 
         assert.equal(panes.indexOf('unbound'), panes.indexOf('shared') + 1);
         await cdp.clickSelector('[data-cov-tab="shared"]');
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-cov-pane="shared"] p')?.textContent), '多张角色卡共用了同一本世界书。');
+        assert.equal(await cdp.evalFn(() => document.querySelector('[data-cov-pane="shared"] .wbo-cov-shared-reason')?.textContent),
+            '原因可能是多次存入同一张角色卡、角色卡新旧版本（但只更新了开场白）。');
+        assert.equal(await cdp.evalFn(() => {
+            const note = document.querySelector('[data-cov-pane="shared"] .wbo-cov-pane-note > p:first-child');
+            const reason = document.querySelector('[data-cov-pane="shared"] .wbo-cov-shared-reason');
+            return reason.getBoundingClientRect().top >= note.getBoundingClientRect().bottom;
+        }), true, 'the possible causes belong on a separate line below the summary');
         await cdp.clickSelector('[data-cov-tab="same_name"]');
         const layout = await cdp.evalFn(() => {
             const rows = [...document.querySelectorAll('.wbo-cov-match-card')];

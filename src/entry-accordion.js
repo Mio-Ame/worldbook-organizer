@@ -1679,6 +1679,20 @@ export function mountEntryAccordion(
         expandEntry,
         collapseEntry,
         refresh,
+        setEntryGroupingAction: (action) => {
+            if (destroyed) return;
+            onOpenEntryGroups = typeof action === 'function' ? action : null;
+            const toolbar = hostEl.querySelector('.wbo-acc-toolbar-actions');
+            const existing = toolbar?.querySelector('[data-acc-extra="open-entry-groups"]');
+            if (!onOpenEntryGroups) { existing?.remove(); return; }
+            if (!toolbar || existing) return;
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'wbo-btn wbo-acc-group-btn';
+            button.dataset.accExtra = 'open-entry-groups';
+            button.innerHTML = '<i class="fa-solid fa-folder-tree" aria-hidden="true"></i> 条目分组';
+            toolbar.prepend(button);
+        },
         hasDirtyEditors: () => {
             for (const ctrl of expandedEditors.values()) {
                 if (ctrl.isDirty?.()) return true;

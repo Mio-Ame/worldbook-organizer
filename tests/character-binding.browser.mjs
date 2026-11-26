@@ -58,7 +58,7 @@ test('scan review, primary replacement and auxiliary bindings use the intended c
         async function chooseBook(book) {
             await cdp.clickSelector(`.wbo-book-item[data-book="${book}"] [data-action="book-more-menu"]`);
             const actions = await cdp.evalFn(() => [...document.querySelectorAll('.wbo-book-more-popover [data-more-act]')].map((button) => button.dataset.moreAct));
-            assert.deepEqual(actions, ['bind-book-to-character', 'edit-book', 'entry-groups', 'rename-alias', 'move-group']);
+            assert.deepEqual(actions, ['bind-book-to-character', 'edit-book', 'rename-alias', 'move-group']);
             const bind = '[data-more-act="bind-book-to-character"]';
             assert.equal(await cdp.evalFn((selector) => document.activeElement.matches(selector), bind), true);
             await cdp.clickSelector(bind);

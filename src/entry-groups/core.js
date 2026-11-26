@@ -6,6 +6,8 @@
  * Zero DOM or browser globals required; zero multi-floor chat history scanning.
  */
 
+import { normalizeTogglePresets } from './toggle-presets.js';
+
 export const MODULE_NAME = 'worldbook_entry_groups';
 
 export const SPECIAL_GROUP_UNGROUPED = '__ungrouped__';
@@ -48,7 +50,7 @@ const ROUTE_INDEX_TAG_REGEX = /<!---?[\s\u3000]*route[\s\u3000]*[:：][\s\u3000]
 
 // Common / shared base lore names MUST stay NORMAL (never auto-marked as mutually exclusive IF lines!)
 const COMMON_BASE_NAME_REGEX = /(?:通用|常规|公共|基础|共用|主线基础|全局|必开|状态栏|变量列表|输出格式|输出规范|世界观基础)/i;
-const IF_NAME_HINT_REGEX = /(?:^|[\s【\[「(（·\-_/:：|｜])(?:if\s*线?|分支|路线|支线|世界线|结局线|if\d+|\d+岁线?)(?:$|[\s】\]」)）·\-_/:：|｜\d])|(?:线)$/i;
+const IF_NAME_HINT_REGEX = /(?:^|[\s【\[「(（·\-_/:：|｜])(?:if\s*线?|分支|路线|支线|世界线|结局线|if\d+|\d+岁线?)(?:$|[\s】\]」)）·\-_/:：|｜\d])/i;
 const RADIO_SECTION_HINT_REGEX = /(?:自选|二选一|多选一|三选一|四选一|场景选择|身份选择|分支选择|路线选择)/i;
 const NSFW_TITLE_HINT_REGEX = /\b(?:nsfw|nfsw|r18|18\+|smut|ero|dirtytalk)\b|(?:亲密剧情|亲密行为|亲密设定|情事|床笫|欢爱|肉体设定|敏感带|敏感点|性癖|瑟瑟|涩涩|色情|成人向|情欲|交合|体位|炖肉)/i;
 
@@ -168,6 +170,9 @@ export function normalizeBookConfig(raw) {
 
     return {
         groups,
+        togglePresets: normalizeTogglePresets(src.togglePresets),
+        toggleBackup: src.toggleBackup && Number.isFinite(src.toggleBackup.createdAt) && src.toggleBackup.createdAt > 0
+            ? { createdAt: src.toggleBackup.createdAt, states: normalizeTogglePresets([{ id: 'backup', name: 'backup', states: src.toggleBackup.states }])[0].states } : null,
         assignments,
         pausedGroupStates,
         ungroupedCollapsed: Boolean(src.ungroupedCollapsed),
@@ -209,6 +214,8 @@ export function normalizeChatProfile(raw) {
 export function cloneBookConfig(bookConfig) {
     const norm = normalizeBookConfig(bookConfig);
     return {
+        togglePresets: normalizeTogglePresets(norm.togglePresets),
+        toggleBackup: norm.toggleBackup ? { createdAt: norm.toggleBackup.createdAt, states: { ...norm.toggleBackup.states } } : null,
         groups: norm.groups.map((g) => ({
             ...g,
             sceneKeywords: [...(g.sceneKeywords || [])],
@@ -226,6 +233,8 @@ export function isBookConfigEmpty(bookConfig) {
     const norm = normalizeBookConfig(bookConfig);
     return (
         norm.groups.length === 0
+        && norm.togglePresets.length === 0
+        && !norm.toggleBackup
         && Object.keys(norm.assignments).length === 0
         && norm.pinnedGroupIds.length === 0
         && norm.pinnedEntryUids.length === 0
@@ -292,6 +301,8 @@ export function normalizeSettings(raw) {
         editorHeightSize,
         lastOpenedBook: String(src.lastOpenedBook ?? '').trim(),
         autoGroupSchemes: normalizeAutoGroupSchemes(src.autoGroupSchemes),
+        autoGroupBatchSize: [5, 10, 20, 50].includes(src.autoGroupBatchSize) ? src.autoGroupBatchSize : 20,
+        autoGroupAutoContinue: src.autoGroupAutoContinue !== false,
         books,
         chatProfiles,
     };
@@ -329,7 +340,8 @@ export function upsertStoredChatProfile(settings, chatKey, rawProfile) {
  */
 function cleanDividerLabelText(rawInner) {
     let s = String(rawInner ?? '')
-        .replace(/[=\-—─━═_*~～✦✧★☆◆◇■□▼▽▲△▸▹◂◃#⬇️⬆️↓↑⤵️⤴️\ufe0f]/g, ' ')
+        .replace(/\s*[（(]通用[）)]$/, '')
+        .replace(/[=\-—─━═_*~～✦✧★☆◆◇■□▼▽▲△▸▹◂◃#⬇️⬆️↓↑☟☝⤵️⤴️\ufe0f]/g, ' ')
         .replace(/^[【\[「(（\s]+|[】\]」)）\s]+$/g, '')
         // Strip leading & trailing decorative emoji runs while keeping CJK / ASCII / numbers intact
         .replace(/^[\p{Extended_Pictographic}\s]+|[\p{Extended_Pictographic}\s]+$/gu, '')
@@ -363,6 +375,10 @@ function suggestedDividerName(label) {
     return topic || label;
 }
 
+function isOperationOnlyLabel(label) {
+    return /^(?:选开|可选|选一|(?:多|[二三四])选一(?:开)?)$/.test(String(label ?? '').trim());
+}
+
 /**
  * Check whether an entry comment is a visual divider banner, distinguishing:
  * - `'start'`: explicitly opens a bounded block (e.g. `——⬇️⬇️神女线⬇️⬇️——`, `【以下是世界观】`)
@@ -378,8 +394,8 @@ export function parseDividerComment(rawComment, meta = {}) {
     const isEmptyBodyAndKeys = !meta.hasContent && (meta.keyCount || 0) === 0;
     if (!text) return { isDivider: false, dividerKind: 'none', label: '', isPureBanner: false };
 
-    const hasUpEndCue = /(?:⬆️|▲|△|↑|⤴️|以上是|上面是|到此为止|(?:^|\s)end(?:\s|$))/i.test(text);
-    const hasDownStartCue = /(?:⬇️|▼|▽|↓|⤵️|以下是|下面是)/i.test(text);
+    const hasUpEndCue = /(?:⬆️|▲|△|↑|☝|⤴️|以上是|上面是|到此为止|(?:^|\s)end(?:\s|$))/i.test(text);
+    const hasDownStartCue = /(?:⬇️|▼|▽|↓|☟|⤵️|以下是|下面是)/i.test(text);
 
     // 1. Explicit decorative line wrappers (`——...——`, `===...===`, `---...---`, `──...──`)
     // Require closing wrapper when the entry carries content or trigger keys so normal `## Title` / `-- Note` entries are never misclassified.
@@ -1072,7 +1088,7 @@ export function computeGreetingPresetPlan(entries, greetingIndex, swipeIndex) {
 
     const routeLabel = target.title
         ? `${target.label} ${target.title}`
-        : `开场白 ${target.label}`;
+        : target.label;
     return { plan, routeLabel };
 }
 
@@ -1911,7 +1927,7 @@ export function buildGreetingCoordinationIndex(source = {}) {
             ? parsedSwipe
             : parsedCard;
 
-        const label = `#${swipeIndex}`;
+        const label = `第 ${swipeIndex + 1} 条开场白`;
         const info = {
             swipeIndex,
             label,
@@ -2163,15 +2179,15 @@ export function looksLikeNsfwEntry(titleOrKeys) {
 }
 
 /**
- * Infer the most natural group mode from a group's name and its member entry titles.
+ * Infer group mode from its author-supplied label, not local hints in individual members.
  */
-function inferSuggestedGroupMode(label, memberEntries = []) {
+function inferSuggestedGroupMode(label) {
     const clean = String(label ?? '').trim();
+    if (looksLikeRadioChoiceSection(clean)) {
+        return GROUP_MODES.RADIO;
+    }
     if (looksLikeNsfwEntry(clean) && !/人设|优化/.test(clean)) {
         return GROUP_MODES.SCENE;
-    }
-    if (looksLikeRadioChoiceSection(clean, memberEntries.map((e) => e.rawComment || e.title))) {
-        return GROUP_MODES.RADIO;
     }
     if (looksLikeIfLineName(clean)) {
         return GROUP_MODES.IF_LINE;
@@ -2182,6 +2198,7 @@ function inferSuggestedGroupMode(label, memberEntries = []) {
 export function extractEntryTitlePrefix(rawTitle) {
     let text = String(rawTitle ?? '').trim();
     if (!text) return null;
+    text = text.replace(/^[\p{Extended_Pictographic}♠♥♣♦♤♡♧♢\ufe0f\s]+/gu, '');
 
     const strippedIndex = text.replace(/^\d{1,3}[.、)\s]+\s*/, '');
     if (strippedIndex.length >= 3) {
@@ -2195,18 +2212,18 @@ export function extractEntryTitlePrefix(rawTitle) {
         let candidate = (bracketMatch[1] || bracketMatch[2] || bracketMatch[3] || bracketMatch[4] || bracketMatch[5] || '').trim();
         // Strip leading card-suit or symbol icons like `♠️权谋` -> `权谋`, `🔴` -> skip if empty
         candidate = candidate.replace(/^[\p{Extended_Pictographic}♠♥♣♦♤♡♧♢\ufe0f\s]+/gu, '').trim();
-        if (candidate && !/^\d+$/.test(candidate)) {
+        if (candidate && !/^\d+$/.test(candidate) && !isOperationOnlyLabel(candidate)) {
             // Note: `【常规·助理线】` / `【常规·小演员线】` have distinct sub-route names inside brackets;
             // normalize `常规·XX线` only if standalone, or group `【常规·...】` under `常规分支` when each bracket is unique!
             return candidate;
         }
     }
 
-    const delimMatch = text.match(/^([^:：\-—_｜|/·]{2,16}?)\s*(?:[:：｜|/]|[-—_]{1,2}|·)\s*(.+)$/);
+    const delimMatch = text.match(/^([^:：\-—_｜丨|/·]{2,16}?)\s*(?:[:：｜丨|/]|[-—_]{1,2}|·)\s*(.+)$/);
     if (delimMatch) {
         const candidate = delimMatch[1].trim();
         const rest = delimMatch[2].trim();
-        if (candidate && rest && !/^\d+$/.test(candidate)) {
+        if (candidate && rest && !/^\d+$/.test(candidate) && !isOperationOnlyLabel(candidate)) {
             return candidate;
         }
     }
@@ -2227,6 +2244,48 @@ export function normalizeAutoGroupSchemes(value) {
     });
 }
 
+function autoGroupPriority(group) {
+    const mode = group.mode || group.suggestedMode;
+    if (mode === GROUP_MODES.IF_LINE) return 0;
+    if (mode === GROUP_MODES.SCENE || looksLikeNsfwEntry(group.name)) return 1;
+    return /^(?:小手机(?:界面)?|手机界面|状态栏(?:界面)?|界面辅助|表情包|变量(?:更新规则|更新|规则|列表))$/.test(group.name || '') ? 3 : 2;
+}
+
+function orderAutomaticProposals(proposals) {
+    return [...proposals].sort((a, b) => autoGroupPriority(a) - autoGroupPriority(b));
+}
+
+function detectExplicitNsfwVariants(entries) {
+    const authoredLabels = new Set(entries.filter((entry) => entry.isDivider && entry.dividerKind === 'start')
+        .map((entry) => entry.dividerLabel));
+    const buckets = new Map();
+    let sectionLabel = '';
+    for (const entry of entries) {
+        if (entry.isDivider) sectionLabel = entry.dividerKind === 'end' ? '' : entry.dividerLabel;
+        if (entry.isDivider && entry.isPureBanner) continue;
+        const title = String(entry.rawComment || entry.title || '');
+        // These are display-only subgroups, requiring explicit title evidence, never body or key guesses.
+        if (!/\b(?:nsfw|nfsw|r18)\b|18\+/i.test(title)
+            || /修正|修复|限制|禁止|禁用|使用说明|注意事项/.test(title)) continue;
+        const unwrapped = title.match(/^([^【\[「（(]{1,18}?)\s*(?:nsfw|nfsw|r18)\s*[（(][^）)]*[）)]$/i);
+        if (unwrapped && !(looksLikeNsfwEntry(sectionLabel) && /人设|修正|优化/.test(sectionLabel))) continue;
+        const label = extractEntryTitlePrefix(title) || unwrapped?.[1]?.trim();
+        if (!label) continue;
+        const common = /^(?:常规|通用)(?:线)?$/.test(label);
+        const version = /^[^·:：/|\s]{1,16}(?:背景|背景版本|版本)$/.test(label);
+        if (!common && !version && !unwrapped && !authoredLabels.has(label) && !looksLikeIfLineName(label)) continue;
+        const variant = common ? '通用' : label;
+        if (!buckets.has(variant)) buckets.set(variant, []);
+        buckets.get(variant).push(entry.uid);
+    }
+    // Keep the existing single-scene behavior when there is no demonstrated version split.
+    if (buckets.size < 2) return [];
+    return [...buckets].map(([label, uids]) => ({
+        key: `nsfw_variant_${label}`, name: `NSFW·${label}`, suggestedMode: GROUP_MODES.NORMAL,
+        uids, source: 'prefix',
+    }));
+}
+
 /**
  * Propose groups from paired dividers, section banners, title prefixes, scene cues,
  * or greeting tags. A custom scheme instead matches literal keywords against titles.
@@ -2241,6 +2300,7 @@ export function detectAutoGroups(entries, {
     const list = Array.isArray(entries) ? entries : [];
     const assignedObj = existingAssignments && typeof existingAssignments === 'object' ? existingAssignments : {};
     const validEntryMap = new Map(list.map((e) => [e.uid, e]));
+    const entryPositions = new Map(list.map((entry, index) => [entry.uid, index]));
 
     const isEligible = (uid) => !onlyUngrouped || !assignedObj[uid];
 
@@ -2285,49 +2345,72 @@ export function detectAutoGroups(entries, {
 
     const detectFromDividers = (claimedSet, { boundedOnly = false, pairedOnly = false, explicitChoiceOnly = false } = {}) => {
         const rawBlocks = [];
-        let currentBlock = null;
+        let activeBlocks = [];
+        let previousEntry = null;
 
         for (const entry of list) {
+            const followsStart = previousEntry?.isDivider && previousEntry.dividerKind === 'start';
+            previousEntry = entry;
             if (entry.isDivider) {
                 if (pairedClosers.has(entry.uid)) {
-                    if (currentBlock?.closer === entry.uid && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
-                        currentBlock.entries.push(entry);
+                    const block = activeBlocks.find((block) => block.closer === entry.uid);
+                    if (block && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
+                        block.entries.push(entry);
                     }
-                    currentBlock = null;
+                    activeBlocks = [];
+                    continue;
+                }
+                if (isOperationOnlyLabel(entry.dividerLabel)) {
+                    activeBlocks = [];
                     continue;
                 }
                 if (entry.dividerKind === 'end') {
-                    currentBlock = null;
+                    activeBlocks = entry.dividerLabel && activeBlocks.some((block) => block.label === entry.dividerLabel)
+                        ? activeBlocks.filter((block) => block.label !== entry.dividerLabel)
+                        : [];
                     continue;
                 }
                 const closer = pairedOpeners.get(entry.uid);
                 if ((explicitChoiceOnly && !RADIO_SECTION_HINT_REGEX.test(entry.dividerLabel))
                     || (!closer && (pairedOnly || (boundedOnly && entry.dividerKind !== 'start')))) {
-                    if (entry.dividerLabel) currentBlock = null;
+                    if (entry.dividerLabel) activeBlocks = [];
                     continue;
                 }
                 if (entry.dividerLabel) {
-                    currentBlock = {
+                    // Only simultaneous starts demonstrate an interleaved author range.
+                    // Unlabelled members of that range remain unclaimed rather than guessed.
+                    const interleaved = entry.dividerKind === 'start' && followsStart && Number.isFinite(entry.displayIndex)
+                        && activeBlocks.length > 0 && activeBlocks.at(-1).startIndex === entry.displayIndex;
+                    if (!interleaved) activeBlocks = [];
+                    else for (const block of activeBlocks) block.interleaved = true;
+                    const block = {
                         label: entry.dividerLabel,
                         kind: entry.dividerKind,
+                        startIndex: entry.displayIndex,
+                        interleaved,
                         closer,
                         entries: [],
                     };
                     if ((closer || !entry.isPureBanner) && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
-                        currentBlock.entries.push(entry);
+                        block.entries.push(entry);
                     }
-                    rawBlocks.push(currentBlock);
+                    activeBlocks.push(block);
+                    rawBlocks.push(block);
                 }
                 continue;
             }
 
-            if (currentBlock && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
-                currentBlock.entries.push(entry);
+            if (activeBlocks.length && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
+                const prefix = extractEntryTitlePrefix(entry.rawComment || entry.title);
+                const target = activeBlocks.find((block) => block.interleaved && prefix === block.label)
+                    || (activeBlocks.length === 1 && !activeBlocks[0].interleaved ? activeBlocks[0] : null);
+                target?.entries.push(entry);
             }
         }
 
         const meaningful = rawBlocks.filter((b) => b.entries.length >= 1);
-        if (!boundedOnly && !explicitChoiceOnly && meaningful.length < 2 && !meaningful.some((block) => block.closer)) return [];
+        if (!boundedOnly && !explicitChoiceOnly && meaningful.length < 2
+            && !meaningful.some((block) => block.closer || block.kind === 'start')) return [];
 
         const mergedByLabel = new Map();
         for (const b of meaningful) {
@@ -2339,20 +2422,35 @@ export function detectAutoGroups(entries, {
 
         const out = [];
         let idx = 0;
-        for (const [label, { entries: memberEntries, paired }] of mergedByLabel) {
-            // In smart mode, if a bounded block's entries ALREADY share a cleaner `【前缀】` (like `⬇️⬇️神女线⬇️⬇️` containing `【神女线】...`),
-            // let prefix clustering handle prefixed ones UNLESS the entries lack prefixes (like `USER身份自选` -> `高门贵女user` / `公主user`)!
-            if (boundedOnly && !paired && !RADIO_SECTION_HINT_REGEX.test(label)) {
-                const unprefixed = memberEntries.filter((e) => !extractEntryTitlePrefix(e.rawComment || e.title));
-                if (unprefixed.length === 0) continue;
+        for (const [label, { entries: originalMembers }] of mergedByLabel) {
+            let memberEntries = originalMembers;
+            // A common base may contain a small local choice, not a whole-book choice theme.
+            if (/^(?:通用(?:[+＋·、]基础)?|基础(?:设定|资料)?)$/.test(label)) {
+                const local = [];
+                let run = [];
+                const flush = () => { if (run.length >= 2) local.push(...run); run = []; };
+                for (const entry of memberEntries) {
+                    if (run.length && entryPositions.get(entry.uid) !== entryPositions.get(run.at(-1).uid) + 1) flush();
+                    const title = String(entry.rawComment || entry.title || '');
+                    if (/^[（(]选一[）)]\s*(?:\d+[.、)）]?|[①②③④⑤⑥⑦⑧⑨⑩])?\s*(?:亲情|爱情)向?好感阶段$/.test(title)) run.push(entry);
+                    else flush();
+                }
+                flush();
+                if (local.length) {
+                    const localUids = new Set(local.map(({ uid }) => uid));
+                    memberEntries = memberEntries.filter(({ uid }) => !localUids.has(uid));
+                    for (const uid of localUids) claimedSet.add(uid);
+                    out.push({ key: `local_${idx++}_好感阶段`, name: '好感阶段', suggestedMode: GROUP_MODES.NORMAL,
+                        uids: [...localUids], source: 'divider' });
+                }
             }
-
+            if (!memberEntries.length) continue;
             const uids = memberEntries.map((e) => e.uid);
             for (const uid of uids) claimedSet.add(uid);
             out.push({
                 key: `divider_${idx++}_${label}`,
                 name: suggestedDividerName(label),
-                suggestedMode: inferSuggestedGroupMode(label, memberEntries),
+                suggestedMode: inferSuggestedGroupMode(label),
                 uids,
                 source: 'divider',
             });
@@ -2368,21 +2466,25 @@ export function detectAutoGroups(entries, {
             if (!isEligible(entry.uid) || claimedSet.has(entry.uid)) continue;
             const prefix = extractEntryTitlePrefix(entry.rawComment || entry.title);
             if (!prefix) continue;
-            if (!buckets.has(prefix)) buckets.set(prefix, []);
-            buckets.get(prefix).push(entry);
+            const name = suggestedDividerName(prefix);
+            const mode = inferSuggestedGroupMode(prefix);
+            const key = JSON.stringify([name, mode]);
+            if (!buckets.has(key)) buckets.set(key, { name, mode, entries: [], label: prefix });
+            const bucket = buckets.get(key);
+            bucket.entries.push(entry);
         }
 
         const out = [];
         let idx = 0;
-        for (const [prefix, memberEntries] of buckets.entries()) {
-            const isSpecial = looksLikeIfLineName(prefix) || looksLikeNsfwEntry(prefix);
+        for (const { name, mode, entries: memberEntries, label } of buckets.values()) {
+            const isSpecial = looksLikeIfLineName(label) || looksLikeNsfwEntry(label);
             if (memberEntries.length < 2 && !isSpecial) continue;
             const uids = memberEntries.map((e) => e.uid);
             for (const uid of uids) claimedSet.add(uid);
             out.push({
-                key: `prefix_${idx++}_${prefix}`,
-                name: prefix,
-                suggestedMode: inferSuggestedGroupMode(prefix, memberEntries),
+                key: `prefix_${idx++}_${name}`,
+                name,
+                suggestedMode: mode,
                 uids,
                 source: 'prefix',
             });
@@ -2448,10 +2550,10 @@ export function detectAutoGroups(entries, {
             const uids = g.loreUids.filter((uid) => validEntryMap.has(uid) && isEligible(uid) && !claimedSet.has(uid));
             if (uids.length === 0) continue;
             for (const uid of uids) claimedSet.add(uid);
-            const cleanTitle = g.title ? g.title.slice(0, 24) : `开场白 ${g.label}`;
+            const cleanTitle = g.title ? g.title.slice(0, 24) : g.label;
             out.push({
                 key: `greeting_${g.swipeIndex}`,
-                name: g.title ? `IF · ${cleanTitle}` : `IF · 开场白 ${g.label}`,
+                name: `IF · ${cleanTitle}`,
                 suggestedMode: GROUP_MODES.IF_LINE,
                 uids,
                 source: 'greeting',
@@ -2462,17 +2564,23 @@ export function detectAutoGroups(entries, {
 
     const claimed = new Set();
     if (strategy === 'scene') return detectNsfwSceneGroup(claimed);
-    if (strategy === 'greeting') return detectFromGreetings(claimed);
-    if (strategy === 'divider') return [
+    if (strategy === 'greeting') return orderAutomaticProposals(detectFromGreetings(claimed));
+    if (strategy === 'divider') return orderAutomaticProposals([
         ...detectFromDividers(claimed, { explicitChoiceOnly: true }),
         ...detectFromDividers(claimed),
-    ];
-    if (strategy === 'prefix') return detectFromPrefixes(claimed);
+    ]);
+    if (strategy === 'prefix') return orderAutomaticProposals(detectFromPrefixes(claimed));
+
+    const explicitChoices = detectFromDividers(claimed, { explicitChoiceOnly: true });
+    const nsfwVariants = detectExplicitNsfwVariants(list)
+        .map((proposal) => ({ ...proposal, uids: proposal.uids.filter((uid) => isEligible(uid) && !claimed.has(uid)) }))
+        .filter((proposal) => proposal.uids.length);
+    for (const { uids } of nsfwVariants) for (const uid of uids) claimed.add(uid);
 
     // Smart combined strategy:
     // Check whether the author structured the whole book with section dividers (e.g. `——🐰🐰...🦊🦊——` covering >60% of entries)
     const nonBannerCount = list.filter((e) => !e.isPureBanner).length;
-    const trialDividerClaimed = new Set();
+    const trialDividerClaimed = new Set(nsfwVariants.flatMap(({ uids }) => uids));
     const fullSectionDividers = detectFromDividers(trialDividerClaimed, { boundedOnly: false });
     const hasComprehensiveSectionLayers =
         fullSectionDividers.length >= 3 &&
@@ -2480,24 +2588,24 @@ export function detectAutoGroups(entries, {
         trialDividerClaimed.size / nonBannerCount >= 0.65 &&
         !list.some((e) => e.dividerKind === 'end');
 
-    const results = detectFromDividers(claimed, { pairedOnly: true });
+    const results = [...explicitChoices, ...nsfwVariants, ...detectFromDividers(claimed, { pairedOnly: true })];
     if (hasComprehensiveSectionLayers) {
         // Book is already cleanly layered top-to-bottom by author section banners! Preserve exact author layers!
-        return [...results, ...detectFromDividers(claimed, { boundedOnly: false })];
+        const authorOrder = new Map(list.map((entry, index) => [entry.uid, index]));
+        return orderAutomaticProposals([...results, ...detectFromDividers(claimed, { boundedOnly: false })]
+            .sort((a, b) => authorOrder.get(a.uids[0]) - authorOrder.get(b.uids[0])));
     }
 
     // Otherwise:
-    // 1) Extract standalone NSFW entries first -> 2) Bounded `⬇️...⬆️` unprefixed blocks (like `USER身份自选`)
-    // -> 3) Prefix clusters (`【通用线】`, `【将军线】`, `【神女线】`) -> 4) Remaining section dividers / greeting branches
-    results.push(...detectFromDividers(claimed, { explicitChoiceOnly: true }));
-    results.push(...detectNsfwSceneGroup(claimed));
+    // Explicit author ranges win over loose scene keywords and repeated internal prefixes.
     results.push(...detectFromDividers(claimed, { boundedOnly: true }));
+    results.push(...detectNsfwSceneGroup(claimed));
     results.push(...detectFromPrefixes(claimed));
     results.push(...detectFromDividers(claimed, { boundedOnly: false }));
     if (results.length === 0 && greetingIndex?.hasManagedEntries) {
         results.push(...detectFromGreetings(claimed));
     }
-    return results;
+    return orderAutomaticProposals(results);
 }
 
 export function applyAutoGroupProposals(rawBookConfig, proposals, { replaceExisting = false } = {}) {
@@ -2511,6 +2619,7 @@ export function applyAutoGroupProposals(rawBookConfig, proposals, { replaceExist
             pinnedEntryUids: [...cloned.pinnedEntryUids],
         }
         : cloned;
+    const addedGroups = [];
 
     for (const item of proposals || []) {
         const name = String(item?.name ?? '').trim();
@@ -2526,7 +2635,7 @@ export function applyAutoGroupProposals(rawBookConfig, proposals, { replaceExist
             ? desiredMode
             : GROUP_MODES.NORMAL;
 
-        let group = next.groups.find((g) => g.name === name);
+        let group = next.groups.find((g) => g.name === name && g.mode === validMode);
         if (!group) {
             group = {
                 id: createGroupId('grp'),
@@ -2537,12 +2646,35 @@ export function applyAutoGroupProposals(rawBookConfig, proposals, { replaceExist
                 cooldownTurns: 2,
             };
             next.groups.push(group);
-        } else if (group.mode === GROUP_MODES.NORMAL && validMode !== GROUP_MODES.NORMAL) {
-            group.mode = validMode;
+            addedGroups.push(group);
         }
 
         for (const uid of uids) {
             next.assignments[uid] = group.id;
+        }
+    }
+
+    // Only place newly created automatic groups; preserve manual and custom-scheme order.
+    if (addedGroups.length && !(proposals || []).some((item) => item?.source === 'custom')) {
+        const byId = new Map(next.groups.map((group) => [group.id, group]));
+        const addedIds = new Set(addedGroups.map(({ id }) => id));
+        const batches = [0, 1, 2, 3].map((rank) => addedGroups.filter((group) => autoGroupPriority(group) === rank).map(({ id }) => id));
+        const insertNew = (oldOrder) => {
+            const order = [...oldOrder];
+            const ranks = () => order.map((id) => id === SPECIAL_GROUP_UNGROUPED ? 4 : autoGroupPriority(byId.get(id)));
+            order.splice(ranks().lastIndexOf(0) + 1, 0, ...batches[0]);
+            const afterRoutesAndNsfw = Math.max(ranks().lastIndexOf(0), ranks().lastIndexOf(1)) + 1;
+            order.splice(afterRoutesAndNsfw, 0, ...batches[1]);
+            const helperIndex = ranks().indexOf(3);
+            const endIndex = () => order.includes(SPECIAL_GROUP_UNGROUPED) ? order.indexOf(SPECIAL_GROUP_UNGROUPED) : order.length;
+            order.splice(helperIndex < 0 ? endIndex() : helperIndex, 0, ...batches[2]);
+            order.splice(endIndex(), 0, ...batches[3]);
+            return order;
+        };
+        const oldIds = next.groups.filter(({ id }) => !addedIds.has(id)).map(({ id }) => id);
+        next.groups = insertNew(oldIds).map((id) => byId.get(id));
+        if (next.nativeGroupOrder?.length) {
+            next.nativeGroupOrder = insertNew([...new Set([...next.nativeGroupOrder, ...oldIds, SPECIAL_GROUP_UNGROUPED])]);
         }
     }
 
@@ -2587,6 +2719,11 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
             merged.nativeGroupOrder = [...new Set([...merged.nativeGroupOrder,
                 ...oldCfg.nativeGroupOrder.map((id) => idRemap.get(id) || id)])];
             merged.pinnedEntryUids = [...new Set([...merged.pinnedEntryUids, ...oldCfg.pinnedEntryUids])];
+            for (const preset of oldCfg.togglePresets) {
+                merged.togglePresets.push({ ...preset,
+                    id: merged.togglePresets.some((item) => item.id === preset.id) ? createGroupId('preset') : preset.id });
+            }
+            merged.toggleBackup ||= oldCfg.toggleBackup;
             for (const [oldId, states] of Object.entries(oldCfg.pausedGroupStates)) {
                 const id = idRemap.get(oldId) || oldId;
                 merged.pausedGroupStates[id] = { ...states, ...merged.pausedGroupStates[id] };

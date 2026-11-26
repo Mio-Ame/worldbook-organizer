@@ -18,7 +18,8 @@ import { showToast } from './host.js';
 import { hasCompatibleDropdownScript } from './native-filter.js';
 import { openImportRulesModal } from './panel-import-rules.js';
 import { getNativeGroupingPreferences } from './entry-groups/host.js';
-import { canConfigureNativeGrouping, setNativeGroupingEnabled } from './entry-groups/panel.js';
+import { canConfigureNativeGrouping, setNativeEntryButtonVisible } from './entry-groups/panel.js';
+import { isEntryGroupingEnabled, syncEntryGroupingFeatureGate } from './entry-groups/feature-gate.js';
 
 // ==================== Settings Modal & Extension Settings Panel ====================
 
@@ -64,13 +65,21 @@ function syncSettingControlsInPlace(container, settings) {
     container.querySelectorAll('input[data-setting]').forEach((el) => {
         if (!(el instanceof HTMLInputElement)) return;
         const key = el.getAttribute('data-setting');
-        if (key) el.checked = Boolean(settings[key]);
+        if (key) el.checked = key === 'entryGroupsEnabled'
+            ? isEntryGroupingEnabled(settings) : Boolean(settings[key]);
     });
     container.querySelectorAll('select[data-setting-select]').forEach((el) => {
         if (!(el instanceof HTMLSelectElement)) return;
         const key = el.getAttribute('data-setting-select');
         if (key && settings[key] !== undefined) el.value = String(settings[key]);
     });
+    const nativeOptions = container.querySelector('[data-entry-native-options]');
+    if (nativeOptions) nativeOptions.hidden = !isEntryGroupingEnabled(settings) || !canConfigureNativeGrouping();
+    const nativeButton = container.querySelector('input[data-entry-native-button]');
+    if (nativeButton) {
+        nativeButton.disabled = !isEntryGroupingEnabled(settings) || !canConfigureNativeGrouping();
+        nativeButton.checked = isEntryGroupingEnabled(settings) && getNativeGroupingPreferences().showButton;
+    }
 }
 
 /**
@@ -92,6 +101,21 @@ function bindSettingControlListeners(container) {
             if (!key) return;
             const { settings } = _callbacks.getState();
             settings[key] = el.checked;
+            if (key === 'entryGroupsEnabled') {
+                el.disabled = true;
+                try {
+                    await syncEntryGroupingFeatureGate();
+                } catch (error) {
+                    settings.entryGroupsEnabled = false;
+                    await syncEntryGroupingFeatureGate();
+                    showToast('error', `条目分组启用失败：${error?.message || error}`);
+                } finally {
+                    el.disabled = false;
+                    syncSettingControlsInPlace(container, settings);
+                }
+                await _callbacks?.onMutation({ save: true, uiOnly: true });
+                return;
+            }
             if (key === 'hideCharBooksByDefault') {
                 settings.showCharBooks = !el.checked;
                 for (const listKey of ['globalHiddenGroupIds', 'editorHiddenGroupIds']) {
@@ -205,6 +229,20 @@ function openSettingsModal() {
 
             <div class="wbo-step-scroll">
             <div class="wbo-settings-tab-pane" data-settings-pane="appearance"${initialSettingsTab === 'appearance' ? '' : ' hidden'}>
+                <div class="wbo-card wbo-entry-settings-card">
+                    <div class="wbo-ai-section-head"><span><i class="fa-solid fa-layer-group" aria-hidden="true"></i> 条目分组（测试）</span></div>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="entryGroupsEnabled">
+                        <strong>启用条目分组</strong>
+                    </label>
+                    <div class="wbo-subtle-tip">关闭后隐藏所有入口，保留分组记录。</div>
+                    <div data-entry-native-options hidden>
+                        <label class="wbo-check-line">
+                            <input type="checkbox" data-entry-native-button>
+                            <span>在原生编辑器显示条目分组入口</span>
+                        </label>
+                    </div>
+                </div>
                 <div class="wbo-card">
                     <div class="wbo-ai-section-head"><span>面板配色</span></div>
                     <div class="wbo-palette-grid">${paletteButtonsHtml}</div>
@@ -243,11 +281,7 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="showNativeCharToggleBtn">
                         <span>显示编辑下拉框旁「角色书显隐」按钮</span>
                     </label>
-                    ${canConfigureNativeGrouping() ? `<label class="wbo-check-line">
-                        <input type="checkbox" data-entry-native-grouping${getNativeGroupingPreferences().enabled ? ' checked' : ''}>
-                        <span>在原生编辑器显示条目分组</span>
-                    </label>` : ''}
-                    <div class="wbo-subtle-tip">默认「三合一按钮」仅占 1 个图标位（内含全局组合、排除分组与搜条目直达）；也可切换为分开显示或完全隐藏。</div>
+                    <div class="wbo-subtle-tip">三合一包含组合、排除分组和搜条目。</div>
                 </div>
             </div>
 
@@ -389,15 +423,19 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="adaptMoveEntryPopup">
                         <span>移动/复制条目目标世界书弹窗</span>
                     </label>
-                    ${hasCompatibleDropdownScript() ? `<label class="wbo-check-line">
+                </div>
+
+                ${hasCompatibleDropdownScript() ? `<div class="wbo-card" data-dropdown-script-settings>
+                    <div class="wbo-ai-section-head"><span>下拉框美化酒馆脚本适配</span></div>
+                    <label class="wbo-check-line">
                         <input type="checkbox" data-setting="adaptEnhancedPresetGroups">
-                        <span>为兼容的预设下拉框添加分组切换</span>
+                        <span>预设下拉框显示分组切换</span>
                     </label>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="overrideEnhancedDropdownStyle">
-                        <span>覆盖美化下拉框样式，跟随酒馆主题</span>
-                    </label>` : ''}
-                </div>
+                        <span>覆盖脚本配色，跟随酒馆主题</span>
+                    </label>
+                </div>` : ''}
             </div>
             </div>
 
@@ -459,8 +497,8 @@ function openSettingsModal() {
 
     syncSettingControlsInPlace(modal, settings);
     bindSettingControlListeners(modal);
-    modal.querySelector('input[data-entry-native-grouping]')?.addEventListener('change', (event) => {
-        setNativeGroupingEnabled(event.target.checked);
+    modal.querySelector('input[data-entry-native-button]')?.addEventListener('change', (event) => {
+        setNativeEntryButtonVisible(event.target.checked);
     });
 
     const syncExcludeChips = () => {

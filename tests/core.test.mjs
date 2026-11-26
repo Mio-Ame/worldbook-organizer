@@ -2507,6 +2507,12 @@ function installMockNativeFilterDom({ innerWidth = 390, innerHeight = 844 } = {}
         getBoundingClientRect() {
             return { ...this._rect };
         }
+        getClientRects() {
+            for (let node = this; node; node = node.parentElement) {
+                if (node.hidden || node.style?.display === 'none') return [];
+            }
+            return this.isConnected ? [this.getBoundingClientRect()] : [];
+        }
         addEventListener(type, fn, opts) {
             const capture = typeof opts === 'boolean' ? opts : Boolean(opts?.capture);
             if (!this._listeners.has(type)) this._listeners.set(type, []);

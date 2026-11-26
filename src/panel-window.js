@@ -28,6 +28,17 @@ const _sessionMobileBoxes = new Map();
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
 const _previewCache = new Map();
 
+function placeOverlayAboveOpenPanels(overlay) {
+    const currentLayer = Number.parseInt(getComputedStyle(overlay).zIndex, 10) || 0;
+    let layer = currentLayer;
+    // Read only our own open panel roots, once when creating the child window.
+    document.querySelectorAll('.wbo-modal-overlay, .weg-modal-backdrop').forEach((panel) => {
+        if (panel === overlay || panel.hidden || !panel.getClientRects().length) return;
+        layer = Math.max(layer, (Number.parseInt(getComputedStyle(panel).zIndex, 10) || 0) + 1);
+    });
+    if (layer > currentLayer) overlay.style.zIndex = String(layer);
+}
+
 function isDesktopAutoFocusAllowed() {
     const w = globalThis.innerWidth || (typeof document !== 'undefined' ? document.documentElement?.clientWidth : 0) || 0;
     const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
@@ -721,6 +732,7 @@ function openInlineTextPrompt({
 
         overlay.appendChild(modal);
         document.body.appendChild(overlay);
+        placeOverlayAboveOpenPanels(overlay);
 
         bindDrawerSafeBubbleGuard(overlay);
         bindDrawerSafeBubbleGuard(modal);
@@ -738,7 +750,7 @@ function openInlineTextPrompt({
             if (!val) {
                 showToast('warning', '请输入内容');
                 if (input instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
-                    input.focus();
+                    input.focus({ preventScroll: true });
                 }
                 return;
             }
@@ -760,13 +772,13 @@ function openInlineTextPrompt({
         clearBtn?.addEventListener('click', () => {
             if (input instanceof HTMLInputElement) {
                 input.value = '';
-                if (isDesktopAutoFocusAllowed()) input.focus();
+                if (isDesktopAutoFocusAllowed()) input.focus({ preventScroll: true });
             }
         });
         if (input instanceof HTMLInputElement) {
             bindImeSafeEnter(input, confirm);
             if (isDesktopAutoFocusAllowed()) {
-                input.focus();
+                input.focus({ preventScroll: true });
                 input.select();
             }
         }
@@ -776,23 +788,23 @@ function openInlineTextPrompt({
 /**
  * Create a sub-modal stacked above the Group Manager modal without closing `#WorldInfo`.
  */
-function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, stack = false, floating = false } = {}) {
+function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, stack = false, floating = false, prompt = false } = {}) {
     if (!stack) {
         closeSubModal({ all: true });
     }
     const stackIdx = _subModalStack.length;
     const overlay = document.createElement('div');
     overlay.id = stackIdx === 0 ? SUBMODAL_OVERLAY_ID : `${SUBMODAL_OVERLAY_ID}-${stackIdx}`;
-    overlay.className = `wbo-modal-overlay wbo-submodal-overlay${floating ? ' wbo-floating-overlay' : ''}`;
+    overlay.className = `wbo-modal-overlay wbo-submodal-overlay${floating ? ' wbo-floating-overlay' : ''}${prompt ? ' wbo-prompt-overlay' : ''}`;
     if (stackIdx > 0) {
         overlay.style.zIndex = String(10020 + stackIdx);
     }
     applyTauriSurface(overlay, 'backdrop');
 
     const modal = document.createElement('div');
-    modal.className = `wbo-modal${wide ? ' is-wide' : ''}${pinnedLayout ? ' is-pinned-layout' : ''}`;
+    modal.className = `wbo-modal${wide ? ' is-wide' : ''}${pinnedLayout ? ' is-pinned-layout' : ''}${prompt ? ' wbo-prompt-modal' : ''}`;
     applyThemeClass(modal);
-    applyTauriSurface(modal, 'fullscreen-window');
+    if (!prompt) applyTauriSurface(modal, 'fullscreen-window');
     if (wide || pinnedLayout) {
         // Lock a steady window height so switching tabs/views NEVER jumps the modal vertically!
         const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
@@ -818,6 +830,7 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
 
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
+    placeOverlayAboveOpenPanels(overlay);
     _subModalStack.push(overlay);
 
     // Isolate events from SillyTavern and close ONLY via the `×` / action buttons (never backdrop click!)

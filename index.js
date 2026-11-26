@@ -58,12 +58,14 @@ import {
     teardownPanels,
 } from './src/panel.js';
 import { startEntryGrouping, stopEntryGrouping } from './src/entry-groups/lifecycle.js';
+import { configureEntryGroupingFeatureGate } from './src/entry-groups/feature-gate.js';
 import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.12';
+export const STYLE_ASSET_VERSION = '2.35.13';
 let _initialized = false;
+let _entryGroupingGate = null;
 let _disabled = false;
 let _bootCleanup = null;
 let _chatImportTimer = null;
@@ -779,7 +781,14 @@ async function init() {
 
     registerSlashCommands(ctx);
     ensureFreshStylesheet();
-    await startEntryGrouping(STYLE_ASSET_VERSION, { onRevealNativeEditor: closeManagerModal });
+    _entryGroupingGate = configureEntryGroupingFeatureGate({
+        getSettings,
+        start: startEntryGrouping,
+        stop: stopEntryGrouping,
+        styleVersion: STYLE_ASSET_VERSION,
+        onRevealNativeEditor: closeManagerModal,
+    });
+    await _entryGroupingGate.sync();
 }
 
 /**
@@ -843,7 +852,9 @@ export function onDisable() {
     _domWorldInfoChangeHandler = null;
     _domEditorChangeHandler = null;
 
-    stopEntryGrouping();
+    if (_entryGroupingGate) _entryGroupingGate.dispose();
+    else stopEntryGrouping();
+    _entryGroupingGate = null;
     teardownNativeFilters();
     teardownPanels();
     const assetRoot = new URL('./', import.meta.url).href;

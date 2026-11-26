@@ -5,6 +5,16 @@ let currentActions = null;
 let entryObserver = null;
 let entryTargets = new Set();
 let entryFrame = 0;
+let pageSizeShell = null;
+let pageSizeShellHadClass = false;
+
+function setPageSizeShell(shell) {
+    if (pageSizeShell === shell) return;
+    if (pageSizeShell && !pageSizeShellHadClass) pageSizeShell.classList.remove('weg-native-page-size');
+    pageSizeShell = shell;
+    pageSizeShellHadClass = shell?.classList.contains('weg-native-page-size') || false;
+    shell?.classList.add('weg-native-page-size');
+}
 
 function stopEntryObserver() {
     entryObserver?.disconnect();
@@ -18,7 +28,9 @@ function watchEntryShell(pagination, list) {
     if (typeof MutationObserver !== 'function') return;
     const targets = new Set();
     // Watch shell children, never the entry list or its individual rows.
-    for (const start of [pagination, list?.parentElement,
+    const sizeShell = pagination?.querySelector('.paginationjs-size-changer');
+    const pageShell = pagination?.querySelector('.paginationjs');
+    for (const start of [sizeShell, pageShell, pagination, list?.parentElement,
         document.getElementById('world_popup'), document.getElementById('WorldInfo'), document.body]) {
         for (let node = start; node && node !== document.documentElement; node = node.parentElement) {
             targets.add(node);
@@ -31,7 +43,7 @@ function watchEntryShell(pagination, list) {
     const observer = new MutationObserver((records) => {
         if (entryObserver !== observer || !currentActions || entryFrame) return;
         const anchors = '#WorldInfo, #world_popup, #world_info_pagination, #world_popup_entries_list, #weg-native-entry-controls';
-        const changed = records.some((record) => record.target === pagination || [...record.addedNodes, ...record.removedNodes].some((node) =>
+        const changed = records.some((record) => record.target === pagination || record.target === pageShell || record.target === sizeShell || [...record.addedNodes, ...record.removedNodes].some((node) =>
             node instanceof Element && (entryTargets.has(node) || node.matches(anchors) || node.querySelector(anchors)),
         ));
         if (!changed) return;
@@ -58,11 +70,13 @@ export function syncNativeEntryPoint(actions) {
     let controls = document.getElementById(CONTROLS_ID);
     if (!showButton) {
         stopEntryObserver();
+        setPageSizeShell(null);
         controls?.remove();
         return;
     }
     watchEntryShell(pagination, list);
     if (!anchor || !getCurrentEditorWorldName()) {
+        setPageSizeShell(null);
         controls?.remove();
         return;
     }
@@ -84,7 +98,7 @@ export function syncNativeEntryPoint(actions) {
         toggle.className = 'menu_button weg-native-entry-switch';
         toggle.setAttribute('role', 'switch');
         toggle.setAttribute('aria-label', '在原生编辑器显示条目分组');
-        toggle.innerHTML = '<span aria-hidden="true"></span>';
+        toggle.innerHTML = '<span class="weg-native-visibility-label"></span>';
         toggle.addEventListener('click', () => currentActions?.setActive(!getNativeGroupingPreferences().active));
         controls.append(button, toggle);
         for (const type of ['mousedown', 'touchstart', 'click']) controls.addEventListener(type, (event) => event.stopPropagation());
@@ -93,13 +107,19 @@ export function syncNativeEntryPoint(actions) {
     toggle.disabled = !enabled;
     const checked = String(active);
     if (toggle.getAttribute('aria-checked') !== checked) toggle.setAttribute('aria-checked', checked);
+    const visibilityLabel = active ? '隐藏分组' : '显示分组';
+    if (toggle.firstElementChild.textContent !== visibilityLabel) toggle.firstElementChild.textContent = visibilityLabel;
     toggle.title = !enabled ? '请先在条目分组设置中允许原生分组显示' : active ? '关闭原生条目分组显示' : '开启原生条目分组显示';
     const size = pagination?.querySelector('select');
     if (size?.offsetHeight) {
         controls.style.setProperty('--weg-native-page-height', `${size.getBoundingClientRect().height}px`);
         controls.style.setProperty('--weg-native-page-font', getComputedStyle(size).fontSize);
     }
-    if (pagination) {
+    const sizeShell = size?.closest('.paginationjs-size-changer') || (size?.parentElement === pagination ? pagination : null);
+    setPageSizeShell(sizeShell);
+    if (sizeShell) {
+        if (controls.parentElement !== sizeShell) sizeShell.append(controls);
+    } else if (pagination) {
         if (pagination.nextElementSibling !== controls) pagination.after(controls);
     } else {
         const pinned = document.getElementById('weg-native-pinned-entries');
@@ -111,5 +131,6 @@ export function syncNativeEntryPoint(actions) {
 export function removeNativeEntryPoint() {
     currentActions = null;
     stopEntryObserver();
+    setPageSizeShell(null);
     document.getElementById(CONTROLS_ID)?.remove();
 }

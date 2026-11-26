@@ -1449,7 +1449,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         targetSelect.innerHTML = groups
             .map((group) => '<option value="' + esc(group.id) + '">' + esc(group.name) + '</option>')
             .join('')
-            + (recommended ? '' : `<option value="${newNsfwGroup}">新建 NSFW 分组</option>`)
+            + (recommended ? '' : `<option value="${newNsfwGroup}">新建：「NSFW」分组</option>`)
             + `<option value="${newNamedGroup}">＋ 新建分组…</option>`;
         targetSelect.value = groups.some((group) => group.id === current) ? current : (recommended?.id || newNsfwGroup);
     };

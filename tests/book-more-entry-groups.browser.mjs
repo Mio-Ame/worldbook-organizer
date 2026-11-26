@@ -8,7 +8,7 @@ if (!suite) throw new Error('Set WBO_E2E_SUITE to the retained browser regressio
 const load = (name) => import(pathToFileURL(resolve(suite, 'lib', name)).href);
 const { createMockStServer } = await load('mock-server.mjs');
 const { VIEWPORTS, launchEdgeCdp } = await load('cdp.mjs');
-const { createDefaultSeed, makeBook, makeEntry } = await load('fixtures.mjs');
+const { createDefaultSeed, makeBook, makeEntry } = await import('./entry-groups-fixtures.mjs');
 const { getServerState, openManager, resetAndBoot, waitForCondition } = await load('assert-helpers.mjs');
 
 for (const device of ['desktop', 'mobile']) {
