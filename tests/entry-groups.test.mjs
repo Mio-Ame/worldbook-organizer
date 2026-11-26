@@ -286,6 +286,9 @@ test('Zero chat-history scan + external script auto-follow + greeting preset loc
     const saveBMetadata = {};
     const extensionSettings = {
         worldbook_entry_groups: normalizeSettings({
+            version: 2,
+            autoSwitchOnChatChange: true,
+            enableSceneAutoToggle: true,
             books: {
                 角色主书: {
                     groups: [
@@ -1380,6 +1383,19 @@ test('estimateEntryTokens and applyTextareaTabIndent handle CJK/ASCII, multi-lin
     const outNewline = applyTextareaTabIndent('\n  line2', 0, 0, { shiftKey: true });
     assert.equal(outNewline.value, '\n  line2');
     assert.equal(outNewline.selectionStart, 0);
+});
+
+test('experimental automations default off and upgrading settings pauses both once', () => {
+    const flags = (settings) => [settings.autoSwitchOnChatChange, settings.enableSceneAutoToggle];
+    assert.deepEqual(flags(normalizeSettings(null)), [false, false]);
+    const migrated = normalizeSettings({
+        version: 1, autoSwitchOnChatChange: true, enableSceneAutoToggle: true, lastOpenedBook: '测试世界书',
+    });
+    assert.deepEqual(flags(migrated), [false, false]);
+    assert.equal(migrated.lastOpenedBook, '测试世界书');
+    assert.deepEqual(flags(normalizeSettings({
+        ...migrated, autoSwitchOnChatChange: true, enableSceneAutoToggle: true,
+    })), [true, true]);
 });
 
 test('computeEditDirty and normalizeSettings editor preferences work accurately', () => {

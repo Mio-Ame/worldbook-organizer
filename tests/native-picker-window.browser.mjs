@@ -63,6 +63,10 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         assert.deepEqual(await groupBadges(), []);
+        await cdp.clickSelector('.wbo-global-group-heading');
+        assert.deepEqual(await visible(), []);
+        await cdp.clickSelector('.wbo-global-group-heading');
+        assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         await cdp.typeInto('.select2-dropdown .select2-search__field', '普通');
         assert.deepEqual(await visible(), [other]);
         assert.deepEqual(await groupBadges(), []);
@@ -120,6 +124,54 @@ test('global picker recovers from an abandoned display without refreshing', asyn
     });
 });
 
+test('enhanced editor includes the newly active character before rendering an excluded group', async () => {
+    const secondBook = '另一测试角色世界书';
+    const fixture = seed([secondBook]);
+    fixture.characters.push({ avatar: 'second.png', name: '另一测试角色', data: { extensions: { world: secondBook } } });
+    Object.assign(fixture.extension_settings.worldbook_organizer, {
+        showCharBooks: false,
+        editorHiddenGroupIds: ['__char__'],
+        pinCurrentChatCharBookInEditor: true,
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => {
+            const style = document.createElement('style');
+            style.setAttribute('data-gr-dropdown-style', '');
+            document.head.append(style);
+            const getContext = SillyTavern.getContext;
+            SillyTavern.getContext = () => ({ ...getContext(), characterId: 1 });
+            const select = document.getElementById('world_editor_select');
+            document.addEventListener('mousedown', (event) => {
+                if (event.target !== select) return;
+                const menu = document.createElement('div');
+                menu.id = 'gr-global-dropdown-container';
+                menu.className = 'gr-container-enhanced';
+                menu.innerHTML = '<div class="gr-options"><div class="gr-options-container"></div></div>';
+                const list = menu.querySelector('.gr-options-container');
+                for (const option of select.options) {
+                    const row = document.createElement('div');
+                    row.className = 'gr-option';
+                    row.dataset.value = option.value;
+                    row.textContent = option.textContent;
+                    list.append(row);
+                }
+                document.body.append(menu);
+                event.stopPropagation();
+            }, { capture: true, once: true });
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, button: 0 }));
+        });
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"]'));
+        assert.deepEqual(await cdp.evalFn((main, old) => {
+            const rows = [...document.querySelectorAll('#gr-global-dropdown-container .gr-option[data-wbo-enhanced-world]')];
+            return {
+                first: rows[0]?.dataset.wboEnhancedWorld,
+                grouped: Boolean(rows.find((row) => row.dataset.wboEnhancedWorld === main)?.closest('.wbo-pop-section')),
+                oldVisible: rows.some((row) => row.dataset.wboEnhancedWorld === old),
+            };
+        }, secondBook, characterBook), { first: secondBook, grouped: false, oldVisible: false });
+    }, [], fixture);
+});
+
 test('shared enhanced dropdown uses the actual opener, friendly role titles and one favorite control', async () => {
     const secondBook = '另一角色原文件名';
     const extras = Array.from({ length: 35 }, (_, index) => `样例长列表 ${index}`);
@@ -127,6 +179,7 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
     const fixture = seed([secondBook, ...extras, ...statuses]);
     fixture.characters.push({ avatar: 'second.png', name: '另一测试角色', data: { extensions: { world: secondBook } } });
     fixture.extension_settings.worldbook_organizer.pinnedBooks = [];
+    Object.assign(fixture.extension_settings.worldbook_organizer.assignments, Object.fromEntries(extras.map((name) => [name, 'g-b'])));
     await withHost(VIEWPORTS.desktop, async (cdp) => {
         const openShared = (id) => cdp.evalFn((selectId, primary) => {
             document.getElementById('gr-global-dropdown-container')?.remove();
@@ -186,10 +239,11 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
                 secondaryTitle: row(secondary)?.querySelector('.wbo-gr-world-title')?.firstChild.textContent,
                 primarySection: row(primary)?.closest('.wbo-pop-section')?.dataset.wboDdGroup ?? null,
                 selected: [...pop.querySelectorAll('.gr-option.selected')].map((item) => item.dataset.wboEnhancedWorld),
-                placeholder: pop.querySelector('.gr-option[data-value=""]').textContent,
+                placeholderVisible: pop.querySelector('.gr-option[data-value=""]').getBoundingClientRect().height > 0,
+                clear: pop.querySelector('button[aria-label="清除当前选择"]')?.textContent,
             };
         }, characterBook, secondBook);
-        assert.deepEqual(state, { primaryTitle: '测试角色', secondaryTitle: '另一测试角色', primarySection: null, selected: [characterBook], placeholder: '清除当前选择' });
+        assert.deepEqual(state, { primaryTitle: '测试角色', secondaryTitle: '另一测试角色', primarySection: null, selected: [characterBook], placeholderVisible: false, clear: '清除' });
 
         await openShared('world_info_sort_order');
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar, #gr-global-dropdown-container .wbo-gr-pin-btn'))), false);
@@ -248,6 +302,27 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
         });
         assert.ok(sticking.scrollTop > 0);
         assert.equal(sticking.retained, true);
+        const groupHead = '#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="g-b"] > .wbo-dd-group-head';
+        const scrollToMiddle = () => cdp.evalFn((selector) => {
+            const heading = document.querySelector(selector);
+            const scroll = heading.closest('.gr-options');
+            const toolbar = scroll.querySelector('.wbo-enhanced-sticky');
+            scroll.scrollTop += heading.parentElement.getBoundingClientRect().top - scroll.getBoundingClientRect().top + 240;
+            const rect = heading.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            return { x, y, offset: rect.top - toolbar.getBoundingClientRect().bottom, hit: heading.contains(document.elementFromPoint(x, y)) };
+        }, groupHead);
+        for (const group of ['__all__', 'g-b']) {
+            await cdp.clickSelector(`#gr-global-dropdown-container [data-wbo-pill="${group}"]`, { scroll: false });
+            const point = await scrollToMiddle();
+            assert.ok(point.hit && Math.abs(point.offset) < 3, JSON.stringify(point));
+            await cdp.clickPoint(point.x, point.y);
+            assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).parentElement.classList.contains('wbo-dd-collapsed'), groupHead), true);
+            const reopened = await cdp.clickSelector(groupHead, { scroll: false });
+            assert.equal(reopened.hit, true);
+            assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).parentElement.classList.contains('wbo-dd-collapsed'), groupHead), false);
+        }
         const theme = await cdp.evalFn(async () => {
             const sticky = document.querySelector('.wbo-enhanced-sticky');
             const idle = sticky.querySelector('.wbo-dd-pill:not(.is-active)');
@@ -268,6 +343,10 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
         await cdp.evalFn((selector) => document.querySelector(selector).click(), pin);
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('aria-pressed'), pin), 'true');
 
+        await openShared('world_editor_select');
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-enhanced-picker-clear'));
+        await cdp.clickSelector('#gr-global-dropdown-container .wbo-enhanced-picker-clear', { scroll: false });
+        assert.equal(await cdp.evalFn(() => document.getElementById('world_editor_select').value), '');
     }, [], fixture);
 });
 
@@ -340,6 +419,63 @@ test('native sort can open and switch repeatedly without dismissing the world ed
             assert.equal(await cdp.evalFn(() => document.getElementById('WorldInfo').classList.contains('closedDrawer')), true);
         });
     }
+});
+
+test('a running dropdown script leaves the native sort available to mouse, touch and keyboard', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const protectedEvents = await cdp.evalFn(() => {
+            const style = document.createElement('style');
+            style.dataset.grDropdownStyle = '1';
+            document.head.append(style);
+            const sort = document.getElementById('world_info_sort_order');
+            sort.value = '2';
+            for (const type of ['mousedown', 'touchend', 'keydown']) {
+                document.addEventListener(type, (event) => {
+                    if (event.target === sort && (event.type !== 'keydown' || ['Enter', ' '].includes(event.key))) {
+                        event.preventDefault();
+                    }
+                }, true);
+            }
+            const pass = [
+                new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+                new Event('touchend', { bubbles: true, cancelable: true }),
+                new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+            ].map((event) => sort.dispatchEvent(event));
+            sort.focus({ preventScroll: true });
+            return pass;
+        });
+        assert.deepEqual(protectedEvents, [true, true, true]);
+        for (const expected of ['1', '0']) {
+            await cdp.pressKey('ArrowUp', 'ArrowUp', 38);
+            assert.equal(await cdp.evalFn(() => document.getElementById('world_info_sort_order').value), expected);
+        }
+        await cdp.pressKey('End', 'End', 35);
+        assert.equal(await cdp.evalFn(() => document.getElementById('world_info_sort_order').value), '2');
+    });
+});
+
+test('opening the group manager through the wand still lets the host close and reopen its menu', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => {
+            const original = document.getElementById('extensionsMenuButton');
+            const trigger = original.cloneNode(true);
+            original.replaceWith(trigger);
+            const menu = document.getElementById('extensionsMenu');
+            let open = false;
+            const setOpen = (next) => {
+                open = next;
+                menu.style.display = open ? 'block' : 'none';
+            };
+            trigger.addEventListener('click', () => setOpen(!open));
+            document.documentElement.addEventListener('click', (event) => {
+                if (open && !trigger.contains(event.target)) setOpen(false);
+            });
+        });
+        await openManager(cdp);
+        await cdp.clickSelector('#wbo-manager-overlay .wbo-modal-close');
+        await cdp.clickSelector('#extensionsMenuButton');
+        assert.equal(await cdp.evalFn(() => getComputedStyle(document.getElementById('extensionsMenu')).display !== 'none'), true);
+    });
 });
 
 test('preset group switching is offered only when the compatible script is detected and stays opt-in', async () => {

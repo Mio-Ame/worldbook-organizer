@@ -124,7 +124,7 @@ function startNativeEditorObserver(scheduleSync) {
     _nativeMountTarget = target;
     if (!target) return;
 
-    const nativeParts = '#world_popup, #world_info_pagination, #world_popup_entries_list, .world_entry[uid]';
+    const nativeParts = '#world_popup, #world_info_pagination, #world_info_pagination select, #world_popup_entries_list, #WIEntryHeaderTitlesPC, .world_entry[uid]';
     _nativeMountObserver = new MutationObserver((records) => {
         const changed = records.some((record) => {
             if (record.target instanceof Element && record.target.closest('.world_entry[uid]')) return false;

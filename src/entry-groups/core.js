@@ -256,15 +256,16 @@ export function normalizeSettings(raw) {
 
     return {
         ...src,
-        version: 1,
+        version: 2,
         palette,
         colorMode,
         showNativeEntryBtn: src.showNativeEntryBtn !== false,
         showWandMenuEntry: src.showWandMenuEntry !== false,
         closeOnLocate: src.closeOnLocate !== false,
         syncGreetingTags: src.syncGreetingTags !== false,
-        autoSwitchOnChatChange: src.autoSwitchOnChatChange !== false,
-        enableSceneAutoToggle: src.enableSceneAutoToggle !== false,
+        // Older versions enabled these experimental automations by default.
+        autoSwitchOnChatChange: src.version === 2 && src.autoSwitchOnChatChange === true,
+        enableSceneAutoToggle: src.version === 2 && src.enableSceneAutoToggle === true,
         searchMultiTerm: Boolean(src.searchMultiTerm),
         editorMonospace: Boolean(src.editorMonospace),
         editorHeightSize,

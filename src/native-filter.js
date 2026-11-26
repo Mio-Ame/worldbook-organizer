@@ -373,8 +373,21 @@ function mountEnhancedDropdownBar(optionsHost, bar, searchInput) {
         scrollable.insertBefore(sticky, optionsHost);
         const searchBox = searchInput?.closest('.gr-search-box') || searchInput;
         if (searchBox?.parentElement === scrollable) sticky.appendChild(searchBox);
+        if (typeof ResizeObserver === 'function') {
+            const observer = new ResizeObserver(() => {
+                if (sticky.isConnected) {
+                    scrollable.style.setProperty('--wbo-enhanced-toolbar-height', `${sticky.offsetHeight}px`);
+                } else {
+                    observer.disconnect();
+                    _activeEnhancedObservers.delete(observer);
+                }
+            });
+            observer.observe(sticky);
+            _activeEnhancedObservers.add(observer);
+        }
     }
     sticky.appendChild(bar);
+    scrollable.style.setProperty('--wbo-enhanced-toolbar-height', `${sticky.offsetHeight}px`);
     return true;
 }
 
@@ -2067,15 +2080,15 @@ function openMobileEditorPickerSheet() {
                 ? sec.books.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
                 : sec.books;
             if (books.length === 0) return '';
-            const collapsed = !q && !isIsolated && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
+            const collapsed = !q && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
             const rowsHtml = collapsed
                 ? ''
                 : books.map(renderMpRowHtml).join('');
 
             return `
                 <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}">
-                    <button type="button" class="wbo-mp-sec-head${isIsolated ? ' is-static' : ''}" data-mp-toggle="${escHtml(sec.id)}">
-                        ${isIsolated ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                    <button type="button" class="wbo-mp-sec-head${q ? ' is-static' : ''}" data-mp-toggle="${escHtml(sec.id)}" aria-expanded="${!collapsed}">
+                        ${q ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
                         <span class="wbo-group-dot" style="background:${escHtml(sec.color || '#8c99a6')}"></span>
                         <span class="wbo-group-name">${escHtml(sec.name)}</span>
                         <span class="wbo-group-count">${books.length}</span>
@@ -2165,7 +2178,7 @@ function openMobileEditorPickerSheet() {
         }
         const toggleBtn = target.closest('[data-mp-toggle]');
         if (toggleBtn) {
-            if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
+            if (searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
             const willCollapse = !_latestSettings.dropdownCollapsed[gid];
@@ -3170,15 +3183,15 @@ export function attachGroupedSelectControl(
                     ? sec.books.filter((b) => tokens.every((tok) => b.searchableText.includes(tok)))
                     : sec.books;
                 if (books.length === 0) return '';
-                const collapsed = !q && !isIsolated && Boolean(localCollapsed[sec.id]);
+                const collapsed = !q && Boolean(localCollapsed[sec.id]);
                 const rowsHtml = collapsed
                     ? ''
                     : books.map((b) => renderPopRowHtml(b, selectedSet)).join('');
 
                 return `
                     <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}">
-                        <button type="button" class="wbo-mp-sec-head${isIsolated ? ' is-static' : ''}" data-pop-toggle="${escHtml(sec.id)}">
-                            ${isIsolated ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                        <button type="button" class="wbo-mp-sec-head${q ? ' is-static' : ''}" data-pop-toggle="${escHtml(sec.id)}" aria-expanded="${!collapsed}">
+                            ${q ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
                             <span class="wbo-group-dot" style="background:${escHtml(sec.color)}"></span>
                             <span class="wbo-group-name">${escHtml(sec.name)}</span>
                             <span class="wbo-group-count">${books.length}</span>
@@ -3271,7 +3284,7 @@ export function attachGroupedSelectControl(
             }
             const toggleBtn = target.closest('[data-pop-toggle]');
             if (toggleBtn) {
-                if (activePillId !== SPECIAL_GROUPS.ALL || searchQuery.trim()) return;
+                if (searchQuery.trim()) return;
                 const gid = toggleBtn.getAttribute('data-pop-toggle');
                 if (!gid) return;
                 const willCollapse = !localCollapsed[gid];
@@ -3955,7 +3968,7 @@ function enhanceOpenEditorDropdown() {
             li.setAttribute('data-wbo-dd-group', gid);
 
             const head = li.querySelector(':scope > .select2-results__group');
-            const isIsolated = isGroupIsolated || isPinFilter;
+            const isIsolated = searching || isPinFilter;
             if (head instanceof HTMLElement) {
                 head.classList.add('wbo-dd-group-head');
                 head.classList.toggle('is-isolated', isIsolated);
@@ -3970,20 +3983,19 @@ function enhanceOpenEditorDropdown() {
             } else {
                 const hiddenByPill = isGroupIsolated && gid !== activePillGroupId;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const isCollapsed = !searching && !isGroupIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                const isCollapsed = !searching && Boolean(_latestSettings.dropdownCollapsed[gid]);
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
     };
 
-    // Delegate mousedown/click on group headers: ONLY fold/unfold in "全部" view
-    // (never unexpectedly teleport back to "全部" — use the "全部" pill for that!).
+    // Keep folding in the current group filter and leave search results visible.
     const onResultsMouseDown = (ev) => {
         const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
         if (!head) return;
         ev.preventDefault();
         ev.stopPropagation();
-        if (activePillGroupId !== SPECIAL_GROUPS.ALL) return;
+        if (head.classList.contains('is-isolated')) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
         _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
@@ -4254,6 +4266,11 @@ function enhanceOpenGlobalDropdown() {
     header.className = 'wbo-global-favorites-heading wbo-dd-group-head is-isolated';
     header.setAttribute('role', 'presentation');
     header.textContent = '收藏';
+    const groupHeading = document.createElement('button');
+    groupHeading.type = 'button';
+    groupHeading.className = 'select2-results__group wbo-dd-group-head wbo-global-group-heading';
+    groupHeading.hidden = true;
+    resultsList.parentElement.insertBefore(groupHeading, resultsList);
     const syncResults = () => {
         ensureSelect2RowsHavePinBtn(resultsList);
         const favorites = [];
@@ -4270,8 +4287,26 @@ function enhanceOpenGlobalDropdown() {
         } else {
             header.remove();
         }
+        const group = (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
+        const searching = Boolean(searchField?.value?.trim());
+        const collapsed = Boolean(group && !searching && _latestSettings.dropdownCollapsed?.[group.id]);
+        groupHeading.hidden = !group || searching;
+        groupHeading.textContent = group?.name || '';
+        groupHeading.setAttribute('aria-expanded', String(!collapsed));
+        resultsList.classList.toggle('wbo-global-results-collapsed', collapsed);
         observer.takeRecords();
     };
+    groupHeading.addEventListener('mousedown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    groupHeading.addEventListener('click', (event) => {
+        event.stopPropagation();
+        _latestSettings.dropdownCollapsed ??= {};
+        _latestSettings.dropdownCollapsed[_activeGlobalPillId] = !_latestSettings.dropdownCollapsed[_activeGlobalPillId];
+        saveSettings();
+        syncResults();
+    });
     const refreshResults = () => {
         if (searchField) searchField.dispatchEvent(new Event('input', { bubbles: true }));
         else inst.trigger?.('query', { term: '' });
@@ -4324,6 +4359,8 @@ function enhanceOpenGlobalDropdown() {
         observer.disconnect();
         unbindPin();
         header.remove();
+        groupHeading.remove();
+        resultsList.classList.remove('wbo-global-results-collapsed');
         barEl?.remove();
     };
 }
@@ -4535,6 +4572,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         delete containerEl.dataset.wboChatAvatar;
         delete containerEl.dataset.wboEnhancedStyle;
         containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+        containerEl.querySelector('.wbo-enhanced-picker-clear')?.remove();
+        containerEl.querySelectorAll('.wbo-enhanced-clear-option').forEach((row) => row.classList.remove('wbo-enhanced-clear-option'));
         containerEl.querySelectorAll('.wbo-enhanced-sticky').forEach((el) => el.replaceWith(...el.children));
         containerEl.querySelectorAll('.wbo-pop-search').forEach((el) => el.remove());
         containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
@@ -4679,6 +4718,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     containerEl.dataset.wboEditingWorld = activeEditName;
     containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
     containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+    containerEl.querySelector('.wbo-enhanced-picker-clear')?.remove();
     containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
 
     if (!isGlobalPopover && useEnhancedStyle) {
@@ -4756,10 +4796,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         const text = getOptionText(optEl);
         if ((optEl.hasAttribute('data-value') && val === '') || !text || text.startsWith('---')) {
             if (!isGlobalPopover && useEnhancedStyle && (val === '' || text.startsWith('---'))) {
-                optEl.dataset.wboOriginalPlaceholder ||= text;
-                const label = activeEditName ? '清除当前选择' : optEl.dataset.wboOriginalPlaceholder;
-                if (optEl.textContent !== label) optEl.textContent = label;
                 optEl.classList.toggle('selected', !activeEditName);
+                optEl.classList.remove('wbo-enhanced-clear-option');
             }
             placeholders.push(optEl);
             continue;
@@ -4787,6 +4825,29 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
         if (!bucketByGroup.has(gid)) bucketByGroup.set(gid, []);
         bucketByGroup.get(gid).push(optEl);
+    }
+
+    const blankRow = placeholders.find((row) => row.getAttribute('data-value') === '');
+    if (activeEditName && editorSel && useEnhancedStyle && blankRow) {
+        const clear = document.createElement('button');
+        clear.type = 'button';
+        clear.className = 'wbo-enhanced-picker-clear';
+        clear.setAttribute('data-wbo-ui', '1');
+        clear.setAttribute('aria-label', '清除当前选择');
+        clear.textContent = '清除';
+        clear.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const $ = globalThis.jQuery;
+            if ($) $(editorSel).val('').trigger('change');
+            else {
+                editorSel.value = '';
+                editorSel.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            closeAllOpenWorldDropdowns({ except: 'global' });
+        });
+        if (mountEnhancedDropdownBar(optionsHost, clear, containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector))) {
+            blankRow.classList.add('wbo-enhanced-clear-option');
+        }
     }
 
     if (bareEditorItems.length > 1) {
@@ -4996,8 +5057,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
             const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
             if (headEl instanceof HTMLElement) {
-                headEl.classList.toggle('is-isolated', isIsolated || isPinFilter);
-                headEl.title = (isIsolated || isPinFilter) ? '' : '点击展开或折叠该分组';
+                const canCollapse = !searching && !isPinFilter && !(isIsolated && gid === SPECIAL_GROUPS.PINNED);
+                headEl.classList.toggle('is-isolated', !canCollapse);
+                headEl.title = canCollapse ? '点击展开或折叠该分组' : '';
             }
             const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
             for (const o of optsInSec) {
@@ -5035,7 +5097,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
                 secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const collapsed = !isIsolated && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                const collapsed = Boolean(_latestSettings.dropdownCollapsed[gid]);
                 secEl.classList.toggle('wbo-dd-collapsed', collapsed);
             }
         }
@@ -5083,13 +5145,6 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!head) return;
             ev.preventDefault();
             ev.stopPropagation();
-            const st = containerEl._wboPopState;
-            if (!st || st.getActivePillId() !== SPECIAL_GROUPS.ALL) return;
-            const gid = head.getAttribute('data-wbo-dd-group');
-            if (!gid) return;
-            _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
-            saveSettings();
-            st.syncSections();
         }, true);
 
         optionsHost.addEventListener('click', (ev) => {
@@ -5099,6 +5154,22 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!head) return;
             ev.preventDefault();
             ev.stopPropagation();
+            const st = containerEl._wboPopState;
+            const gid = head.getAttribute('data-wbo-dd-group');
+            if (!st || !gid || head.classList.contains('is-isolated')) return;
+            st.cancelRestore();
+            const collapsed = !_latestSettings.dropdownCollapsed[gid];
+            _latestSettings.dropdownCollapsed[gid] = collapsed;
+            saveSettings();
+            const scroller = findScrollableListEl(optionsHost, containerEl);
+            st.syncSections();
+            if (collapsed) {
+                const toolbarHeight = scroller.querySelector(':scope > .wbo-enhanced-sticky')?.offsetHeight || 0;
+                const section = head.parentElement;
+                if (section.getBoundingClientRect().top < scroller.getBoundingClientRect().top + toolbarHeight) {
+                    scrollContentToItem(scroller, section, { align: 'start', margin: toolbarHeight });
+                }
+            }
         }, true);
 
         const onPopoverOptionPointerDown = (ev) => {
@@ -5295,15 +5366,30 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
 
     // Keep the browser default action for panel selects without reaching document-level overrides.
     const selectEvents = ['mousedown', 'touchend', 'keydown'];
-    const protectPanelSelect = (event) => {
+    const prepareDropdownGesture = (event) => {
         if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
-        const select = event.target instanceof Element ? event.target.closest('select') : null;
-        if (select?.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')
-            && document.querySelector(ENHANCED_STYLE_SELECTOR)) event.stopPropagation();
+        const target = event.target;
+        if (!(target instanceof Element) || !document.querySelector(ENHANCED_STYLE_SELECTOR)) return;
+        if (isEditorSelectTriggerTarget(target)) {
+            // The script reads the options during document capture, before native opening hooks.
+            syncEditorBeforeOpen();
+            sharedPopoverOpening = {
+                role: 'editor',
+                at: Date.now(),
+                previous: document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId),
+            };
+            return;
+        }
+        const select = target.closest('select');
+        if (!select) return;
+        const nativeSort = select.id === 'world_info_sort_order';
+        if (!nativeSort && !select.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')) return;
+        if (nativeSort) closeAllOpenWorldDropdowns();
+        event.stopPropagation();
     };
-    for (const event of selectEvents) globalThis.addEventListener?.(event, protectPanelSelect, true);
+    for (const event of selectEvents) globalThis.addEventListener?.(event, prepareDropdownGesture, true);
     removePluginSelectIsolation = () => {
-        for (const event of selectEvents) globalThis.removeEventListener?.(event, protectPanelSelect, true);
+        for (const event of selectEvents) globalThis.removeEventListener?.(event, prepareDropdownGesture, true);
     };
 
     let openBeforePress = false;

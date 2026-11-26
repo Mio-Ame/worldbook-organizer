@@ -61,6 +61,8 @@ import {
 } from './host.js';
 import { removeNativeEntryGroups, revealNativeEntryGroup, syncNativeEntryGroups } from './native-view.js';
 import { attachGroupedSelectControl, closeGroupedSelectControl } from '../native-filter.js';
+import { saveWorldbookEntriesOrderDirect } from '../host.js';
+import { bindEntryGroupReordering, planEntryGroupOrder } from './entry-reorder.js';
 
 const MODAL_BACKDROP_ID = 'weg-modal-backdrop';
 const MINIMIZE_PILL_ID = 'weg-minimized-pill';
@@ -76,6 +78,7 @@ let _minimizedScrollTop = 0;
 let _currentBook = '';
 let _loadingBook = false;
 let _writingToggle = false;
+let _savingEntryOrder = false;
 let _loadError = '';
 /** @type {Array<any>} */
 let _loadedSummaries = [];
@@ -599,6 +602,9 @@ function ensureModalShell() {
                         <input type="search" class="weg-input weg-search-input" id="weg-search-input" aria-label="搜索条目" placeholder="搜索条目标题、触发词、正文或 UID…" autocomplete="off" spellcheck="false" />
                         <button type="button" class="weg-clear-input-btn" id="weg-search-clear" title="清空搜索词" hidden>清空</button>
                     </div>
+                    <button type="button" class="weg-btn weg-btn-subtle weg-batch-toggle" data-weg-footer-action="enter-batch" aria-pressed="false">
+                        <i class="fa-solid fa-list-check" aria-hidden="true"></i> 多选移组
+                    </button>
                 </div>
             </div>
 
@@ -723,6 +729,34 @@ function wireShellEvents(modal) {
     const saveBarEl = modal.querySelector('#weg-save-bar');
     const bodyEl = modal.querySelector('#weg-body');
     const footerEl = modal.querySelector('#weg-footer');
+    if (bodyEl) bindEntryGroupReordering(bodyEl, {
+        isAllowed: () => !_writingToggle && !_savingEntryOrder && !_batchMode && !_searchQuery.trim() && _statusFilter === 'all',
+        onMove: async (draggedUid, targetUid, after) => {
+            const worldName = _currentBook;
+            _savingEntryOrder = true;
+            try {
+                const result = await saveWorldbookEntriesOrderDirect(worldName, (entries) =>
+                    planEntryGroupOrder(entries, getSettings().books[worldName], draggedUid, targetUid, after));
+                if (!result.ok) showToast('error', result.error || '保存条目顺序失败');
+                else if (result.updatedCount > 0) {
+                    if (_isOpen && _currentBook === worldName) {
+                        const rank = new Map(result.orderedUids.map((uid, index) => [uid, index]));
+                        _loadedSummaries.sort((a, b) => (rank.get(a.uid) ?? Infinity) - (rank.get(b.uid) ?? Infinity));
+                        renderBodyAndFooterOnly();
+                    }
+                    showToast('success', '条目显示顺序已保存');
+                }
+            } finally {
+                _savingEntryOrder = false;
+            }
+        },
+    });
+    const setBatchMode = (active) => {
+        _batchMode = active;
+        _selectedUids.clear();
+        renderBodyAndFooterOnly();
+    };
+    modal.querySelector('.weg-batch-toggle')?.addEventListener('click', () => setBatchMode(!_batchMode));
 
     closeBtn?.addEventListener('click', () => requestCloseEntryGroupsModal());
     minimizeBtn?.addEventListener('click', () => minimizeEntryGroupsModal());
@@ -1022,14 +1056,8 @@ function wireShellEvents(modal) {
         if (!(actionBtn instanceof HTMLElement) || actionBtn.hasAttribute('disabled')) return;
 
         const action = actionBtn.getAttribute('data-weg-footer-action');
-        if (action === 'enter-batch') {
-            _batchMode = true;
-            _selectedUids.clear();
-            renderBodyAndFooterOnly();
-        } else if (action === 'exit-batch') {
-            _batchMode = false;
-            _selectedUids.clear();
-            renderBodyAndFooterOnly();
+        if (action === 'exit-batch') {
+            setBatchMode(false);
         } else if (action === 'select-visible') {
             toggleSelectAllVisibleEntries();
         } else if (action === 'batch-move') {
@@ -1398,8 +1426,8 @@ function updateUndoButtonInPlace(backdrop) {
     const undoBtn = backdrop?.querySelector('[data-weg-footer-action="undo"]');
     if (!(undoBtn instanceof HTMLButtonElement)) return;
     const undoCount = getUndoCount(_currentBook);
-    undoBtn.disabled = undoCount === 0;
-    undoBtn.textContent = undoCount > 0 ? `撤销 (${undoCount})` : '撤销';
+    undoBtn.hidden = undoCount === 0;
+    undoBtn.dataset.undoCount = String(undoCount);
 }
 
 function updatePinButtonElement(btn, isPinned, itemKind) {
@@ -1457,6 +1485,7 @@ function togglePinEntry(uid) {
     saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
 
     const backdrop = typeof document !== 'undefined' ? document.getElementById(MODAL_BACKDROP_ID) : null;
+    syncAllNativeEntryPoints();
     if (_statusFilter === 'pinned') {
         renderBodyAndFooterOnly();
     } else if (backdrop) {
@@ -2087,11 +2116,17 @@ function renderBodyAndFooterOnly() {
     bodyEl.scrollTop = prevScrollTop;
 
     const undoCount = getUndoCount(_currentBook);
+    const undoHtml = `<button type="button" class="weg-btn weg-btn-subtle weg-undo-btn" data-weg-footer-action="undo" data-undo-count="${undoCount}" ${undoCount === 0 ? 'hidden' : ''}>撤销分组操作</button>`;
+    const batchToggle = backdrop.querySelector('.weg-batch-toggle');
+    if (batchToggle) {
+        batchToggle.disabled = _loadedSummaries.length === 0 || _loadingBook;
+        batchToggle.setAttribute('aria-pressed', String(_batchMode));
+    }
     const allGroupsCollapsed = bookCfg.groups.every((g) => g.collapsed) && bookCfg.ungroupedCollapsed;
 
     if (_batchMode) {
         footerEl.innerHTML = `
-            <div class="weg-footer-status">已选 <strong>${_selectedUids.size}</strong> 条（点击条目行可直接勾选）</div>
+            <div class="weg-footer-status-wrap"><div class="weg-footer-status">已选 <strong>${_selectedUids.size}</strong> 条</div>${undoHtml}</div>
             <div class="weg-footer-buttons">
                 <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="select-visible">全选当前</button>
                 <button type="button" class="weg-btn weg-btn-primary" data-weg-footer-action="batch-move" ${_selectedUids.size === 0 ? 'disabled' : ''}>移入分组…</button>
@@ -2107,11 +2142,9 @@ function renderBodyAndFooterOnly() {
                 ? (openCount > 0 ? `共 ${customGroupCount} 个自定义分组 · 已展开 ${openCount} 条编辑` : `共 ${customGroupCount} 个自定义分组`)
                 : '未选择世界书');
         footerEl.innerHTML = `
-            <div class="weg-footer-status">${esc(statusText)}</div>
+            <div class="weg-footer-status-wrap"><div class="weg-footer-status">${esc(statusText)}</div>${undoHtml}</div>
             <div class="weg-footer-buttons">
-                <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="enter-batch" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>多选移组</button>
                 ${customGroupCount ? `<button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="toggle-collapse-all" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>${allGroupsCollapsed ? '全部展开' : '全部折叠'}</button>` : ''}
-                <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="undo" ${undoCount === 0 ? 'disabled' : ''}>撤销${undoCount > 0 ? ` (${undoCount})` : ''}</button>
             </div>
         `;
     }
@@ -2159,6 +2192,8 @@ function buildEntryRowInnerHtml(entry, isPinned = false) {
     return `
         <div class="weg-entry-main" title="${esc(rowTooltip)}">
             ${batchCheckboxHtml}
+            ${!_batchMode && !_searchQuery.trim() && _statusFilter === 'all'
+                ? '<span class="weg-entry-drag" data-weg-entry-drag title="拖动调整组内顺序"><i class="fa-solid fa-grip-vertical" aria-hidden="true"></i></span>' : ''}
             <span class="weg-strategy-dot ${dotClass}" title="${esc(dotTitle)}"></span>
             <span class="weg-entry-uid">#${esc(entry.uid)}</span>
             <span class="weg-entry-title">${esc(entry.title)}</span>
@@ -3367,7 +3402,7 @@ function renderSubmodalHost() {
         `).join('');
 
         host.innerHTML = `
-            <div class="weg-submodal-card" role="dialog" aria-label="移动条目到分组">
+            <div class="weg-submodal-card weg-move-card" role="dialog" aria-label="移动条目到分组">
                 <div class="weg-submodal-header">
                     <span class="weg-submodal-title">移动已选的 ${count} 个条目</span>
                     <button type="button" class="weg-icon-btn" data-weg-sub-close="1" aria-label="返回"><i class="fa-solid fa-xmark"></i></button>
@@ -3477,7 +3512,7 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">切换聊天存档时自动恢复本档路线</div>
-                            <div class="weg-setting-desc">仅读取存档头元数据（零聊天记录扫描），切档自动恢复对应 IF 线</div>
+                            <div class="weg-setting-desc">默认关闭。开启后，切换存档时按本档记录恢复 IF 线。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.autoSwitchOnChatChange !== false ? ' is-on' : ''}" id="weg-set-auto-chat-switch" role="switch" aria-checked="${settings.autoSwitchOnChatChange !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -3487,7 +3522,7 @@ function renderSubmodalHost() {
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
                             <div class="weg-setting-name">按最近对话自动开关情境组（如 NSFW）</div>
-                            <div class="weg-setting-desc">仅检测最新 1~2 条消息片段，有相关剧情时当轮开启，恢复日常后自动关闭</div>
+                            <div class="weg-setting-desc">默认关闭。开启后，按最近 1～2 条消息判断何时开关情境组。</div>
                         </div>
                         <button type="button" class="weg-switch${settings.enableSceneAutoToggle !== false ? ' is-on' : ''}" id="weg-set-scene-auto" role="switch" aria-checked="${settings.enableSceneAutoToggle !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -3707,9 +3742,15 @@ function wireBatchMoveSubmodal(host) {
         if (!_currentBook || uids.length === 0) return;
         const settings = getSettings();
         const bookCfg = getBookConfigMutable(settings, _currentBook);
+        const changed = uids.filter((uid) => (bookCfg.assignments[uid] || SPECIAL_GROUP_UNGROUPED) !== targetGroupId);
+        if (!changed.length) {
+            closeSubmodal();
+            showToast('info', `所选条目已在「${targetLabel}」`);
+            return;
+        }
         pushUndoSnapshot(_currentBook, bookCfg);
 
-        for (const uid of uids) {
+        for (const uid of changed) {
             if (targetGroupId === SPECIAL_GROUP_UNGROUPED) {
                 delete bookCfg.assignments[uid];
             } else {
@@ -3721,7 +3762,7 @@ function wireBatchMoveSubmodal(host) {
         for (const uid of uids) _selectedUids.delete(uid);
         closeSubmodal();
         renderModalContents();
-        showToast('success', `已将 ${uids.length} 个条目移入「${targetLabel}」`);
+        showToast('success', `已将 ${changed.length} 个条目移入「${targetLabel}」`);
     };
 
     host.querySelectorAll('[data-weg-move-target]').forEach((btn) => {
@@ -3751,19 +3792,21 @@ function wireBatchMoveSubmodal(host) {
         }
         const settings = getSettings();
         const bookCfg = getBookConfigMutable(settings, _currentBook);
-        let group = bookCfg.groups.find((g) => g.name === name);
-        pushUndoSnapshot(_currentBook, bookCfg);
-        if (!group) {
-            group = {
-                id: createGroupId('grp'),
-                name,
-                mode: GROUP_MODES.NORMAL,
-                collapsed: false,
-                sceneKeywords: [],
-                cooldownTurns: 2,
-            };
-            bookCfg.groups.push(group);
+        const existing = bookCfg.groups.find((g) => g.name === name);
+        if (existing) {
+            applyMoveToGroupId(existing.id, existing.name);
+            return;
         }
+        pushUndoSnapshot(_currentBook, bookCfg);
+        const group = {
+            id: createGroupId('grp'),
+            name,
+            mode: GROUP_MODES.NORMAL,
+            collapsed: false,
+            sceneKeywords: [],
+            cooldownTurns: 2,
+        };
+        bookCfg.groups.push(group);
         for (const uid of uids) {
             bookCfg.assignments[uid] = group.id;
         }

@@ -102,6 +102,7 @@ test('batch group checkboxes preserve multiselect after moving and pinned entrie
         await cdp.clickSelector('[data-weg-filter="pinned"]');
         assert.deepEqual(await rows(source), ['2']);
         await cdp.clickSelector('[data-weg-filter="all"]');
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.weg-filter-bar .weg-batch-toggle'))), true);
         await cdp.clickSelector('[data-weg-footer-action="enter-batch"]');
         await cdp.clickSelector('[data-weg-entry-row="0"] .weg-entry-main');
         const sourceCheck = '[data-weg-group-batch="from"]';
@@ -117,6 +118,21 @@ test('batch group checkboxes preserve multiselect after moving and pinned entrie
         await cdp.clickSelector('[data-weg-move-target="to"]');
         assert.equal(await count(), '0');
         assert.deepEqual(await rows('[data-weg-group-card="to"]'), ['0', '2']);
+        const undoCount = () => cdp.evalFn(() => document.querySelector('.weg-footer-status-wrap [data-undo-count]').dataset.undoCount);
+        const moves = await undoCount();
+        await cdp.clickSelector('[data-weg-group-batch="to"]');
+        await cdp.clickSelector('[data-weg-footer-action="batch-move"]');
+        const uniform = await cdp.evalFn(() => {
+            const card = document.querySelector('.weg-move-card');
+            const controls = [...card.querySelectorAll('.weg-move-target-btn, #weg-quick-new-move-btn, #weg-quick-new-group-input, .weg-submodal-footer .weg-btn')];
+            return controls.map((control) => [control.getBoundingClientRect().height, getComputedStyle(control).fontSize]);
+        });
+        assert.ok(uniform.length > 0);
+        for (const size of uniform) assert.deepEqual(size, [36, '16px']);
+        await cdp.clickSelector('[data-weg-move-target="to"]');
+        assert.equal(await undoCount(), moves);
+        assert.equal(await count(), '2');
+        await cdp.clickSelector('[data-weg-group-batch="to"]');
         await cdp.clickSelector('[data-weg-entry-row="1"] .weg-entry-main');
         await cdp.clickSelector('[data-weg-footer-action="batch-move"]');
         await cdp.typeInto('#weg-quick-new-group-input', '新建测试组');
@@ -124,6 +140,18 @@ test('batch group checkboxes preserve multiselect after moving and pinned entrie
         assert.equal(await count(), '0');
         await cdp.clickSelector('[data-weg-footer-action="exit-batch"]');
         assert.equal(await count(), undefined);
+        const point = await cdp.evalFn(() => {
+            const handle = document.querySelector('[data-weg-entry-row="2"] [data-weg-entry-drag]');
+            const target = document.querySelector('[data-weg-entry-row="0"]');
+            const a = handle.getBoundingClientRect();
+            const b = target.getBoundingClientRect();
+            return [a.left + a.width / 2, a.top + a.height / 2, b.left + b.width / 2, b.top + b.height / 4];
+        });
+        await cdp.mouseDrag(...point);
+        await waitForCondition(cdp, () => [...document.querySelectorAll('[data-weg-group-card="to"] [data-weg-entry-row]')].map((row) => row.dataset.wegEntryRow).join(',') === '2,0');
+        const saved = (await getServerState(baseUrl)).worldbooks[world].entries;
+        assert.deepEqual(Object.values(saved).sort((a, b) => a.displayIndex - b.displayIndex).map((item) => item.uid), [2, 1, 0]);
+        assert.deepEqual(Object.values(saved).map((item) => item.order), Object.values(seed.worldbooks[world].entries).map((item) => item.order));
         assert.deepEqual(cdp.getErrors().runtimeErrors, []);
     } finally {
         await cdp?.close();
@@ -193,7 +221,7 @@ test('an ungrouped-only book starts expanded with a static list header and an in
                 new Event('touchend', { bubbles: true, cancelable: true }),
                 new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
             ].some((event) => !select.dispatchEvent(event));
-            document.getElementById('world_info_sort_order').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            document.getElementById('world_info').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
             return {
                 labels: [...select.options].map((option) => option.textContent),
                 intercepted,
@@ -242,6 +270,7 @@ test('mobile native locate clears both panels and native group folding preserves
         extraPluginSettingsKey: { worldbook_entry_groups: { closeOnLocate: false, books: { [world]: {
             groups: [{ id: 'g1', name: '第一组' }, { id: 'g2', name: '第二组' }],
             assignments: { 0: 'g1', 1: 'g1', 2: 'g2' },
+            pinnedEntryUids: ['1'],
         } } } },
     });
     const server = createMockStServer();
@@ -323,6 +352,54 @@ test('mobile native locate clears both panels and native group folding preserves
         await cdp.clickSelector(`#weg-floating-menu [role="menuitem"]:nth-child(${item + 1})`);
         await waitForCondition(cdp, () => Boolean(window.wegTestNativeEntry));
         assert.deepEqual(await cdp.evalFn(() => window.wegTestNativeEntry), { world, uid: '0', unobstructed: true });
+
+        const nativeFields = await cdp.evalFn(() => {
+            const list = document.querySelector('#world_popup_entries_list');
+            const row = list.querySelector('.world_entry');
+            const fields = document.createElement('div');
+            fields.className = 'inline-drawer-header WIEnteryHeaderControls';
+            fields.style.cssText = 'display:flex;gap:5px;width:100%';
+            fields.innerHTML = '<textarea name="comment" spellcheck="false" style="width:180px"></textarea><select name="entryStateSelector" style="width:60px"><option>状态</option></select><select name="position" style="width:140px"><option>位置</option></select><input type="number" name="depth" style="width:65px"><input type="number" name="order" value="895" style="width:42px;padding:0 18px"><input type="number" name="probability" value="100" style="width:42px;padding:0 18px">';
+            row.append(fields);
+            const headers = document.createElement('div');
+            headers.id = 'WIEntryHeaderTitlesPC';
+            headers.style.cssText = 'padding:0 7em;display:flex;justify-content:space-between';
+            for (const key of ['Title/Memo', 'Strategy', 'Position', 'Depth', 'Order', 'Trigger %']) {
+                const label = document.createElement('small');
+                label.textContent = key;
+                label.setAttribute('data-i18n', key);
+                headers.append(label);
+            }
+            list.prepend(headers);
+            const pageSize = document.createElement('select');
+            pageSize.style.cssText = 'height:37px;font-size:17px';
+            pageSize.add(new Option('25 / page'));
+            document.getElementById('world_info_pagination').append(pageSize);
+            return fields.children.length;
+        });
+        assert.equal(nativeFields, 6);
+        await waitForCondition(cdp, () => document.querySelector('.weg-native-aligned-columns'));
+        assert.deepEqual(await cdp.evalFn(() => {
+            const center = (node) => { const rect = node.getBoundingClientRect(); return rect.left + rect.width / 2; };
+            const order = document.querySelector('.WIEnteryHeaderControls [name="order"]');
+            const probability = document.querySelector('.WIEnteryHeaderControls [name="probability"]');
+            const header = document.getElementById('WIEntryHeaderTitlesPC');
+            const offset = (key, field) => Math.abs(center(header.querySelector(`[data-i18n="${key}"]`)) - center(field));
+            const button = document.getElementById('weg-native-group-manager');
+            const size = document.querySelector('#world_info_pagination select');
+            return {
+                orderOffset: Math.round(offset('Order', order)),
+                probabilityOffset: Math.round(offset('Trigger %', probability)),
+                orderFits: order.clientWidth > 42,
+                probabilityFits: probability.clientWidth > 42,
+                font: getComputedStyle(button).fontSize === getComputedStyle(size).fontSize,
+                height: Math.abs(button.getBoundingClientRect().height - size.getBoundingClientRect().height) <= 1,
+            };
+        }), { orderOffset: 0, probabilityOffset: 0, orderFits: true, probabilityFits: true, font: true, height: true });
+        await cdp.clickSelector('#weg-native-pinned-entries summary');
+        await cdp.clickSelector('#weg-native-pinned-entries button');
+        await waitForCondition(cdp, () => window.wegTestNativeEntry?.uid === '1');
+        assert.deepEqual(await nativeOrder(), [['1', '第一组'], ['2', '第二组'], ['0', null]]);
 
         await cdp.setViewport(VIEWPORTS.mobile);
         await cdp.evalFn((bookName) => {

@@ -40,7 +40,7 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
             autoScanNewCharacters: false,
             groups: [
                 { id: 'fixture-destination', name: '测试归档', color: '#6b7a8c' },
-                { id: 'fixture-sensitive-group', name: '成人向归档', color: '#a55751' },
+                { id: 'fixture-sensitive-group', name: '成人向世界书测试归档', color: '#a55751' },
             ],
             assignments: { 已分组测试书: 'fixture-destination' },
         },
@@ -76,13 +76,27 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
         await cdp.clickSelector('[data-ai-book-tab="sensitive"]');
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-ai-section="normal"]').hidden), true);
         await cdp.setViewport(VIEWPORTS.mobile);
-        const layout = await cdp.evalFn(() => {
-            const select = document.querySelector('#wbo-sens-target-group').getBoundingClientRect();
+        const readLayout = () => cdp.evalFn(() => {
+            const field = document.querySelector('#wbo-sens-target-group');
+            const select = field.getBoundingClientRect();
             const button = document.querySelector('#wbo-sens-move-nsfw-btn').getBoundingClientRect();
-            return { aligned: Math.abs(select.top + select.height / 2 - button.top - button.height / 2) < 1, adjacent: select.right <= button.left };
+            const arrow = field.parentElement.querySelector('.fa-chevron-down');
+            const style = getComputedStyle(field);
+            const canvas = document.createElement('canvas').getContext('2d');
+            canvas.font = `${style.fontSize} ${style.fontFamily}`;
+            const textWidth = canvas.measureText(field.selectedOptions[0].textContent).width;
+            return {
+                aligned: Math.abs(select.top + select.height / 2 - button.top - button.height / 2) < 1,
+                adjacent: select.right <= button.left,
+                labelFits: select.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 2 > textWidth,
+                arrow: Boolean(arrow && arrow.getBoundingClientRect().width > 0 && getComputedStyle(arrow).pointerEvents === 'none'),
+                width: select.width,
+            };
         });
-        assert.deepEqual(layout, { aligned: true, adjacent: true });
+        const { width, ...layout } = await readLayout();
+        assert.deepEqual(layout, { aligned: true, adjacent: true, labelFits: true, arrow: true });
         await cdp.clickSelector('#wbo-pick-toggle-sens');
+        assert.deepEqual(await readLayout(), { ...layout, width });
         assert.equal(await picks(), '已勾选 1 本世界书');
         assert.equal(await safetyText(), warning);
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-sens-move-nsfw-btn').matches('.wbo-btn-primary:enabled')), true);

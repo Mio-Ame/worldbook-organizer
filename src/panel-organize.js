@@ -279,11 +279,17 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                         <span id="wbo-sens-banner-text" aria-live="polite">${sensitiveDefaultWarning}</span>
                     </div>
                     <div class="wbo-sens-banner-actions" id="wbo-ai-sensitive-actions" hidden>
-                        <button type="button" class="wbo-link-btn" id="wbo-pick-toggle-sens">全选敏感书</button>
+                        <button type="button" class="wbo-link-btn" id="wbo-pick-toggle-sens">
+                            <span class="wbo-sens-stable-label" data-sens-max-text="取消敏感书全选"><span data-sens-toggle-label>全选敏感书</span></span>
+                        </button>
                         <div class="wbo-sens-assign">
-                            <select class="wbo-select" id="wbo-sens-target-group" aria-label="归入的分组"></select>
+                            <div class="wbo-sens-select-wrap">
+                                <select class="wbo-select" id="wbo-sens-target-group" aria-label="归入的分组"></select>
+                                <i class="fa-solid fa-chevron-down" aria-hidden="true"></i>
+                            </div>
                             <button type="button" class="wbo-btn wbo-btn-primary wbo-sens-move-btn" id="wbo-sens-move-nsfw-btn" data-action-move-nsfw="1" disabled>
-                                <i class="fa-solid fa-folder-open" aria-hidden="true"></i><span data-sens-move-label>归入分组</span>
+                                <i class="fa-solid fa-folder-open" aria-hidden="true"></i>
+                                <span class="wbo-sens-stable-label" data-sens-move-width><span data-sens-move-label>归入分组</span></span>
                             </button>
                         </div>
                     </div>
@@ -1475,12 +1481,14 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
         if (sensResultBar) sensResultBar.hidden = activeBookTab !== 'sensitive' || !sensResultText?.textContent;
         const actions = modal.querySelector('#wbo-ai-sensitive-actions');
         if (actions) actions.hidden = activeBookTab !== 'sensitive' || sensChecks.length === 0;
-        const sensButton = modal.querySelector('#wbo-pick-toggle-sens');
-        if (sensButton) sensButton.textContent = sensChecks.length && selectedCount === sensChecks.length ? '取消敏感书全选' : '全选敏感书';
+        const sensToggleLabel = modal.querySelector('[data-sens-toggle-label]');
+        if (sensToggleLabel) sensToggleLabel.textContent = sensChecks.length && selectedCount === sensChecks.length ? '取消敏感书全选' : '全选敏感书';
         const moveButton = modal.querySelector('#wbo-sens-move-nsfw-btn');
+        if (targetSelect) targetSelect.title = targetSelect.selectedOptions?.[0]?.textContent || '';
         if (moveButton) {
             moveButton.disabled = selectedCount === 0 || !targetSelect?.value;
             moveButton.querySelector('[data-sens-move-label]').textContent = selectedCount ? `归入分组（${selectedCount} 本）` : '归入分组';
+            moveButton.querySelector('[data-sens-move-width]')?.setAttribute('data-sens-max-text', `归入分组（${'0'.repeat(String(sensChecks.length).length)} 本）`);
         }
         const boxes = allChecks();
         const checkedCount = boxes.filter((box) => box.checked).length;

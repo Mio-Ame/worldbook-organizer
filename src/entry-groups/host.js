@@ -123,8 +123,10 @@ export function getSettings() {
     if (!container[MODULE_NAME]) {
         container[MODULE_NAME] = normalizeSettings(null);
     } else {
+        const previousVersion = container[MODULE_NAME].version;
         const normalized = normalizeSettings(container[MODULE_NAME]);
         Object.assign(container[MODULE_NAME], normalized);
+        if (normalized.version !== previousVersion) getHostContext()?.saveSettingsDebounced?.();
     }
     return container[MODULE_NAME];
 }

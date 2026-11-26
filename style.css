@@ -2749,6 +2749,23 @@ li.wbo-dd-collapsed > ul.select2-results__options--nested,
     display: none !important;
 }
 
+.wbo-global-group-heading {
+    width: 100%;
+    border: 0;
+    padding: 6px 8px;
+    color: inherit;
+    text-align: start;
+}
+
+.wbo-global-group-heading[aria-expanded="false"]::before {
+    content: '▸';
+}
+
+.wbo-global-group-heading[hidden],
+.wbo-global-results-collapsed {
+    display: none !important;
+}
+
 li.wbo-dd-group-hidden,
 .wbo-pop-section.wbo-dd-group-hidden {
     display: none !important;
@@ -5792,24 +5809,65 @@ details[open] > summary .wbo-details-chev {
 
 .wbo-sens-assign {
     display: flex;
-    flex: 0 1 200px;
+    flex: 1 1 300px;
     align-items: center;
     min-width: 0;
     gap: 6px;
 }
 
-.wbo-sens-assign > .wbo-select {
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-sens-assign {
+        flex-basis: 100%;
+    }
+}
+
+.wbo-sens-select-wrap {
+    position: relative;
     flex: 1 1 0;
-    width: auto !important;
     min-width: 0;
+}
+
+.wbo-sens-select-wrap > .wbo-select {
+    appearance: none;
     height: 26px !important;
     min-height: 26px !important;
     padding-block: 1px !important;
+    padding-inline-end: 24px !important;
+    text-overflow: ellipsis;
+    cursor: pointer;
+}
+
+.wbo-sens-select-wrap > i {
+    position: absolute;
+    inset-inline-end: 8px;
+    inset-block-start: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+    color: var(--wbo-fg-muted);
+    font-size: 10px;
 }
 
 .wbo-sens-banner-actions .wbo-link-btn {
     flex-shrink: 0;
     white-space: nowrap;
+}
+
+.wbo-sens-stable-label {
+    display: inline-grid;
+}
+
+.wbo-sens-stable-label > span,
+.wbo-sens-stable-label::after {
+    grid-area: 1 / 1;
+}
+
+.wbo-sens-stable-label::after {
+    content: attr(data-sens-max-text);
+    visibility: hidden;
+}
+
+#wbo-pick-toggle-sens .wbo-sens-stable-label {
+    text-align: start;
 }
 
 .wbo-sens-assign > .wbo-sens-move-btn {
@@ -6497,7 +6555,7 @@ body.dark-mode .gr-options > .wbo-enhanced-sticky {
 }
 
 [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
-    position: static !important;
+    top: var(--wbo-enhanced-toolbar-height, 0px) !important;
     margin: 3px 5px;
     padding: 7px 8px;
     border-radius: 6px;
@@ -6505,6 +6563,22 @@ body.dark-mode .gr-options > .wbo-enhanced-sticky {
     color: #546e7a;
     box-shadow: none;
     letter-spacing: normal;
+}
+
+.gr-option.wbo-enhanced-clear-option {
+    display: none !important;
+}
+
+.wbo-enhanced-picker-clear {
+    display: block;
+    margin: 4px 8px 4px auto;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+    cursor: pointer;
 }
 
 body.dark-mode :is([data-wbo-enhanced-style], .wbo-enhanced-sticky) .wbo-dd-pill.is-active {

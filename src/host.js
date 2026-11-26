@@ -670,7 +670,7 @@ export async function deleteWorldbookEntryDirect(worldName, uid) {
  * `order` / `insertion_order` ONLY when `options.syncOrder === true`.
  *
  * @param {string} worldName
- * @param {Array<string | number>} orderedUids
+ * @param {Array<string | number> | ((entries: object) => Array<string | number>)} orderedUids
  * @param {{ syncOrder?: boolean }} [options={}]
  * @returns {Promise<{ ok: boolean, updatedCount: number, orderedUids?: string[], updatesByUid?: Record<string, any>, error?: string }>}
  */
@@ -678,7 +678,7 @@ export async function saveWorldbookEntriesOrderDirect(worldName, orderedUids, op
     const syncOrder = Boolean(options?.syncOrder);
     const clean = String(worldName ?? '').trim();
     if (!clean) return { ok: false, updatedCount: 0, error: '世界书名称为空' };
-    if (!Array.isArray(orderedUids) || orderedUids.length === 0) {
+    if (typeof orderedUids !== 'function' && (!Array.isArray(orderedUids) || orderedUids.length === 0)) {
         return { ok: false, updatedCount: 0, error: '条目顺序列表为空' };
     }
 
@@ -688,7 +688,9 @@ export async function saveWorldbookEntriesOrderDirect(worldName, orderedUids, op
         return { ok: false, updatedCount: 0, error: `无法读取世界书「${clean}」` };
     }
 
-    const plan = computeReorderedEntries(data.entries, orderedUids, { syncOrder });
+    const desiredOrder = typeof orderedUids === 'function' ? orderedUids(data.entries) : orderedUids;
+    if (!desiredOrder.length) return { ok: true, updatedCount: 0 };
+    const plan = computeReorderedEntries(data.entries, desiredOrder, { syncOrder });
     if (plan.updates.length === 0) {
         data = null;
         return { ok: false, updatedCount: 0, error: '未找到可排序的条目' };

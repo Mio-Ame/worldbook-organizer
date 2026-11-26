@@ -67,9 +67,8 @@ function ensureWandMenuEntry() {
         <i class="fa-solid fa-layer-group fa-fw extensionsMenuExtensionButton"></i>
         <span>世界书分组管理</span>
     `;
-    item.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        if (menu instanceof HTMLElement) menu.style.display = 'none';
+    item.addEventListener('click', () => {
+        if (menu.style.display !== 'none') document.getElementById('extensionsMenuButton')?.click();
         openManagerModal();
     });
 
