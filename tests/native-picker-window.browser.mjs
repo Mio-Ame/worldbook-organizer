@@ -513,6 +513,70 @@ test('opening the group manager through the wand still lets the host close and r
     });
 });
 
+test('compatible worldbook dropdown style override follows host colors, is reversible and does not style unrelated controls', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const openSettings = async () => {
+            await openManager(cdp);
+            await cdp.clickSelector('#wbo-manager-overlay [data-action="open-settings-modal"]');
+            await cdp.clickSelector('[data-settings-tab="behavior"]');
+        };
+        const closeSettings = async () => {
+            await cdp.clickSelector('#wbo-settings-close-btn');
+            await cdp.clickSelector('#wbo-manager-overlay .wbo-modal-close');
+        };
+        await cdp.evalFn(() => {
+            const marker = document.createElement('style');
+            marker.dataset.grDropdownStyle = '1';
+            marker.textContent = '#gr-global-dropdown-container { background: rgb(190, 90, 170) !important; color: rgb(255, 240, 255) !important }';
+            document.head.append(marker);
+            document.documentElement.style.setProperty('--SmartThemeBodyColor', 'rgb(24, 35, 46)');
+            document.documentElement.style.setProperty('--SmartThemeBlurTintColor', 'rgb(235, 230, 215)');
+        });
+        const openGlobal = () => cdp.evalFn(() => window.__ST_TEST_HELPERS__.openGrGlobalPopover());
+        await openGlobal();
+        await waitForCondition(cdp, () => document.querySelector('[data-wbo-popover-role="global"]'));
+        const colors = () => cdp.evalFn(() => {
+            const pop = document.getElementById('gr-global-dropdown-container');
+            return { enabled: pop.hasAttribute('data-wbo-enhanced-host-theme'), foreground: getComputedStyle(pop).color,
+                background: getComputedStyle(pop).backgroundImage, groupBar: !!pop.querySelector('.wbo-pop-filter-bar') };
+        });
+        assert.equal((await colors()).enabled, false);
+        await cdp.evalFn(() => document.getElementById('gr-global-dropdown-container').remove());
+        await openSettings();
+        await cdp.clickSelector('[data-setting="overrideEnhancedDropdownStyle"]');
+        await closeSettings();
+        await openGlobal();
+        await waitForCondition(cdp, () => document.querySelector('[data-wbo-enhanced-host-theme]'));
+        let state = await colors();
+        assert.equal(state.foreground, 'rgb(24, 35, 46)');
+        assert.match(state.background, /rgb\(235, 230, 215\)/);
+        assert.equal(state.groupBar, true);
+        await cdp.evalFn(() => {
+            document.documentElement.style.setProperty('--SmartThemeBodyColor', 'rgb(220, 225, 230)');
+            document.documentElement.style.setProperty('--SmartThemeBlurTintColor', 'rgb(30, 35, 40)');
+        });
+        state = await colors();
+        assert.equal(state.foreground, 'rgb(220, 225, 230)');
+        assert.match(state.background, /rgb\(30, 35, 40\)/);
+        await cdp.evalFn(() => {
+            const pop = document.getElementById('gr-global-dropdown-container');
+            pop.dataset.wboSourceRole = 'sort';
+            pop.innerHTML = '<div class="gr-options"><div class="gr-options-container"><div class="gr-option">自定义排序</div></div></div>';
+        });
+        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container[data-wbo-enhanced-host-theme]'));
+        await cdp.evalFn(() => document.getElementById('gr-global-dropdown-container').remove());
+        await openSettings();
+        await cdp.clickSelector('[data-setting="overrideEnhancedDropdownStyle"]');
+        await closeSettings();
+        await openGlobal();
+        await waitForCondition(cdp, () => document.querySelector('[data-wbo-popover-role="global"]'));
+        state = await colors();
+        assert.equal(state.enabled, false);
+        assert.equal(state.foreground, 'rgb(255, 240, 255)');
+        assert.equal(state.background, 'none');
+    });
+});
+
 test('preset group switching is offered only when the compatible script is detected and stays opt-in', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
         const setting = '[data-setting="adaptEnhancedPresetGroups"]';
@@ -527,6 +591,7 @@ test('preset group switching is offered only when the compatible script is detec
         };
         await openSettings();
         assert.equal(await cdp.evalFn((selector) => Boolean(document.querySelector(selector)), setting), false);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]'))), false);
         await closeSettings();
 
         await cdp.evalFn(() => {
@@ -535,6 +600,7 @@ test('preset group switching is offered only when the compatible script is detec
         });
         await openSettings();
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);
+        assert.equal(await cdp.evalFn(() => document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]')?.checked), false);
         await closeSettings();
 
         const openPreset = () => cdp.evalFn(() => {

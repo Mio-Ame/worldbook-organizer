@@ -1,6 +1,8 @@
 import { GROUP_MODES, SPECIAL_GROUP_UNGROUPED } from './core.js';
 import { detectHostColorScheme, getCurrentEditorWorldName, getNativeGroupingState, locateEntryInNativeEditor, showToast } from './host.js';
 import { findScrollableContent, restoreContentAnchor } from '../content-scroll.js';
+import { UNDO_SVG } from '../panel-window.js';
+import { getNativeGroupOrder } from './entry-reorder.js';
 
 const BUTTON_ID = 'weg-native-group-manager';
 const HEADING_CLASS = 'weg-native-group-heading';
@@ -16,6 +18,7 @@ let nativeThemeObserver = null;
 let groupMarkers = [];
 const groupHeadings = new Map();
 const collapsedGroups = new Set();
+let groupDrag = null;
 
 const nativeColumnControls = new Map([
     ['Title/Memo', 'textarea[name="comment"]'],
@@ -28,7 +31,8 @@ const nativeColumnControls = new Map([
 
 function syncNativeLayout(list, pagination, button) {
     const heading = list?.querySelector('#WIEntryHeaderTitlesPC');
-    const row = list?.querySelector('.world_entry:not(.weg-native-group-collapsed) .inline-drawer-header');
+    const row = [...(list?.querySelectorAll('.world_entry:not(.weg-native-group-collapsed)') || [])]
+        .find((entry) => entry.querySelector('textarea[name="comment"]'));
     const sizeControl = pagination?.querySelector('select');
     if (nativeLayout?.heading === heading && nativeLayout?.row === row && nativeLayout?.sizeControl === sizeControl && nativeLayout?.button === button) {
         nativeLayout.update();
@@ -38,15 +42,19 @@ function syncNativeLayout(list, pagination, button) {
     if ((!heading || !row) && (!sizeControl || !button)) return;
     const columns = [...(heading?.children || [])].map((label) => [label, row?.querySelector(nativeColumnControls.get(label.getAttribute('data-i18n')) || ':not(*)')]);
     const update = () => {
-        if (heading?.clientWidth && row?.offsetWidth && columns.length && columns.every(([, control]) => control)) {
+        if (heading?.clientWidth && row?.offsetWidth && columns.length) {
             const headerLeft = heading.getBoundingClientRect().left;
             const scale = heading.getBoundingClientRect().width / heading.offsetWidth || 1;
             const geometry = columns.map(([label, control]) => {
-                const visible = control.offsetWidth ? control : control.nextElementSibling;
+                const replacement = control?.matches('select') ? control.nextElementSibling : null;
+                const visible = control?.offsetWidth ? control
+                    : replacement?.matches('.select2-container, .gr-select2-display') ? replacement : null;
                 return [label, visible?.getBoundingClientRect()];
             });
-            if (geometry.some(([, rect]) => !rect?.width)) return;
-            for (const [label, { left, width }] of geometry) {
+            for (const [label, rect] of geometry) {
+                label.toggleAttribute('data-weg-column-hidden', !rect?.width);
+                if (!rect?.width) continue;
+                const { left, width } = rect;
                 label.style.setProperty('--weg-native-column-center', `${(left + width / 2 - headerLeft) / scale - heading.clientLeft}px`);
                 label.style.setProperty('--weg-native-column-width', `${width / scale}px`);
             }
@@ -72,6 +80,11 @@ function clearNativeLayout() {
     nativeLayout?.observer?.disconnect();
     nativeLayout?.styleObserver?.disconnect();
     nativeLayout?.heading?.classList.remove('weg-native-aligned-columns');
+    for (const label of nativeLayout?.heading?.children || []) {
+        label.removeAttribute('data-weg-column-hidden');
+        label.style.removeProperty('--weg-native-column-center');
+        label.style.removeProperty('--weg-native-column-width');
+    }
     nativeLayout?.button?.style.removeProperty('--weg-native-page-height');
     nativeLayout?.button?.style.removeProperty('--weg-native-page-font');
     nativeLayout = null;
@@ -116,7 +129,39 @@ function syncNativePinnedEntries(list, worldName, config) {
     panel.lastElementChild.replaceChildren(...links);
 }
 
-function makeGroupControls(parent, resolveGroup) {
+function makeNativeUndoButton() {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'weg-native-group-undo';
+    button.innerHTML = UNDO_SVG;
+    button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        if (visibleBook) void nativeActions?.undo(visibleBook);
+    });
+    updateNativeUndoButton(button);
+    return button;
+}
+
+function updateNativeUndoButton(button) {
+    const label = nativeActions?.undoLabel(visibleBook) || '';
+    button.disabled = !label || Boolean(nativeActions?.busy);
+    setAttributeIfChanged(button, 'aria-label', label || '撤回上一步分组操作');
+    setAttributeIfChanged(button, 'title', label || '暂无可撤回的操作');
+    return label;
+}
+
+function makeGroupControls(parent, resolveGroup, { withUndo = true } = {}) {
+    if (withUndo) {
+        const handle = document.createElement('button');
+        handle.type = 'button';
+        handle.className = 'weg-native-group-drag';
+        handle.dataset.wegNativeGroupDrag = '1';
+        handle.setAttribute('aria-label', '拖动调整分组顺序');
+        handle.title = '拖动调整分组顺序';
+        handle.innerHTML = '<i class="fa-solid fa-grip-vertical" aria-hidden="true"></i>';
+        handle.addEventListener('click', (event) => event.stopPropagation());
+        parent.append(handle);
+    }
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'weg-native-group-disclosure';
@@ -129,7 +174,7 @@ function makeGroupControls(parent, resolveGroup) {
         const groupId = resolveGroup();
         const heading = groupHeadings.get(groupId);
         if (!heading || !visibleBook) return;
-        const disclosure = heading.firstElementChild;
+        const disclosure = heading.querySelector('.weg-native-group-disclosure');
         if (disclosure.disabled) return;
         const scroller = findScrollableContent(heading, document.getElementById('WorldInfo')?.parentElement);
         const top = scroller?.getBoundingClientRect().top || 0;
@@ -155,14 +200,26 @@ function makeGroupControls(parent, resolveGroup) {
         if (visibleBook && groupId) void nativeActions?.toggleGroup(visibleBook, groupId);
     });
     parent.append(button, toggle);
+    if (withUndo) {
+        const pin = document.createElement('button');
+        pin.type = 'button';
+        pin.className = 'weg-native-group-pin';
+        pin.innerHTML = '<i class="fa-regular fa-star" aria-hidden="true"></i>';
+        pin.addEventListener('click', (event) => {
+            event.stopPropagation();
+            if (visibleBook) nativeActions?.pinGroup(visibleBook, resolveGroup());
+        });
+        parent.append(makeNativeUndoButton(), pin);
+    }
 }
 
 function setAttributeIfChanged(element, name, value) {
     if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
-function updateGroupControls(parent, name, collapsed, canFold, total, enabled, radio, partial) {
-    const [disclosure, toggle] = parent.children;
+function updateGroupControls(parent, name, collapsed, canFold, total, enabled, radio, partial, pinned) {
+    const disclosure = parent.querySelector('.weg-native-group-disclosure');
+    const toggle = parent.querySelector('.weg-native-group-switch');
     if (disclosure.lastElementChild.textContent !== name) disclosure.lastElementChild.textContent = name;
     if (disclosure.disabled === canFold) disclosure.disabled = !canFold;
     if (canFold) setAttributeIfChanged(disclosure, 'aria-expanded', String(!collapsed));
@@ -178,6 +235,53 @@ function updateGroupControls(parent, name, collapsed, canFold, total, enabled, r
     if (toggle.firstElementChild.className !== icon) toggle.firstElementChild.className = icon;
     const disabled = total === 0 || Boolean(nativeActions?.busy);
     if (toggle.disabled !== disabled) toggle.disabled = disabled;
+    updateNativeUndoButton(parent.querySelector('.weg-native-group-undo'));
+    const pin = parent.querySelector('.weg-native-group-pin');
+    pin.disabled = Boolean(nativeActions?.busy);
+    setAttributeIfChanged(pin, 'aria-pressed', String(Boolean(pinned)));
+    setAttributeIfChanged(pin, 'aria-label', pinned ? '取消收藏分组' : '收藏分组');
+    setAttributeIfChanged(pin, 'title', pinned ? '取消收藏分组' : '收藏分组');
+    pin.firstElementChild.className = `${pinned ? 'fa-solid' : 'fa-regular'} fa-star`;
+    parent.querySelector('.weg-native-group-drag').disabled = !canFold || Boolean(nativeActions?.busy);
+}
+
+function finishGroupDrag(event) {
+    if (!groupDrag || (event && event.pointerId !== groupDrag.pointerId)) return;
+    const { source, target, after, pointerId, book } = groupDrag;
+    groupDrag = null;
+    source.classList.remove('weg-native-group-dragging');
+    target?.classList.remove('weg-native-drop-before', 'weg-native-drop-after');
+    if (source.hasPointerCapture(pointerId)) source.releasePointerCapture(pointerId);
+    if (event?.type === 'pointerup' && target && visibleBook === book && !nativeActions?.busy) {
+        nativeActions?.moveGroup(book, source.dataset.groupId, target.dataset.groupId, after);
+    }
+}
+
+function startGroupDrag(event) {
+    const handle = event.target.closest?.('[data-weg-native-group-drag]');
+    if (!handle || handle.disabled || event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const source = handle.closest(`.${HEADING_CLASS}`);
+    groupDrag = { source, book: visibleBook, pointerId: event.pointerId,
+        pinned: new Set(getNativeGroupingState(visibleBook).config?.pinnedGroupIds || []) };
+    source.classList.add('weg-native-group-dragging');
+    source.setPointerCapture(event.pointerId);
+}
+
+function moveGroupDrag(event) {
+    if (groupDrag?.pointerId !== event.pointerId) return;
+    const { source } = groupDrag;
+    groupDrag.target?.classList.remove('weg-native-drop-before', 'weg-native-drop-after');
+    groupDrag.target = null;
+    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest(`.${HEADING_CLASS}`);
+    if (!target || target === source || !decoratedList.contains(target)) return;
+    const { pinned } = groupDrag;
+    if (pinned.has(source.dataset.groupId) !== pinned.has(target.dataset.groupId)) return;
+    const rect = target.getBoundingClientRect();
+    groupDrag.target = target;
+    groupDrag.after = event.clientY > rect.top + rect.height / 2;
+    target.classList.add(groupDrag.after ? 'weg-native-drop-after' : 'weg-native-drop-before');
 }
 
 function handleNativeScroll(event) {
@@ -192,6 +296,10 @@ function updateStickyGroup() {
     stickyFrame = 0;
     if (!stickyBar?.isConnected) return;
     const controls = stickyBar.querySelector('.weg-native-sticky-group');
+    if (!controls?.querySelector('.weg-native-group-disclosure')) {
+        syncStickyBar(decoratedList);
+        return;
+    }
     const top = stickyBar.getBoundingClientRect().top;
     let low = 0;
     let high = groupMarkers.length;
@@ -206,7 +314,8 @@ function updateStickyGroup() {
     controls.hidden = !show;
     if (!show) return;
     if (controls.dataset.groupId !== id) controls.dataset.groupId = id;
-    const [sourceDisclosure, sourceToggle] = heading.children;
+    const sourceDisclosure = heading.querySelector('.weg-native-group-disclosure');
+    const sourceToggle = heading.querySelector('.weg-native-group-switch');
     const [disclosure, toggle] = controls.children;
     const name = sourceDisclosure.lastElementChild.textContent;
     if (disclosure.lastElementChild.textContent !== name) disclosure.lastElementChild.textContent = name;
@@ -223,22 +332,19 @@ function updateStickyGroup() {
 }
 
 function syncStickyBar(list) {
-    if (!stickyBar) {
+    if (!list?.isConnected) return;
+    if (!stickyBar?.isConnected || !stickyBar.querySelector('#weg-native-undo')
+        || !stickyBar.querySelector('.weg-native-sticky-group > .weg-native-group-switch')) {
+        stickyBar?.remove();
         stickyBar = document.createElement('div');
         stickyBar.className = 'weg-native-list-sticky';
         const bar = document.createElement('div');
         const controls = document.createElement('div');
         controls.className = 'weg-native-sticky-group';
         controls.hidden = true;
-        makeGroupControls(controls, () => controls.dataset.groupId);
-        const undo = document.createElement('button');
+        makeGroupControls(controls, () => controls.dataset.groupId, { withUndo: false });
+        const undo = makeNativeUndoButton();
         undo.id = 'weg-native-undo';
-        undo.type = 'button';
-        undo.className = 'menu_button';
-        undo.addEventListener('click', (event) => {
-            event.stopPropagation();
-            if (visibleBook) void nativeActions?.undo(visibleBook);
-        });
         bar.append(controls, undo);
         stickyBar.append(bar);
         document.addEventListener('scroll', handleNativeScroll, { capture: true, passive: true });
@@ -247,11 +353,9 @@ function syncStickyBar(list) {
     const columns = list.querySelector(':scope > #WIEntryHeaderTitlesPC');
     if (columns && columns.nextElementSibling !== stickyBar) columns.after(stickyBar);
     else if (!columns && list.firstElementChild !== stickyBar) list.prepend(stickyBar);
-    const undo = stickyBar.firstElementChild.lastElementChild;
-    const label = nativeActions?.undoLabel(visibleBook) || '';
+    const undo = stickyBar.querySelector('#weg-native-undo');
+    const label = updateNativeUndoButton(undo);
     undo.hidden = !label;
-    undo.disabled = Boolean(nativeActions?.busy);
-    if (undo.textContent !== label) undo.textContent = label;
     stickyBar.classList.toggle('has-undo', Boolean(label));
     scheduleStickyUpdate();
 }
@@ -278,7 +382,7 @@ export function syncNativeEntryGroupsTheme(settings = null) {
 }
 
 function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) {
-    const rows = list?.querySelectorAll('.world_entry[uid]');
+    const rows = [...(list?.querySelectorAll('.world_entry[uid]') || [])];
     if (!visibleBook || !rows?.length) {
         clearNativeGroupRows();
         return;
@@ -287,6 +391,9 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         clearNativeGroupRows();
         decoratedList = list;
         list.addEventListener('click', handleNativeEntryToggle);
+        list.addEventListener('pointerdown', startGroupDrag);
+        list.addEventListener('pointermove', moveGroupDrag);
+        for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) list.addEventListener(type, finishGroupDrag);
         if (typeof MutationObserver === 'function') {
             nativeThemeObserver = new MutationObserver(() => syncNativeEntryGroupsTheme());
             nativeThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['style', 'class'] });
@@ -298,6 +405,14 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         const assigned = config?.assignments?.[uid];
         return groups.has(assigned) ? assigned : SPECIAL_GROUP_UNGROUPED;
     };
+    const sortGroups = Boolean(config?.nativeGroupOrder?.length || config?.pinnedGroupIds?.length);
+    const ranks = new Map(getNativeGroupOrder(config).map((id, index) => [id, index]));
+    list.classList.toggle('weg-native-sorted-groups', sortGroups);
+    for (const row of rows) {
+        if (sortGroups) row.style.setProperty('--weg-native-group-rank', ranks.get(getGroupId(row.getAttribute('uid'))));
+        else row.style.removeProperty('--weg-native-group-rank');
+    }
+    if (sortGroups) rows.sort((a, b) => ranks.get(getGroupId(a.getAttribute('uid'))) - ranks.get(getGroupId(b.getAttribute('uid'))));
     const knownStates = new Map(disabledByUid);
     for (const row of rows) {
         const uid = row.getAttribute('uid');
@@ -359,12 +474,19 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         if (!heading) {
             heading = document.createElement('div');
             heading.className = HEADING_CLASS;
-            makeGroupControls(heading, () => heading.dataset.groupId);
             row.prepend(heading);
+        }
+        if (!heading.querySelector(':scope > .weg-native-group-disclosure > span')
+            || !heading.querySelector(':scope > .weg-native-group-switch > i')
+            || !heading.querySelector(':scope > .weg-native-group-undo > svg')
+            || !heading.querySelector(':scope > .weg-native-group-pin > i')) {
+            heading.replaceChildren();
+            makeGroupControls(heading, () => heading.dataset.groupId);
         }
         if (heading.dataset.groupId !== groupId) heading.dataset.groupId = groupId;
         const { total, enabled } = groupCounts.get(groupId) || { total: 0, enabled: 0 };
-        updateGroupControls(heading, name, collapsed, groups.size > 0, total, enabled, group?.mode === GROUP_MODES.RADIO, partial);
+        updateGroupControls(heading, name, collapsed, groups.size > 0, total, enabled, group?.mode === GROUP_MODES.RADIO, partial,
+            config?.pinnedGroupIds?.includes(groupId));
         groupHeadings.set(groupId, heading);
         groupMarkers.push(heading);
     }
@@ -422,11 +544,17 @@ export function revealNativeEntryGroup(worldName, uid) {
 
 function clearNativeGroupRows() {
     if (!decoratedList) return;
+    finishGroupDrag();
     nativeThemeObserver?.disconnect();
     nativeThemeObserver = null;
     decoratedList.classList.remove('weg-native-themed', 'weg-theme-light', 'weg-theme-dark');
     decoratedList.removeAttribute('data-weg-palette');
     decoratedList.removeEventListener('click', handleNativeEntryToggle);
+    decoratedList.removeEventListener('pointerdown', startGroupDrag);
+    decoratedList.removeEventListener('pointermove', moveGroupDrag);
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) decoratedList.removeEventListener(type, finishGroupDrag);
+    decoratedList.classList.remove('weg-native-sorted-groups');
+    for (const row of decoratedList.querySelectorAll('.world_entry[uid]')) row.style.removeProperty('--weg-native-group-rank');
     document.removeEventListener('scroll', handleNativeScroll, true);
     window.removeEventListener('resize', scheduleStickyUpdate);
     if (stickyFrame) cancelAnimationFrame(stickyFrame);

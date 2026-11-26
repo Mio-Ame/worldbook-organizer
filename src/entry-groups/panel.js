@@ -63,7 +63,7 @@ import {
 import { removeNativeEntryGroups, revealNativeEntryGroup, syncNativeEntryGroups, syncNativeEntryGroupsTheme } from './native-view.js';
 import { attachGroupedSelectControl, closeGroupedSelectControl } from '../native-filter.js';
 import { saveWorldbookEntriesOrderDirect } from '../host.js';
-import { bindEntryGroupReordering, planEntryGroupOrder } from './entry-reorder.js';
+import { bindEntryGroupReordering, planEntryGroupOrder, planNativeGroupMove } from './entry-reorder.js';
 import { scanWorldbooksForEntryGroups } from './bulk-auto-group.js';
 
 const MODAL_BACKDROP_ID = 'weg-modal-backdrop';
@@ -239,7 +239,29 @@ export function syncAllNativeEntryPoints() {
         undoLabel: (worldName) => getUndoCount(worldName) ? getUndoLabel(worldName) : '',
         busy: _writingToggle,
         getTheme: getEntryGroupsTheme,
+        pinGroup: (worldName, groupId) => changeNativeGroupDisplay(worldName, (config) => setGroupPinned(config, groupId).changed),
+        moveGroup: (worldName, from, to, after) => changeNativeGroupDisplay(worldName, (config) => {
+            const order = planNativeGroupMove(config, from, to, after);
+            if (!order.length) return false;
+            config.nativeGroupOrder = order;
+            return true;
+        }),
     });
+}
+
+function changeNativeGroupDisplay(worldName, change) {
+    if (!worldName || _writingToggle) return;
+    const settings = getSettings();
+    const config = getBookConfigMutable(settings, worldName);
+    const before = cloneBookConfig(config);
+    if (!change(config)) return;
+    pushUndoSnapshot(worldName, before);
+    saveBookConfigWithCleanEmpty(settings, worldName, config);
+    syncAllNativeEntryPoints();
+    if (_isOpen && _currentBook === worldName) {
+        _freezePinnedOrder = false;
+        renderBodyAndFooterOnly();
+    }
 }
 
 export function isEntryGroupsModalOpen() {
@@ -1341,6 +1363,7 @@ async function undoWorldbookGroupChange(worldName) {
         stack.pop();
         if (_currentBook === worldName) _freezePinnedOrder = false;
         saveBookConfigWithCleanEmpty(getSettings(), worldName, action.config);
+        syncAllNativeEntryPoints();
         if (_isOpen && _currentBook === worldName) renderModalContents();
         showToast('info', '已撤销上一步分组操作');
         return;

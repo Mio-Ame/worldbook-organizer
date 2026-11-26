@@ -62,16 +62,30 @@ test('scan review, primary replacement and auxiliary bindings use the intended c
             const bind = '[data-more-act="bind-book-to-character"]';
             assert.equal(await cdp.evalFn((selector) => document.activeElement.matches(selector), bind), true);
             await cdp.clickSelector(bind);
-            await cdp.evalFn((avatar) => {
-                const select = document.querySelector('[data-bind-character]');
-                select.value = avatar;
-                select.dispatchEvent(new Event('change', { bubbles: true }));
-            }, avatarB);
+            await cdp.typeInto('[data-bind-character-search]', '核对');
+            assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('[data-bind-avatar-choice]')].every((node) => node.tabIndex === -1)), true);
+            await cdp.pressKey('ArrowDown', 'ArrowDown', 40);
+            await cdp.pressKey('Enter', 'Enter', 13);
             await waitForCondition(cdp, () => !document.querySelector('[data-bind-options]')?.disabled);
+            assert.equal(await cdp.evalFn(() => document.querySelector('[data-bind-character]').value), avatarB);
+            await cdp.clickSelector('[data-bind-picker-toggle]');
+            await cdp.pressKey('Escape', 'Escape', 27);
+            assert.equal(await cdp.evalFn(() => document.querySelector('[data-bind-choices]').hidden), true);
+            await cdp.clickSelector('[data-bind-character-search]');
+            await cdp.pressKey('Tab', 'Tab', 9);
+            await cdp.pressKey('Tab', 'Tab', 9);
+            assert.equal(await cdp.evalFn(() => document.activeElement.matches('[name="wbo-bind-kind"]') && document.querySelector('[data-bind-choices]').hidden), true);
         }
         await chooseBook('新主书');
         await cdp.clickSelector('[name="wbo-bind-kind"][value="primary"]');
         assert.match(await cdp.evalFn(() => document.querySelector('[data-bind-warning]').textContent), /原主书.*新主书/);
+        assert.deepEqual(await cdp.evalFn(() => {
+            const confirm = document.querySelector('[data-bind-confirm]');
+            const cancel = document.querySelector('[data-bind-cancel]');
+            return { label: confirm.textContent.trim(), left: confirm.getBoundingClientRect().right <= cancel.getBoundingClientRect().left,
+                sameRow: confirm.getBoundingClientRect().top === cancel.getBoundingClientRect().top };
+        }), { label: '替换主世界书', left: true, sameRow: true });
+        if (process.env.WBO_CAPTURE_UI) await cdp.screenshot('v2358-binding-desktop');
         await cdp.clickSelector('[data-bind-confirm]');
         await waitForCondition(cdp, () => !document.querySelector('[data-bind-confirm]'));
         const saved = await getServerState(baseUrl);
@@ -151,6 +165,19 @@ test('mobile keeps binding in the book menu and sizes the expanded sort picker t
         await cdp.clickSelector(`${row} [data-action="book-more-menu"]`);
         await cdp.clickSelector(firstAction);
         const search = '[data-bind-character-search]';
+        assert.deepEqual(await cdp.evalFn(() => ({
+            selectHidden: getComputedStyle(document.querySelector('[data-bind-character]')).display === 'none',
+            role: document.querySelector('[data-bind-character-search]').getAttribute('role'),
+            confirmOnLeft: document.querySelector('[data-bind-confirm]').getBoundingClientRect().right <= document.querySelector('[data-bind-cancel]').getBoundingClientRect().left,
+            actions: [...document.querySelectorAll('.wbo-bind-content + .wbo-modal-footer button')].map((node) => node.textContent.trim()),
+        })), { selectHidden: true, role: 'combobox', confirmOnLeft: true, actions: ['确认绑定', '取消'] });
+        await cdp.clickSelector('[data-bind-picker-toggle]');
+        if (process.env.WBO_CAPTURE_UI) await cdp.screenshot('v2358-binding-mobile-list');
+        assert.equal(await cdp.evalFn(() => document.querySelector('[data-bind-character-search]').getAttribute('aria-expanded')), 'true');
+        await cdp.clickSelector('[data-bind-avatar-choice="fixture-other.png"]');
+        await waitForCondition(cdp, () => !document.querySelector('[data-bind-options]')?.disabled);
+        assert.equal(await cdp.evalFn(() => document.querySelector('[data-bind-character-search]').value), '另一个角色');
+        if (process.env.WBO_CAPTURE_UI) await cdp.screenshot('v2358-binding-mobile-selected');
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('spellcheck'), search), 'false');
         assert.equal(await cdp.evalFn((selector) => document.activeElement.matches(selector), search), false);
         await cdp.typeInto(search, '手机测试');

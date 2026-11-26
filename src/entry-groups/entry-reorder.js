@@ -1,5 +1,20 @@
 import { reorderEntryUids } from '../core.js';
-import { buildGroupedView, extractWorldbookEntrySummaries } from './core.js';
+import { buildGroupedView, extractWorldbookEntrySummaries, SPECIAL_GROUP_UNGROUPED } from './core.js';
+
+export function getNativeGroupOrder(config) {
+    const available = new Set([...(config?.groups || []).map(({ id }) => id), SPECIAL_GROUP_UNGROUPED]);
+    const ordered = [...new Set([...(config?.nativeGroupOrder || []), ...available])].filter((id) => available.has(id));
+    const pinned = new Set(config?.pinnedGroupIds || []);
+    return [...ordered.filter((id) => pinned.has(id)), ...ordered.filter((id) => !pinned.has(id))];
+}
+
+export function planNativeGroupMove(config, from, to, after) {
+    const order = getNativeGroupOrder(config);
+    const pinned = new Set(config?.pinnedGroupIds || []);
+    if (pinned.has(from) !== pinned.has(to)) return [];
+    const result = reorderEntryUids(order, from, to, after);
+    return result.changed ? result.orderedUids : [];
+}
 
 export function planEntryGroupOrder(entries, config, draggedUid, targetUid, after) {
     const summaries = extractWorldbookEntrySummaries({ entries });

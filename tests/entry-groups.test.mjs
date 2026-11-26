@@ -1,5 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { getNativeGroupOrder, planNativeGroupMove } from '../src/entry-groups/entry-reorder.js';
+
+test('native group display order preserves explicit order, pins and ungrouped without touching entries', () => {
+    const config = { groups: [{ id: 'a', name: '甲组' }, { id: 'b', name: '乙组' }], pinnedGroupIds: ['b'], nativeGroupOrder: ['a', 'b', '__ungrouped__'] };
+    assert.deepEqual(getNativeGroupOrder(config), ['b', 'a', '__ungrouped__']);
+    assert.deepEqual(planNativeGroupMove(config, 'b', 'a', true), []);
+    config.pinnedGroupIds = [];
+    assert.deepEqual(planNativeGroupMove(config, 'b', 'a', false), ['b', 'a', '__ungrouped__']);
+    assert.deepEqual(planNativeGroupMove(config, 'a', 'b', false), []);
+    assert.deepEqual(planNativeGroupMove(config, 'missing', 'b', false), []);
+    const normalized = normalizeBookConfig({ ...config, nativeGroupOrder: ['b', 'b', 'missing', '__ungrouped__', 'a'] });
+    assert.deepEqual(normalized.nativeGroupOrder, ['b', '__ungrouped__', 'a']);
+});
 
 import {
     ENTRY_ACTIVATION_MODES,

@@ -1,5 +1,6 @@
 import { bindWorldbookToCharacter, getCharactersInMemory, getWorldNames, inspectCharacterWorldbookBinding, showToast } from './host.js';
 import { _callbacks, closeSubModal, createSubModal, esc } from './panel-window.js';
+let bindingPickerSerial = 0;
 
 export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound, stack = false } = {}) {
     if (!_callbacks) return;
@@ -16,6 +17,7 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
         + cards.map((card) =>
             `<option value="${esc(card.avatar)}">${esc(card.name)} · ${esc(card.avatar)}</option>`,
         ).join('');
+    const listId = `wbo-bind-character-list-${++bindingPickerSerial}`;
 
     const { modal, overlay } = createSubModal('绑定世界书到角色', `
         <div class="wbo-bind-content">
@@ -27,14 +29,19 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
                     <p>主世界书只能有一本，导出角色卡时会随卡带走。附加世界书可以有多本，导出角色卡时不会一同带走。</p>
                 </details>
             </div>
-            <label class="wbo-bind-label">搜索角色名
-                <input type="search" class="wbo-input" data-bind-character-search placeholder="输入角色名" autocomplete="off" spellcheck="false">
-            </label>
-            <label class="wbo-bind-label">选择角色
-                <select class="wbo-select" data-bind-character>
+            <div class="wbo-bind-picker">
+                <label class="wbo-bind-label">角色卡
+                    <span class="wbo-bind-combo">
+                        <input type="search" class="wbo-input" data-bind-character-search placeholder="选择角色卡或输入角色名搜索" autocomplete="off" spellcheck="false"
+                            role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="${listId}">
+                        <button type="button" class="wbo-icon-btn" data-bind-picker-toggle aria-label="展开角色卡列表" aria-controls="${listId}" aria-expanded="false"><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
+                    </span>
+                </label>
+                <div class="wbo-bind-choices" id="${listId}" role="listbox" aria-label="角色卡" data-bind-choices hidden></div>
+                <select data-bind-character hidden aria-hidden="true" tabindex="-1">
                     ${renderChoices(characters, '没有可绑定的角色卡')}
                 </select>
-            </label>
+            </div>
             <div class="wbo-bind-card" data-bind-card hidden>
                 <img data-bind-avatar alt="角色头像" width="68" height="68">
                 <div>
@@ -52,13 +59,15 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
             <p role="status" data-bind-status hidden></p>
         </div>
         <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
-            <button type="button" class="wbo-btn" data-bind-cancel>取消</button>
             <button type="button" class="wbo-btn wbo-btn-primary" data-bind-confirm disabled>确认绑定</button>
+            <button type="button" class="wbo-btn" data-bind-cancel>取消</button>
         </div>
     `, { pinnedLayout: true, stack });
 
     const select = modal.querySelector('[data-bind-character]');
     const search = modal.querySelector('[data-bind-character-search]');
+    const choices = modal.querySelector('[data-bind-choices]');
+    const pickerToggle = modal.querySelector('[data-bind-picker-toggle]');
     const cardEl = modal.querySelector('[data-bind-card]');
     const avatarEl = modal.querySelector('[data-bind-avatar]');
     const warning = modal.querySelector('[data-bind-warning]');
@@ -69,6 +78,31 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
     let selected = null;
     let busy = false;
     let request = 0;
+    let matchedCharacters = characters;
+    let activeChoice = -1;
+
+    function setPickerOpen(open) {
+        choices.hidden = !open;
+        search.setAttribute('aria-expanded', String(open));
+        pickerToggle.setAttribute('aria-expanded', String(open));
+        pickerToggle.setAttribute('aria-label', open ? '收起角色卡列表' : '展开角色卡列表');
+        if (!open) search.removeAttribute('aria-activedescendant');
+    }
+
+    function renderPicker() {
+        activeChoice = -1;
+        search.removeAttribute('aria-activedescendant');
+        choices.innerHTML = matchedCharacters.length ? matchedCharacters.map((card, index) => `
+            <button type="button" role="option" tabindex="-1" id="${listId}-${index}" data-bind-avatar-choice="${esc(card.avatar)}" aria-selected="${card.avatar === select.value}">
+                <span>${esc(card.name)}</span><small>${esc(card.avatar)}</small>
+            </button>`).join('') : '<p class="wbo-subtle-tip">没有匹配的角色卡</p>';
+    }
+
+    function chooseCard(avatar) {
+        select.value = avatar;
+        setPickerOpen(false);
+        void selectCard();
+    }
 
     function showStatus(message) {
         status.textContent = message;
@@ -85,12 +119,15 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
         options.disabled = busy || !selected;
         select.disabled = busy || select.options.length <= 1;
         search.disabled = busy || !characters.length;
+        pickerToggle.disabled = search.disabled;
     }
 
     async function selectCard() {
         const id = ++request;
         const avatar = select.value;
         const choice = characters.find((card) => card.avatar === avatar);
+        if (choice) search.value = choice.name;
+        setPickerOpen(false);
         selected = null;
         for (const option of options.querySelectorAll('input')) option.checked = false;
         cardEl.hidden = !choice;
@@ -113,17 +150,81 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
     function filterCharacters() {
         const query = search.value.trim().normalize('NFKC').toLowerCase();
         const matches = characters.filter((card) => card.name.normalize('NFKC').toLowerCase().includes(query));
+        matchedCharacters = matches;
         const avatar = select.value;
         select.innerHTML = renderChoices(matches, '没有匹配的角色卡');
-        select.value = matches.some((card) => card.avatar === avatar) ? avatar : '';
+        select.value = matches.some((card) => card.avatar === avatar && card.name === search.value) ? avatar : '';
         if (select.value !== avatar) void selectCard();
         else syncConfirm();
+        renderPicker();
+        setPickerOpen(true);
     }
 
     search.addEventListener('input', (event) => {
         if (!event.isComposing) filterCharacters();
     });
     search.addEventListener('compositionend', filterCharacters);
+    search.addEventListener('click', () => {
+        if (busy || !characters.length) return;
+        if (selected && search.value === selected.name) {
+            matchedCharacters = characters;
+            select.innerHTML = renderChoices(characters, '没有可绑定的角色卡');
+            select.value = selected.avatar;
+        }
+        renderPicker();
+        setPickerOpen(true);
+    });
+    pickerToggle.addEventListener('click', () => {
+        if (!choices.hidden) setPickerOpen(false);
+        else {
+            matchedCharacters = characters;
+            const avatar = select.value;
+            select.innerHTML = renderChoices(characters, '没有可绑定的角色卡');
+            select.value = avatar;
+            renderPicker();
+            setPickerOpen(true);
+        }
+    });
+    choices.addEventListener('click', (event) => {
+        const choice = event.target.closest('[data-bind-avatar-choice]');
+        if (choice) chooseCard(choice.dataset.bindAvatarChoice);
+    });
+    modal.addEventListener('click', (event) => {
+        if (!event.target.closest('.wbo-bind-picker')) setPickerOpen(false);
+    });
+    const picker = modal.querySelector('.wbo-bind-picker');
+    picker.addEventListener('focusout', (event) => {
+        if (!picker.contains(event.relatedTarget)) setPickerOpen(false);
+    });
+    picker.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || choices.hidden || event.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setPickerOpen(false);
+    });
+    search.addEventListener('keydown', (event) => {
+        if (event.isComposing) return;
+        if (event.key === 'Escape' && !choices.hidden) {
+            event.preventDefault();
+            event.stopPropagation();
+            setPickerOpen(false);
+        } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            setPickerOpen(true);
+            const buttons = [...choices.querySelectorAll('[role="option"]')];
+            if (!buttons.length) return;
+            activeChoice = (activeChoice + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+            buttons.forEach((button, index) => button.classList.toggle('is-active', index === activeChoice));
+            const target = buttons[activeChoice];
+            search.setAttribute('aria-activedescendant', target.id);
+            const top = target.offsetTop - choices.offsetTop;
+            if (top < choices.scrollTop) choices.scrollTop = top;
+            else if (top + target.offsetHeight > choices.scrollTop + choices.clientHeight) choices.scrollTop = top + target.offsetHeight - choices.clientHeight;
+        } else if (event.key === 'Enter' && !choices.hidden && activeChoice >= 0) {
+            event.preventDefault();
+            chooseCard(matchedCharacters[activeChoice].avatar);
+        }
+    });
     select.addEventListener('change', selectCard);
     options.addEventListener('change', syncConfirm);
     modal.querySelector('[data-bind-cancel]').addEventListener('click', close);
@@ -153,6 +254,7 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
             : `已为「${name}」${kind === 'primary' ? '设置主世界书' : '添加附加世界书'}`);
     });
 
+    renderPicker();
     if (suggestedAvatar && characters.some((card) => card.avatar === suggestedAvatar)) {
         select.value = suggestedAvatar;
         void selectCard();

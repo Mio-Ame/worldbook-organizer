@@ -31,6 +31,47 @@
     flex-wrap: wrap;
 }
 
+#world_popup_entries_list.weg-native-sorted-groups {
+    display: flex;
+    flex-direction: column;
+}
+
+.weg-native-sorted-groups .world_entry[uid] {
+    order: var(--weg-native-group-rank);
+}
+
+.weg-native-sorted-groups > #WIEntryHeaderTitlesPC { order: -2; }
+.weg-native-sorted-groups > .weg-native-list-sticky { order: -1; }
+
+.weg-native-group-drag,
+.weg-native-group-pin {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    flex: 0 0 28px;
+    inline-size: 28px;
+    block-size: 30px;
+    padding: 0;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 14px;
+    border-radius: 5px;
+    cursor: pointer;
+}
+
+.weg-native-group-drag {
+    cursor: grab;
+    touch-action: none;
+    color: var(--weg-fg-muted);
+}
+
+.weg-native-group-pin[aria-pressed="true"] { color: var(--weg-pin); }
+.weg-native-group-dragging { opacity: 0.55; }
+.weg-native-drop-before { box-shadow: 0 -3px var(--weg-accent); }
+.weg-native-drop-after { box-shadow: 0 3px var(--weg-accent); }
+
 #WIEntryHeaderTitlesPC.weg-native-aligned-columns {
     position: relative;
     padding: 0 !important;
@@ -49,6 +90,10 @@
     max-width: none !important;
     flex: none !important;
     box-sizing: border-box;
+}
+
+#WIEntryHeaderTitlesPC.weg-native-aligned-columns > [data-weg-column-hidden] {
+    display: none;
 }
 
 #world_popup_entries_list .world_entry .WIEnteryHeaderControls input[type="number"]:is([name="order"], [name="probability"]) {
@@ -90,7 +135,8 @@
 }
 
 .weg-native-group-disclosure,
-.weg-native-group-switch {
+.weg-native-group-switch,
+.weg-native-group-undo {
     display: flex;
     align-items: center;
     min-block-size: 28px;
@@ -129,10 +175,49 @@
 
 .weg-native-group-switch {
     flex: 0 0 36px;
+    inline-size: 36px;
+    block-size: 30px;
     justify-content: center;
     margin-inline-end: 2px;
     padding: 3px 5px;
     font-size: 1em;
+}
+
+.weg-native-group-switch > i {
+    position: relative;
+    display: block;
+    flex: 0 0 28px;
+    inline-size: 28px;
+    block-size: 16px;
+    border-radius: 999px;
+    background: var(--weg-track-off);
+    font-size: 0;
+    box-sizing: border-box;
+}
+
+.weg-native-group-switch > i::before {
+    content: '';
+    position: absolute;
+    inset-block-start: 3px;
+    inset-inline-start: 3px;
+    inline-size: 10px;
+    block-size: 10px;
+    border-radius: 50%;
+    background: var(--weg-thumb-off);
+}
+
+.weg-native-group-switch[aria-checked="true"] > i {
+    background: var(--weg-track-on);
+}
+
+.weg-native-group-switch[aria-checked="true"] > i::before {
+    inset-inline-start: 15px;
+    background: var(--weg-thumb);
+}
+
+.weg-native-group-switch[aria-checked="mixed"] > i::before {
+    inset-inline-start: 9px;
+    border-radius: 3px;
 }
 
 .weg-native-group-switch[aria-checked="false"] {
@@ -144,8 +229,29 @@
     opacity: 0.45;
 }
 
+.weg-native-group-undo {
+    flex: 0 0 30px;
+    inline-size: 30px;
+    block-size: 30px;
+    padding: 0;
+    margin: 0 2px 0 0;
+    justify-content: center;
+}
+
+.weg-native-group-undo:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.weg-native-group-undo > svg {
+    inline-size: 15px;
+    block-size: 15px;
+    pointer-events: none;
+}
+
 .weg-native-group-disclosure:not(:disabled):hover,
-.weg-native-group-switch:not(:disabled):hover {
+.weg-native-group-switch:not(:disabled):hover,
+.weg-native-group-undo:not(:disabled):hover {
     background: var(--weg-surface-hover);
 }
 
@@ -197,7 +303,7 @@
 
 #weg-native-undo {
     flex: 0 0 auto;
-    inline-size: auto;
+    inline-size: 32px;
     min-block-size: 30px;
     margin: 0;
     padding: 3px 8px;

@@ -287,6 +287,7 @@ const ENHANCED_POPOVER_SELECTORS = Object.freeze({
 });
 let sharedPopoverOpening = null;
 let enhancedStyleObserver = null;
+let enhancedHostThemeObserver = null;
 let enhancedGlobalRecoveryTimer = null;
 let enhancedGlobalClickHandler = null;
 let removePluginSelectIsolation = null;
@@ -308,6 +309,20 @@ export function hasCompatibleDropdownScript() {
         }
     } catch { /* Older hosts can only detect the running script. */ }
     return Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR));
+}
+
+function syncEnhancedHostTheme(element, eligible = true) {
+    if (!element) return;
+    const enabled = eligible && _latestSettings?.overrideEnhancedDropdownStyle === true;
+    if (enabled) {
+        if (!element.hasAttribute('data-wbo-enhanced-host-theme')) element.setAttribute('data-wbo-enhanced-host-theme', '');
+    } else element.removeAttribute('data-wbo-enhanced-host-theme');
+    if (enabled) {
+        const foreground = getComputedStyle(document.getElementById('WorldInfo') || document.body).color.match(/[\d.]+/g)?.map(Number);
+        const light = foreground && 0.299 * foreground[0] + 0.587 * foreground[1] + 0.114 * foreground[2] < 140;
+        const tone = light ? 'light' : 'dark';
+        if (element.dataset.wboEnhancedHostTone !== tone) element.dataset.wboEnhancedHostTone = tone;
+    } else element.removeAttribute('data-wbo-enhanced-host-tone');
 }
 
 function hasOpenEnhancedGlobalPicker() {
@@ -2284,6 +2299,11 @@ function openMobileEditorPickerSheet() {
 export function applyAllNativeWorldFilters(classification, settings, { force = false, deferGlobal = false } = {}) {
     _latestClassification = classification;
     _latestSettings = settings;
+    document.querySelectorAll('.gr-select2-display[data-gr-select-id="world_info"], .gr-select2-display[data-gr-select-id="world_editor_select"]')
+        .forEach((element) => syncEnhancedHostTheme(element));
+    document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => {
+        if (!element.classList.contains('gr-select2-display')) syncEnhancedHostTheme(element, Boolean(detectEnhancedPopoverRole(element)));
+    });
     if (force) {
         _lastGlobalSignature = null;
         _lastEditorSignature = null;
@@ -4598,6 +4618,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     let observedHost = null;
     try {
     const detectedRole = detectEnhancedPopoverRole(containerEl);
+    syncEnhancedHostTheme(containerEl, Boolean(detectedRole));
+    if (detectedRole) document.querySelectorAll('.gr-select2-display[data-gr-select-id="world_info"], .gr-select2-display[data-gr-select-id="world_editor_select"]')
+        .forEach((element) => syncEnhancedHostTheme(element));
     if (!detectedRole) {
         if (containerEl.dataset.wboSourceRole === 'preset' && _latestSettings?.adaptEnhancedPresetGroups === true
             && document.querySelector(ENHANCED_STYLE_SELECTOR)) {
@@ -5494,6 +5517,13 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         });
         enhancedStyleObserver.observe(document.head, { childList: true });
     }
+    enhancedHostThemeObserver = new MutationObserver(() => {
+        if (_latestSettings?.overrideEnhancedDropdownStyle !== true) return;
+        document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => syncEnhancedHostTheme(element));
+    });
+    for (const element of [document.documentElement, document.body]) {
+        if (element) enhancedHostThemeObserver.observe(element, { attributes: true, attributeFilter: ['style', 'class'] });
+    }
 
     const scheduleResync = () => {
         if (_isApplying) return;
@@ -5794,6 +5824,8 @@ export function stopNativeObservers() {
     if (typeof document !== 'undefined') clearEnhancedPresetGroups(document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId));
     enhancedStyleObserver?.disconnect();
     enhancedStyleObserver = null;
+    enhancedHostThemeObserver?.disconnect();
+    enhancedHostThemeObserver = null;
     clearTimeout(enhancedGlobalRecoveryTimer);
     enhancedGlobalRecoveryTimer = null;
     enhancedGlobalClickHandler?.();
@@ -5900,6 +5932,10 @@ export function stopNativeObservers() {
  * (used on extension disable / clean).
  */
 export function teardownNativeFilters() {
+    document.querySelectorAll('[data-wbo-enhanced-host-theme]').forEach((element) => {
+        element.removeAttribute('data-wbo-enhanced-host-theme');
+        element.removeAttribute('data-wbo-enhanced-host-tone');
+    });
     clearTimeout(_deferredGlobalTimer);
     _deferredGlobalTimer = null;
     stopNativeObservers();

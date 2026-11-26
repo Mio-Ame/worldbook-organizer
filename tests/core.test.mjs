@@ -2793,8 +2793,9 @@ function installMockNativeFilterDom({ innerWidth = 390, innerHeight = 844 } = {}
             this.target = null;
             observerInstances.push(this);
         }
-        observe(target) {
+        observe(target, options) {
             this.target = target;
+            this.options = options;
         }
         disconnect() {
             this.target = null;
@@ -2944,7 +2945,7 @@ test('R6.1 grouped popup picker (#wbo-pop-search) clamps to visualViewport witho
         nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
         nativeMod.startNativeObservers(() => {});
 
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver, 'body MutationObserver should be registered');
         bodyObserver.cb([{ addedNodes: [dialog] }]);
 
@@ -3036,7 +3037,7 @@ test('R6.2 .gr-container-enhanced & #world_popup .gr-select2-display isolation +
         dom.doc.body.appendChild(editorEnhanced);
         dom.doc.body.appendChild(globalEnhanced);
 
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver, 'body MutationObserver should be registered');
         bodyObserver.cb([{ addedNodes: [editorEnhanced, globalEnhanced] }]);
 
@@ -3132,7 +3133,7 @@ test('R6.2 grouped enhanceCustomDropdownPopover works for global (★ 已置顶 
         nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
         nativeMod.startNativeObservers(() => {});
 
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver, 'body MutationObserver should be registered');
 
         // 1) Grouped #gr-global-dropdown-container (exercises isGlobalPopover === true, orderedSections >= 2, initialPopPinned > 0)
@@ -3359,7 +3360,7 @@ test('R6.2 .wbo-mp-backdrop pointerdown over trigger rect suppresses trailing cl
         nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
         nativeMod.startNativeObservers(() => {});
 
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver);
         bodyObserver.cb([{ addedNodes: [dialog] }]);
 
@@ -4542,7 +4543,7 @@ test('M2 F4.2: #world_info_sort_order & non-worldbook .gr-container-enhanced (fr
         sortPopover.appendChild(sortOptsHost);
         dom.doc.body.appendChild(sortPopover);
 
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver);
         bodyObserver.cb([{ addedNodes: [sortPopover] }]);
 
@@ -4850,7 +4851,7 @@ test('M2 F2.2, F2.4, F2.5 & v2.35.1: UNGROUPED last across 5 surfaces, zero 当�
         dom.doc.body.appendChild(dialog);
 
         nativeMod.startNativeObservers(() => {});
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         bodyObserver.cb([{ addedNodes: [dialog] }]);
         const popTrigger = charWorldPopup.querySelector('.wbo-popup-select-trigger');
         assert.ok(popTrigger);
@@ -5175,7 +5176,7 @@ test('M2 R2 regression F4.2: container innerHTML reset cleanup (1C), 150ms slow-
         const cls = classifyWorldbooks({ worldNames: ['书A', '书B', '书C'], bindingMap: new Map(), settings });
         nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
         nativeMod.startNativeObservers(() => {});
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver);
 
         // Probe 4B: shared parent with intermediate .select2-container recognizes editorDisp while excluding sortDisp
@@ -5514,7 +5515,7 @@ test('M2 R3 regression F4.2 & F1.1/F2.5: persistent container re-observes across
         const cls = classifyWorldbooks({ worldNames: ['当前角色书', '隐藏他角书', '普通书'], bindingMap, settings });
         nativeMod.applyAllNativeWorldFilters(cls, settings, { force: true });
         nativeMod.startNativeObservers(() => {});
-        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body);
+        const bodyObserver = dom.observerInstances.find((o) => o.target === dom.doc.body && o.options?.childList);
         assert.ok(bodyObserver);
 
         // R2_5: Mount & enhance persistent editor container with active = '隐藏他角书'

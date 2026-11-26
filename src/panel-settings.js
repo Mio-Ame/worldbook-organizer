@@ -386,6 +386,10 @@ function openSettingsModal() {
                     ${hasCompatibleDropdownScript() ? `<label class="wbo-check-line">
                         <input type="checkbox" data-setting="adaptEnhancedPresetGroups">
                         <span>为兼容的预设下拉框添加分组切换</span>
+                    </label>
+                    <label class="wbo-check-line">
+                        <input type="checkbox" data-setting="overrideEnhancedDropdownStyle">
+                        <span>覆盖美化下拉框样式，跟随酒馆主题</span>
                     </label>` : ''}
                 </div>
             </div>

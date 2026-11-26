@@ -163,6 +163,8 @@ export function normalizeBookConfig(raw) {
         ungroupedCollapsed: Boolean(src.ungroupedCollapsed),
         pinnedGroupIds,
         pinnedEntryUids,
+        nativeGroupOrder: [...new Set(Array.isArray(src.nativeGroupOrder) ? src.nativeGroupOrder : [])]
+            .filter((id) => seenIds.has(id) || id === SPECIAL_GROUP_UNGROUPED),
     };
 }
 
@@ -205,6 +207,7 @@ export function cloneBookConfig(bookConfig) {
         ungroupedCollapsed: norm.ungroupedCollapsed,
         pinnedGroupIds: [...norm.pinnedGroupIds],
         pinnedEntryUids: [...norm.pinnedEntryUids],
+        nativeGroupOrder: [...norm.nativeGroupOrder],
     };
 }
 
@@ -598,6 +601,9 @@ export function removeGroupFromBookConfig(bookConfig, groupId) {
     }
     if (Array.isArray(bookConfig.pinnedGroupIds)) {
         bookConfig.pinnedGroupIds = bookConfig.pinnedGroupIds.filter((id) => String(id ?? '').trim() !== gid);
+    }
+    if (Array.isArray(bookConfig.nativeGroupOrder)) {
+        bookConfig.nativeGroupOrder = bookConfig.nativeGroupOrder.filter((id) => id !== gid);
     }
     return true;
 }
@@ -2485,6 +2491,8 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
                 }
             }
             merged.pinnedGroupIds = [...mergedPinnedGroups];
+            merged.nativeGroupOrder = [...new Set([...merged.nativeGroupOrder,
+                ...oldCfg.nativeGroupOrder.map((id) => idRemap.get(id) || id)])];
             merged.pinnedEntryUids = [...new Set([...merged.pinnedEntryUids, ...oldCfg.pinnedEntryUids])];
             settings.books[cleanNew] = merged;
         }
