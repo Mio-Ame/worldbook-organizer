@@ -1,7 +1,5 @@
 /**
- * Worldbook Entry Groups — Standalone fixed-size panel, 3 native host entry points
- * (Extensions Drawer `#extensions_settings2`, Magic Wand `#extensionsMenu`, WorldInfo `#world_popup`),
- * O(1) per-chat save stage bar, and scene-group (NSFW) configuration.
+ * Worldbook Entry Groups — Group editor and chat-bound route controls.
  */
 
 import { attachModalWindowControls, isDesktopAutoFocusAllowed, UNDO_SVG } from '../panel-window.js';
@@ -61,11 +59,9 @@ import {
     saveWorldbookEntryEdit,
     showToast,
 } from './host.js';
+import { removeNativeEntryGroups, revealNativeEntryGroup, syncNativeEntryGroups } from './native-view.js';
+import { attachGroupedSelectControl, closeGroupedSelectControl } from '../native-filter.js';
 
-const APP_VERSION = '0.5.1';
-const NATIVE_BTN_ID = 'weg-native-entry-btn';
-const WAND_ENTRY_ID = 'weg-wand-entry';
-const EXT_DRAWER_ID = 'weg-extension-settings';
 const MODAL_BACKDROP_ID = 'weg-modal-backdrop';
 const MINIMIZE_PILL_ID = 'weg-minimized-pill';
 const FLOATING_MENU_ID = 'weg-floating-menu';
@@ -100,7 +96,6 @@ const _undoStacks = new Map();
 let _submodal = null;
 let _windowInteractCleanup = null;
 let _floatingMenuCleanup = null;
-let _nativeBtnSizeObserver = null;
 let _modalKeydownCleanup = null;
 
 let _editorLoadCounter = 0;
@@ -110,7 +105,7 @@ const _openEditors = new Map();
 const _mountedEditorEls = new Map();
 let _visibleRenderLimit = INCREMENTAL_RENDER_STEP;
 let _freezePinnedOrder = false;
-let _sessionOrder = { groupIds: [], entryUids: [] };
+let _sessionGroupOrder = [];
 
 const BOOK_SCOPED_SUBMODAL_TYPES = new Set(['confirm-discard', 'group-form', 'batch-move', 'auto-detect']);
 
@@ -165,7 +160,8 @@ function esc(val) {
 
 function isNarrowViewport() {
     if (typeof window === 'undefined') return false;
-    return window.innerWidth <= 768 || Boolean(window.matchMedia?.('(pointer: coarse)')?.matches);
+    return window.__TAURITAVERN_HOST__?.kind === 'mobile'
+        || window.innerWidth <= 768 || Boolean(window.matchMedia?.('(pointer: coarse)')?.matches);
 }
 
 export function bindPanelCallbacks(callbacks) {
@@ -227,241 +223,9 @@ function popUndoSnapshot(worldName) {
     return stack.pop() || null;
 }
 
-// ============================================================================
-// Three Native Host Entry Points:
-// 1. Extensions Drawer (`#extensions_settings2`)
-// 2. Magic Wand Menu (`#extensionsMenu`)
-// 3. WorldInfo Toolbar (`#world_popup`)
-// ============================================================================
-
-function syncNativeEntryBtnSize(btn) {
-    if (!btn || !btn.isConnected || typeof document === 'undefined') return false;
-    const importBtn = document.getElementById('world_import_button');
-    const editorRow = btn.parentElement;
-    const ref = importBtn || editorRow?.querySelector?.('.menu_button:not(#weg-native-entry-btn)');
-    if (ref instanceof HTMLElement) {
-        const rect = ref.getBoundingClientRect();
-        if (rect.height >= 24 && rect.height <= 48) {
-            btn.style.height = `${Math.round(rect.height)}px`;
-            btn.style.minWidth = `${Math.round(rect.height)}px`;
-            btn.dataset.wegSizeSynced = '1';
-            return true;
-        }
-    }
-    return false;
-}
-
-function scheduleNativeEntryBtnSizeSync(btn) {
-    if (!btn || typeof document === 'undefined') return;
-    if (syncNativeEntryBtnSize(btn)) {
-        if (_nativeBtnSizeObserver) {
-            _nativeBtnSizeObserver.disconnect();
-            _nativeBtnSizeObserver = null;
-        }
-        return;
-    }
-
-    requestAnimationFrame(() => {
-        if (syncNativeEntryBtnSize(btn) && _nativeBtnSizeObserver) {
-            _nativeBtnSizeObserver.disconnect();
-            _nativeBtnSizeObserver = null;
-        }
-    });
-
-    const wiDrawer = document.getElementById('WorldInfo');
-    if (wiDrawer && typeof MutationObserver !== 'undefined') {
-        if (_nativeBtnSizeObserver) {
-            _nativeBtnSizeObserver.disconnect();
-            _nativeBtnSizeObserver = null;
-        }
-        _nativeBtnSizeObserver = new MutationObserver(() => {
-            if (!btn.isConnected) {
-                _nativeBtnSizeObserver?.disconnect();
-                _nativeBtnSizeObserver = null;
-                return;
-            }
-            if (!wiDrawer.classList.contains('closedDrawer')) {
-                requestAnimationFrame(() => {
-                    if (syncNativeEntryBtnSize(btn)) {
-                        _nativeBtnSizeObserver?.disconnect();
-                        _nativeBtnSizeObserver = null;
-                    }
-                });
-            }
-        });
-        _nativeBtnSizeObserver.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
-    }
-}
-
-export function ensureNativeShortcutButton() {
-    if (typeof document === 'undefined') return null;
-    let btn = document.getElementById(NATIVE_BTN_ID);
-    if (btn) {
-        if (btn.dataset.wegSizeSynced !== '1') {
-            scheduleNativeEntryBtnSizeSync(btn);
-        }
-        return btn;
-    }
-
-    const importBtn = document.getElementById('world_import_button');
-    const editorSelect = document.getElementById('world_editor_select');
-    const editorRow = importBtn?.parentElement || editorSelect?.closest?.('.flex-container') || editorSelect?.parentElement;
-    if (!editorRow) return null;
-
-    btn = document.createElement('div');
-    btn.id = NATIVE_BTN_ID;
-    btn.className = 'menu_button fa-solid fa-fw fa-folder-tree weg-native-entry-btn';
-    btn.tabIndex = 0;
-    btn.setAttribute('role', 'button');
-    btn.title = '世界书条目分组（整组开关 / 切档锁线 / 情境开关）';
-
-    if (importBtn && importBtn.parentElement === editorRow) {
-        editorRow.insertBefore(btn, importBtn);
-    } else {
-        editorRow.appendChild(btn);
-    }
-
-    scheduleNativeEntryBtnSizeSync(btn);
-
-    const onTrigger = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        void openEntryGroupsModal();
-    };
-
-    btn.addEventListener('click', onTrigger);
-    btn.addEventListener('keydown', (ev) => {
-        if (ev.key === 'Enter' || ev.key === ' ') {
-            onTrigger(ev);
-        }
-    });
-
-    return btn;
-}
-
-function ensureWandMenuEntry() {
-    if (typeof document === 'undefined') return null;
-    let item = document.getElementById(WAND_ENTRY_ID);
-    if (item) return item;
-
-    const menu = document.getElementById('extensionsMenu');
-    if (!menu) return null;
-
-    item = document.createElement('div');
-    item.id = WAND_ENTRY_ID;
-    item.className = 'list-group-item flex-container flexGap5 interactable';
-    item.tabIndex = 0;
-    item.title = '打开世界书条目分组（快速切换 IF 线或分组开关）';
-    item.innerHTML = `
-        <i class="fa-solid fa-folder-tree fa-fw extensionsMenuExtensionButton"></i>
-        <span>世界书条目分组</span>
-    `;
-    item.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        menu.style.display = 'none';
-        void openEntryGroupsModal();
-    });
-
-    menu.appendChild(item);
-    return item;
-}
-
-function ensureExtensionSettingsDrawer() {
-    if (typeof document === 'undefined') return null;
-    let box = document.getElementById(EXT_DRAWER_ID);
-    if (box) return box;
-
-    const container = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
-    if (!container) return null;
-
-    const settings = getSettings();
-    box = document.createElement('div');
-    box.id = EXT_DRAWER_ID;
-    box.className = 'inline-drawer';
-    box.innerHTML = `
-        <div class="inline-drawer-toggle inline-drawer-header">
-            <b>世界书条目分组 v${APP_VERSION}</b>
-            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-        </div>
-        <div class="inline-drawer-content">
-            <div class="weg-ext-drawer-body">
-                <div class="weg-ext-route-hint" id="weg-ext-route-hint"></div>
-                <div class="menu_button menu_button_icon weg-ext-open-btn" id="weg-ext-open-btn" tabindex="0" role="button">
-                    <i class="fa-solid fa-folder-tree"></i>
-                    <span>打开条目分组管理</span>
-                </div>
-                <label class="checkbox_label" for="weg-ext-auto-chat-cb">
-                    <input id="weg-ext-auto-chat-cb" type="checkbox" ${settings.autoSwitchOnChatChange !== false ? 'checked' : ''} />
-                    <span>切换聊天存档时自动恢复本档 IF 线</span>
-                </label>
-                <label class="checkbox_label" for="weg-ext-scene-auto-cb">
-                    <input id="weg-ext-scene-auto-cb" type="checkbox" ${settings.enableSceneAutoToggle !== false ? 'checked' : ''} />
-                    <span>按最近对话自动开关情境组（如 NSFW）</span>
-                </label>
-            </div>
-        </div>
-    `;
-
-    container.appendChild(box);
-
-    box.querySelector('#weg-ext-open-btn')?.addEventListener('click', () => {
-        void openEntryGroupsModal();
-    });
-    box.querySelector('#weg-ext-auto-chat-cb')?.addEventListener('change', (ev) => {
-        const cur = getSettings();
-        cur.autoSwitchOnChatChange = Boolean(ev.target?.checked);
-        notifySettingsChanged();
-    });
-    box.querySelector('#weg-ext-scene-auto-cb')?.addEventListener('change', (ev) => {
-        const cur = getSettings();
-        cur.enableSceneAutoToggle = Boolean(ev.target?.checked);
-        notifySettingsChanged();
-    });
-
-    return box;
-}
-
-export function ensureAllNativeEntryPoints() {
-    ensureNativeShortcutButton();
-    ensureWandMenuEntry();
-    ensureExtensionSettingsDrawer();
-}
-
 export function syncAllNativeEntryPoints() {
-    if (typeof document === 'undefined') return;
-    const settings = getSettings();
-
-    const wiBtn = document.getElementById(NATIVE_BTN_ID);
-    if (wiBtn) wiBtn.hidden = settings.showNativeEntryBtn === false;
-
-    const wandItem = document.getElementById(WAND_ENTRY_ID);
-    if (wandItem) wandItem.hidden = settings.showWandMenuEntry === false;
-
-    const drawer = document.getElementById(EXT_DRAWER_ID);
-    if (drawer) {
-        const autoChatCb = drawer.querySelector('#weg-ext-auto-chat-cb');
-        if (autoChatCb instanceof HTMLInputElement) {
-            autoChatCb.checked = settings.autoSwitchOnChatChange !== false;
-        }
-        const sceneCb = drawer.querySelector('#weg-ext-scene-auto-cb');
-        if (sceneCb instanceof HTMLInputElement) {
-            sceneCb.checked = settings.enableSceneAutoToggle !== false;
-        }
-        const hintEl = drawer.querySelector('#weg-ext-route-hint');
-        if (hintEl instanceof HTMLElement) {
-            const { saveCtx, profile } = getActiveChatBoundProfile();
-            if (!saveCtx) {
-                hintEl.textContent = '当前未打开聊天存档';
-            } else if (profile) {
-                hintEl.textContent = `当前存档路线：${profile.routeLabel}`;
-            } else {
-                hintEl.textContent = '当前存档暂未锁线（在面板开启任意 IF 线即可记住）';
-            }
-        }
-    }
+    syncNativeEntryGroups(openEntryGroupsModal);
 }
-
-export const syncNativeShortcutButton = syncAllNativeEntryPoints;
 
 export function isEntryGroupsModalOpen() {
     return _isOpen;
@@ -832,7 +596,7 @@ function ensureModalShell() {
                 <div class="weg-filter-bar">
                     <div class="weg-search-wrap">
                         <i class="fa-solid fa-magnifying-glass weg-search-icon" aria-hidden="true"></i>
-                        <input type="text" class="weg-input weg-search-input" id="weg-search-input" placeholder="搜索条目标题、触发词、正文或 UID…" autocomplete="off" spellcheck="false" />
+                        <input type="search" class="weg-input weg-search-input" id="weg-search-input" aria-label="搜索条目" placeholder="搜索条目标题、触发词、正文或 UID…" autocomplete="off" spellcheck="false" />
                         <button type="button" class="weg-clear-input-btn" id="weg-search-clear" title="清空搜索词" hidden>清空</button>
                     </div>
                 </div>
@@ -880,6 +644,7 @@ function minimizeEntryGroupsModal() {
     if (typeof document === 'undefined' || !_isOpen || _isMinimized) return;
     closeFloatingMenu();
     const backdrop = document.getElementById(MODAL_BACKDROP_ID);
+    closeGroupedSelectControl(backdrop?.querySelector('#weg-book-select'));
     const bodyEl = backdrop?.querySelector('#weg-body');
     _minimizedScrollTop = bodyEl instanceof HTMLElement ? bodyEl.scrollTop : 0;
     _isMinimized = true;
@@ -1042,7 +807,7 @@ function wireShellEvents(modal) {
     searchClearBtn?.addEventListener('click', () => {
         if (searchInput instanceof HTMLInputElement) {
             searchInput.value = '';
-            if (isDesktopAutoFocusAllowed()) searchInput.focus();
+            if (isDesktopAutoFocusAllowed()) searchInput.focus({ preventScroll: true });
         }
         _searchQuery = '';
         _visibleRenderLimit = INCREMENTAL_RENDER_STEP;
@@ -1193,6 +958,15 @@ function wireShellEvents(modal) {
             return;
         }
 
+        const batchCheck = target.closest('[data-weg-group-batch]');
+        if (batchCheck instanceof HTMLInputElement) {
+            ev.stopPropagation();
+            const groupId = batchCheck.dataset.wegGroupBatch;
+            const bookCfg = getBookConfigMutable(getSettings(), _currentBook);
+            toggleSelectedEntries(getGroupEntryUids(bookCfg, groupId));
+            return;
+        }
+
         const grpHeader = target.closest('[data-weg-group-header]');
         if (grpHeader instanceof HTMLElement) {
             const groupId = grpHeader.getAttribute('data-weg-group-header') || '';
@@ -1285,6 +1059,10 @@ function wireShellEvents(modal) {
         if (ev.isComposing || _isComposing || accState?.composing || ev.keyCode === 229) return;
 
         if (ev.key === 'Escape') {
+            if (closeGroupedSelectControl(bookSelect)) {
+                ev.stopPropagation();
+                return;
+            }
             if (_submodal) {
                 ev.stopPropagation();
                 closeSubmodal();
@@ -1392,12 +1170,13 @@ export function closeEntryGroupsModal() {
     _selectedUids.clear();
     _visibleRenderLimit = INCREMENTAL_RENDER_STEP;
     _freezePinnedOrder = false;
-    _sessionOrder = { groupIds: [], entryUids: [] };
+    _sessionGroupOrder = [];
     clearAllEditors();
 
     if (typeof document !== 'undefined') {
         const backdrop = document.getElementById(MODAL_BACKDROP_ID);
         if (backdrop) {
+            closeGroupedSelectControl(backdrop.querySelector('#weg-book-select'));
             backdrop.hidden = true;
             const bodyEl = backdrop.querySelector('#weg-body');
             if (bodyEl) bodyEl.innerHTML = '';
@@ -1420,16 +1199,10 @@ export function teardownPanels() {
         _modalKeydownCleanup();
         _modalKeydownCleanup = null;
     }
-    if (_nativeBtnSizeObserver) {
-        _nativeBtnSizeObserver.disconnect();
-        _nativeBtnSizeObserver = null;
-    }
     _undoStacks.clear();
     if (typeof document !== 'undefined') {
         document.getElementById(MODAL_BACKDROP_ID)?.remove();
-        document.getElementById(NATIVE_BTN_ID)?.remove();
-        document.getElementById(WAND_ENTRY_ID)?.remove();
-        document.getElementById(EXT_DRAWER_ID)?.remove();
+        removeNativeEntryGroups();
     }
 }
 
@@ -1439,6 +1212,7 @@ function toggleGroupCollapse(groupId) {
     const bookCfg = getBookConfigMutable(settings, _currentBook);
 
     if (groupId === SPECIAL_GROUP_UNGROUPED) {
+        if (!bookCfg.groups.length) return;
         bookCfg.ungroupedCollapsed = !bookCfg.ungroupedCollapsed;
     } else {
         const grp = bookCfg.groups.find((g) => g.id === groupId);
@@ -1453,6 +1227,7 @@ function toggleCollapseAllGroups() {
     if (!_currentBook) return;
     const settings = getSettings();
     const bookCfg = getBookConfigMutable(settings, _currentBook);
+    if (!bookCfg.groups.length) return;
     const allCollapsed = bookCfg.groups.every((g) => g.collapsed) && bookCfg.ungroupedCollapsed;
     const nextCollapsed = !allCollapsed;
     for (const g of bookCfg.groups) {
@@ -1584,14 +1359,22 @@ function toggleSelectAllVisibleEntries() {
         pinnedGroupSet: new Set(bookCfg.pinnedGroupIds),
         assignments: bookCfg.assignments,
     });
-    const visibleUids = [...matchedSet];
-    if (visibleUids.length === 0) return;
+    toggleSelectedEntries([...matchedSet]);
+}
 
-    const allSelected = visibleUids.every((u) => _selectedUids.has(u));
-    if (allSelected) {
-        for (const u of visibleUids) _selectedUids.delete(u);
-    } else {
-        for (const u of visibleUids) _selectedUids.add(u);
+function getGroupEntryUids(bookCfg, groupId) {
+    return _loadedSummaries
+        .filter((entry) => (bookCfg.assignments[entry.uid] || SPECIAL_GROUP_UNGROUPED) === groupId)
+        .map((entry) => entry.uid);
+}
+
+function toggleSelectedEntries(uids) {
+    if (!uids.length) return;
+    _batchMode = true;
+    const allSelected = uids.every((uid) => _selectedUids.has(uid));
+    for (const uid of uids) {
+        if (allSelected) _selectedUids.delete(uid);
+        else _selectedUids.add(uid);
     }
     renderBodyAndFooterOnly();
 }
@@ -1671,11 +1454,12 @@ function togglePinEntry(uid) {
     if (!res.changed) return;
 
     pushUndoSnapshot(_currentBook, snapshot);
-    _freezePinnedOrder = true;
     saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
 
     const backdrop = typeof document !== 'undefined' ? document.getElementById(MODAL_BACKDROP_ID) : null;
-    if (backdrop) {
+    if (_statusFilter === 'pinned') {
+        renderBodyAndFooterOnly();
+    } else if (backdrop) {
         const row = backdrop.querySelector(`.weg-entry-row[data-weg-entry-row="${cssEsc(uid)}"]`);
         if (row instanceof HTMLElement) {
             row.classList.toggle('is-pinned', res.pinned);
@@ -1695,21 +1479,14 @@ function openGroupActionsMenu(anchorEl, groupId) {
     const bookCfg = getBookConfigMutable(settings, _currentBook);
 
     if (groupId === SPECIAL_GROUP_UNGROUPED) {
-        const ungroupedUids = _loadedSummaries
-            .filter((e) => !bookCfg.assignments[e.uid])
-            .map((e) => e.uid);
+        const ungroupedUids = getGroupEntryUids(bookCfg, groupId);
 
         openFloatingMenu(anchorEl, [
             {
-                label: '勾选未分组条目批量移组',
+                label: ungroupedUids.length && ungroupedUids.every((uid) => _selectedUids.has(uid)) ? '取消勾选未分组条目' : '全选未分组条目',
                 icon: 'fa-check-double',
                 disabled: ungroupedUids.length === 0,
-                onClick: () => {
-                    _batchMode = true;
-                    _selectedUids.clear();
-                    for (const u of ungroupedUids) _selectedUids.add(u);
-                    renderBodyAndFooterOnly();
-                },
+                onClick: () => toggleSelectedEntries(ungroupedUids),
             },
             {
                 label: '自动识别未分组条目',
@@ -1782,15 +1559,10 @@ function openGroupActionsMenu(anchorEl, groupId) {
             },
         },
         {
-            label: '勾选本组条目批量移动',
+            label: groupUids.length && groupUids.every((uid) => _selectedUids.has(uid)) ? '取消勾选本组条目' : '全选本组条目',
             icon: 'fa-check-double',
             disabled: groupUids.length === 0,
-            onClick: () => {
-                _batchMode = true;
-                _selectedUids.clear();
-                for (const u of groupUids) _selectedUids.add(u);
-                renderBodyAndFooterOnly();
-            },
+            onClick: () => toggleSelectedEntries(groupUids),
         },
         {
             label: '复制开场白联动标签',
@@ -1875,16 +1647,9 @@ function openEntryActionsMenu(anchorEl, uid) {
         {
             label: '在酒馆原生编辑器中定位',
             icon: 'fa-location-crosshairs',
-            onClick: async () => {
-                const targetBook = _currentBook;
-                const shouldClose = settings.closeOnLocate !== false;
-                if (shouldClose) {
-                    closeEntryGroupsModal();
-                }
-                const ok = await locateEntryInNativeEditor(targetBook, entry.uid, entry.rawComment || entry.keys?.[0] || '');
-                if (!ok) {
-                    showToast('info', `已打开世界书「${targetBook}」，请查看条目 #${entry.uid}`);
-                }
+            onClick: () => {
+                if (_openEditors.get(uid)?.dirty) requestLocateFromAccordion(uid);
+                else executeLocateForEntry(_currentBook, entry.uid, entry.rawComment || entry.keys?.[0] || '');
             },
         },
         {
@@ -1937,6 +1702,7 @@ function renderModalContents() {
                 .map((n) => `<option value="${esc(n)}"${n === _currentBook ? ' selected' : ''}>${esc(n)}</option>`)
                 .join('');
         }
+        attachGroupedSelectControl(bookSelect, { collapseCharByDefault: false });
     }
 
     renderBodyAndFooterOnly();
@@ -2004,8 +1770,7 @@ function renderSaveBindingBar(saveBarEl) {
 
 function applySessionOrderToGroupedView(grouped) {
     if (!grouped || !Array.isArray(grouped.sections)) return grouped;
-    const groupOrderMap = new Map(_sessionOrder.groupIds.map((id, idx) => [id, idx]));
-    const entryOrderMap = new Map(_sessionOrder.entryUids.map((uid, idx) => [uid, idx]));
+    const groupOrderMap = new Map(_sessionGroupOrder.map((id, idx) => [id, idx]));
 
     const orderedSections = [...grouped.sections].sort((a, b) => {
         if (a.isUngrouped && !b.isUngrouped) return 1;
@@ -2014,15 +1779,6 @@ function applySessionOrderToGroupedView(grouped) {
         const ib = groupOrderMap.has(b.id) ? groupOrderMap.get(b.id) : Number.MAX_SAFE_INTEGER;
         return ia - ib;
     });
-
-    for (const sec of orderedSections) {
-        if (!Array.isArray(sec.entries) || sec.entries.length <= 1) continue;
-        sec.entries = [...sec.entries].sort((a, b) => {
-            const ia = entryOrderMap.has(a.uid) ? entryOrderMap.get(a.uid) : Number.MAX_SAFE_INTEGER;
-            const ib = entryOrderMap.has(b.uid) ? entryOrderMap.get(b.uid) : Number.MAX_SAFE_INTEGER;
-            return ia - ib;
-        });
-    }
 
     return { ...grouped, sections: orderedSections };
 }
@@ -2050,14 +1806,11 @@ function renderBodyAndFooterOnly() {
         }
     }
 
-    let grouped = buildGroupedView(_loadedSummaries, bookCfg, { sortPinned: !_freezePinnedOrder });
+    let grouped = buildGroupedView(_loadedSummaries, bookCfg, { sortPinned: !_freezePinnedOrder, sortPinnedEntries: false });
     if (_freezePinnedOrder) {
         grouped = applySessionOrderToGroupedView(grouped);
     } else {
-        _sessionOrder = {
-            groupIds: grouped.sections.map((s) => s.id),
-            entryUids: grouped.sections.flatMap((s) => s.entries.map((e) => e.uid)),
-        };
+        _sessionGroupOrder = grouped.sections.map((s) => s.id);
     }
 
     updateQuickFilterBar(backdrop, bookCfg);
@@ -2165,11 +1918,12 @@ function renderBodyAndFooterOnly() {
                 if (isFiltering && visibleEntries.length === 0) {
                     continue;
                 }
-                const effectiveCollapsed = isFiltering ? false : sec.collapsed;
+                const canCollapse = !sec.isUngrouped || bookCfg.groups.length > 0;
                 candidateSections.push({
                     ...sec,
                     visibleEntries,
-                    effectiveCollapsed,
+                    canCollapse,
+                    effectiveCollapsed: canCollapse && !isFiltering && sec.collapsed,
                 });
             }
 
@@ -2225,11 +1979,17 @@ function renderBodyAndFooterOnly() {
                         title="${sec.pinned ? '取消置顶分组' : '置顶分组'}"
                     ><i class="fa-${sec.pinned ? 'solid' : 'regular'} fa-star" aria-hidden="true"></i></button>`;
 
+                const selectedCount = _batchMode ? sec.entries.filter((entry) => _selectedUids.has(entry.uid)).length : 0;
+                const allSelected = selectedCount > 0 && selectedCount === sec.totalCount;
+                const batchCheckHtml = _batchMode ? `<input type="checkbox" class="weg-group-batch-check"
+                    data-weg-group-batch="${esc(sec.id)}" aria-label="${allSelected ? '取消全选' : '全选'} ${esc(sec.name)}的全部条目"
+                    ${allSelected ? 'checked' : ''} ${selectedCount && !allSelected ? 'data-weg-group-mixed' : ''} ${sec.totalCount === 0 ? 'disabled' : ''}>` : '';
                 sectionsHtml.push(`
                     <section class="weg-group-card${sec.mode === GROUP_MODES.IF_LINE && sec.enabledCount > 0 ? ' is-active-if' : ''}${sec.pinned ? ' is-pinned' : ''}" data-weg-group-card="${esc(sec.id)}">
-                        <div class="weg-group-header" data-weg-group-header="${esc(sec.id)}">
+                        <div class="weg-group-header"${sec.canCollapse ? ` data-weg-group-header="${esc(sec.id)}"` : ''}>
                             <div class="weg-group-header-main">
-                                <i class="fa-solid fa-chevron-${sec.effectiveCollapsed ? 'right' : 'down'} weg-chevron" aria-hidden="true"></i>
+                                ${batchCheckHtml}
+                                <i class="fa-solid ${sec.canCollapse ? `fa-chevron-${sec.effectiveCollapsed ? 'right' : 'down'}` : 'fa-list-ul'} weg-chevron" aria-hidden="true"></i>
                                 <span class="weg-group-name">${esc(sec.name)}</span>
                                 ${modeBadge}
                                 ${dirtyBadgeHtml}
@@ -2323,6 +2083,7 @@ function renderBodyAndFooterOnly() {
         }
     }
 
+    for (const check of bodyEl.querySelectorAll('[data-weg-group-mixed]')) check.indeterminate = true;
     bodyEl.scrollTop = prevScrollTop;
 
     const undoCount = getUndoCount(_currentBook);
@@ -2349,7 +2110,7 @@ function renderBodyAndFooterOnly() {
             <div class="weg-footer-status">${esc(statusText)}</div>
             <div class="weg-footer-buttons">
                 <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="enter-batch" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>多选移组</button>
-                <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="toggle-collapse-all" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>${allGroupsCollapsed ? '全部展开' : '全部折叠'}</button>
+                ${customGroupCount ? `<button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="toggle-collapse-all" ${_loadedSummaries.length === 0 ? 'disabled' : ''}>${allGroupsCollapsed ? '全部展开' : '全部折叠'}</button>` : ''}
                 <button type="button" class="weg-btn weg-btn-subtle" data-weg-footer-action="undo" ${undoCount === 0 ? 'disabled' : ''}>撤销${undoCount > 0 ? ` (${undoCount})` : ''}</button>
             </div>
         `;
@@ -2988,7 +2749,7 @@ function mountAccordionFormIntoPanel(panelEl, state, { hydrateFromDraft = false 
             if (inp instanceof HTMLInputElement) {
                 inp.value = '';
                 syncDraftFromDom();
-                if (isDesktopAutoFocusAllowed()) inp.focus();
+                if (isDesktopAutoFocusAllowed()) inp.focus({ preventScroll: true });
             }
         });
     });
@@ -3221,18 +2982,23 @@ function requestLocateFromAccordion(uid) {
 }
 
 function executeLocateForEntry(worldName, uid, hint) {
-    const shouldClose = getSettings().closeOnLocate !== false;
+    if (!worldName || !uid) return;
+    const narrow = isNarrowViewport();
+    const shouldClose = narrow || getSettings().closeOnLocate !== false;
     if (shouldClose) {
-        clearAllEditors();
+        const dirtyCount = getDirtyEditorUids().length;
+        if (dirtyCount > 0) {
+            _submodal = { type: 'confirm-discard', scope: 'modal', nextAction: 'locate', targetBook: worldName, uid, hint, dirtyCount };
+            renderSubmodalHost();
+            return;
+        }
         closeEntryGroupsModal();
     }
-    if (worldName && uid) {
-        void locateEntryInNativeEditor(worldName, uid, hint).then((ok) => {
-            if (!ok) {
-                showToast('info', `已打开世界书「${worldName}」，请查看条目 #${uid}`);
-            }
-        });
-    }
+    if (narrow) _callbacks?.onRevealNativeEditor?.();
+    revealNativeEntryGroup(worldName, uid);
+    void locateEntryInNativeEditor(worldName, uid, hint).then((ok) => {
+        if (!ok) showToast('info', `未能定位「${worldName}」的条目 #${uid}`);
+    });
 }
 
 function refreshEntryRowAndStatsInPlace(uid, disabledChanged) {
@@ -3450,6 +3216,7 @@ function renderSubmodalHost() {
         if (scope === 'modal') {
             const dirtyCount = _submodal.dirtyCount || getDirtyEditorUids().length;
             const targetBook = _submodal.targetBook || '';
+            const { uid, hint } = _submodal;
             host.innerHTML = `
                 <div class="weg-submodal-card weg-submodal-compact" role="dialog" aria-label="放弃未保存的修改">
                     <div class="weg-submodal-header">
@@ -3474,6 +3241,8 @@ function renderSubmodalHost() {
                     _batchMode = false;
                     _selectedUids.clear();
                     void loadBookIntoModal(targetBook, { silent: false, preserveSelection: false });
+                } else if (nextAction === 'locate') {
+                    executeLocateForEntry(targetBook, uid, hint);
                 } else {
                     closeEntryGroupsModal();
                 }
@@ -3753,8 +3522,8 @@ function renderSubmodalHost() {
 
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
-                            <div class="weg-setting-name">显示世界书面板快捷按钮</div>
-                            <div class="weg-setting-desc">在世界书编辑器工具栏显示图标入口</div>
+                            <div class="weg-setting-name">显示原生编辑器分组按钮</div>
+                            <div class="weg-setting-desc">在原生编辑器页码旁打开条目分组管理</div>
                         </div>
                         <button type="button" class="weg-switch${settings.showNativeEntryBtn !== false ? ' is-on' : ''}" id="weg-set-native-btn" role="switch" aria-checked="${settings.showNativeEntryBtn !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -3763,18 +3532,8 @@ function renderSubmodalHost() {
 
                     <div class="weg-setting-row">
                         <div class="weg-setting-text">
-                            <div class="weg-setting-name">显示左下角魔法棒菜单入口</div>
-                            <div class="weg-setting-desc">方便在聊天界面直接点开切换 18岁/30岁等阶段</div>
-                        </div>
-                        <button type="button" class="weg-switch${settings.showWandMenuEntry !== false ? ' is-on' : ''}" id="weg-set-wand-btn" role="switch" aria-checked="${settings.showWandMenuEntry !== false}">
-                            <span class="weg-switch-thumb"></span>
-                        </button>
-                    </div>
-
-                    <div class="weg-setting-row">
-                        <div class="weg-setting-text">
-                            <div class="weg-setting-name">定位条目时自动关闭本窗口</div>
-                            <div class="weg-setting-desc">跳转回酒馆原生编辑器时自动让出编辑视野</div>
+                            <div class="weg-setting-name">电脑宽屏定位时关闭本窗口</div>
+                            <div class="weg-setting-desc">手机与窄屏定位时自动让出原生编辑器</div>
                         </div>
                         <button type="button" class="weg-switch${settings.closeOnLocate !== false ? ' is-on' : ''}" id="weg-set-close-locate" role="switch" aria-checked="${settings.closeOnLocate !== false}">
                             <span class="weg-switch-thumb"></span>
@@ -3831,7 +3590,7 @@ function wireGroupFormSubmodal(host) {
     if (nameInput instanceof HTMLInputElement && !isNarrowViewport()) {
         requestAnimationFrame(() => {
             if (!nameInput.isConnected || !isDesktopAutoFocusAllowed()) return;
-            nameInput.focus();
+            nameInput.focus({ preventScroll: true });
             nameInput.select();
         });
     }
@@ -3839,14 +3598,14 @@ function wireGroupFormSubmodal(host) {
     clearBtn?.addEventListener('click', () => {
         if (nameInput instanceof HTMLInputElement) {
             nameInput.value = '';
-            if (isDesktopAutoFocusAllowed()) nameInput.focus();
+            if (isDesktopAutoFocusAllowed()) nameInput.focus({ preventScroll: true });
         }
     });
 
     sceneKwClear?.addEventListener('click', () => {
         if (sceneKwInput instanceof HTMLInputElement) {
             sceneKwInput.value = '';
-            if (isDesktopAutoFocusAllowed()) sceneKwInput.focus();
+            if (isDesktopAutoFocusAllowed()) sceneKwInput.focus({ preventScroll: true });
         }
     });
 
@@ -3959,8 +3718,7 @@ function wireBatchMoveSubmodal(host) {
         }
 
         saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
-        _batchMode = false;
-        _selectedUids.clear();
+        for (const uid of uids) _selectedUids.delete(uid);
         closeSubmodal();
         renderModalContents();
         showToast('success', `已将 ${uids.length} 个条目移入「${targetLabel}」`);
@@ -3981,7 +3739,7 @@ function wireBatchMoveSubmodal(host) {
     quickClear?.addEventListener('click', () => {
         if (quickInput instanceof HTMLInputElement) {
             quickInput.value = '';
-            if (isDesktopAutoFocusAllowed()) quickInput.focus();
+            if (isDesktopAutoFocusAllowed()) quickInput.focus({ preventScroll: true });
         }
     });
 
@@ -4010,8 +3768,7 @@ function wireBatchMoveSubmodal(host) {
             bookCfg.assignments[uid] = group.id;
         }
         saveBookConfigWithCleanEmpty(settings, _currentBook, bookCfg);
-        _batchMode = false;
-        _selectedUids.clear();
+        for (const uid of uids) _selectedUids.delete(uid);
         closeSubmodal();
         renderModalContents();
         showToast('success', `已新建分组「${name}」并移入 ${uids.length} 个条目`);
@@ -4113,7 +3870,6 @@ function wireSettingsSubmodal(host) {
     const paletteSel = host.querySelector('#weg-set-palette');
     const modeSel = host.querySelector('#weg-set-colormode');
     const nativeBtnSwitch = host.querySelector('#weg-set-native-btn');
-    const wandBtnSwitch = host.querySelector('#weg-set-wand-btn');
     const closeLocateSwitch = host.querySelector('#weg-set-close-locate');
     const clearBookBtn = host.querySelector('#weg-set-clear-book');
 
@@ -4146,7 +3902,6 @@ function wireSettingsSubmodal(host) {
     bindSwitch(autoChatSwitch, 'autoSwitchOnChatChange');
     bindSwitch(sceneAutoSwitch, 'enableSceneAutoToggle');
     bindSwitch(nativeBtnSwitch, 'showNativeEntryBtn');
-    bindSwitch(wandBtnSwitch, 'showWandMenuEntry');
     bindSwitch(closeLocateSwitch, 'closeOnLocate');
 
     clearBookBtn?.addEventListener('click', () => {

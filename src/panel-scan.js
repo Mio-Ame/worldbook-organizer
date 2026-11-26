@@ -1,6 +1,7 @@
 /** Character scan, worldbook coverage and embedded-book import. */
 
 import { openCharacterBindingModal } from './panel-binding.js';
+import { findScrollableContent, scrollContentToItem } from './content-scroll.js';
 
 import {
     _callbacks,
@@ -95,7 +96,7 @@ function renderWorldbookDiff(drawer, diff, leftLabel, rightLabel) {
         drawer.hidden = true;
         drawer.removeAttribute('data-drawer-key');
     });
-    requestAnimationFrame(() => { try { drawer.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch { /* ignore */ } });
+    requestAnimationFrame(() => scrollContentToItem(findScrollableContent(drawer, drawer.closest('.wbo-modal')), drawer));
 }
 
 /**
@@ -547,8 +548,13 @@ function openScanAndImportModal({ initialTab = '' } = {}) {
 
         modal.querySelector('[data-cov-open-unbound]')?.addEventListener('click', () => {
             const tab = modal.querySelector('[data-cov-tab="unbound"]');
-            tab?.click();
-            tab?.scrollIntoView?.({ block: 'nearest' });
+            if (!tab) return;
+            tab.click();
+            const rail = tab.parentElement;
+            const chip = tab.getBoundingClientRect();
+            const railRect = rail.getBoundingClientRect();
+            if (chip.left < railRect.left) rail.scrollLeft += chip.left - railRect.left;
+            else if (chip.right > railRect.right) rail.scrollLeft += chip.right - railRect.right;
         });
 
         modal.querySelector('#wbo-scan-close-btn')?.addEventListener('click', () => {

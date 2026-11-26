@@ -3,8 +3,7 @@
  *
  * Lifecycle guarantees:
  * - Zero polling, zero background worldbook scanning, zero multi-floor chat history scanning.
- * - Mounts in 3 native places: Extensions Drawer (`#extensions_settings2`), Magic Wand Menu (`#extensionsMenu`),
- *   and WorldInfo Toolbar (`#world_popup`).
+ * - Enhances the native World Info pagination and visible entry rows.
  * - O(1) metadata-based per-chat route restoration on `CHAT_CHANGED` + pre-WorldInfo scene auto-toggle
  *   on `GENERATION_AFTER_COMMANDS`.
  */
@@ -29,7 +28,6 @@ import {
 } from './host.js';
 import {
     bindPanelCallbacks,
-    ensureAllNativeEntryPoints,
     getCurrentModalWorldName,
     handleExternalEntriesUpdated,
     handleExternalWorldbookDeleted,
@@ -48,6 +46,7 @@ let _mountJob = null;
 let _stylesheet = null;
 const _registeredSlashParsers = new WeakSet();
 let _nativeMountObserver = null;
+let _nativeMountTarget = null;
 let _greetingSyncTimer = null;
 let _chatSwitchSyncTimer = null;
 let _externalFollowTimer = null;
@@ -114,16 +113,26 @@ function scheduleChatSaveRouteSync(reason, delayMs) {
     }, delayMs);
 }
 
-function startToolbarMountObserver() {
-    if (_nativeMountObserver || typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
-    const target = document.getElementById('WorldInfo') || document.getElementById('world_popup');
+function startNativeEditorObserver(scheduleSync) {
+    if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return;
+    const popup = document.getElementById('world_popup');
+    const drawer = document.getElementById('WorldInfo');
+    const target = drawer?.contains(popup) ? drawer : popup || drawer;
+    if (_nativeMountTarget === target) return;
+    _nativeMountObserver?.disconnect();
+    _nativeMountObserver = null;
+    _nativeMountTarget = target;
     if (!target) return;
 
-    _nativeMountObserver = new MutationObserver(() => {
-        if (!document.getElementById('weg-native-entry-btn')) {
-            ensureAllNativeEntryPoints();
-            syncAllNativeEntryPoints();
-        }
+    const nativeParts = '#world_popup, #world_info_pagination, #world_popup_entries_list, .world_entry[uid]';
+    _nativeMountObserver = new MutationObserver((records) => {
+        const changed = records.some((record) => {
+            if (record.target instanceof Element && record.target.closest('.world_entry[uid]')) return false;
+            return [...record.addedNodes, ...record.removedNodes].some((node) =>
+                node instanceof Element && (node.matches(nativeParts) || node.querySelector(nativeParts)),
+            );
+        });
+        if (changed) scheduleSync();
     });
     _nativeMountObserver.observe(target, { childList: true, subtree: true });
 }
@@ -176,7 +185,7 @@ function registerSlashCommand(ctx) {
     }
 }
 
-export async function startEntryGrouping(styleVersion) {
+export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } = {}) {
     if (_initialized) return;
     const ctx = getHostContext();
     if (!ctx || typeof document === 'undefined') return;
@@ -196,15 +205,14 @@ export async function startEntryGrouping(styleVersion) {
     }
 
     bindPanelCallbacks({
+        onRevealNativeEditor,
         onSettingsChanged: () => {
             saveSettings();
             syncAllNativeEntryPoints();
         },
     });
 
-    ensureAllNativeEntryPoints();
     syncAllNativeEntryPoints();
-    startToolbarMountObserver();
 
     if (typeof window !== 'undefined') {
         if (!_onWboRenamed) {
@@ -293,8 +301,8 @@ export async function startEntryGrouping(styleVersion) {
         const run = () => {
             _mountJob = null;
             if (!_initialized) return;
-            ensureAllNativeEntryPoints();
             syncAllNativeEntryPoints();
+            startNativeEditorObserver(syncEntryPointsIdle);
         };
         if (typeof globalThis.requestIdleCallback === 'function') {
             const id = globalThis.requestIdleCallback(run, { timeout: 1000 });
@@ -304,6 +312,7 @@ export async function startEntryGrouping(styleVersion) {
             _mountJob = () => clearTimeout(id);
         }
     };
+    startNativeEditorObserver(syncEntryPointsIdle);
 
     trackHostEvent(eventSource, et.APP_READY, syncEntryPointsIdle);
     trackHostEvent(eventSource, et.EXTENSION_SETTINGS_LOADED, syncEntryPointsIdle);
@@ -389,6 +398,7 @@ export function stopEntryGrouping() {
         _nativeMountObserver.disconnect();
         _nativeMountObserver = null;
     }
+    _nativeMountTarget = null;
 
     if (typeof window !== 'undefined') {
         if (_onWboRenamed) {

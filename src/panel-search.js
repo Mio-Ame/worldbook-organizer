@@ -205,7 +205,7 @@ async function runManagerInlineEntrySearch() {
     if (!q) {
         showToast('info', '请先在搜索框输入关键词');
         const input = document.getElementById('wbo-mgr-search-input');
-        if (input instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) input.focus();
+        if (input instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) input.focus({ preventScroll: true });
         return;
     }
 
@@ -674,7 +674,7 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
         const q = queryInput instanceof HTMLInputElement ? queryInput.value.trim() : '';
         if (!q) {
             showToast('info', '请先输入要搜索的关键词');
-            if (queryInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) queryInput.focus();
+            if (queryInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) queryInput.focus({ preventScroll: true });
             return;
         }
         const searchTitleAndKeys = Boolean(inTitleCb instanceof HTMLInputElement ? inTitleCb.checked : true);
@@ -829,7 +829,9 @@ function openEntrySearchModal(initialQuery = '', { autoRun = false } = {}) {
     if (autoRun && String(initialQuery).trim()) {
         setTimeout(() => { void runSearch(); }, 30);
     } else if (queryInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
-        setTimeout(() => queryInput.focus(), 20);
+        setTimeout(() => {
+            if (queryInput.isConnected && isDesktopAutoFocusAllowed()) queryInput.focus({ preventScroll: true });
+        }, 20);
     }
 }
 

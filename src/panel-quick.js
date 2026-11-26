@@ -645,6 +645,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
 
     const applyEditFilters = () => {
         if (!pickListEl) return;
+        pickListEl.classList.toggle('wbo-cmb-single-group', !['__nonchar__', '__selected__', '__all__'].includes(activeEditPill));
         const q = filterInput instanceof HTMLInputElement ? filterInput.value.trim().toLowerCase() : '';
         let visibleCount = 0;
 
@@ -756,7 +757,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                                 <input type="checkbox" class="wbo-cmb-book-check" value="${esc(b.realName)}"${checked}>
                                 <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
                                 ${isLiveGlobal ? '<span class="wbo-tag is-on-tag">已全局</span>' : ''}
-                                <span class="wbo-tag">${esc(b.groupName)}</span>
+                                <span class="wbo-tag" data-cmb-group-badge>${esc(b.groupName)}</span>
                             </label>
                         `;
                     }).join('');

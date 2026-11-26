@@ -15,6 +15,7 @@ import {
     SPECIAL_GROUPS,
 } from './core.js';
 import { showToast } from './host.js';
+import { hasCompatibleDropdownScript } from './native-filter.js';
 import { openImportRulesModal } from './panel-import-rules.js';
 
 // ==================== Settings Modal & Extension Settings Panel ====================
@@ -382,6 +383,10 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="adaptMoveEntryPopup">
                         <span>移动/复制条目目标世界书弹窗</span>
                     </label>
+                    ${hasCompatibleDropdownScript() ? `<label class="wbo-check-line">
+                        <input type="checkbox" data-setting="adaptEnhancedPresetGroups">
+                        <span>为兼容的预设下拉框添加分组切换</span>
+                    </label>` : ''}
                 </div>
             </div>
             </div>

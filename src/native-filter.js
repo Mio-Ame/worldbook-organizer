@@ -33,6 +33,8 @@ import {
     togglePinnedBook,
 } from './core.js';
 import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
+import { revealNativeEntryGroup } from './entry-groups/native-view.js';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -282,6 +284,51 @@ const ENHANCED_POPOVER_SELECTORS = Object.freeze({
     groupLabelSelector: ':scope > .gr-group-label',
     searchInputSelector: 'input[type="text"], input[type="search"], .gr-search-input',
 });
+let sharedPopoverOpening = null;
+let enhancedStyleObserver = null;
+let enhancedGlobalRecoveryTimer = null;
+let enhancedGlobalClickHandler = null;
+let removePluginSelectIsolation = null;
+const ENHANCED_GLOBAL_DISPLAY = '#WIMultiSelector .gr-select2-display[data-gr-select-id="world_info"]';
+const ENHANCED_STYLE_SELECTOR = 'style[data-gr-dropdown-style]';
+
+export function hasCompatibleDropdownScript() {
+    if (typeof document === 'undefined') return false;
+    try {
+        const scripts = globalThis.TavernHelper?.getScriptTrees?.({ type: 'global' });
+        if (Array.isArray(scripts)) {
+            return scripts.flatMap((item) => item?.type === 'folder' ? (item.scripts || []) : [item]).some((item) => {
+                const code = item?.content;
+                return typeof code === 'string'
+                    && code.includes('gr-global-dropdown-container')
+                    && code.includes('gr-select2-display')
+                    && code.includes('data-gr-dropdown-style');
+            });
+        }
+    } catch { /* Older hosts can only detect the running script. */ }
+    return Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR));
+}
+
+function hasOpenEnhancedGlobalPicker() {
+    const popover = document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId);
+    return popover && !popover.hidden && popover.style.display !== 'none' && detectEnhancedPopoverRole(popover) === 'global';
+}
+
+function restoreGlobalPickerFromStaleDisplay(display, { open = false } = {}) {
+    const select = document.getElementById('world_info');
+    if (!display?.isConnected || !(select instanceof HTMLSelectElement)) return;
+    const $select = globalThis.jQuery ? globalThis.jQuery(select) : null;
+    const select2 = $select?.data('select2');
+    const nativeDisplay = select2?.$container?.[0] || select.parentElement?.querySelector(':scope > .select2-container');
+    display.remove();
+    if (select.style.display === 'none') select.style.removeProperty('display');
+    if (nativeDisplay?.style.display === 'none') nativeDisplay.style.removeProperty('display');
+    if (!open) return;
+    if (select2) $select.select2('open');
+    else {
+        try { select.showPicker?.(); } catch { /* The restored native control is available for the next tap. */ }
+    }
+}
 
 const WORLD_INFO_SORT_OPTION_FALLBACKS = new Set([
     'Search', 'Priority', 'Custom', 'Title A-Z', 'Title Z-A',
@@ -291,6 +338,8 @@ const WORLD_INFO_SORT_OPTION_FALLBACKS = new Set([
 ]);
 
 function getEnhancedPopoverOptionText(el) {
+    if (el.dataset?.wboEnhancedWorld) return el.dataset.wboEnhancedWorld;
+    if (el.dataset?.wboOriginalPlaceholder) return el.dataset.wboOriginalPlaceholder;
     let txt = '';
     for (const node of el.childNodes) {
         if (node.nodeType === 3) txt += node.textContent || '';
@@ -307,11 +356,99 @@ function getEnhancedPopoverOptionText(el) {
     return txt.trim() || (el.textContent || '').trim();
 }
 
+function getEnhancedOptionNodes(container) {
+    return [...container.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)].filter((row) =>
+        !['gr-theme-toggle', 'gr-filter-toggle', 'gr-create-new-option'].some((cls) => row.classList.contains(cls)),
+    );
+}
+
+function mountEnhancedDropdownBar(optionsHost, bar, searchInput) {
+    const scrollable = optionsHost.parentElement;
+    if (!scrollable?.classList.contains('gr-options')) return false;
+    let sticky = scrollable.querySelector(':scope > .wbo-enhanced-sticky');
+    if (!sticky) {
+        sticky = document.createElement('div');
+        sticky.className = 'wbo-enhanced-sticky';
+        sticky.setAttribute('data-wbo-ui', '1');
+        scrollable.insertBefore(sticky, optionsHost);
+        const searchBox = searchInput?.closest('.gr-search-box') || searchInput;
+        if (searchBox?.parentElement === scrollable) sticky.appendChild(searchBox);
+    }
+    sticky.appendChild(bar);
+    return true;
+}
+
+function enhancePresetDropdownGroups(container) {
+    if (container.querySelector('.wbo-preset-filter-bar')) return;
+    const optionsHost = container.querySelector('.gr-options-container');
+    if (!optionsHost) return;
+    const sections = [];
+    const options = new Set(getEnhancedOptionNodes(optionsHost));
+    let section = { id: 'other', name: '其他', rows: [] };
+    sections.push(section);
+    for (const child of optionsHost.children) {
+        if (child.classList.contains(ENHANCED_POPOVER_SELECTORS.groupLabelClass)) {
+            section = { id: String(sections.length), name: child.textContent.trim(), heading: child, rows: [] };
+            sections.push(section);
+        } else if (options.has(child)) {
+            section.rows.push(child);
+        }
+    }
+    const groups = sections.filter((item) => item.name && item.rows.length);
+    if (groups.length < 2) return;
+    const { barEl } = createDropdownFilterBar(groups.map(({ id, name }) => ({ id, label: name })), SPECIAL_GROUPS.ALL, 'wbo-preset-filter-bar');
+    bindDrawerSafeBubbleGuard(barEl);
+    barEl.addEventListener('mousedown', (event) => event.preventDefault());
+    barEl.addEventListener('click', (event) => {
+        const button = event.target instanceof Element ? event.target.closest('[data-wbo-pill]') : null;
+        if (!button) return;
+        const id = button.dataset.wboPill;
+        for (const item of groups) {
+            const hide = id !== SPECIAL_GROUPS.ALL && item.id !== id;
+            item.heading?.classList.toggle('wbo-preset-group-hidden', hide);
+            for (const row of item.rows) row.classList.toggle('wbo-preset-group-hidden', hide);
+        }
+        for (const pill of barEl.querySelectorAll('[data-wbo-pill]')) {
+            pill.classList.toggle('is-active', pill === button);
+            pill.setAttribute('aria-pressed', String(pill === button));
+        }
+        findScrollableListEl(optionsHost, container).scrollTop = 0;
+    });
+    if (!mountEnhancedDropdownBar(optionsHost, barEl, container.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector))) {
+        optionsHost.before(barEl);
+    }
+}
+
+function clearEnhancedPresetGroups(container) {
+    if (!container?.querySelector('.wbo-preset-filter-bar')) return;
+    container.querySelectorAll('.wbo-preset-filter-bar').forEach((el) => el.remove());
+    container.querySelectorAll('.wbo-preset-group-hidden').forEach((el) => el.classList.remove('wbo-preset-group-hidden'));
+    container.querySelectorAll('.wbo-enhanced-sticky').forEach((el) => el.replaceWith(...el.children));
+}
+
+function matchesSharedSelectOptions(selectId, rows) {
+    const select = document.getElementById(selectId);
+    if (!select?.options.length || rows.length > select.options.length) return false;
+    const labels = new Map([...select.options].map((option) => [option.value, option.textContent.trim()]));
+    return rows.length > 0 && rows.every((row) => labels.get(row.dataset.value) === getEnhancedPopoverOptionText(row));
+}
+
 function detectEnhancedPopoverRole(containerEl) {
     if (!(containerEl instanceof HTMLElement)) return null;
-    if (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || containerEl.closest('#WIMultiSelector')) return 'global';
+    const usesSharedContainer = containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId
+        && Boolean(containerEl.querySelector('.gr-options-container'));
+    if (containerEl.closest('#WIMultiSelector') || (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId && !usesSharedContainer)) return 'global';
+    if (usesSharedContainer) {
+        if (!containerEl.dataset.wboSourceRole && sharedPopoverOpening && Date.now() - sharedPopoverOpening.at < 750
+            && containerEl !== sharedPopoverOpening.previous) {
+            containerEl.dataset.wboSourceRole = sharedPopoverOpening.role;
+            sharedPopoverOpening = null;
+        }
+        const source = containerEl.dataset.wboSourceRole;
+        if (source) return source === 'editor' || source === 'global' ? source : null;
+    }
 
-    const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+    const optionNodes = getEnhancedOptionNodes(containerEl);
     if (optionNodes.length === 0) {
         delete containerEl.dataset.wboPopoverRole;
         return null;
@@ -360,6 +497,7 @@ function detectEnhancedPopoverRole(containerEl) {
     }
     if (sortMatchCount >= 2 && sortMatchCount / nonEmptyCount >= 0.45 && sortMatchCount >= matchedWorldCount) {
         delete containerEl.dataset.wboPopoverRole;
+        if (usesSharedContainer) containerEl.dataset.wboSourceRole = 'sort';
         return null;
     }
     if (knownWorldNames.size === 0) {
@@ -373,7 +511,65 @@ function detectEnhancedPopoverRole(containerEl) {
         delete containerEl.dataset.wboPopoverRole;
         return null;
     }
+    if (usesSharedContainer) {
+        const rows = optionNodes.filter((row) => row.dataset.value !== '' && !getEnhancedPopoverOptionText(row).startsWith('---'));
+        const matchesEditor = matchesSharedSelectOptions('world_editor_select', rows);
+        const matchesGlobal = matchesSharedSelectOptions('world_info', rows);
+        if (matchesGlobal && (!matchesEditor || rows.some((row) => row.querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)')))) {
+            containerEl.dataset.wboSourceRole = 'global';
+            return 'global';
+        }
+        if (!matchesEditor) return null;
+    }
     return 'editor';
+}
+
+function syncEnhancedPinButton(button, pinned) {
+    button.classList.toggle('is-pinned', pinned);
+    button.setAttribute('aria-pressed', String(pinned));
+    button.title = pinned ? '取消收藏' : '收藏世界书';
+    button.setAttribute('aria-label', button.title);
+    if (!button.querySelector('svg')) button.textContent = pinned ? '★' : '☆';
+}
+
+function adoptEnhancedPinIcon(row, button) {
+    const original = row.querySelector('.gr-option-pin:not(.wbo-gr-pin-btn)');
+    if (!original) return;
+    const icon = original.querySelector('svg');
+    const path = icon?.querySelector('path')?.getAttribute('d');
+    if (path && !button.querySelector('svg')) {
+        const ns = 'http://www.w3.org/2000/svg';
+        const glyph = document.createElementNS(ns, 'svg');
+        glyph.setAttribute('viewBox', icon.getAttribute('viewBox') || '0 0 24 24');
+        glyph.setAttribute('width', '13');
+        glyph.setAttribute('height', '13');
+        glyph.setAttribute('fill', 'currentColor');
+        glyph.setAttribute('aria-hidden', 'true');
+        const stroke = document.createElementNS(ns, 'path');
+        stroke.setAttribute('d', path);
+        glyph.appendChild(stroke);
+        button.replaceChildren(glyph);
+    }
+    original.remove();
+}
+
+function syncEnhancedEditorOptionTitle(row, meta) {
+    if (!meta?.isCharBound && !meta?.isInCharGroup) return;
+    row.dataset.wboEnhancedWorld = meta.realName;
+    let label = row.querySelector(':scope > .wbo-gr-world-title');
+    if (!label) {
+        for (const node of [...row.childNodes]) if (node.nodeType === 3) node.remove();
+        label = document.createElement('span');
+        label.className = 'wbo-gr-world-title';
+        row.prepend(label);
+    }
+    label.textContent = meta.primaryTitle || meta.realName;
+    label.title = meta.realName;
+    if (meta.subtitle) {
+        const subtitle = document.createElement('small');
+        subtitle.textContent = meta.subtitle;
+        label.appendChild(subtitle);
+    }
 }
 
 /**
@@ -405,6 +601,13 @@ function findOwningSelectSibling(el) {
     return null;
 }
 
+function isNativeSortTriggerTarget(target) {
+    if (target.closest('#world_info_sort_order, [data-gr-select-id="world_info_sort_order"], #select2-world_info_sort_order-container')) return true;
+    const wrapper = target.closest('#world_popup .gr-select2-display, #world_popup .select2-container');
+    return Boolean(wrapper && (wrapper.querySelector('#select2-world_info_sort_order-container')
+        || findOwningSelectSibling(wrapper)?.id === 'world_info_sort_order'));
+}
+
 /**
  * Determine whether a click/mousedown target belongs specifically to `#world_editor_select`
  * (and NOT `#world_info_sort_order` or entry-level `<select>`s inside `#world_popup_entries_list`).
@@ -418,7 +621,7 @@ function isEditorSelectTriggerTarget(t) {
 
     const disp = t.closest('#world_popup .gr-select2-display');
     if (disp) {
-        const selAttr = disp.getAttribute('data-select-id') || disp.getAttribute('data-for') || disp.dataset?.selectId || disp.dataset?.for || '';
+        const selAttr = disp.dataset.grSelectId || disp.getAttribute('data-select-id') || disp.getAttribute('data-for') || '';
         if (selAttr === 'world_info_sort_order') return false;
         if (selAttr === 'world_editor_select') return true;
         const ownerSel = findOwningSelectSibling(disp);
@@ -1032,7 +1235,9 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     if (hasSelect2 && $select && selectEl.dataset.wboS2Ready !== '1') {
         const patched = patchExistingSelect2InPlace($select, {
             matcher: globalSelect2Matcher,
-            templateResult: (state) => renderSelect2OptionResult(state, { showGroupPill: true }),
+            templateResult: (state) => renderSelect2OptionResult(state, {
+                showGroupPill: _activeGlobalPillId === SPECIAL_GROUPS.ALL || _activeGlobalPillId === SPECIAL_GROUPS.PINNED,
+            }),
         });
         if (patched) {
             selectEl.dataset.wboS2Ready = '1';
@@ -1970,9 +2175,7 @@ function openMobileEditorPickerSheet() {
             renderList();
             if (willCollapse) {
                 const nextBtn = listEl.querySelector(`[data-mp-toggle="${CSS.escape(gid)}"]`);
-                if (nextBtn instanceof HTMLElement) {
-                    nextBtn.scrollIntoView({ block: 'nearest' });
-                }
+                if (nextBtn) scrollContentToItem(listEl, nextBtn);
             } else {
                 listEl.scrollTop = prevTop;
             }
@@ -2242,11 +2445,8 @@ export function openWorldInNativeEditor(realName, { focusUid = null } = {}) {
             const list = document.getElementById('world_popup_entries_list');
             const entryEl = list?.querySelector(`.world_entry[uid="${CSS.escape(uidStr)}"]`);
             if (entryEl instanceof HTMLElement) {
-                try {
-                    entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                } catch {
-                    entryEl.scrollIntoView();
-                }
+                revealNativeEntryGroup(clean, uidStr);
+                scrollNativeWorldEntry(entryEl);
                 entryEl.classList.add('wbo-entry-locate-flash');
                 setTimeout(() => entryEl.classList.remove('wbo-entry-locate-flash'), 1800);
                 return;
@@ -2623,7 +2823,13 @@ function buildPopupGroupedSections(
  *   placeholder?: string,
  * }} [opts]
  */
-function attachGroupedSelectControl(
+const groupedSelectControls = new WeakMap();
+
+export function closeGroupedSelectControl(selectEl) {
+    return groupedSelectControls.get(selectEl)?.closePopover() ?? false;
+}
+
+export function attachGroupedSelectControl(
     selectEl,
     {
         multiple = false,
@@ -2633,19 +2839,28 @@ function attachGroupedSelectControl(
         placeholder = '--- 未选择 ---',
     } = {},
 ) {
-    if (!selectEl || selectEl.dataset.wboGroupedControl === '1') return;
+    if (!selectEl) return;
+    const existing = groupedSelectControls.get(selectEl);
+    if (existing) {
+        existing.syncTriggerText();
+        return;
+    }
     if (!_latestClassification || !_latestSettings) return;
     selectEl.dataset.wboGroupedControl = '1';
+    const panelRoot = selectEl.closest('.weg-modal-backdrop');
 
     const trigger = document.createElement('button');
     trigger.type = 'button';
     trigger.className = 'wbo-mobile-editor-trigger wbo-popup-select-trigger';
+    trigger.setAttribute('aria-expanded', 'false');
+    if (selectEl.getAttribute('aria-label')) trigger.setAttribute('aria-label', selectEl.getAttribute('aria-label'));
     trigger.innerHTML = `
         <span class="wbo-mobile-trigger-text"></span>
         <i class="fa-solid fa-chevron-down wbo-mobile-trigger-chev"></i>
     `;
 
     const syncTriggerText = () => {
+        trigger.disabled = selectEl.disabled;
         const textSpan = trigger.querySelector('.wbo-mobile-trigger-text');
         if (!textSpan) return;
         const selectedOpts = Array.from(selectEl.selectedOptions || []).filter((o) => o.value !== '');
@@ -2675,6 +2890,7 @@ function attachGroupedSelectControl(
     let openOverlay = null;
     let removeGlobalDismiss = null;
     const closePopover = () => {
+        if (!openOverlay) return false;
         _openCustomPickerClosers.delete(popoverCloserEntry);
         if (removeGlobalDismiss) {
             removeGlobalDismiss();
@@ -2685,7 +2901,9 @@ function attachGroupedSelectControl(
             openOverlay = null;
         }
         trigger.classList.remove('is-open');
+        trigger.setAttribute('aria-expanded', 'false');
         flushPinDirtyOnClose();
+        return true;
     };
     const popoverCloserEntry = () => closePopover();
 
@@ -2705,7 +2923,7 @@ function attachGroupedSelectControl(
         let searchQuery = '';
 
         // CRITICAL: mount inside `<dialog>` when inside SillyTavern's native Popup so we stay in top-layer!
-        const mountRoot = selectEl.closest('dialog') || document.body;
+        const mountRoot = panelRoot || selectEl.closest('dialog') || document.body;
 
         const overlay = document.createElement('div');
         overlay.className = 'wbo-mp-backdrop';
@@ -2724,7 +2942,7 @@ function attachGroupedSelectControl(
                     <i class="fa-solid fa-magnifying-glass"></i>
                     <input type="search" class="wbo-search-input" id="wbo-pop-search" placeholder="搜索世界书 / 角色名..." autocomplete="off" spellcheck="false">
                 </div>
-                <button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${getSelectedValSet().size > 0 ? '' : ' hidden'}>清除</button>
+                ${panelRoot ? '' : `<button type="button" class="wbo-mp-clear-btn" id="wbo-pop-clear"${getSelectedValSet().size > 0 ? '' : ' hidden'}>清除</button>`}
             </div>
             <div class="wbo-mp-pills-row"${sections.length < 2 ? ' hidden' : ''}>
                 <div class="wbo-pills-rail">
@@ -2740,6 +2958,12 @@ function attachGroupedSelectControl(
         overlay.appendChild(popover);
         mountRoot.appendChild(overlay);
         trigger.classList.add('is-open');
+        trigger.setAttribute('aria-expanded', 'true');
+        overlay.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape' || event.isComposing) return;
+            event.stopPropagation();
+            closePopover();
+        });
 
         let lockedOpenAbove = null;
         const positionPopover = ({ preserveDirection = false } = {}) => {
@@ -2970,7 +3194,7 @@ function attachGroupedSelectControl(
 
         const fireSelectChange = () => {
             const $ = globalThis.jQuery;
-            if ($) {
+            if ($ && !panelRoot) {
                 $(selectEl).trigger('change');
             } else {
                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
@@ -3056,7 +3280,7 @@ function attachGroupedSelectControl(
                 renderList();
                 if (willCollapse) {
                     const nextBtn = listEl.querySelector(`[data-pop-toggle="${CSS.escape(gid)}"]`);
-                    if (nextBtn instanceof HTMLElement) nextBtn.scrollIntoView({ block: 'nearest' });
+                    if (nextBtn) scrollContentToItem(listEl, nextBtn);
                 } else {
                     listEl.scrollTop = prevTop;
                 }
@@ -3128,6 +3352,7 @@ function attachGroupedSelectControl(
     mirrorNativeSelectAppearance(selectEl, trigger);
     selectEl.classList.add('wbo-mobile-select-hidden');
     selectEl.addEventListener('change', syncTriggerText);
+    groupedSelectControls.set(selectEl, { syncTriggerText, closePopover });
     syncTriggerText();
 }
 
@@ -4218,23 +4443,22 @@ function scheduleContainerReEnhance(containerEl) {
 function handleEnhancedContainerMutations(containerEl, mutations) {
     if (!_observersActive || !containerEl.isConnected || containerEl.dataset.wboEnhancing === '1') return;
     const reopeningGlobal = !containerEl.hidden && containerEl.style.display !== 'none' &&
-        !containerEl.dataset.wboGlobalOpen &&
-        (containerEl.id === ENHANCED_POPOVER_SELECTORS.globalContainerId || containerEl.dataset.wboPopoverRole === 'global');
+        !containerEl.dataset.wboGlobalOpen && containerEl.dataset.wboPopoverRole === 'global';
     if (!reopeningGlobal && !hasNonWboMutation(mutations)) return;
     const nextRole = detectEnhancedPopoverRole(containerEl);
     const hasStaleState = Boolean(
         containerEl.dataset.wboPopoverRole ||
         containerEl.dataset.wboBubbleGuarded ||
         containerEl._wboPopState ||
-        containerEl.querySelector('.wbo-pop-filter-bar'),
+        containerEl.querySelector('.wbo-pop-filter-bar, .wbo-preset-filter-bar'),
     );
     if (!nextRole) {
-        if (hasStaleState) {
+        if (hasStaleState || containerEl.dataset.wboSourceRole === 'preset') {
             enhanceCustomDropdownPopover(containerEl);
         }
         return;
     }
-    const curOpts = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+    const curOpts = getEnhancedOptionNodes(containerEl);
     const needsEnhance = reopeningGlobal ||
         containerEl.dataset.wboPopoverRole !== nextRole ||
         containerEl.dataset.wboPopoverReady !== '1' ||
@@ -4297,13 +4521,21 @@ function enhanceCustomDropdownPopover(containerEl) {
     try {
     const detectedRole = detectEnhancedPopoverRole(containerEl);
     if (!detectedRole) {
+        if (containerEl.dataset.wboSourceRole === 'preset' && _latestSettings?.adaptEnhancedPresetGroups === true
+            && document.querySelector(ENHANCED_STYLE_SELECTOR)) {
+            enhancePresetDropdownGroups(containerEl);
+            return;
+        }
+        clearEnhancedPresetGroups(containerEl);
         containerEl._wboPopState?.cancelRestore?.();
         unbindDrawerSafeBubbleGuard(containerEl);
         delete containerEl.dataset.wboPopoverRole;
         delete containerEl.dataset.wboPopoverReady;
         delete containerEl.dataset.wboEditingWorld;
         delete containerEl.dataset.wboChatAvatar;
+        delete containerEl.dataset.wboEnhancedStyle;
         containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
+        containerEl.querySelectorAll('.wbo-enhanced-sticky').forEach((el) => el.replaceWith(...el.children));
         containerEl.querySelectorAll('.wbo-pop-search').forEach((el) => el.remove());
         containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
         containerEl._wboOnPinChanged = undefined;
@@ -4319,13 +4551,16 @@ function enhanceCustomDropdownPopover(containerEl) {
         return;
     }
 
-    const optionNodes = Array.from(containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
+    const optionNodes = getEnhancedOptionNodes(containerEl);
     if (optionNodes.length === 0) return;
 
     const existingSec = optionNodes[0].closest?.('.wbo-pop-section');
     const optionsHost = existingSec?.parentElement || optionNodes[0].parentElement;
     if (!(optionsHost instanceof HTMLElement)) return;
     observedHost = optionsHost;
+    const useEnhancedStyle = optionsHost.classList.contains('gr-options-container');
+    if (useEnhancedStyle) containerEl.dataset.wboEnhancedStyle = '1';
+    const previousGlobalScrollTop = isGlobalPopover ? findScrollableListEl(optionsHost, containerEl).scrollTop : 0;
 
     const globalNamesByValue = new Map();
     if (isGlobalPopover) {
@@ -4366,10 +4601,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             const nextPinned = toggleWorldPinFromNative(worldName);
             containerEl.querySelectorAll('.wbo-gr-pin-btn').forEach((btn) => {
                 if (btn.getAttribute('data-pin-world') === worldName) {
-                    btn.classList.toggle('is-pinned', nextPinned);
-                    btn.setAttribute('aria-pressed', nextPinned ? 'true' : 'false');
-                    btn.title = nextPinned ? '取消置顶' : '置顶此世界书';
-                    btn.textContent = nextPinned ? '★' : '☆';
+                    syncEnhancedPinButton(btn, nextPinned);
                 }
             });
             containerEl._wboOnPinChanged?.({ worldName, isPinned: nextPinned });
@@ -4378,6 +4610,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         containerEl.addEventListener('mousedown', blockPinEvt, true);
         containerEl.addEventListener('mouseup', blockPinEvt, true);
         containerEl.addEventListener('touchstart', blockPinEvt, { capture: true, passive: false });
+        containerEl.addEventListener('touchend', onGrPinClick, { capture: true, passive: false });
         containerEl.addEventListener('click', onGrPinClick, true);
     }
 
@@ -4448,6 +4681,15 @@ function enhanceCustomDropdownPopover(containerEl) {
     containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
     containerEl.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
 
+    if (!isGlobalPopover && useEnhancedStyle) {
+        for (const optEl of optionNodes) {
+            const previous = optEl.previousElementSibling;
+            if (previous?.matches('.gr-group-label:not(.wbo-dd-group-head)') && previous.textContent.trim() === '角色世界书') {
+                optEl.dataset.wboPreferredRoleBook = '1';
+            }
+        }
+    }
+
     // Unwrap any previously created `.wbo-pop-section`s if re-enhancing a reused container
     const prevSections = Array.from(optionsHost.querySelectorAll(':scope > .wbo-pop-section'));
     if (prevSections.length > 0) {
@@ -4465,6 +4707,10 @@ function enhanceCustomDropdownPopover(containerEl) {
         const isPinned = Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName));
         const isEditingRow = Boolean(!isGlobalPopover && activeEditName && worldName === activeEditName);
         optEl.classList.add('wbo-has-pin');
+        if (!isGlobalPopover && useEnhancedStyle) {
+            syncEnhancedEditorOptionTitle(optEl, meta);
+            optEl.classList.toggle('selected', isEditingRow);
+        }
 
         let pinBtn = optEl.querySelector('.wbo-gr-pin-btn');
         if (!pinBtn) {
@@ -4473,12 +4719,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             pinBtn.className = `${ENHANCED_POPOVER_SELECTORS.pinClass} wbo-s2-pin-btn wbo-gr-pin-btn${isPinned ? ' is-pinned' : ''}`;
             pinBtn.setAttribute('data-pin-world', worldName);
             pinBtn.setAttribute('data-wbo-gr-pin', worldName);
-        } else {
-            pinBtn.classList.toggle('is-pinned', isPinned);
         }
-        pinBtn.setAttribute('aria-pressed', isPinned ? 'true' : 'false');
-        pinBtn.title = isPinned ? '取消置顶' : '置顶此世界书';
-        pinBtn.textContent = isPinned ? '★' : '☆';
+        if (useEnhancedStyle && isGlobalPopover) adoptEnhancedPinIcon(optEl, pinBtn);
+        syncEnhancedPinButton(pinBtn, isPinned);
 
         let rightWrap = optEl.querySelector(':scope > .wbo-s2-right');
         if (!rightWrap) {
@@ -4512,6 +4755,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         const val = optEl.dataset?.value ?? '';
         const text = getOptionText(optEl);
         if ((optEl.hasAttribute('data-value') && val === '') || !text || text.startsWith('---')) {
+            if (!isGlobalPopover && useEnhancedStyle && (val === '' || text.startsWith('---'))) {
+                optEl.dataset.wboOriginalPlaceholder ||= text;
+                const label = activeEditName ? '清除当前选择' : optEl.dataset.wboOriginalPlaceholder;
+                if (optEl.textContent !== label) optEl.textContent = label;
+                optEl.classList.toggle('selected', !activeEditName);
+            }
             placeholders.push(optEl);
             continue;
         }
@@ -4521,8 +4770,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (!isGlobalPopover) {
             const isEditingRow = Boolean(activeEditName && worldName === activeEditName);
             const isCurrentChatCharBook = Boolean(
-                currentChatAvatar &&
-                meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
+                optEl.dataset.wboPreferredRoleBook === '1' ||
+                (currentChatAvatar && meta?.charOwners?.some((o) => o.avatar === currentChatAvatar)),
             );
             const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
             if (isCurrentChatCharBook || (isEditingRow && isFromHiddenGroup)) {
@@ -4571,6 +4820,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         return cnt;
     };
     const initialPopPinned = getPopoverPinnedCount();
+    if (useEnhancedStyle) optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.groupLabelSelector).forEach((el) => el.remove());
 
     // When only 1 section exists and 0 pinned books, keep DOM flat (zero headers) — pin buttons & bare top items are ALREADY mounted!
     if (!isGlobalPopover && orderedSections.length < 2 && initialPopPinned === 0) {
@@ -4622,6 +4872,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         containerEl.insertBefore(searchInput, containerEl.firstChild);
     }
     const filterGlobalSearch = isGlobalPopover && searchInput instanceof HTMLInputElement;
+    if (searchInput instanceof HTMLInputElement && searchInput.spellcheck) searchInput.spellcheck = false;
     const isSearching = () =>
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
@@ -4916,10 +5167,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }, { passive: true });
 
-        if (optionsHost === containerEl) {
-            containerEl.insertBefore(filterBar, sectionEls[0] || optionsHost.firstChild);
-        } else {
-            optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
+        if (!useEnhancedStyle || !mountEnhancedDropdownBar(optionsHost, filterBar, searchInput)) {
+            if (optionsHost === containerEl) containerEl.insertBefore(filterBar, sectionEls[0] || optionsHost.firstChild);
+            else optionsHost.parentElement?.insertBefore(filterBar, optionsHost);
         }
     }
 
@@ -5006,13 +5256,8 @@ function enhanceCustomDropdownPopover(containerEl) {
                 [...containerEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)].find((row) => getOptionText(row) === name));
             return;
         }
-        const savedTop = _dropdownMemory.scrollTopByGroup[activePillGroupId];
-        if (typeof savedTop === 'number' && savedTop > 0) {
-            const host = getScrollHost();
-            if (host.clientHeight > 0) {
-                host.scrollTop = savedTop;
-            }
-        }
+        const host = getScrollHost();
+        if (host.clientHeight > 0) host.scrollTop = isGlobalOpening ? 0 : previousGlobalScrollTop;
     };
     applyPopoverScroll();
     scheduleEnhancedRaf(applyPopoverScroll);
@@ -5047,6 +5292,75 @@ function enhanceCustomDropdownPopover(containerEl) {
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
+
+    // Keep the browser default action for panel selects without reaching document-level overrides.
+    const selectEvents = ['mousedown', 'touchend', 'keydown'];
+    const protectPanelSelect = (event) => {
+        if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+        const select = event.target instanceof Element ? event.target.closest('select') : null;
+        if (select?.closest('.wbo-modal, .weg-modal, #wbo-extension-settings')
+            && document.querySelector(ENHANCED_STYLE_SELECTOR)) event.stopPropagation();
+    };
+    for (const event of selectEvents) globalThis.addEventListener?.(event, protectPanelSelect, true);
+    removePluginSelectIsolation = () => {
+        for (const event of selectEvents) globalThis.removeEventListener?.(event, protectPanelSelect, true);
+    };
+
+    let openBeforePress = false;
+    const recoverClick = (event) => {
+        const display = event.target instanceof Element ? event.target.closest(ENHANCED_GLOBAL_DISPLAY) : null;
+        if (!display) return;
+        const chip = event.target.closest('.gr-select2-chip-remove')?.closest('.gr-select2-chip');
+        const chipValue = chip?.dataset.value;
+        const checked = [...(document.getElementById('world_info')?.selectedOptions || [])];
+        const chipName = chip?.querySelector('span')?.textContent.trim();
+        const activeOption = chip ? checked.find((option) => option.textContent.trim() === chipName)
+            || checked.find((option) => option.value === chipValue) : null;
+        const closing = openBeforePress;
+        const openPopover = hasOpenEnhancedGlobalPicker() ? document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId) : null;
+        if (!activeOption && !closing && openPopover) return;
+        clearTimeout(enhancedGlobalRecoveryTimer);
+        enhancedGlobalRecoveryTimer = setTimeout(() => {
+            enhancedGlobalRecoveryTimer = null;
+            if (!display.isConnected) return;
+            if (activeOption) {
+                if (!activeOption.selected) return;
+                restoreGlobalPickerFromStaleDisplay(display);
+                setGlobalWorldActive(activeOption.dataset.wboRealName || activeOption.textContent.trim(), false);
+            } else if (closing) {
+                if (openPopover?.isConnected && hasOpenEnhancedGlobalPicker()) {
+                    openPopover.remove();
+                    restoreGlobalPickerFromStaleDisplay(display);
+                }
+            } else if (!hasOpenEnhancedGlobalPicker()) {
+                restoreGlobalPickerFromStaleDisplay(display, { open: true });
+            }
+        }, 160);
+    };
+    const rememberPress = (event) => {
+        if (event.target instanceof Element && event.target.closest(ENHANCED_GLOBAL_DISPLAY)) {
+            openBeforePress = Boolean(hasOpenEnhancedGlobalPicker());
+        }
+    };
+    document.addEventListener('pointerdown', rememberPress, true);
+    document.addEventListener('click', recoverClick, true);
+    enhancedGlobalClickHandler = () => {
+        document.removeEventListener('pointerdown', rememberPress, true);
+        document.removeEventListener('click', recoverClick, true);
+    };
+    if (document.head) {
+        enhancedStyleObserver = new MutationObserver((records) => {
+            const detachedStyle = records.some((record) => [...record.removedNodes].some((node) =>
+                node instanceof Element && node.matches(ENHANCED_STYLE_SELECTOR),
+            ));
+            if (detachedStyle && !document.querySelector(ENHANCED_STYLE_SELECTOR)) {
+                clearEnhancedPresetGroups(document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId));
+                if (hasOpenEnhancedGlobalPicker()) document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId)?.remove();
+                restoreGlobalPickerFromStaleDisplay(document.querySelector(ENHANCED_GLOBAL_DISPLAY));
+            }
+        });
+        enhancedStyleObserver.observe(document.head, { childList: true });
+    }
 
     const scheduleResync = () => {
         if (_isApplying) return;
@@ -5207,16 +5521,30 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     _docDrawerGuardMouseDown = (ev) => {
         const t = ev.target instanceof Element ? ev.target : null;
         if (!t) return;
+        const inSortTrigger = isNativeSortTriggerTarget(t);
         const inGlobalTrigger = Boolean(
             t.closest(`#world_info, #WIMultiSelector, ${ENHANCED_POPOVER_SELECTORS.displaySelector}`),
         );
         const inEditorTrigger = isEditorSelectTriggerTarget(t);
         const enhancedContainer = t.closest(ENHANCED_POPOVER_SELECTORS.containerSelector);
+        const dropdownTrigger = t.closest('select, .gr-select2-display, .select2-selection, #wbo-mobile-editor-trigger');
+        if (!enhancedContainer && dropdownTrigger) {
+            const sourceSelect = dropdownTrigger.closest('select') || findOwningSelectSibling(dropdownTrigger.closest('.select2-container, .gr-select2-display'));
+            const isPreset = sourceSelect?.id === 'settings_preset_openai'
+                || dropdownTrigger.dataset.grSelectId === 'settings_preset_openai'
+                || Boolean(dropdownTrigger.querySelector('#select2-settings_preset_openai-container'));
+            sharedPopoverOpening = {
+                role: inSortTrigger ? 'sort' : inGlobalTrigger ? 'global' : inEditorTrigger ? 'editor' : isPreset ? 'preset' : 'other',
+                at: Date.now(),
+                previous: document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId),
+            };
+        }
         const inWorldEnhanced = Boolean(
             enhancedContainer instanceof HTMLElement && detectEnhancedPopoverRole(enhancedContainer) !== null,
         );
         const s2Drop = t.closest('.select2-dropdown');
-        const inWorldS2Drop = Boolean(s2Drop && !s2Drop.querySelector('#select2-world_info_sort_order-results'));
+        const inSortS2Drop = Boolean(s2Drop?.querySelector('#select2-world_info_sort_order-results'));
+        const inWorldS2Drop = Boolean(s2Drop && !inSortS2Drop);
         if (inGlobalTrigger) {
             closeAllOpenWorldDropdowns({ except: 'global' });
             schedulePopoverSweep();
@@ -5226,7 +5554,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         } else if (
             !inWorldEnhanced &&
             !inWorldS2Drop &&
-            t.closest('#world_popup .gr-select2-display, #world_popup .select2-container, #world_info_sort_order')
+            (inSortTrigger || t.closest('#world_popup .gr-select2-display, #world_popup .select2-container'))
         ) {
             closeAllOpenWorldDropdowns({ except: 'global' });
         }
@@ -5237,7 +5565,8 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             inWorldS2Drop ||
             inWorldEnhanced,
         );
-        if (inWorldSelect) {
+        // A host sort menu can disappear on mousedown, before the resulting click reaches the drawer guard.
+        if (inWorldSelect || inSortTrigger || inSortS2Drop || enhancedContainer?.dataset.wboSourceRole === 'sort') {
             _lastWorldSelectMouseDownAt = Date.now();
         }
     };
@@ -5327,6 +5656,16 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
  * Stop observers cleanly.
  */
 export function stopNativeObservers() {
+    removePluginSelectIsolation?.();
+    removePluginSelectIsolation = null;
+    if (typeof document !== 'undefined') clearEnhancedPresetGroups(document.getElementById(ENHANCED_POPOVER_SELECTORS.globalContainerId));
+    enhancedStyleObserver?.disconnect();
+    enhancedStyleObserver = null;
+    clearTimeout(enhancedGlobalRecoveryTimer);
+    enhancedGlobalRecoveryTimer = null;
+    enhancedGlobalClickHandler?.();
+    enhancedGlobalClickHandler = null;
+    sharedPopoverOpening = null;
     _observersActive = false;
     cleanupOpenEditorDropdown();
     cleanupOpenGlobalDropdown();

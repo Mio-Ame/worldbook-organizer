@@ -598,15 +598,15 @@ export function removeGroupFromBookConfig(bookConfig, groupId) {
     return true;
 }
 
-export function buildGroupedView(entries, rawBookConfig, { sortPinned = true } = {}) {
+export function buildGroupedView(entries, rawBookConfig, { sortPinned = true, sortPinnedEntries = sortPinned } = {}) {
     const bookConfig = normalizeBookConfig(rawBookConfig);
     const list = Array.isArray(entries) ? entries : [];
     const validUidSet = new Set(list.map((e) => e.uid));
     const pinnedGroupSet = new Set(bookConfig.pinnedGroupIds);
     const pinnedEntrySet = new Set(bookConfig.pinnedEntryUids);
 
-    const sortPinnedEntries = (items) => {
-        if (!sortPinned || pinnedEntrySet.size === 0 || items.length <= 1) return items;
+    const orderEntries = (items) => {
+        if (!sortPinnedEntries || pinnedEntrySet.size === 0 || items.length <= 1) return items;
         return [
             ...items.filter((e) => pinnedEntrySet.has(e.uid)),
             ...items.filter((e) => !pinnedEntrySet.has(e.uid)),
@@ -629,7 +629,7 @@ export function buildGroupedView(entries, rawBookConfig, { sortPinned = true } =
     }
 
     const customSections = bookConfig.groups.map((grp) => {
-        const items = sortPinnedEntries(bucketMap.get(grp.id) || []);
+        const items = orderEntries(bucketMap.get(grp.id) || []);
         const totalCount = items.length;
         const enabledCount = items.filter((e) => !e.disabled).length;
         return {
@@ -653,7 +653,7 @@ export function buildGroupedView(entries, rawBookConfig, { sortPinned = true } =
         ? [...customSections.filter((s) => s.pinned), ...customSections.filter((s) => !s.pinned)]
         : customSections;
 
-    const sortedUngrouped = sortPinnedEntries(ungroupedEntries);
+    const sortedUngrouped = orderEntries(ungroupedEntries);
     const ungroupedEnabledCount = sortedUngrouped.filter((e) => !e.disabled).length;
     const sections = [
         ...orderedCustomSections,

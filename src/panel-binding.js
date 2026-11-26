@@ -11,9 +11,11 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
         .filter((card) => typeof card?.avatar === 'string' && card.avatar)
         .map((card) => ({ avatar: card.avatar, name: card.name || card.data?.name || card.avatar }))
         .sort((a, b) => a.name.localeCompare(b.name) || a.avatar.localeCompare(b.avatar));
-    const choices = characters.map((card) =>
-        `<option value="${esc(card.avatar)}">${esc(card.name)} · ${esc(card.avatar)}</option>`,
-    ).join('');
+    const renderChoices = (cards, emptyLabel) =>
+        `<option value="">${cards.length ? '请选择角色卡' : emptyLabel}</option>`
+        + cards.map((card) =>
+            `<option value="${esc(card.avatar)}">${esc(card.name)} · ${esc(card.avatar)}</option>`,
+        ).join('');
 
     const { modal, overlay } = createSubModal('绑定世界书到角色', `
         <div class="wbo-bind-content">
@@ -25,10 +27,12 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
                     <p>主世界书只能有一本，导出角色卡时会随卡带走。附加世界书可以有多本，导出角色卡时不会一同带走。</p>
                 </details>
             </div>
+            <label class="wbo-bind-label">搜索角色名
+                <input type="search" class="wbo-input" data-bind-character-search placeholder="输入角色名" autocomplete="off" spellcheck="false">
+            </label>
             <label class="wbo-bind-label">选择角色
                 <select class="wbo-select" data-bind-character>
-                    <option value="">${characters.length ? '请选择角色卡' : '没有可绑定的角色卡'}</option>
-                    ${choices}
+                    ${renderChoices(characters, '没有可绑定的角色卡')}
                 </select>
             </label>
             <div class="wbo-bind-card" data-bind-card hidden>
@@ -39,7 +43,6 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
                     <div data-bind-current></div>
                 </div>
             </div>
-            <p class="wbo-bind-reminder">同名也可能是不同的 IF 线或年龄线。请先核对头像、角色卡和世界书。</p>
             <fieldset class="wbo-bind-options" data-bind-options disabled>
                 <legend>绑定方式</legend>
                 <label><input type="radio" name="wbo-bind-kind" value="primary"> 设为主世界书</label>
@@ -55,6 +58,7 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
     `, { pinnedLayout: true, stack });
 
     const select = modal.querySelector('[data-bind-character]');
+    const search = modal.querySelector('[data-bind-character-search]');
     const cardEl = modal.querySelector('[data-bind-card]');
     const avatarEl = modal.querySelector('[data-bind-avatar]');
     const warning = modal.querySelector('[data-bind-warning]');
@@ -79,7 +83,8 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
         confirmBtn.textContent = replacement ? '替换主世界书' : '确认绑定';
         confirmBtn.disabled = busy || !selected || !kind;
         options.disabled = busy || !selected;
-        select.disabled = busy;
+        select.disabled = busy || select.options.length <= 1;
+        search.disabled = busy || !characters.length;
     }
 
     async function selectCard() {
@@ -105,6 +110,20 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
         syncConfirm();
     }
 
+    function filterCharacters() {
+        const query = search.value.trim().normalize('NFKC').toLowerCase();
+        const matches = characters.filter((card) => card.name.normalize('NFKC').toLowerCase().includes(query));
+        const avatar = select.value;
+        select.innerHTML = renderChoices(matches, '没有匹配的角色卡');
+        select.value = matches.some((card) => card.avatar === avatar) ? avatar : '';
+        if (select.value !== avatar) void selectCard();
+        else syncConfirm();
+    }
+
+    search.addEventListener('input', (event) => {
+        if (!event.isComposing) filterCharacters();
+    });
+    search.addEventListener('compositionend', filterCharacters);
     select.addEventListener('change', selectCard);
     options.addEventListener('change', syncConfirm);
     modal.querySelector('[data-bind-cancel]').addEventListener('click', close);
@@ -137,5 +156,7 @@ export function openCharacterBindingModal(worldName, { suggestedAvatar, onBound,
     if (suggestedAvatar && characters.some((card) => card.avatar === suggestedAvatar)) {
         select.value = suggestedAvatar;
         void selectCard();
+    } else {
+        syncConfirm();
     }
 }

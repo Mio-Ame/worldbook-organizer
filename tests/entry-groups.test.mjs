@@ -565,16 +565,12 @@ test('locateEntryInNativeEditor clears stale search before searching and clears 
         let currentPage = 1;
         let renderedRows = [];
 
-        const makeEntryNode = (uid) => {
-            let scrolled = false;
-            return {
-                uid: String(uid),
-                offsetWidth: 100,
-                classList: createMockClassList(),
-                scrollIntoView: () => { scrolled = true; },
-                wasScrolled: () => scrolled,
-            };
-        };
+        const makeEntryNode = (uid) => ({
+            uid: String(uid),
+            offsetWidth: 100,
+            classList: createMockClassList(),
+            scrollIntoView: () => assert.fail('Entry navigation must only scroll the content list'),
+        });
 
         const row1 = makeEntryNode('1');
         const row55 = makeEntryNode('55');
@@ -682,7 +678,6 @@ test('locateEntryInNativeEditor clears stale search before searching and clears 
         const ok1 = await locateEntryInNativeEditor('测试书', '55', '目标条目', fastOpts);
         assert.equal(ok1, true);
         assert.deepEqual(h1.searchHistory, ['', '目标条目']);
-        assert.equal(h1.row55.wasScrolled(), true);
         assert.equal(h1.row55.classList.contains('weg-entry-locate-flash'), true);
 
         // (ii) Search matches unrelated entry (renderedCount > 0), clears search unconditionally before traversing page 2
@@ -692,7 +687,7 @@ test('locateEntryInNativeEditor clears stale search before searching and clears 
         assert.deepEqual(h2.searchHistory, ['目标条目', '']);
         assert.deepEqual(h2.pageHistory, [2]);
         assert.equal(h2.searchInput.value, '');
-        assert.equal(h2.row55.wasScrolled(), true);
+        assert.equal(h2.row55.classList.contains('weg-entry-locate-flash'), true);
     } finally {
         globalThis.document = origDocument;
         globalThis.Event = origEvent;
@@ -803,16 +798,12 @@ test('locateEntryInNativeEditor rewinds non-jQuery pagination from page > 1 via 
         const clickLog = [];
         let renderedRows = [];
 
-        const makeEntryNode = (uid) => {
-            let scrolled = false;
-            return {
-                uid: String(uid),
-                offsetWidth: 100,
-                classList: createMockClassList(),
-                scrollIntoView: () => { scrolled = true; },
-                wasScrolled: () => scrolled,
-            };
-        };
+        const makeEntryNode = (uid) => ({
+            uid: String(uid),
+            offsetWidth: 100,
+            classList: createMockClassList(),
+            scrollIntoView: () => assert.fail('Entry navigation must only scroll the content list'),
+        });
 
         const rowPage1 = makeEntryNode('1');
         const rowPage2 = makeEntryNode('26');
@@ -919,14 +910,14 @@ test('locateEntryInNativeEditor rewinds non-jQuery pagination from page > 1 via 
         const okFirst = await locateEntryInNativeEditor('分页测试书', '1', '首页条目', fastOpts);
         assert.equal(okFirst, true);
         assert.deepEqual(hFirst.clickLog, ['first->1']);
-        assert.equal(hFirst.rowPage1.wasScrolled(), true);
+        assert.equal(hFirst.rowPage1.classList.contains('weg-entry-locate-flash'), true);
 
         // (ii) `.paginationjs-prev`-only fallback rewinds to page 1
         const hPrev = createNoJqHarness({ useFirstButton: false });
         const okPrev = await locateEntryInNativeEditor('分页测试书', '1', '首页条目', fastOpts);
         assert.equal(okPrev, true);
         assert.deepEqual(hPrev.clickLog, ['prev->1']);
-        assert.equal(hPrev.rowPage1.wasScrolled(), true);
+        assert.equal(hPrev.rowPage1.classList.contains('weg-entry-locate-flash'), true);
     } finally {
         globalThis.document = origDocument;
         globalThis.Event = origEvent;

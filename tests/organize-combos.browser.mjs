@@ -28,7 +28,7 @@ async function withMockHost(seed, workflow, viewport = VIEWPORTS.desktop) {
 
 test('AI picks can be restored in bulk, switched by category, grouped explicitly and undone', async () => {
     const sensitive = '成人向测试书';
-    const warning = '有疑似敏感世界书，发送可能会触发AI拒绝回答。';
+    const warning = '已勾选了疑似敏感世界书，发送可能会触发AI拒绝回答。';
     const defaultWarning = '有疑似敏感世界书，发送可能会触发AI拒绝回答，因此已默认移除选中。';
     const seed = createDefaultSeed({
         characters: [],
@@ -36,8 +36,12 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
         selected_world_info: [],
         pluginSettings: {
             organizeLastTab: 'organize',
+            aiOrganizeScope: 'nonchar',
             autoScanNewCharacters: false,
-            groups: [{ id: 'fixture-destination', name: '测试归档', color: '#6b7a8c' }],
+            groups: [
+                { id: 'fixture-destination', name: '测试归档', color: '#6b7a8c' },
+                { id: 'fixture-sensitive-group', name: '成人向归档', color: '#a55751' },
+            ],
             assignments: { 已分组测试书: 'fixture-destination' },
         },
     });
@@ -46,8 +50,18 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
         await cdp.clickSelector('[data-action="open-ai-organize"]');
         const safetyText = () => cdp.evalFn(() => document.querySelector('#wbo-sens-banner-text').textContent);
         const picks = () => cdp.evalFn(() => document.querySelector('#wbo-ai-selected-count').textContent);
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-pick-default-hint')?.textContent), '默认只勾选未分组的世界书，可手动调整。');
         assert.equal(await safetyText(), defaultWarning);
         assert.equal(await picks(), '已勾选 1 本世界书');
+        assert.equal(await cdp.evalFn(() => {
+            const count = document.querySelector('#wbo-ai-selected-count');
+            const value = count.querySelector('strong');
+            const style = getComputedStyle(count);
+            return value.textContent === '1'
+                && parseFloat(getComputedStyle(value).fontSize) > parseFloat(style.fontSize)
+                && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        }), true);
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('.wbo-ai-book-check:checked')].map((box) => box.value)), ['普通测试书']);
         assert.match(await cdp.evalFn(() => document.querySelector('#wbo-ai-book-groups [aria-pressed="true"]').textContent), /未分组/);
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-ai-section="sensitive"]').hidden), true);
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-ai-sensitive-actions').hidden), true);
@@ -71,11 +85,16 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
         await cdp.clickSelector('#wbo-pick-toggle-sens');
         assert.equal(await picks(), '已勾选 1 本世界书');
         assert.equal(await safetyText(), warning);
-        await cdp.evalFn(() => {
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-sens-move-nsfw-btn').matches('.wbo-btn-primary:enabled')), true);
+        const selectTarget = (label) => cdp.evalFn((name) => {
             const target = document.querySelector('#wbo-sens-target-group');
-            target.value = 'fixture-destination';
+            const option = [...target.options].find((item) => item.textContent.includes(name));
+            if (!option) return false;
+            target.value = option.value;
             target.dispatchEvent(new Event('change', { bubbles: true }));
-        });
+            return true;
+        }, label);
+        assert.equal(await selectTarget('测试归档'), true);
         await cdp.clickSelector('#wbo-sens-move-nsfw-btn');
         const before = await getServerState(baseUrl);
         assert.equal(before.extension_settings.worldbook_organizer.assignments[sensitive], undefined);
@@ -91,6 +110,57 @@ test('AI picks can be restored in bulk, switched by category, grouped explicitly
             const state = await fetch('/__test/state').then((res) => res.json());
             return !state.extension_settings.worldbook_organizer.assignments['成人向测试书'];
         });
+
+        await cdp.clickSelector('#wbo-pick-toggle-sens');
+        assert.equal(await selectTarget('新建分组'), true);
+        await cdp.clickSelector('#wbo-sens-move-nsfw-btn');
+        assert.equal(await cdp.evalFn(() => document.activeElement.id === 'wbo-inline-prompt-input'), false);
+        await cdp.clickSelector('#wbo-inline-prompt-cancel');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-sens-confirm-bar').hidden), true);
+        assert.equal(await picks(), '已勾选 1 本世界书');
+        await cdp.clickSelector('#wbo-sens-move-nsfw-btn');
+        await cdp.typeInto('#wbo-inline-prompt-input', '新建测试分组');
+        await cdp.clickSelector('#wbo-inline-prompt-ok');
+        await waitForCondition(cdp, () => document.querySelector('#wbo-sens-confirm-text')?.textContent.includes('新建分组「新建测试分组」'));
+        const beforeNew = (await getServerState(baseUrl)).extension_settings.worldbook_organizer;
+        assert.equal(beforeNew.groups.some((group) => group.name === '新建测试分组'), false);
+        await cdp.clickSelector('#wbo-sens-confirm-ok');
+        await waitForCondition(cdp, async () => {
+            const state = await fetch('/__test/state').then((res) => res.json());
+            const { groups, assignments } = state.extension_settings.worldbook_organizer;
+            return groups.some((group) => group.name === '新建测试分组' && assignments['成人向测试书'] === group.id);
+        });
+        await cdp.clickSelector('#wbo-sens-inline-undo');
+        await waitForCondition(cdp, async () => {
+            const state = await fetch('/__test/state').then((res) => res.json());
+            const { groups, assignments } = state.extension_settings.worldbook_organizer;
+            return !groups.some((group) => group.name === '新建测试分组') && !assignments['成人向测试书'];
+        });
+    });
+});
+
+test('AI organize starts with no picks when all worldbooks are already grouped', async () => {
+    const seed = createDefaultSeed({
+        characters: [],
+        worldbooks: { 已分组测试书: { entries: {} } },
+        selected_world_info: [],
+        pluginSettings: {
+            organizeLastTab: 'organize',
+            autoScanNewCharacters: false,
+            groups: [{ id: 'fixture-existing', name: '测试归档', color: '#6b7a8c' }],
+            assignments: { 已分组测试书: 'fixture-existing' },
+        },
+    });
+    await withMockHost(seed, async (cdp) => {
+        await openManager(cdp);
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        const picks = () => cdp.evalFn(() => document.querySelector('#wbo-ai-selected-count').textContent);
+        assert.equal(await picks(), '已勾选 0 本世界书');
+        await cdp.clickSelector('#wbo-pick-nonchar');
+        assert.equal(await picks(), '已勾选 1 本世界书');
+        await cdp.clickSelector('#wbo-submodal-overlay .wbo-modal-close');
+        await cdp.clickSelector('[data-action="open-ai-organize"]');
+        assert.equal(await picks(), '已勾选 0 本世界书');
     });
 });
 
@@ -122,11 +192,15 @@ test('global combo names are safe to select and their editors can jump directly 
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-cmb-seed-active-btn').textContent), '加入已开启的全局世界书');
         await cdp.clickSelector('#wbo-cmb-seed-active-btn');
         assert.match(await cdp.evalFn(() => document.querySelector('#wbo-cmb-pick-feedback').textContent), /已勾选 1 本/);
+        const comboTags = () => cdp.evalFn(() => [...document.querySelectorAll('[data-cmb-gid="fixture-quick-group"]:not([hidden]) .wbo-tag')]
+            .filter((tag) => tag.getBoundingClientRect().height > 0).map((tag) => tag.textContent.trim()));
+        assert.deepEqual(await comboTags(), ['已全局', '组合测试组']);
         await cdp.clickSelector('[data-cmb-pill="fixture-quick-group"]');
         const result = await cdp.evalFn(() =>
             [...document.querySelectorAll('.wbo-cmb-pick-row:not([hidden]) .wbo-cmb-book-check')].map((item) => [item.value, item.checked]),
         );
         assert.deepEqual(result, [['组合测试书', true]]);
+        assert.deepEqual(await comboTags(), ['已全局']);
         await cdp.clickSelector('#wbo-submodal-overlay .wbo-modal-close');
         await openManager(cdp);
         await cdp.clickSelector('#wbo-manager-overlay [data-action="create-group"]:not([hidden])');

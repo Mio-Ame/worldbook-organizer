@@ -1,5 +1,6 @@
 /** Worldbook group manager and inline previews. */
 
+import { scrollContentToItem } from './content-scroll.js';
 import {
     _callbacks,
     _modalWindowCleanupMap,
@@ -378,24 +379,11 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                 </div>
                 <div class="wbo-book-actions">
                     ${globalBtnHtml}
-                    ${isEntryGroupingAvailable() ? `
-                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="open-entry-groups" title="条目分组">
-                        <i class="fa-solid fa-folder-tree"></i>
-                    </button>` : ''}
-                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="edit-book" title="在酒馆编辑器中打开">
-                        <i class="fa-solid fa-arrow-up-right-from-square"></i>
+                    <button type="button" class="wbo-icon-btn wbo-icon-danger wbo-book-delete-btn" data-action="delete-single-book" title="删除世界书" aria-label="删除世界书">
+                        <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="rename-alias" title="编辑名称与备注">
-                        <i class="fa-solid fa-pen-to-square"></i>
-                    </button>
-                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary" data-action="move-group" title="移动分组">
-                        <i class="fa-solid fa-folder-open"></i>
-                    </button>
-                    <button type="button" class="wbo-icon-btn wbo-book-action-secondary wbo-book-bind-btn" data-action="bind-book-to-character" title="绑定到角色" aria-label="绑定到角色">
-                        <i class="fa-solid fa-globe" aria-hidden="true"></i><span>绑定</span>
-                    </button>
-                    <button type="button" class="wbo-icon-btn wbo-icon-danger wbo-book-action-secondary" data-action="delete-single-book" title="删除世界书">
-                        <i class="fa-regular fa-trash-can"></i>
+                    <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作">
+                        <i class="fa-solid fa-ellipsis" aria-hidden="true"></i>
                     </button>
                     <button type="button"
                         class="wbo-icon-btn wbo-star-btn${book.isPinned ? ' is-pinned' : ''}"
@@ -403,9 +391,6 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                         title="${book.isPinned ? '取消置顶' : '置顶'}"
                         aria-pressed="${book.isPinned ? 'true' : 'false'}">
                         <i class="${book.isPinned ? 'fa-solid' : 'fa-regular'} fa-star"></i>
-                    </button>
-                    <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作">
-                        <i class="fa-solid fa-ellipsis"></i>
                     </button>
                 </div>
             </div>
@@ -455,14 +440,6 @@ async function toggleInlineBookPreview(itemEl, bookName) {
         worldName: bookName,
         pageSize: 60,
         showToolbar: true,
-        extraHeaderActionsHtml: `
-            <button type="button" class="wbo-link-btn" data-acc-extra="bind-book-to-character">
-                <i class="fa-solid fa-globe" aria-hidden="true"></i><span>绑定世界书到角色</span>
-            </button>
-        `,
-        onExtraAction: (action) => {
-            if (action === 'bind-book-to-character') openCharacterBindingModal(bookName);
-        },
         getMonoFont: () => Boolean(_callbacks?.getState?.()?.settings?.entryEditorMonoFont),
         onToggleMonoFont: (nextMono) => {
             const curSettings = _callbacks?.getState?.()?.settings;
@@ -1932,9 +1909,7 @@ function openManagerModal() {
                 renderManagerGroupsListOnly();
                 if (willCollapse && gid) {
                     const collapsedEl = modal.querySelector(`#wbo-mgr-groups-list .wbo-group[data-group-id="${CSS.escape(gid)}"]`);
-                    if (collapsedEl instanceof HTMLElement) {
-                        collapsedEl.scrollIntoView({ block: 'nearest' });
-                    }
+                    if (collapsedEl) scrollContentToItem(modal.querySelector('#wbo-mgr-groups-list'), collapsedEl);
                 }
                 await _callbacks.onMutation({ save: true, uiOnly: true });
                 break;
@@ -2256,42 +2231,6 @@ function openManagerModal() {
                     await _callbacks.onMutation({ save: true, pinInPlaceOnly: true });
                     showToast('info', nextPinned ? `已置顶「${meta?.primaryTitle || bookName}」` : '已取消置顶');
                 }
-                break;
-            }
-            case 'bind-book-to-character': {
-                const bookName = target.closest('.wbo-book-item, .wbo-book-row')?.getAttribute('data-book');
-                if (bookName) openCharacterBindingModal(bookName);
-                break;
-            }
-            case 'open-entry-groups': {
-                const holder = target.closest('.wbo-book-item, .wbo-book-row');
-                const bookName = holder?.getAttribute('data-book');
-                if (bookName) {
-                    openEntryGroupsForBook(bookName);
-                }
-                break;
-            }
-            case 'edit-book': {
-                const holder = target.closest('.wbo-book-item, .wbo-book-row');
-                const bookName = holder?.getAttribute('data-book');
-                if (bookName) {
-                    openWorldInNativeEditor(bookName);
-                    closeManagerModal();
-                }
-                break;
-            }
-            case 'rename-alias': {
-                const row = target.closest('.wbo-book-row');
-                const bookName = row?.getAttribute('data-book');
-                const meta = bookName ? classification.byName.get(bookName) : null;
-                if (meta) openAliasNoteModal(meta);
-                break;
-            }
-            case 'move-group': {
-                const row = target.closest('.wbo-book-row');
-                const bookName = row?.getAttribute('data-book');
-                const meta = bookName ? classification.byName.get(bookName) : null;
-                if (meta) openMoveGroupModal(meta);
                 break;
             }
             case 'book-more-menu': {
@@ -3419,8 +3358,7 @@ function openMoveGroupModal(bookMeta) {
 }
 
 /**
- * Compact mobile overflow popover (`···`) for secondary worldbook row actions
- * (rename/note, move group, delete) so rows stay clean and single-line on phones.
+ * Overflow popover (`···`) for secondary worldbook row actions.
  * @param {HTMLElement} anchorBtn
  * @param {object} bookMeta
  */
@@ -3436,6 +3374,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     pop.className = 'wbo-modal wbo-vis-popover wbo-book-more-popover';
     applyThemeClass(pop);
     const hasEntryGroups = isEntryGroupingAvailable();
+    const deleteInMenu = !anchorBtn.parentElement?.querySelector('.wbo-book-delete-btn')?.offsetWidth;
     const entryGroupsItemHtml = hasEntryGroups
         ? `
         <button type="button" class="wbo-book-more-item" data-more-act="open-entry-groups">
@@ -3456,10 +3395,11 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         <button type="button" class="wbo-book-more-item" data-more-act="move-group">
             <i class="fa-solid fa-folder-open"></i><span>移动分组</span>
         </button>
-        <div class="wbo-book-more-divider"></div>
-        <button type="button" class="wbo-book-more-item is-danger" data-more-act="delete-single-book">
-            <i class="fa-regular fa-trash-can"></i><span>删除世界书</span>
-        </button>
+        ${deleteInMenu ? `
+            <div class="wbo-book-more-divider"></div>
+            <button type="button" class="wbo-book-more-item is-danger" data-more-act="delete-single-book">
+                <i class="fa-regular fa-trash-can"></i><span>删除世界书</span>
+            </button>` : ''}
     `;
 
     backdrop.appendChild(pop);
@@ -3471,7 +3411,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
     const popW = 164;
-    const minH = hasEntryGroups ? 216 : 184;
+    const minH = 152 + (hasEntryGroups ? 32 : 0) + (deleteInMenu ? 32 : 0);
     const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
     const openAbove = vh - rect.bottom < minH && rect.top > minH;
     pop.style.width = `${popW}px`;
@@ -3485,20 +3425,27 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     }
 
     const onKeyDown = (ev) => {
+        if (!backdrop.isConnected) {
+            document.removeEventListener('keydown', onKeyDown, true);
+            return;
+        }
         if (ev.key === 'Escape') {
             ev.stopPropagation();
-            cleanup();
+            cleanup(true);
         }
     };
-    const cleanup = () => {
+    const cleanup = (restoreFocus = false) => {
         document.removeEventListener('keydown', onKeyDown, true);
         closeGroupVisibilityPopover();
+        if (restoreFocus && anchorBtn.isConnected && isDesktopAutoFocusAllowed()) {
+            anchorBtn.focus();
+        }
     };
     document.addEventListener('keydown', onKeyDown, true);
 
     backdrop.addEventListener('click', (ev) => {
         ev.stopPropagation();
-        if (ev.target === backdrop) cleanup();
+        if (ev.target === backdrop) cleanup(true);
     });
 
     pop.querySelectorAll('[data-more-act]').forEach((btn) => {
@@ -3522,6 +3469,9 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             }
         });
     });
+    if (isDesktopAutoFocusAllowed()) {
+        pop.querySelector('[data-more-act]')?.focus();
+    }
 }
 
 /**

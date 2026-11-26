@@ -33,6 +33,7 @@ import {
     normalizeSettings,
     upsertStoredChatProfile,
 } from './core.js';
+import { scrollNativeWorldEntry } from '../content-scroll.js';
 
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
@@ -104,10 +105,18 @@ export function emitBridgeEvent(type, detail = {}) {
     }
 }
 
-export function getSettings() {
+function getSettingsContainer() {
     const ctx = getHostContext();
-    const fallbackRoot = globalThis.extension_settings;
-    const container = ctx?.extensionSettings || fallbackRoot;
+    return ctx?.extensionSettings || globalThis.extension_settings;
+}
+
+export function getNativeGroupingState(worldName) {
+    const settings = getSettingsContainer()?.[MODULE_NAME];
+    return { config: settings?.books?.[worldName], showButton: settings?.showNativeEntryBtn !== false };
+}
+
+export function getSettings() {
+    const container = getSettingsContainer();
     if (!container || typeof container !== 'object') {
         return normalizeSettings(null);
     }
@@ -1106,6 +1115,38 @@ export async function locateEntryInNativeEditor(worldName, uid, entryTitle = '',
     const rawHint = String(entryTitle ?? '').trim();
     const searchTerm = (!rawHint || /^未命名条目 #\d+$/.test(rawHint)) ? uidStr : rawHint;
 
+    const findEntryEl = () => document.getElementById('world_popup_entries_list')
+        ?.querySelector?.(`.world_entry[uid="${escapeCssAttr(uidStr)}"]`) || null;
+    const highlightElement = (entryEl) => {
+        scrollNativeWorldEntry(entryEl);
+        entryEl.classList?.remove('weg-entry-locate-flash');
+        void entryEl.offsetWidth;
+        entryEl.classList?.add('weg-entry-locate-flash');
+        setTimeout(() => entryEl.classList?.remove('weg-entry-locate-flash'), 2000);
+    };
+
+    const nativeApi = globalThis.__TAURITAVERN__?.api?.worldInfo;
+    if (typeof nativeApi?.openEntry === 'function') {
+        const drawer = document.getElementById('WorldInfo');
+        const page = document.scrollingElement;
+        const drawerTop = drawer?.scrollTop;
+        const pageTop = page?.scrollTop;
+        try {
+            const result = await nativeApi.openEntry({ world: cleanWorld, uid: uidStr });
+            if (result?.opened) {
+                const entry = getCurrentEditorWorldName() === cleanWorld ? findEntryEl() : null;
+                if (entry) {
+                    if (drawer && drawer.scrollTop !== drawerTop) drawer.scrollTop = drawerTop;
+                    if (page && page.scrollTop !== pageTop) page.scrollTop = pageTop;
+                    highlightElement(entry);
+                }
+                return true;
+            }
+        } catch {
+            // Older hosts can still use the editor's DOM navigation.
+        }
+    }
+
     const ctx = getHostContext();
     await ensureWorldInfoModule();
 
@@ -1154,54 +1195,6 @@ export async function locateEntryInNativeEditor(worldName, uid, entryTitle = '',
             selectEl.dispatchEvent(new Event('change', { bubbles: true }));
         }
     }
-
-    const isElementLike = (node) => Boolean(
-        node && typeof node === 'object'
-        && (typeof HTMLElement === 'undefined' || node instanceof HTMLElement || node.classList),
-    );
-
-    const findEntryEl = () => {
-        const list = document.getElementById('world_popup_entries_list');
-        const el = list?.querySelector?.(`.world_entry[uid="${escapeCssAttr(uidStr)}"]`) || null;
-        return isElementLike(el) ? el : null;
-    };
-
-    const highlightElement = (entryEl) => {
-        const wiDrawer = document.getElementById('WorldInfo');
-        if (
-            wiDrawer
-            && typeof wiDrawer.scrollHeight === 'number'
-            && typeof wiDrawer.clientHeight === 'number'
-            && wiDrawer.scrollHeight > wiDrawer.clientHeight
-            && typeof wiDrawer.getBoundingClientRect === 'function'
-            && typeof entryEl.getBoundingClientRect === 'function'
-        ) {
-            const drawerRect = wiDrawer.getBoundingClientRect();
-            const entryRect = entryEl.getBoundingClientRect();
-            const targetTop = (wiDrawer.scrollTop || 0)
-                + (entryRect.top - drawerRect.top)
-                - Math.max(24, (wiDrawer.clientHeight - entryRect.height) / 2);
-            if (typeof wiDrawer.scrollTo === 'function') {
-                try {
-                    wiDrawer.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
-                } catch {
-                    wiDrawer.scrollTop = Math.max(0, targetTop);
-                }
-            } else {
-                wiDrawer.scrollTop = Math.max(0, targetTop);
-            }
-        } else if (typeof entryEl.scrollIntoView === 'function') {
-            try {
-                entryEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            } catch {
-                entryEl.scrollIntoView();
-            }
-        }
-        entryEl.classList?.remove('weg-entry-locate-flash');
-        void entryEl.offsetWidth;
-        entryEl.classList?.add('weg-entry-locate-flash');
-        setTimeout(() => entryEl.classList?.remove('weg-entry-locate-flash'), 2000);
-    };
 
     const isInputLike = (el) => Boolean(
         el && typeof el === 'object'

@@ -2,6 +2,7 @@ import { addCustomGroup, findSensitiveTargetGroup, findUnscannedShallowCharacter
 import { getCharactersInMemory, getCharLoreEntries, showToast } from './host.js';
 import { applyImportedWorldbookPlan, findSensitiveImportCandidates } from './import-organizer.js';
 import { _callbacks, closeSubModal, createSubModal, esc } from './panel-window.js';
+import { findScrollableContent, scrollContentToItem } from './content-scroll.js';
 
 const createGroupChoice = '__create_group__';
 
@@ -138,7 +139,8 @@ export function openImportRulesModal({ intro = false, stack = false, onResolved 
         }
         draftRules.push({ keyword: '', groupId: '' });
         renderDraftRules();
-        ruleList.lastElementChild?.scrollIntoView({ block: 'nearest' });
+        const row = ruleList.lastElementChild;
+        if (row) scrollContentToItem(findScrollableContent(row, modal), row);
     });
     const onRuleInput = (ev) => {
         const row = ev.target.closest('[data-import-rule]');

@@ -33,6 +33,7 @@ import {
     saveWorldbookEntryPatch,
     showToast,
 } from './host.js';
+import { findScrollableContent, scrollContentToItem } from './content-scroll.js';
 
 const UNDO_SVG = '<svg class="wbo-undo-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
 const REDO_SVG = '<svg class="wbo-undo-svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/></svg>';
@@ -62,6 +63,8 @@ function formatContentStats(text) {
 function normalizeSortMode(mode) {
     return mode === 'order' || mode === 'title' ? mode : 'custom';
 }
+
+const SORT_LABELS = { custom: '自定义排序', order: '顺序 (order)', title: '标题' };
 
 /**
  * Mount the shared multi-open entry accordion inside `hostEl`.
@@ -129,11 +132,14 @@ export function mountEntryAccordion(
             <div class="wbo-preview-head wbo-acc-head">
                 <span class="wbo-acc-summary">正在读取条目...</span>
                 <span class="wbo-preview-head-actions wbo-acc-head-controls">
-                    <select class="wbo-select wbo-acc-sort-select" data-acc-sort aria-label="条目排序方式" title="切换条目列表排序方式">
-                        <option value="custom"${sortMode === 'custom' ? ' selected' : ''}>自定义排序</option>
-                        <option value="order"${sortMode === 'order' ? ' selected' : ''}>顺序 (order)</option>
-                        <option value="title"${sortMode === 'title' ? ' selected' : ''}>标题</option>
-                    </select>
+                    <span class="wbo-acc-sort-control">
+                        <span class="wbo-acc-sort-size" aria-hidden="true">${SORT_LABELS[sortMode]}</span>
+                        <select class="wbo-select wbo-acc-sort-select" data-acc-sort aria-label="条目排序方式" title="切换条目列表排序方式">
+                            ${Object.entries(SORT_LABELS).map(([mode, label]) =>
+                                `<option value="${mode}"${mode === sortMode ? ' selected' : ''}>${label}</option>`,
+                            ).join('')}
+                        </select>
+                    </span>
                     ${extraHeaderActionsHtml}
                 </span>
             </div>
@@ -162,6 +168,7 @@ export function mountEntryAccordion(
 
     const summaryEl = hostEl.querySelector('.wbo-acc-summary');
     const sortSelect = hostEl.querySelector('[data-acc-sort]');
+    const sortSize = hostEl.querySelector('.wbo-acc-sort-size');
     const searchInput = hostEl.querySelector('.wbo-acc-search');
     const newBtn = hostEl.querySelector('.wbo-acc-new-btn');
     const listEl = hostEl.querySelector('.wbo-acc-list');
@@ -798,7 +805,7 @@ export function mountEntryAccordion(
                 const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 1200;
                 const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
                 if (vw > 680 && !coarse) {
-                    contentArea.focus();
+                    contentArea.focus({ preventScroll: true });
                 }
                 try { contentArea.setSelectionRange(activeStart, activeEnd); } catch { /* ignore */ }
             }
@@ -1230,11 +1237,10 @@ export function mountEntryAccordion(
         const slotEl = itemEl.querySelector('.wbo-acc-editor-slot');
         const toggleBtn = itemEl.querySelector('[data-acc-toggle]');
         if (!(slotEl instanceof HTMLElement)) return;
+        const scrollEntry = () => scrollContentToItem(findScrollableContent(itemEl, itemEl.closest('.wbo-modal')), itemEl);
 
         if (expandedEditors.has(cleanUid)) {
-            if (scrollIntoView) {
-                try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
-            }
+            if (scrollIntoView) scrollEntry();
             return;
         }
 
@@ -1251,9 +1257,7 @@ export function mountEntryAccordion(
         slotEl.hidden = false;
         slotEl.innerHTML = '<div class="wbo-preview-loading">正在读取条目...</div>';
 
-        if (scrollIntoView) {
-            try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
-        }
+        if (scrollIntoView) scrollEntry();
 
         let entryData = preloadedEntry;
         if (!entryData) {
@@ -1278,9 +1282,7 @@ export function mountEntryAccordion(
 
         const editorCtrl = mountEditorIntoSlot(itemEl, slotEl, entryData);
         expandedEditors.set(cleanUid, editorCtrl);
-        if (scrollIntoView) {
-            try { itemEl.scrollIntoView({ block: 'nearest' }); } catch { /* ignore */ }
-        }
+        if (scrollIntoView) scrollEntry();
     };
 
     const collapseEntry = (uid) => {
@@ -1333,6 +1335,7 @@ export function mountEntryAccordion(
     if (sortSelect instanceof HTMLSelectElement) {
         sortSelect.addEventListener('change', () => {
             sortMode = normalizeSortMode(sortSelect.value);
+            if (sortSize) sortSize.textContent = SORT_LABELS[sortMode];
             onChangeSortMode?.(sortMode);
             if (listState.ok) {
                 listState.items = sortEntryListItems(listState.items, sortMode);

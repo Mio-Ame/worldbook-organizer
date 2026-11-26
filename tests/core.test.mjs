@@ -1959,8 +1959,7 @@ test('Persistent UI preferences, legacy quick-action migration, and static CSS/s
     assert.equal(/backdrop-filter\s*:/i.test(cssSrc), false, 'style.css must not use backdrop-filter');
     assert.equal(/\bblur\s*\(/i.test(cssSrc), false, 'style.css must not use blur()');
     assert.equal(/wbo-modal-mini-btn|is-mini-window|wbo-modal-resize-handle/.test(cssSrc), false, 'style.css must not contain removed mini-window or corner-badge rules');
-    assert.match(cssSrc, /\.wbo-book-actions\s+\.wbo-book-more-btn\s*\{\s*display:\s*none\s*!important;/, 'wide desktop .wbo-book-more-btn hide rule must out-specify .wbo-icon-btn');
-    assert.match(cssSrc, /\.wbo-book-actions\s+\.wbo-book-action-secondary\s*\{\s*display:\s*none\s*!important;/, 'responsive .wbo-book-action-secondary hide rule must out-specify .wbo-icon-btn');
+    assert.doesNotMatch(cssSrc, /\.wbo-book-more-btn\s*\{[^}]*display:\s*none/i);
 
     const forbiddenThirdPartyRe = /(?:baibai|st-baibai-tools|柏宝箱)/i;
     for (const relPath of ['../style.css', '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', ...getPanelSourcePaths(), '../src/entry-accordion.js', '../src/native-filter.js']) {
@@ -3459,8 +3458,8 @@ test('narrow worldbook preview keeps the summary, sort picker and binding action
     const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
     assert.match(css, /\.wbo-acc-summary\s*\{[^}]*white-space:\s*nowrap/s);
     assert.match(css, /\.wbo-preview-head\s*\{[^}]*flex-wrap:\s*wrap/s);
-    assert.match(css, /@container\s+plugin-win\s*\(max-width:\s*600px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\],\s*\[data-acc-extra="bind-book-to-character"\]\)\s*\{\s*display:\s*none\s*!important;/);
-    assert.match(css, /@media\s*\(max-width:\s*680px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\[data-acc-sort\],\s*\[data-acc-extra="bind-book-to-character"\]\)\s*\{\s*display:\s*none\s*!important;/);
+    assert.match(css, /@container\s+plugin-win\s*\(max-width:\s*600px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\.wbo-acc-sort-control\)\s*\{\s*display:\s*none\s*!important;/);
+    assert.match(css, /@media\s*\(max-width:\s*680px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\.wbo-acc-sort-control\)\s*\{\s*display:\s*none\s*!important;/);
 });
 
 test('v2.35.1 polish: deleteWorldbookEntryDirect, gr-option pin stars across flat/grouped/re-rendered popovers, no duplicate scan status, and standard undo SVG', async () => {
@@ -5973,7 +5972,8 @@ test('M3 R2, R3 & R5 panel.js: 3-button+gear header, visibility-skipping moves, 
         assert.notEqual(dom.doc.activeElement, scanBtn, 'closing scan modal blurs #wbo-mgr-scan-btn');
 
         // 7. R3 移动到分组 includes 角色世界书 and R4 footer has no .wbo-spacer inside .wbo-footer-pair
-        const moveBtn = dom.doc.querySelector('#wbo-mgr-groups-list .wbo-book-row[data-book="未分组书"] [data-action="move-group"]');
+        dom.doc.querySelector('#wbo-mgr-groups-list .wbo-book-row[data-book="未分组书"] [data-action="book-more-menu"]').click();
+        const moveBtn = dom.doc.querySelector('.wbo-book-more-popover [data-more-act="move-group"]');
         assert.ok(moveBtn);
         moveBtn.click();
         const moveCharOpt = dom.doc.querySelector(`.wbo-move-option[data-target-group="${SPECIAL_GROUPS.CHARACTER}"]`);
@@ -6323,7 +6323,8 @@ test('M3 R3 regression: assignBookToGroup / openMoveGroupModal round-trip & batc
     const moveViaModal = async (bookName, targetGroupId) => {
         const row = dom.doc.querySelector(`#wbo-mgr-groups-list .wbo-book-row[data-book="${bookName}"]`);
         assert.ok(row, `book row for ${bookName} must exist`);
-        const moveBtn = row.querySelector('[data-action="move-group"]');
+        row.querySelector('[data-action="book-more-menu"]').click();
+        const moveBtn = dom.doc.querySelector('.wbo-book-more-popover [data-more-act="move-group"]');
         assert.ok(moveBtn, `move-group button for ${bookName} must exist`);
         moveBtn.click();
         const opt = dom.doc.querySelector(`.wbo-move-option[data-target-group="${targetGroupId}"]`);

@@ -28,13 +28,13 @@ const seed = (extraBooks = []) => createDefaultSeed({
     },
 });
 
-async function withHost(viewport, verify, extraBooks) {
+async function withHost(viewport, verify, extraBooks, fixture = seed(extraBooks)) {
     const server = createMockStServer();
     const baseUrl = await server.start();
     let cdp;
     try {
         cdp = await launchEdgeCdp();
-        await resetAndBoot(cdp, baseUrl, { seed: seed(extraBooks), viewport });
+        await resetAndBoot(cdp, baseUrl, { seed: fixture, viewport });
         await verify(cdp);
         assert.deepEqual(cdp.getErrors().runtimeErrors, []);
     } finally {
@@ -50,8 +50,11 @@ test('desktop native global picker keeps its search, filters by group and opens 
         const activePill = () => cdp.evalFn(() => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent);
         const visible = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown [data-wbo-world]')]
             .filter((row) => row.getBoundingClientRect().height > 0).map((row) => row.dataset.wboWorld));
+        const groupBadges = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .wbo-s2-badge:not(.is-editing)')]
+            .filter((badge) => badge.getBoundingClientRect().height > 0).map((badge) => badge.textContent.trim()));
         assert.equal(await activePill(), '收藏 1');
         assert.deepEqual(await visible(), [favorite]);
+        assert.deepEqual(await groupBadges(), ['测试分组甲']);
         await cdp.evalFn(() => { document.querySelector('.select2-dropdown').style.width = '640px'; });
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .wbo-dd-expand-btn').hidden);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
@@ -59,11 +62,358 @@ test('desktop native global picker keeps its search, filters by group and opens 
         assert.equal((await visible())[0], favorite);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
+        assert.deepEqual(await groupBadges(), []);
         await cdp.typeInto('.select2-dropdown .select2-search__field', '普通');
         assert.deepEqual(await visible(), [other]);
+        assert.deepEqual(await groupBadges(), []);
+        await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
+        assert.deepEqual(await groupBadges(), ['测试分组乙']);
         await cdp.evalFn(() => { window.jQuery('#world_info').select2('close').select2('open'); });
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent === '收藏 1');
         assert.deepEqual(await visible(), [favorite]);
+    });
+});
+
+test('global picker recovers from an abandoned display without refreshing', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const installStaleDisplay = () => cdp.evalFn(() => {
+            const style = document.createElement('style');
+            style.dataset.grDropdownStyle = '1';
+            document.head.append(style);
+            const native = document.querySelector('#WIMultiSelector .select2-container');
+            native.style.display = 'none';
+            const display = document.createElement('div');
+            display.className = 'gr-select2-display';
+            display.style.cssText = 'cursor:pointer;min-height:30px';
+            display.dataset.grSelectId = 'world_info';
+            const chip = document.createElement('span');
+            chip.className = 'gr-select2-chip';
+            chip.dataset.value = document.getElementById('world_info').selectedOptions[0].value;
+            chip.innerHTML = '<span>已选世界书</span><button type="button" class="gr-select2-chip-remove">×</button>';
+            display.append(chip);
+            native.before(display);
+        });
+        await installStaleDisplay();
+        await cdp.evalFn(() => document.querySelector('style[data-gr-dropdown-style]').remove());
+        await waitForCondition(cdp, () => !document.querySelector('#WIMultiSelector .gr-select2-display'));
+        await cdp.clickSelector('#WIMultiSelector .select2-container');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-global-dd-bar')));
+        await cdp.evalFn(() => window.jQuery('#world_info').select2('close'));
+
+        await installStaleDisplay();
+        await cdp.clickSelector('#WIMultiSelector .gr-select2-display');
+        await waitForCondition(cdp, () => !document.querySelector('#WIMultiSelector .gr-select2-display') && Boolean(document.querySelector('.wbo-global-dd-bar')));
+        assert.deepEqual(await cdp.evalFn(() => [...document.getElementById('world_info').selectedOptions].map((option) => option.textContent)), [globalBook]);
+        await cdp.evalFn(() => window.jQuery('#world_info').select2('close'));
+        await installStaleDisplay();
+        await cdp.evalFn(() => window.__ST_TEST_HELPERS__.openGrGlobalPopover());
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar'));
+        await cdp.evalFn(() => {
+            const display = document.querySelector('#WIMultiSelector .gr-select2-display');
+            display.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            display.click();
+        });
+        await waitForCondition(cdp, () => !document.getElementById('gr-global-dropdown-container') && !document.querySelector('#WIMultiSelector .gr-select2-display'));
+        await installStaleDisplay();
+        await cdp.clickSelector('#WIMultiSelector .gr-select2-chip-remove');
+        await waitForCondition(cdp, () => !document.querySelector('#WIMultiSelector .gr-select2-display') && document.getElementById('world_info').selectedOptions.length === 0);
+    });
+});
+
+test('shared enhanced dropdown uses the actual opener, friendly role titles and one favorite control', async () => {
+    const secondBook = '另一角色原文件名';
+    const extras = Array.from({ length: 35 }, (_, index) => `样例长列表 ${index}`);
+    const statuses = ['全部状态', '仅已开启', '仅已关闭'];
+    const fixture = seed([secondBook, ...extras, ...statuses]);
+    fixture.characters.push({ avatar: 'second.png', name: '另一测试角色', data: { extensions: { world: secondBook } } });
+    fixture.extension_settings.worldbook_organizer.pinnedBooks = [];
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const openShared = (id) => cdp.evalFn((selectId, primary) => {
+            document.getElementById('gr-global-dropdown-container')?.remove();
+            const select = document.getElementById(selectId);
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            const container = document.createElement('div');
+            container.id = 'gr-global-dropdown-container';
+            container.className = 'gr-container-enhanced open';
+            container.style.cssText = 'position:fixed;top:150px;left:20px;width:400px;z-index:9000;background:white;color:#28394b';
+            const scroller = document.createElement('div');
+            scroller.className = 'gr-options';
+            scroller.style.cssText = 'display:block;max-height:160px;overflow:auto';
+            scroller.innerHTML = '<input type="search" spellcheck="false"><div class="gr-options-container"></div>';
+            const options = scroller.querySelector('.gr-options-container');
+            for (const [index, option] of [...select.options].entries()) {
+                if (selectId === 'world_editor_select' && option.textContent === primary) {
+                    const head = document.createElement('div');
+                    head.className = 'gr-group-label';
+                    head.textContent = '角色世界书';
+                    options.append(head);
+                }
+                const row = document.createElement('div');
+                row.className = 'gr-option';
+                row.style.minHeight = '29px';
+                row.dataset.index = String(index);
+                row.dataset.value = option.value;
+                row.textContent = option.textContent;
+                row.classList.toggle('selected', selectId === 'world_editor_select' ? option.value === '' : option.selected);
+                if (selectId === 'world_info') {
+                    row.classList.add('has-pin');
+                    row.insertAdjacentHTML('beforeend', '<span class="gr-option-pin"><svg viewBox="0 0 12 12"><path d="M0 0H12V12Z"/></svg></span>');
+                }
+                options.append(row);
+            }
+            container.append(scroller);
+            document.body.append(container);
+            if (selectId === 'world_info') {
+                setTimeout(() => {
+                    scroller.scrollTop = 600;
+                    container.dataset.hostAutoScroll = String(scroller.scrollTop);
+                }, 65);
+            }
+        }, id, characterBook);
+
+        await cdp.evalFn((name) => {
+            const select = document.getElementById('world_editor_select');
+            const chosen = [...select.options].find((item) => item.textContent === name);
+            window.jQuery(select).val(chosen.value).trigger('change');
+        }, characterBook);
+        await openShared('world_editor_select');
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] [data-wbo-editing-badge]'));
+        const state = await cdp.evalFn((primary, secondary) => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            const row = (name) => [...pop.querySelectorAll('.gr-option')].find((item) => item.dataset.wboEnhancedWorld === name);
+            return {
+                primaryTitle: row(primary)?.querySelector('.wbo-gr-world-title')?.firstChild.textContent,
+                secondaryTitle: row(secondary)?.querySelector('.wbo-gr-world-title')?.firstChild.textContent,
+                primarySection: row(primary)?.closest('.wbo-pop-section')?.dataset.wboDdGroup ?? null,
+                selected: [...pop.querySelectorAll('.gr-option.selected')].map((item) => item.dataset.wboEnhancedWorld),
+                placeholder: pop.querySelector('.gr-option[data-value=""]').textContent,
+            };
+        }, characterBook, secondBook);
+        assert.deepEqual(state, { primaryTitle: '测试角色', secondaryTitle: '另一测试角色', primarySection: null, selected: [characterBook], placeholder: '清除当前选择' });
+
+        await openShared('world_info_sort_order');
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar, #gr-global-dropdown-container .wbo-gr-pin-btn'))), false);
+
+        await cdp.evalFn((name) => {
+            const select = document.createElement('select');
+            select.id = 'fixture-preset-dropdown';
+            const option = document.createElement('option');
+            option.value = '0';
+            option.textContent = name;
+            select.append(option);
+            document.body.append(select);
+        }, characterBook);
+        await openShared('fixture-preset-dropdown');
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-source-role="other"]'));
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar, #gr-global-dropdown-container .wbo-gr-pin-btn, #gr-global-dropdown-container .wbo-enhanced-sticky'))), false);
+
+        await cdp.evalFn(async (labels) => {
+            document.getElementById('gr-global-dropdown-container').remove();
+            await new Promise((resolve) => setTimeout(resolve, 780));
+            const menu = document.createElement('div');
+            menu.id = 'gr-global-dropdown-container';
+            menu.className = 'gr-container-enhanced open';
+            menu.innerHTML = '<div class="gr-options"><div class="gr-options-container"><div class="gr-option gr-theme-toggle">切换到黑夜主题</div><div class="gr-option gr-filter-toggle">开启选中项置顶</div></div></div>';
+            const list = menu.querySelector('.gr-options-container');
+            for (const [index, label] of labels.entries()) {
+                const row = document.createElement('div');
+                row.className = 'gr-option';
+                row.dataset.value = ['all', 'enabled', 'disabled'][index];
+                row.textContent = label;
+                list.append(row);
+            }
+            document.body.append(menu);
+            await new Promise(requestAnimationFrame);
+        }, statuses);
+        assert.deepEqual(await cdp.evalFn(() => {
+            const menu = document.getElementById('gr-global-dropdown-container');
+            return {
+                decorated: Boolean(menu.querySelector('.wbo-dd-filter-bar, .wbo-gr-pin-btn, .wbo-pop-section')),
+                commands: [...menu.querySelectorAll('.gr-theme-toggle, .gr-filter-toggle')].map((row) => row.textContent),
+            };
+        }), { decorated: false, commands: ['切换到黑夜主题', '开启选中项置顶'] });
+
+        await openShared('world_info');
+        await waitForCondition(cdp, () => {
+            const pop = document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="global"]');
+            return Number(pop?.dataset.hostAutoScroll) > 0 && pop.querySelector('.gr-options').scrollTop === 0;
+        });
+        const sticking = await cdp.evalFn(async () => {
+            await new Promise((resolve) => setTimeout(resolve, 220));
+            const scroll = document.querySelector('#gr-global-dropdown-container .gr-options');
+            const header = scroll.querySelector('.wbo-enhanced-sticky');
+            const before = header.getBoundingClientRect().top;
+            scroll.scrollTop = 200;
+            return { scrollTop: scroll.scrollTop, retained: Math.abs(header.getBoundingClientRect().top - before) < 2 };
+        });
+        assert.ok(sticking.scrollTop > 0);
+        assert.equal(sticking.retained, true);
+        const theme = await cdp.evalFn(async () => {
+            const sticky = document.querySelector('.wbo-enhanced-sticky');
+            const idle = sticky.querySelector('.wbo-dd-pill:not(.is-active)');
+            const active = sticky.querySelector('.wbo-dd-pill.is-active');
+            const heading = document.querySelector('.wbo-pop-section .wbo-dd-group-head');
+            const colors = () => [getComputedStyle(idle).color, getComputedStyle(active).color, getComputedStyle(heading).backgroundColor];
+            const day = colors();
+            document.body.classList.add('dark-mode');
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            const night = colors();
+            document.body.classList.remove('dark-mode');
+            return { day, night };
+        });
+        assert.ok(theme.day.every((color, index) => color !== theme.night[index]), JSON.stringify(theme));
+        const pin = '#gr-global-dropdown-container [data-pin-world="普通测试书"]';
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelectorAll('.gr-option-pin').length, pin), 1);
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(`${selector} svg path`).getAttribute('d'), pin), 'M0 0H12V12Z');
+        await cdp.evalFn((selector) => document.querySelector(selector).click(), pin);
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('aria-pressed'), pin), 'true');
+
+    }, [], fixture);
+});
+
+test('native sort can open and switch repeatedly without dismissing the world editor', async () => {
+    for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+        await withHost(viewport, async (cdp) => {
+            await cdp.evalFn(() => {
+                const drawer = document.getElementById('WorldInfo');
+                drawer.classList.add('openDrawer');
+                drawer.classList.remove('closedDrawer');
+                document.getElementById('WI_panel_pin').checked = false;
+                const select = document.getElementById('world_info_sort_order');
+                select.options[0].textContent = '优先级';
+                select.options[1].textContent = '标题升序';
+                select.options[2].textContent = '自定义排序';
+                select.value = '2';
+                window.fixtureSortChanges = 0;
+                select.addEventListener('change', () => window.fixtureSortChanges++);
+                document.addEventListener('mousedown', (event) => {
+                    if (event.target !== select) return;
+                    event.preventDefault();
+                    const openMenu = document.getElementById('gr-global-dropdown-container');
+                    if (openMenu) {
+                        openMenu.remove();
+                        return;
+                    }
+                    const menu = document.createElement('div');
+                    menu.id = 'gr-global-dropdown-container';
+                    menu.className = 'gr-container-enhanced open';
+                    const { left, top, height } = select.getBoundingClientRect();
+                    menu.style.cssText = `position:fixed;left:${Math.min(left, innerWidth - 160)}px;top:${Math.min(top, innerHeight - 200)}px;width:150px;min-width:0;height:${height}px;overflow:visible;padding:0;border:0;z-index:20000;background:white;color:black`;
+                    const options = document.createElement('div');
+                    options.className = 'gr-options-container';
+                    options.style.cssText = `position:absolute;top:${height}px;width:100%;background:white`;
+                    for (const option of select.options) {
+                        const row = document.createElement('div');
+                        row.className = 'gr-option';
+                        row.dataset.value = option.value;
+                        row.textContent = option.textContent;
+                        row.style.minHeight = '28px';
+                        row.addEventListener('mousedown', (press) => {
+                            press.preventDefault();
+                            option.selected = true;
+                            select.dispatchEvent(new Event('change', { bubbles: true }));
+                            menu.remove();
+                        });
+                        options.append(row);
+                    }
+                    menu.append(options);
+                    document.body.append(menu);
+                    document.addEventListener('click', (click) => click.stopImmediatePropagation(), { capture: true, once: true });
+                }, true);
+            });
+
+            for (const [index, value] of ['1', '0', '2'].entries()) {
+                await cdp.clickSelector('#world_info_sort_order');
+                await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .gr-option'));
+                assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar, #gr-global-dropdown-container .wbo-gr-pin-btn'))), false);
+                const hit = await cdp.clickSelector(`#gr-global-dropdown-container .gr-option[data-value="${value}"]`, { scroll: false });
+                assert.equal(hit.hit, true, `Sort option click at ${hit.cx},${hit.cy} hit ${hit.topTag} ${hit.topCls}`);
+                // A detached popup row can leave the click on the body, outside the drawer.
+                await cdp.evalFn(() => document.body.click());
+                assert.deepEqual(await cdp.evalFn(() => ({
+                    open: document.getElementById('WorldInfo').classList.contains('openDrawer'),
+                    value: document.getElementById('world_info_sort_order').value,
+                    changes: window.fixtureSortChanges,
+                })), { open: true, value, changes: index + 1 });
+            }
+            await cdp.clickSelector('#host-outside-blank');
+            assert.equal(await cdp.evalFn(() => document.getElementById('WorldInfo').classList.contains('closedDrawer')), true);
+        });
+    }
+});
+
+test('preset group switching is offered only when the compatible script is detected and stays opt-in', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const setting = '[data-setting="adaptEnhancedPresetGroups"]';
+        const openSettings = async () => {
+            await openManager(cdp);
+            await cdp.clickSelector('#wbo-manager-overlay [data-action="open-settings-modal"]');
+            await cdp.clickSelector('[data-settings-tab="behavior"]');
+        };
+        const closeSettings = async () => {
+            await cdp.clickSelector('#wbo-settings-close-btn');
+            await cdp.clickSelector('#wbo-manager-overlay .wbo-modal-close');
+        };
+        await openSettings();
+        assert.equal(await cdp.evalFn((selector) => Boolean(document.querySelector(selector)), setting), false);
+        await closeSettings();
+
+        await cdp.evalFn(() => {
+            window.TavernHelper = { getScriptTrees: () => [{ type: 'folder', scripts: [{ type: 'script', enabled: false,
+                content: 'gr-global-dropdown-container gr-select2-display data-gr-dropdown-style' }] }] };
+        });
+        await openSettings();
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);
+        await closeSettings();
+
+        const openPreset = () => cdp.evalFn(() => {
+            document.getElementById('gr-global-dropdown-container')?.remove();
+            if (!document.querySelector('style[data-gr-dropdown-style]')) {
+                const marker = document.createElement('style');
+                marker.dataset.grDropdownStyle = '1';
+                document.head.append(marker);
+            }
+            let select = document.getElementById('settings_preset_openai');
+            if (!select) {
+                select = document.createElement('select');
+                select.id = 'settings_preset_openai';
+                select.innerHTML = '<option value="1">测试方案甲</option><option value="2">测试方案乙</option>';
+                document.body.append(select);
+            }
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            const pop = document.createElement('div');
+            pop.id = 'gr-global-dropdown-container';
+            pop.className = 'gr-container-enhanced open';
+            pop.style.cssText = 'position:fixed;top:120px;left:20px;width:320px;z-index:9000;background:white';
+            pop.innerHTML = `<div class="gr-options"><div class="gr-search-box"><input type="search" placeholder="搜索选项" spellcheck="false"></div>
+                <div class="gr-options-container">
+                    <div class="gr-group-label">预设测试组甲</div><div class="gr-option">测试方案甲<span class="gr-option-pin"></span></div>
+                    <div class="gr-group-label">预设测试组乙</div><div class="gr-option">测试方案乙<span class="gr-option-pin"></span></div>
+                </div></div>`;
+            document.body.append(pop);
+        });
+        await openPreset();
+        await waitForCondition(cdp, () => document.querySelector('[data-wbo-source-role="preset"]'));
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.wbo-preset-filter-bar'))), false);
+        await cdp.evalFn(() => document.getElementById('gr-global-dropdown-container').remove());
+        await openSettings();
+        await cdp.clickSelector(setting);
+        await closeSettings();
+        await openPreset();
+        await waitForCondition(cdp, () => document.querySelector('.wbo-preset-filter-bar'));
+        await cdp.clickSelector('.wbo-preset-filter-bar [data-wbo-pill="2"]');
+        const state = await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            return {
+                visible: [...pop.querySelectorAll('.gr-option:not(.wbo-preset-group-hidden)')].map((row) => row.textContent.trim()),
+                nativePins: pop.querySelectorAll('.gr-option-pin:not(.wbo-gr-pin-btn)').length,
+                search: pop.querySelector('.gr-search-box input').placeholder,
+                selection: document.getElementById('settings_preset_openai').value,
+            };
+        });
+        assert.deepEqual(state, { visible: ['测试方案乙'], nativePins: 2, search: '搜索选项', selection: '1' });
+        await cdp.evalFn(() => document.querySelector('style[data-gr-dropdown-style]').remove());
+        await waitForCondition(cdp, () => !document.querySelector('.wbo-preset-filter-bar, .wbo-preset-group-hidden'));
     });
 });
 
@@ -205,10 +555,16 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         await drag(`${panel} .wbo-resize-se`, -55, -240);
         const smaller = await rect(panel);
         assert.ok(smaller.width < full.width && smaller.height < full.height);
-        await drag(`${panel} .wbo-modal-title`, 20, 75);
+        await drag(`${panel} .wbo-modal-title`, 65, 270);
         const moved = await rect(panel);
         assert.ok(moved.left > smaller.left && moved.top > smaller.top);
+        assert.ok(moved.right >= 376 && moved.bottom >= 830);
+        await cdp.clickSelector('#wbo-mgr-search-input', { scroll: false });
+        assert.equal(await cdp.evalFn(() => document.activeElement?.id), 'wbo-mgr-search-input');
         await cdp.resizeViewport(390, 450);
+        const closeBtn = await rect(`${panel} .wbo-modal-close`);
+        assert.ok(closeBtn.top >= 0 && closeBtn.bottom <= 450);
+        assert.equal(await cdp.evalFn(() => document.activeElement?.id), 'wbo-mgr-search-input');
         await cdp.resizeViewport(390, 844);
         assert.deepEqual(await rect(panel), moved);
         await cdp.clickSelector('[data-wbo-fullscreen-btn]');
