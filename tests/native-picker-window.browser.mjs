@@ -58,13 +58,13 @@ test('desktop native global picker keeps its search, filters by group and opens 
             .filter((row) => row.getBoundingClientRect().height > 0).map((row) => row.dataset.wboWorld));
         const groupBadges = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .wbo-s2-badge:not(.is-editing)')]
             .filter((badge) => badge.getBoundingClientRect().height > 0).map((badge) => badge.textContent.trim()));
-        assert.equal(await activePill(), '收藏 1');
+        assert.equal(await activePill(), '已收藏 1');
         assert.deepEqual(await visible(), [favorite]);
         assert.deepEqual(await groupBadges(), ['测试分组甲']);
         await cdp.evalFn(() => { document.querySelector('.select2-dropdown').style.width = '640px'; });
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .wbo-dd-expand-btn').hidden);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
-        assert.equal(await cdp.evalFn(() => document.querySelector('.select2-results__options').firstElementChild.textContent), '收藏');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.select2-results__options').firstElementChild.textContent), '已收藏');
         assert.equal((await visible())[0], favorite);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
@@ -79,7 +79,7 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
         assert.deepEqual(await groupBadges(), ['测试分组乙']);
         await cdp.evalFn(() => { window.jQuery('#world_info').select2('close').select2('open'); });
-        await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent === '收藏 1');
+        await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent === '已收藏 1');
         assert.deepEqual(await visible(), [favorite]);
     });
 });
@@ -721,7 +721,7 @@ test('mobile global dropdown handles direct option rows without native search', 
         const visible = () => cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .gr-option')]
             .filter((row) => row.getBoundingClientRect().height > 0)
             .map((row) => row.querySelector('[data-pin-world]').getAttribute('data-pin-world')));
-        assert.equal(await activePill(), '收藏 1');
+        assert.equal(await activePill(), '已收藏 1');
         assert.deepEqual(await visible(), [favorite]);
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-pop-search').getAttribute('spellcheck')), 'false');
         await cdp.clickSelector(`${bar} [data-wbo-pill="__all__"]`);

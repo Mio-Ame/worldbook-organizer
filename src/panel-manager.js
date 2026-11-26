@@ -386,7 +386,7 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                     <button type="button"
                         class="wbo-icon-btn wbo-star-btn${book.isPinned ? ' is-pinned' : ''}"
                         data-action="toggle-pin-book"
-                        title="${book.isPinned ? '取消置顶' : '置顶'}"
+                        title="${book.isPinned ? '取消收藏' : '收藏此世界书'}"
                         aria-pressed="${book.isPinned ? 'true' : 'false'}">
                         <i class="${book.isPinned ? 'fa-solid' : 'fa-regular'} fa-star"></i>
                     </button>
@@ -2410,12 +2410,12 @@ function openManagerModal() {
                     listEl?.querySelectorAll(`.wbo-book-item[data-book="${CSS.escape(bookName)}"] .wbo-star-btn`).forEach((btn) => {
                         btn.classList.toggle('is-pinned', nextPinned);
                         btn.setAttribute('aria-pressed', nextPinned ? 'true' : 'false');
-                        btn.setAttribute('title', nextPinned ? '取消置顶' : '置顶');
+                        btn.setAttribute('title', nextPinned ? '取消收藏' : '收藏此世界书');
                         const icon = btn.querySelector('i');
                         if (icon) icon.className = `${nextPinned ? 'fa-solid' : 'fa-regular'} fa-star`;
                     });
 
-                    // Update `★ 已置顶` filter pill count in-place
+                    // Update `★ 已收藏` filter pill count in-place
                     const pillsEl = modal.querySelector('#wbo-mgr-pills');
                     const groupBarEl = modal.querySelector('#wbo-mgr-groupbar');
                     const listCreateBtn = modal.querySelector('#wbo-mgr-list-create-btn');
@@ -2430,7 +2430,7 @@ function openManagerModal() {
                             newPill.className = 'wbo-pill';
                             newPill.setAttribute('data-action', 'select-filter');
                             newPill.setAttribute('data-group-id', SPECIAL_GROUPS.PINNED);
-                            newPill.innerHTML = `<span>★ 已置顶</span><span class="wbo-pill-count">${classification.pinnedCount}</span>`;
+                            newPill.innerHTML = `<span>★ 已收藏</span><span class="wbo-pill-count">${classification.pinnedCount}</span>`;
                             const firstPill = pillsEl.querySelector('.wbo-pill');
                             if (firstPill) firstPill.insertAdjacentElement('afterend', newPill);
                             else pillsEl.appendChild(newPill);
@@ -2443,7 +2443,7 @@ function openManagerModal() {
                     }
 
                     await _callbacks.onMutation({ save: true, pinInPlaceOnly: true });
-                    showToast('info', nextPinned ? `已置顶「${meta?.primaryTitle || bookName}」` : '已取消置顶');
+                    showToast('info', nextPinned ? `已收藏「${meta?.primaryTitle || bookName}」` : '已取消收藏');
                 }
                 break;
             }
@@ -2587,7 +2587,7 @@ function refreshManagerModalContent({ backgroundCatchUp = false } = {}) {
         ...(classification.pinnedCount > 0 || settings.activeFilterGroupId === SPECIAL_GROUPS.PINNED
             ? [{
                 id: SPECIAL_GROUPS.PINNED,
-                label: '★ 已置顶',
+                label: '★ 已收藏',
                 count: classification.pinnedCount || 0,
             }]
             : []),
@@ -2804,18 +2804,18 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             renderSpecs.push({
                 type: 'section',
                 id: SPECIAL_GROUPS.PINNED,
-                name: '★ 已置顶',
+                name: '★ 已收藏',
                 color: '#e09f3e',
-                collapsed: false,
+                collapsed: Boolean(q) ? false : Boolean(settings.pinnedGroupCollapsed),
                 isCustom: false,
-                isSingleView: true,
+                isSingleView: false,
                 isMovable: false,
                 books: pinnedList,
             });
         } else {
             renderSpecs.push({
                 type: 'raw',
-                html: `<div class="wbo-empty-hint">${q ? '已置顶中无匹配世界书' : '暂无已置顶的世界书，点击书行右侧 ★ 即可置顶'}</div>`,
+                html: `<div class="wbo-empty-hint">${q ? '已收藏中无匹配世界书' : '暂无已收藏的世界书，点击书行右侧 ★ 即可收藏'}</div>`,
             });
         }
     } else if (isAllView) {
@@ -2839,7 +2839,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             renderSpecs.push({
                 type: 'section',
                 id: SPECIAL_GROUPS.PINNED,
-                name: '★ 已置顶',
+                name: '★ 已收藏',
                 color: '#e09f3e',
                 collapsed: Boolean(q) ? false : Boolean(settings.pinnedGroupCollapsed),
                 isCustom: false,

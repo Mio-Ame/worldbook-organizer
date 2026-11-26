@@ -2416,6 +2416,17 @@ function installMockNativeFilterDom({ innerWidth = 390, innerHeight = 844 } = {}
                 }
             }
         }
+        prepend(...nodes) {
+            for (const node of [...nodes].reverse()) {
+                this.insertBefore(typeof node === 'string' ? new MockNode(3, node) : node, this.firstChild);
+            }
+        }
+        replaceWith(...nodes) {
+            const parent = this.parentNode;
+            if (!parent) return;
+            for (const node of nodes) parent.insertBefore(typeof node === 'string' ? new MockNode(3, node) : node, this);
+            this.remove();
+        }
         insertBefore(newNode, refNode) {
             if (!refNode) return this.appendChild(newNode);
             newNode.remove();
