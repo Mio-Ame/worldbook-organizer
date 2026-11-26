@@ -45,6 +45,12 @@ async function withHost(viewport, verify, extraBooks, fixture = seed(extraBooks)
 
 test('desktop native global picker keeps its search, filters by group and opens on 收藏', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        assert.deepEqual(await cdp.evalFn(() => [
+            document.querySelector('#wbo-mgr-floating-tools-btn'),
+            document.querySelector('[data-wbo-fullscreen-btn="manager"]'),
+        ].map((button) => getComputedStyle(button).display)), ['none', 'none']);
+        await cdp.clickSelector('.wbo-manager-modal .wbo-modal-close');
         await cdp.clickSelector('#WIMultiSelector .select2-container');
         await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
         const activePill = () => cdp.evalFn(() => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent);
@@ -722,7 +728,7 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         assert.deepEqual(await cdp.evalFn(() => {
             const restore = document.querySelector('[data-wbo-fullscreen-btn="manager"]');
             const minimize = document.querySelector('[data-wbo-minimize-btn]');
-            return [restore.textContent.trim(), restore.offsetHeight, minimize.offsetHeight,
+            return [restore.getAttribute('aria-label'), restore.offsetHeight, minimize.offsetHeight,
                 getComputedStyle(restore).border === getComputedStyle(minimize).border];
         }), ['还原窗口', 30, 30, true]);
         await cdp.clickSelector(windowButton);

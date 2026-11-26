@@ -306,11 +306,11 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
             syncAllNativeEntryPoints();
             startNativeEditorObserver(syncEntryPointsIdle);
         };
-        if (typeof globalThis.requestIdleCallback === 'function') {
-            const id = globalThis.requestIdleCallback(run, { timeout: 1000 });
-            _mountJob = () => globalThis.cancelIdleCallback?.(id);
+        if (typeof globalThis.requestAnimationFrame === 'function') {
+            const id = globalThis.requestAnimationFrame(run);
+            _mountJob = () => globalThis.cancelAnimationFrame?.(id);
         } else {
-            const id = setTimeout(run, 120);
+            const id = setTimeout(run, 16);
             _mountJob = () => clearTimeout(id);
         }
     };

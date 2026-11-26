@@ -44,6 +44,11 @@
     top: 50%;
     transform: translate(-50%, -50%);
     text-align: center;
+    margin: 0 !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex: none !important;
+    box-sizing: border-box;
 }
 
 #world_popup_entries_list .world_entry .WIEnteryHeaderControls input[type="number"]:is([name="order"], [name="probability"]) {

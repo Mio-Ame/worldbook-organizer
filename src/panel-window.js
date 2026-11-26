@@ -201,9 +201,8 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const getBounds = () => {
         const vw = Math.max(globalThis.innerWidth || document.documentElement?.clientWidth || 1200, 280);
         const vh = Math.max(globalThis.innerHeight || document.documentElement?.clientHeight || 800, 320);
-        const isMobile = vw <= 680 || Boolean(mobileWindowKey && (
+        const isMobile = (vw <= 680 && Boolean(globalThis.matchMedia?.('(pointer: coarse)')?.matches)) || Boolean(mobileWindowKey && (
             globalThis.__TAURITAVERN_HOST__?.kind === 'mobile'
-            || globalThis.matchMedia?.('(pointer: coarse)')?.matches
         ));
         const minW = isMobile ? Math.min(310, Math.max(240, vw - 16)) : 340;
         const minH = isMobile ? 250 : 280;
@@ -217,7 +216,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const updateFullscreenButton = () => {
         if (!fullScreen) return;
         const label = isMobileFloating() ? '最大化' : '还原窗口';
-        fullScreen.querySelector('span').textContent = label;
+        fullScreen.setAttribute('aria-label', label);
         fullScreen.title = isMobileFloating() ? '最大化' : '还原窗口后可移动和调整大小';
         fullScreen.querySelector('i').className = `fa-solid ${isMobileFloating() ? 'fa-expand' : 'fa-compress'}`;
     };

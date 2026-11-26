@@ -31,6 +31,7 @@ function syncNativeLayout(list, pagination, button) {
     const row = list?.querySelector('.world_entry:not(.weg-native-group-collapsed) .inline-drawer-header');
     const sizeControl = pagination?.querySelector('select');
     if (nativeLayout?.heading === heading && nativeLayout?.row === row && nativeLayout?.sizeControl === sizeControl && nativeLayout?.button === button) {
+        nativeLayout.update();
         return;
     }
     clearNativeLayout();
@@ -39,10 +40,15 @@ function syncNativeLayout(list, pagination, button) {
     const update = () => {
         if (heading?.clientWidth && row?.offsetWidth && columns.length && columns.every(([, control]) => control)) {
             const headerLeft = heading.getBoundingClientRect().left;
-            const geometry = columns.map(([label, control]) => [label, control.getBoundingClientRect()]);
+            const scale = heading.getBoundingClientRect().width / heading.offsetWidth || 1;
+            const geometry = columns.map(([label, control]) => {
+                const visible = control.offsetWidth ? control : control.nextElementSibling;
+                return [label, visible?.getBoundingClientRect()];
+            });
+            if (geometry.some(([, rect]) => !rect?.width)) return;
             for (const [label, { left, width }] of geometry) {
-                label.style.setProperty('--weg-native-column-center', `${left + width / 2 - headerLeft}px`);
-                label.style.setProperty('--weg-native-column-width', `${width}px`);
+                label.style.setProperty('--weg-native-column-center', `${(left + width / 2 - headerLeft) / scale - heading.clientLeft}px`);
+                label.style.setProperty('--weg-native-column-width', `${width / scale}px`);
             }
             heading.classList.add('weg-native-aligned-columns');
         }
@@ -54,13 +60,17 @@ function syncNativeLayout(list, pagination, button) {
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(update) : null;
     if (list) observer?.observe(list);
     if (row) observer?.observe(row);
+    for (const [, control] of columns) if (control) observer?.observe(control);
     if (sizeControl) observer?.observe(sizeControl);
-    nativeLayout = { heading, row, sizeControl, button, observer };
+    const styleObserver = typeof MutationObserver === 'function' && list ? new MutationObserver(update) : null;
+    styleObserver?.observe(list, { attributes: true, attributeFilter: ['style'] });
+    nativeLayout = { heading, row, sizeControl, button, observer, styleObserver, update };
     update();
 }
 
 function clearNativeLayout() {
     nativeLayout?.observer?.disconnect();
+    nativeLayout?.styleObserver?.disconnect();
     nativeLayout?.heading?.classList.remove('weg-native-aligned-columns');
     nativeLayout?.button?.style.removeProperty('--weg-native-page-height');
     nativeLayout?.button?.style.removeProperty('--weg-native-page-font');
@@ -264,6 +274,7 @@ export function syncNativeEntryGroupsTheme(settings = null) {
     decoratedList.classList.toggle('weg-theme-light', mode === 'light');
     decoratedList.classList.toggle('weg-theme-dark', mode !== 'light');
     setAttributeIfChanged(decoratedList, 'data-weg-palette', palette);
+    nativeLayout?.update();
 }
 
 function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) {

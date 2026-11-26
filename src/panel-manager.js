@@ -1372,10 +1372,10 @@ function openManagerModal() {
                         <i class="fa-solid fa-gear"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-mgr-floating-tools-btn" id="wbo-mgr-floating-tools-btn" aria-controls="wbo-mgr-floating-tools" aria-expanded="false" title="展开或收起搜索与分组工具">
-                        <i class="fa-solid fa-sliders" aria-hidden="true"></i><span>工具</span>
+                        <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn="manager" title="还原窗口后可移动和调整大小">
-                        <i class="fa-solid fa-compress" aria-hidden="true"></i><span>还原窗口</span>
+                        <i class="fa-solid fa-compress" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-minimize-btn" data-wbo-minimize-btn title="最小化（保留草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus"></i>

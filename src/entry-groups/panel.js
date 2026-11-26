@@ -605,7 +605,7 @@ function ensureModalShell() {
                         <i class="fa-solid fa-sliders" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="weg-icon-btn" data-wbo-fullscreen-btn="entry-groups" title="还原窗口后可移动和调整大小">
-                        <i class="fa-solid fa-compress" aria-hidden="true"></i><span>还原窗口</span>
+                        <i class="fa-solid fa-compress" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="weg-icon-btn" id="weg-btn-minimize" title="暂收窗口（保留状态与草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus" aria-hidden="true"></i>
@@ -1347,8 +1347,8 @@ async function undoWorldbookGroupChange(worldName) {
     }
 
     const callbacks = _callbacks;
-    setGroupToggleBusy(true);
     try {
+        setGroupToggleBusy(true);
         const result = await applyWorldbookTogglePlan(worldName, action.togglePlan, { preserveNativePosition: true });
         if (_callbacks !== callbacks) return;
         if (!result.ok) {
@@ -1365,6 +1365,8 @@ async function undoWorldbookGroupChange(worldName) {
             });
         }
         showToast('info', '已恢复整组开关前的条目状态');
+    } catch (error) {
+        showToast('error', `撤销未完成，请重试。${error?.message || ''}`);
     } finally {
         setGroupToggleBusy(false, worldName);
     }
@@ -1390,8 +1392,8 @@ async function toggleWorldbookGroup(worldName, groupId, targetEnabled, { forceBi
     const chatKey = getCurrentChatSaveContext()?.chatKey;
     const callbacks = _callbacks;
 
-    setGroupToggleBusy(true);
     try {
+        setGroupToggleBusy(true);
         const result = await applyWorldbookTogglePlan(worldName, (summaries) => {
             if (targetEnabled === undefined) {
                 const entries = summaries.filter((entry) => !entry.isPureBanner
@@ -1433,6 +1435,8 @@ async function toggleWorldbookGroup(worldName, groupId, targetEnabled, { forceBi
                 ? `已切换本档阶段至「${group.name}」`
                 : `已切换至「${group.name}」，其余 IF 线已自动关闭`);
         }
+    } catch (error) {
+        showToast('error', `整组切换未完成，请重试。${error?.message || ''}`);
     } finally {
         setGroupToggleBusy(false, worldName);
     }
