@@ -3440,6 +3440,10 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         <button type="button" class="wbo-book-more-item" data-more-act="edit-book">
             <i class="fa-solid fa-arrow-up-right-from-square"></i><span>在编辑器中打开</span>
         </button>
+        ${isEntryGroupingAvailable() ? `
+        <button type="button" class="wbo-book-more-item" data-more-act="entry-groups">
+            <i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>条目分组</span>
+        </button>` : ''}
         <button type="button" class="wbo-book-more-item" data-more-act="rename-alias">
             <i class="fa-solid fa-pen-to-square"></i><span>编辑名称与备注</span>
         </button>
@@ -3513,6 +3517,8 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             if (act === 'edit-book') {
                 openWorldInNativeEditor(bookMeta.realName);
                 closeManagerModal();
+            } else if (act === 'entry-groups') {
+                openEntryGroupsForBook(bookMeta.realName);
             } else if (act === 'rename-alias') {
                 openAliasNoteModal(bookMeta);
             } else if (act === 'move-group') {

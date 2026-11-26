@@ -221,7 +221,7 @@ function setAttributeIfChanged(element, name, value) {
     if (element.getAttribute(name) !== value) element.setAttribute(name, value);
 }
 
-function updateGroupControls(parent, name, collapsed, canFold, total, enabled, radio, partial, pinned) {
+function updateGroupControls(parent, name, collapsed, canFold, total, enabled, radio, partial, pinned, paused) {
     const disclosure = parent.querySelector('.weg-native-group-disclosure');
     const toggle = parent.querySelector('.weg-native-group-switch');
     if (disclosure.lastElementChild.textContent !== name) disclosure.lastElementChild.textContent = name;
@@ -231,8 +231,8 @@ function updateGroupControls(parent, name, collapsed, canFold, total, enabled, r
     const on = total > 0 && (radio ? enabled > 0 : enabled === total);
     const state = partial ? 'mixed' : on ? 'true' : enabled > 0 ? 'mixed' : 'false';
     setAttributeIfChanged(toggle, 'aria-checked', state);
-    const action = partial ? '切换' : on ? '关闭' : '开启';
-    const label = `${action}「${name}」整组条目`;
+    const action = partial ? '切换整组条目' : enabled > 0 ? '关闭整组并记住搭配' : paused ? '恢复上次搭配' : '开启整组条目';
+    const label = `${action}：${name}`;
     setAttributeIfChanged(toggle, 'aria-label', label);
     setAttributeIfChanged(toggle, 'title', label);
     const icon = `fa-solid ${state === 'mixed' ? 'fa-circle-half-stroke' : on ? 'fa-toggle-on' : 'fa-toggle-off'}`;
@@ -385,6 +385,10 @@ export function syncNativeEntryGroupsTheme(settings = null) {
 }
 
 function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) {
+    if (!config?.groups?.length) {
+        clearNativeGroupRows();
+        return;
+    }
     const rows = [...(list?.querySelectorAll('.world_entry[uid]') || [])];
     if (!visibleBook || !rows?.length) {
         clearNativeGroupRows();
@@ -468,7 +472,7 @@ function syncGroupRows(list, { config, disabledByUid, banners, themeSettings }) 
         if (heading.dataset.groupId !== groupId) heading.dataset.groupId = groupId;
         const { total, enabled } = groupCounts.get(groupId) || { total: 0, enabled: 0 };
         updateGroupControls(heading, name, collapsed, groups.size > 0, total, enabled, group?.mode === GROUP_MODES.RADIO, partial,
-            config?.pinnedGroupIds?.includes(groupId));
+            config?.pinnedGroupIds?.includes(groupId), Boolean(config?.pausedGroupStates?.[groupId]));
         groupHeadings.set(groupId, heading);
         groupMarkers.push(heading);
     }

@@ -1507,6 +1507,22 @@ test('native grouping stays enabled by default and remembers an explicit opt-out
     assert.equal(settings.books['设置测试书'].assignments['0'], 'g1');
 });
 
+test('native entry choice is a strict persisted boolean independent of the old hint and display permission', () => {
+    for (const value of [undefined, null, false, 0, 1, 'true', {}, []]) {
+        assert.equal(normalizeSettings({ nativeEntryChoiceSeen: value, nativeEntryHintSeen: true }).nativeEntryChoiceSeen, false);
+    }
+    const settings = normalizeSettings({ nativeEntryChoiceSeen: true, nativeEntryHintSeen: false,
+        showNativeEntryBtn: false, enableNativeGrouping: true, books: { '选择测试书': {
+            groups: [{ id: 'g1', name: '测试组' }], assignments: { 0: 'g1' },
+        } } });
+    const restored = normalizeSettings(JSON.parse(JSON.stringify(settings)));
+    assert.equal(restored.nativeEntryChoiceSeen, true);
+    assert.equal(restored.nativeEntryHintSeen, false);
+    assert.equal(restored.showNativeEntryBtn, false);
+    assert.equal(restored.enableNativeGrouping, true);
+    assert.equal(restored.books['选择测试书'].assignments['0'], 'g1');
+});
+
 test('experimental automations default off and upgrading settings pauses both once', () => {
     const flags = (settings) => [settings.autoSwitchOnChatChange, settings.enableSceneAutoToggle];
     assert.deepEqual(flags(normalizeSettings(null)), [false, false]);

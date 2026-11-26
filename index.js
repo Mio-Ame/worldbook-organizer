@@ -62,7 +62,7 @@ import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.11';
+export const STYLE_ASSET_VERSION = '2.35.12';
 let _initialized = false;
 let _disabled = false;
 let _bootCleanup = null;

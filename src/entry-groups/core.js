@@ -157,9 +157,19 @@ export function normalizeBookConfig(raw) {
         }
     }
 
+    const pausedGroupStates = Object.fromEntries(Object.entries(
+        src.pausedGroupStates && typeof src.pausedGroupStates === 'object' && !Array.isArray(src.pausedGroupStates) ? src.pausedGroupStates : {},
+    ).flatMap(([groupId, states]) => {
+        if ((!seenIds.has(groupId) && groupId !== SPECIAL_GROUP_UNGROUPED) || !states || typeof states !== 'object' || Array.isArray(states)) return [];
+        const entries = Object.entries(states).filter(([uid, disabled]) => uid && typeof disabled === 'boolean'
+            && (assignments[uid] || SPECIAL_GROUP_UNGROUPED) === groupId);
+        return entries.length ? [[groupId, Object.fromEntries(entries)]] : [];
+    }));
+
     return {
         groups,
         assignments,
+        pausedGroupStates,
         ungroupedCollapsed: Boolean(src.ungroupedCollapsed),
         pinnedGroupIds,
         pinnedEntryUids,
@@ -204,6 +214,7 @@ export function cloneBookConfig(bookConfig) {
             sceneKeywords: [...(g.sceneKeywords || [])],
         })),
         assignments: { ...norm.assignments },
+        pausedGroupStates: Object.fromEntries(Object.entries(norm.pausedGroupStates).map(([id, states]) => [id, { ...states }])),
         ungroupedCollapsed: norm.ungroupedCollapsed,
         pinnedGroupIds: [...norm.pinnedGroupIds],
         pinnedEntryUids: [...norm.pinnedEntryUids],
@@ -218,6 +229,7 @@ export function isBookConfigEmpty(bookConfig) {
         && Object.keys(norm.assignments).length === 0
         && norm.pinnedGroupIds.length === 0
         && norm.pinnedEntryUids.length === 0
+        && Object.keys(norm.pausedGroupStates).length === 0
     );
 }
 
@@ -268,6 +280,7 @@ export function normalizeSettings(raw) {
         enableNativeGrouping: src.enableNativeGrouping !== false,
         showNativeEntryBtn: src.showNativeEntryBtn !== false,
         nativeEntryHintSeen: src.nativeEntryHintSeen === true,
+        nativeEntryChoiceSeen: src.nativeEntryChoiceSeen === true,
         showWandMenuEntry: src.showWandMenuEntry !== false,
         closeOnLocate: src.closeOnLocate !== false,
         syncGreetingTags: src.syncGreetingTags !== false,
@@ -537,6 +550,12 @@ export function pruneOrphanAssignments(bookConfig, validUidSet) {
         bookConfig.pinnedGroupIds = nextPinnedGroups;
     }
 
+    for (const states of Object.values(bookConfig.pausedGroupStates || {})) {
+        for (const uid of Object.keys(states)) {
+            if (!validUidSet.has(uid)) { delete states[uid]; removed++; }
+        }
+    }
+    bookConfig.pausedGroupStates = normalizeBookConfig(bookConfig).pausedGroupStates;
     return removed;
 }
 
@@ -611,6 +630,7 @@ export function removeGroupFromBookConfig(bookConfig, groupId) {
     if (idx < 0) return false;
 
     bookConfig.groups.splice(idx, 1);
+    if (bookConfig.pausedGroupStates) delete bookConfig.pausedGroupStates[gid];
     if (bookConfig.assignments && typeof bookConfig.assignments === 'object') {
         for (const [uid, assigned] of Object.entries(bookConfig.assignments)) {
             if (assigned === gid) delete bookConfig.assignments[uid];
@@ -924,6 +944,56 @@ export function computeGroupTogglePlan(entries, rawBookConfig, groupId, targetEn
     }
 
     return plan;
+}
+
+export function computeRememberedGroupToggle(entries, rawBookConfig, groupId, targetEnabled, { allEnabled = false } = {}) {
+    const config = cloneBookConfig(rawBookConfig);
+    const states = config.pausedGroupStates;
+    const list = (Array.isArray(entries) ? entries : []).filter((entry) => !entry.isPureBanner);
+    const buckets = new Map();
+    for (const entry of list) {
+        const id = config.assignments[entry.uid] || SPECIAL_GROUP_UNGROUPED;
+        if (!buckets.has(id)) buckets.set(id, []);
+        buckets.get(id).push(entry);
+    }
+    const membersOf = (id) => buckets.get(id) || [];
+    const members = membersOf(groupId);
+    const group = config.groups.find((item) => item.id === groupId);
+    if ((!group && groupId !== SPECIAL_GROUP_UNGROUPED) || !members.length) {
+        return { plan: new Map(), pausedGroupStates: states, targetEnabled: false, restoring: false };
+    }
+    const enabled = targetEnabled ?? !members.some((entry) => !entry.disabled);
+    const saved = states[groupId];
+    const restoring = Boolean(enabled && saved && !allEnabled);
+    const plan = computeGroupTogglePlan(list, config, groupId, enabled);
+    const remember = (id, items) => {
+        if (items.some((entry) => !entry.disabled)) states[id] = Object.fromEntries(items.map((entry) => [entry.uid, Boolean(entry.disabled)]));
+    };
+    if (!enabled) remember(groupId, members);
+    else {
+        if (restoring) {
+            let radioChosen = false;
+            for (const entry of members) {
+                let disabled = Object.hasOwn(saved, entry.uid) ? saved[entry.uid] : Boolean(entry.disabled);
+                if (group?.mode === GROUP_MODES.RADIO && !disabled) {
+                    disabled = radioChosen;
+                    radioChosen = true;
+                }
+                plan.set(entry.uid, disabled);
+            }
+        }
+        delete states[groupId];
+        if (group?.mode === GROUP_MODES.IF_LINE) {
+            const hasActiveTarget = members.some((entry) => plan.get(entry.uid) === false);
+            for (const sibling of config.groups) {
+                if (sibling.id === groupId || sibling.mode !== GROUP_MODES.IF_LINE) continue;
+                const items = membersOf(sibling.id);
+                if (hasActiveTarget) remember(sibling.id, items);
+                else for (const entry of items) plan.delete(entry.uid);
+            }
+        }
+    }
+    return { plan, pausedGroupStates: states, targetEnabled: enabled, restoring };
 }
 
 export function computeEntryTogglePlan(entries, rawBookConfig, uid, targetEnabled) {
@@ -2517,7 +2587,11 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
             merged.nativeGroupOrder = [...new Set([...merged.nativeGroupOrder,
                 ...oldCfg.nativeGroupOrder.map((id) => idRemap.get(id) || id)])];
             merged.pinnedEntryUids = [...new Set([...merged.pinnedEntryUids, ...oldCfg.pinnedEntryUids])];
-            settings.books[cleanNew] = merged;
+            for (const [oldId, states] of Object.entries(oldCfg.pausedGroupStates)) {
+                const id = idRemap.get(oldId) || oldId;
+                merged.pausedGroupStates[id] = { ...states, ...merged.pausedGroupStates[id] };
+            }
+            settings.books[cleanNew] = normalizeBookConfig(merged);
         }
         delete settings.books[cleanOld];
         changed = true;

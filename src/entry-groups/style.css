@@ -2562,6 +2562,26 @@
     gap: 10px;
 }
 
+.weg-settings-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    min-width: 0;
+}
+
+.weg-settings-section + .weg-settings-section {
+    padding-block-start: 12px;
+    border-block-start: 1px solid var(--weg-border);
+}
+
+.weg-settings-section-title {
+    margin: 0;
+    color: var(--weg-fg);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.4;
+}
+
 .weg-setting-row {
     display: flex;
     align-items: center;

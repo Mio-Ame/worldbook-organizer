@@ -45,6 +45,7 @@ import { hasEnabledLegacyGrouping, isLegacyGroupingMounted } from './legacy.js';
 let _initialized = false;
 let _lifecycleEpoch = 0;
 let _mountJob = null;
+let _editorChangeCleanup = null;
 let _stylesheet = null;
 const _registeredSlashParsers = new WeakSet();
 let _nativeMountObserver = null;
@@ -337,6 +338,19 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
 
     syncNativeEditorIntegration();
 
+    const onEditorChange = (event) => {
+        if (event.target?.id === 'world_editor_select') scheduleNativeEntrySync();
+    };
+    const jqDocument = typeof globalThis.jQuery === 'function' ? globalThis.jQuery(document) : null;
+    if (jqDocument?.on && jqDocument?.off) {
+        // Delegation also receives synthetic change events when the editor select is replaced.
+        jqDocument.on('change.wegNativeEntry', '#world_editor_select', onEditorChange);
+        _editorChangeCleanup = () => jqDocument.off('change.wegNativeEntry', onEditorChange);
+    } else {
+        document.addEventListener('change', onEditorChange);
+        _editorChangeCleanup = () => document.removeEventListener('change', onEditorChange);
+    }
+
     trackHostEvent(eventSource, et.APP_READY, scheduleNativeEntrySync);
     trackHostEvent(eventSource, et.EXTENSION_SETTINGS_LOADED, scheduleNativeEntrySync);
     trackHostEvent(eventSource, et.WORLDINFO_SETTINGS_UPDATED, () => {
@@ -404,6 +418,8 @@ export function stopEntryGrouping() {
     _lifecycleEpoch += 1;
     if (!_initialized) return;
     _initialized = false;
+    _editorChangeCleanup?.();
+    _editorChangeCleanup = null;
     _mountJob?.();
     _mountJob = null;
     _stylesheet?.remove();

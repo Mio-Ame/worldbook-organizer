@@ -18,7 +18,7 @@ function watchEntryShell(pagination, list) {
     if (typeof MutationObserver !== 'function') return;
     const targets = new Set();
     // Watch shell children, never the entry list or its individual rows.
-    for (const start of [pagination?.parentElement, list?.parentElement,
+    for (const start of [pagination, list?.parentElement,
         document.getElementById('world_popup'), document.getElementById('WorldInfo'), document.body]) {
         for (let node = start; node && node !== document.documentElement; node = node.parentElement) {
             targets.add(node);
@@ -31,7 +31,7 @@ function watchEntryShell(pagination, list) {
     const observer = new MutationObserver((records) => {
         if (entryObserver !== observer || !currentActions || entryFrame) return;
         const anchors = '#WorldInfo, #world_popup, #world_info_pagination, #world_popup_entries_list, #weg-native-entry-controls';
-        const changed = records.some((record) => [...record.addedNodes, ...record.removedNodes].some((node) =>
+        const changed = records.some((record) => record.target === pagination || [...record.addedNodes, ...record.removedNodes].some((node) =>
             node instanceof Element && (entryTargets.has(node) || node.matches(anchors) || node.querySelector(anchors)),
         ));
         if (!changed) return;

@@ -1278,6 +1278,21 @@
     min-height: 0 !important;
 }
 
+.wbo-native-entry-choice .wbo-modal-body > p {
+    margin: 0;
+}
+
+.wbo-native-entry-choice-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.wbo-native-entry-choice-actions > .wbo-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
 .wbo-modal-overlay.wbo-floating-overlay {
     pointer-events: none;
     background: transparent !important;
@@ -7367,6 +7382,11 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     flex-wrap: wrap;
     align-items: center;
     gap: 5px;
+}
+
+.wbo-acc-toolbar-right > [data-acc-mono] > span {
+    min-inline-size: 6em;
+    text-align: center;
 }
 
 @media (max-width: 680px), (pointer: coarse) {

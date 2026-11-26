@@ -23,6 +23,13 @@ async function enableNativeGrouping(cdp) {
     }
 }
 
+async function openNativeGroupingManager(cdp) {
+    await cdp.clickSelector('#weg-native-group-manager');
+    if (await cdp.evalFn(() => Boolean(document.querySelector('[data-weg-native-entry-choice="use"]')))) {
+        await cdp.clickSelector('[data-weg-native-entry-choice="use"]');
+    }
+}
+
 test('integrated grouping restores existing settings and only one runtime owns the native entry points', async () => {
     const world = '分组测试书';
     const seed = createDefaultSeed({
@@ -780,6 +787,9 @@ test('native grouping starts dormant until requested and explains once how to hi
     const world = '按需分组测试书';
     const seed = createDefaultSeed({ characters: [], selected_world_info: [],
         worldbooks: { [world]: makeBook([makeEntry(0)]) },
+        extraPluginSettingsKey: { worldbook_entry_groups: { books: { [world]: {
+            groups: [{ id: 'g1', name: '测试组' }], assignments: { 0: 'g1' },
+        } } } },
     });
     const server = createMockStServer();
     const baseUrl = await server.start();
@@ -803,7 +813,7 @@ test('native grouping starts dormant until requested and explains once how to hi
                 window.nativeEntryTips = [];
                 toastr.info = (message) => window.nativeEntryTips.push(message);
             });
-            await cdp.clickSelector('#weg-native-group-manager');
+            await openNativeGroupingManager(cdp);
             await waitForCondition(cdp, () => document.querySelector('#weg-btn-settings'));
             assert.equal(await resourceCount(), 0, 'the independent manager does not opt into native decoration');
             await cdp.clickSelector('#weg-btn-close');
@@ -831,7 +841,7 @@ test('native grouping starts dormant until requested and explains once how to hi
             await cdp.clickSelector('#weg-native-group-enabled');
             await waitForCondition(cdp, () => document.querySelector('.weg-native-group-heading'));
             assert.equal(await cdp.evalFn(() => window.nativeEntryTips.length), 0, 'the tip is remembered across restarts');
-            await cdp.clickSelector('#weg-native-group-manager');
+            await openNativeGroupingManager(cdp);
             await cdp.clickSelector('#weg-btn-settings');
             await cdp.clickSelector('#weg-set-native-btn');
             assert.equal(await cdp.evalFn(() => document.querySelector('#weg-native-entry-controls')), null, 'the documented setting removes the entire entry');
@@ -878,7 +888,7 @@ test('native grouping can stay unloaded, toggles without row observers when off,
             const toggle = '#weg-native-group-enabled';
             await waitForCondition(cdp, () => document.querySelector('#weg-native-group-enabled[aria-checked="false"]'));
             assert.equal(await cdp.evalFn(() => document.querySelectorAll('.weg-native-group-heading, .weg-native-list-sticky, .weg-native-themed').length), 0);
-            await cdp.clickSelector('#weg-native-group-manager');
+            await openNativeGroupingManager(cdp);
             await waitForCondition(cdp, () => document.querySelector('[data-weg-group-card="a"]'));
             assert.equal(await resources(), 0, 'opening the standalone panel must not load native enhancement either');
             await cdp.clickSelector('#weg-btn-settings');
@@ -1154,7 +1164,7 @@ test('native group controls stay reachable while scrolling and undo restores mix
             if (viewport === VIEWPORTS.desktop) assert.equal(await cdp.evalFn(() => window.wegReadTestPage()), 2);
             let actual = (await getServerState(baseUrl)).worldbooks[world];
             for (let uid = 0; uid < entries.length; uid++) {
-                const expected = uid >= 45 && uid < 54 ? false : uid % 2 === 1;
+                const expected = uid >= 45 && uid < 54 ? true : uid % 2 === 1;
                 assert.equal(Boolean(actual.entries[uid].disable), expected, `entry ${uid}`);
             }
             await scrollTo(56);
@@ -1167,12 +1177,13 @@ test('native group controls stay reachable while scrolling and undo restores mix
             assert.ok((await cdp.clickSelector(`${sticky} .weg-native-group-switch`, { scroll: false })).hit);
             await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-undo:enabled'));
             actual = (await getServerState(baseUrl)).worldbooks[world];
-            assert.ok([54, 55, 56, 57, 58, 59].every((uid) => !actual.entries[uid].disable));
+            assert.ok([54, 55, 56, 57, 58, 59].every((uid) => actual.entries[uid].disable), 'a mixed ungrouped section pauses directly');
             for (let index = 0; index < 4; index++) {
                 assert.ok((await cdp.clickSelector(`${sticky} .weg-native-group-switch`, { scroll: false })).hit);
                 await waitForCondition(cdp, () => !!document.querySelector('.weg-native-sticky-group .weg-native-group-switch:enabled'));
                 const changed = (await getServerState(baseUrl)).worldbooks[world];
-                assert.ok([54, 55, 56, 57, 58, 59].every((uid) => changed.entries[uid].disable === (index % 2 === 0)));
+                assert.ok([54, 55, 56, 57, 58, 59].every((uid) => changed.entries[uid].disable === (index % 2 === 0 ? uid % 2 === 1 : true)),
+                    'repeated toggles alternate the remembered mix and all-off');
             }
             for (let index = 0; index < 4; index++) {
                 assert.ok((await cdp.clickSelector(nativeUndo, { scroll: false })).hit);
@@ -1262,7 +1273,7 @@ test('mobile native locate clears both panels and native group folding preserves
             }
             return results;
         }, world, other);
-        assert.deepEqual(switching.map((result) => result.count), [1, 2, 1, 2]);
+        assert.deepEqual(switching.map((result) => result.count), [0, 2, 0, 2], 'books without custom groups do not render an ungrouped heading');
         t.diagnostic(`Native group rendering after book switch ${JSON.stringify(switching)}`);
         await cdp.evalFn(() => {
             const list = document.querySelector('#world_popup_entries_list');
@@ -1284,7 +1295,7 @@ test('mobile native locate clears both panels and native group folding preserves
             assert.ok((await cdp.clickSelector('.world_entry[uid="1"] .weg-native-group-disclosure')).hit);
             assert.equal(await cdp.evalFn(() => document.querySelector('.world_entry[uid="1"] .weg-native-group-disclosure').getAttribute('aria-expanded')), String(index % 2 === 1));
         }
-        await cdp.clickSelector('#weg-native-group-manager');
+        await openNativeGroupingManager(cdp);
         await waitForCondition(cdp, () => !!document.querySelector('[data-weg-footer-action="enter-batch"]:enabled'));
         const mobileWindow = '.weg-modal [data-wbo-fullscreen-btn="entry-groups"]';
         const entryWindowHeight = () => cdp.evalFn(() => document.querySelector('.weg-modal').getBoundingClientRect().height);
@@ -1571,7 +1582,9 @@ test('native numeric fields show three digits beside their spinners and the grou
     const world = '数字框测试书';
     const seed = createDefaultSeed({ characters: [], selected_world_info: [],
         worldbooks: { [world]: makeBook([makeEntry(0)]) },
-        extraPluginSettingsKey: { worldbook_entry_groups: { enableNativeGrouping: true } },
+        extraPluginSettingsKey: { worldbook_entry_groups: { enableNativeGrouping: true, books: { [world]: {
+            groups: [{ id: 'g1', name: '测试组' }], assignments: { 0: 'g1' },
+        } } } },
     });
     const server = createMockStServer();
     const baseUrl = await server.start();
