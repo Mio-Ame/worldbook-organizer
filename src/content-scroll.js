@@ -22,6 +22,14 @@ export function scrollContentToItem(scroller, item, { align = 'nearest', margin 
     else scroller.scrollTop = top;
 }
 
+export function restoreContentAnchor(scroller, item, offset) {
+    if (!item || !scroller?.contains(item)) return 0;
+    const currentOffset = item.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    const currentScroll = scroller.scrollTop;
+    scroller.scrollTop = Math.max(0, Math.min(currentScroll + currentOffset - offset, scroller.scrollHeight - scroller.clientHeight));
+    return currentOffset - (scroller.scrollTop - currentScroll) - offset;
+}
+
 export function scrollNativeWorldEntry(entry) {
     const drawer = document.getElementById('WorldInfo');
     const list = document.getElementById('world_popup_entries_list');

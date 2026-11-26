@@ -192,7 +192,7 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
             const scroller = document.createElement('div');
             scroller.className = 'gr-options';
             scroller.style.cssText = 'display:block;max-height:160px;overflow:auto';
-            scroller.innerHTML = '<input type="search" spellcheck="false"><div class="gr-options-container"></div>';
+            scroller.innerHTML = '<div class="gr-search-box" style="position:sticky;bottom:0;padding:4px 8px"><input type="search" spellcheck="false" style="width:100%"></div><div class="gr-options-container"></div>';
             const options = scroller.querySelector('.gr-options-container');
             for (const [index, option] of [...select.options].entries()) {
                 if (selectId === 'world_editor_select' && option.textContent === primary) {
@@ -244,6 +244,16 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
             };
         }, characterBook, secondBook);
         assert.deepEqual(state, { primaryTitle: '测试角色', secondaryTitle: '另一测试角色', primarySection: null, selected: [characterBook], placeholderVisible: false, clear: '清除' });
+        assert.deepEqual(await cdp.evalFn(() => {
+            const toolbar = document.querySelector('#gr-global-dropdown-container .wbo-enhanced-sticky');
+            const search = toolbar.querySelector('input').getBoundingClientRect();
+            const clear = toolbar.querySelector('.wbo-enhanced-picker-clear').getBoundingClientRect();
+            const filters = toolbar.querySelector('.wbo-pop-filter-bar').getBoundingClientRect();
+            return {
+                inline: search.left < clear.left && Math.abs((search.top + search.bottom) - (clear.top + clear.bottom)) < 2,
+                compact: filters.top >= search.bottom && filters.top - search.bottom < 10,
+            };
+        }), { inline: true, compact: true });
 
         await openShared('world_info_sort_order');
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-pop-filter-bar, #gr-global-dropdown-container .wbo-gr-pin-btn'))), false);
@@ -343,6 +353,25 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
         await cdp.evalFn((selector) => document.querySelector(selector).click(), pin);
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).getAttribute('aria-pressed'), pin), 'true');
 
+        await cdp.evalFn(() => {
+            const source = document.getElementById('world_editor_select');
+            let selection = document.getElementById('select2-world_editor_select-container')?.closest('.select2-selection');
+            if (!selection) {
+                selection = document.createElement('span');
+                selection.className = 'select2-selection';
+                selection.innerHTML = '<span id="select2-world_editor_select-container"></span>';
+                source.after(selection);
+            }
+            const clear = document.createElement('button');
+            clear.className = 'select2-selection__clear';
+            clear.id = 'fixture-native-editor-clear';
+            clear.textContent = '×';
+            selection.prepend(clear);
+        });
+        await openShared('world_editor_select');
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] [data-wbo-editing-badge]'));
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-picker-clear'))), false);
+        await cdp.evalFn(() => document.getElementById('fixture-native-editor-clear').remove());
         await openShared('world_editor_select');
         await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-enhanced-picker-clear'));
         await cdp.clickSelector('#gr-global-dropdown-container .wbo-enhanced-picker-clear', { scroll: false });
@@ -670,6 +699,7 @@ test('selecting a book in a long editor list restores its original visible posit
 });
 
 test('mobile manager can be resized and moved by touch and returned to full screen', async () => {
+    const books = Array.from({ length: 32 }, (_, index) => `小窗滚动示例 ${index}`);
     await withHost(VIEWPORTS.mobile, async (cdp) => {
         await openManager(cdp);
         const panel = '.wbo-manager-modal';
@@ -688,6 +718,17 @@ test('mobile manager can be resized and moved by touch and returned to full scre
             await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
         };
         const full = await rect(panel);
+        const windowButton = '[data-wbo-fullscreen-btn="manager"]';
+        assert.deepEqual(await cdp.evalFn(() => {
+            const restore = document.querySelector('[data-wbo-fullscreen-btn="manager"]');
+            const minimize = document.querySelector('[data-wbo-minimize-btn]');
+            return [restore.textContent.trim(), restore.offsetHeight, minimize.offsetHeight,
+                getComputedStyle(restore).border === getComputedStyle(minimize).border];
+        }), ['还原窗口', 30, 30, true]);
+        await cdp.clickSelector(windowButton);
+        assert.ok((await rect(panel)).height < full.height);
+        await cdp.clickSelector(windowButton);
+        assert.deepEqual(await rect(panel), full);
         await drag(`${panel} .wbo-resize-se`, -55, -240);
         const smaller = await rect(panel);
         assert.ok(smaller.width < full.width && smaller.height < full.height);
@@ -703,7 +744,64 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         assert.equal(await cdp.evalFn(() => document.activeElement?.id), 'wbo-mgr-search-input');
         await cdp.resizeViewport(390, 844);
         assert.deepEqual(await rect(panel), moved);
-        await cdp.clickSelector('[data-wbo-fullscreen-btn]');
+        await drag(`${panel} .wbo-resize-se`, 0, -360);
+        const short = await rect(panel);
+        assert.ok(short.height <= 260);
+        await cdp.clickSelector('#wbo-mgr-pills [data-group-id="__ungrouped__"]');
+        const metrics = await cdp.evalFn(() => {
+            const host = document.querySelector('.wbo-mgr-window-scroll');
+            const first = document.querySelector('#wbo-mgr-groups-list .wbo-group-header');
+            host.scrollTop = 0;
+            const bar = document.querySelector('.wbo-modal-header-top');
+            const create = document.querySelector('#wbo-mgr-groupbar [data-action="create-group"]');
+            const stickyTop = bar.getBoundingClientRect().bottom;
+            const limit = Math.round(first.getBoundingClientRect().top - stickyTop);
+            const createAbove = create.getBoundingClientRect().top;
+            const sizes = [limit - 3, limit, limit + 3, limit + 24].map((top) => {
+                host.scrollTop = top;
+                return [host.scrollTop, Math.round(first.getBoundingClientRect().top - stickyTop)];
+            });
+            return { limit, sizes, createAbove, createBelow: create.getBoundingClientRect().top,
+                titleStable: Math.abs(bar.getBoundingClientRect().bottom - stickyTop) <= 1 };
+        });
+        assert.ok(metrics.limit > 0);
+        assert.deepEqual(metrics.sizes, [[metrics.limit - 3, 3], [metrics.limit, 0], [metrics.limit + 3, 0], [metrics.limit + 24, 0]]);
+        assert.ok(metrics.createBelow < metrics.createAbove && metrics.titleStable);
+        const toolsButton = '#wbo-mgr-floating-tools-btn';
+        const toolsPanel = '#wbo-mgr-floating-tools';
+        await cdp.evalFn(() => { window.wboTestSearch = document.querySelector('#wbo-mgr-search-input'); });
+        assert.ok((await cdp.clickSelector(toolsButton, { scroll: false })).hit);
+        assert.deepEqual(await cdp.evalFn((selector) => {
+            const popover = document.querySelector(selector);
+            const actions = ['open-ai-organize', 'open-combos-modal', 'open-scan-modal',
+                'create-group', 'open-manage-groups', 'select-filter', 'toggle-batch-mode'];
+            return {
+                visible: !popover.hidden,
+                workingControls: actions.every((action) => popover.querySelector(`[data-action="${action}"]`)),
+                sameSearch: popover.querySelector('#wbo-mgr-search-input') === window.wboTestSearch,
+                listTop: document.querySelector('.wbo-mgr-window-scroll').scrollTop,
+                count: document.querySelectorAll('#wbo-mgr-search-input').length,
+            };
+        }, toolsPanel), { visible: true, workingControls: true, sameSearch: true, listTop: metrics.limit + 24, count: 1 });
+        await cdp.clickSelector(toolsButton, { scroll: false });
+        assert.deepEqual(await cdp.evalFn(() => [
+            document.querySelector('#wbo-mgr-floating-tools').hidden,
+            document.querySelector('.wbo-mgr-window-scroll').scrollTop,
+        ]), [true, metrics.limit + 24]);
+        await cdp.clickSelector(toolsButton, { scroll: false });
+        assert.ok((await cdp.clickSelector(`${toolsPanel} #wbo-mgr-groupbar [data-action="create-group"]`, { scroll: false })).hit);
+        await cdp.clickSelector('#wbo-submodal-overlay .wbo-modal-close');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-mgr-window-scroll').scrollTop), metrics.limit + 24);
+        await cdp.evalFn(() => { document.querySelector('.wbo-mgr-window-scroll').scrollTop = 0; });
+        assert.ok((await cdp.clickSelector('#wbo-mgr-groupbar [data-action="create-group"]', { scroll: false })).hit);
+        await cdp.clickSelector('#wbo-submodal-overlay .wbo-modal-close');
+        await cdp.clickSelector(windowButton);
         assert.equal((await rect(panel)).height, full.height);
-    });
+        await cdp.navigate(await cdp.evalFn(() => location.href));
+        await openManager(cdp);
+        assert.deepEqual(await rect(panel), full);
+        await cdp.clickSelector(windowButton);
+        const restored = await rect(panel);
+        assert.deepEqual([restored.width, restored.height], [short.width, short.height]);
+    }, books);
 });

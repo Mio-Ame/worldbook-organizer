@@ -140,7 +140,7 @@ export function normalizeBookConfig(raw) {
     if (Array.isArray(src.pinnedGroupIds)) {
         for (const rawGid of src.pinnedGroupIds) {
             const gid = String(rawGid ?? '').trim();
-            if (!gid || gid === SPECIAL_GROUP_UNGROUPED || !seenIds.has(gid) || seenPinnedGroups.has(gid)) continue;
+            if ((!seenIds.has(gid) && gid !== SPECIAL_GROUP_UNGROUPED) || seenPinnedGroups.has(gid)) continue;
             seenPinnedGroups.add(gid);
             pinnedGroupIds.push(gid);
         }
@@ -259,6 +259,9 @@ export function normalizeSettings(raw) {
         version: 2,
         palette,
         colorMode,
+        followMainPalette: typeof src.followMainPalette === 'boolean' ? src.followMainPalette : palette === 'paper',
+        followMainColorMode: typeof src.followMainColorMode === 'boolean' ? src.followMainColorMode : colorMode === 'auto',
+        followNativeTheme: src.followNativeTheme !== false,
         showNativeEntryBtn: src.showNativeEntryBtn !== false,
         showWandMenuEntry: src.showWandMenuEntry !== false,
         closeOnLocate: src.closeOnLocate !== false,
@@ -270,6 +273,7 @@ export function normalizeSettings(raw) {
         editorMonospace: Boolean(src.editorMonospace),
         editorHeightSize,
         lastOpenedBook: String(src.lastOpenedBook ?? '').trim(),
+        autoGroupSchemes: normalizeAutoGroupSchemes(src.autoGroupSchemes),
         books,
         chatProfiles,
     };
@@ -503,7 +507,7 @@ export function pruneOrphanAssignments(bookConfig, validUidSet) {
         const seenGroups = new Set();
         for (const rawGid of bookConfig.pinnedGroupIds) {
             const gid = String(rawGid ?? '').trim();
-            if (!gid || gid === SPECIAL_GROUP_UNGROUPED || !groupIds.has(gid) || seenGroups.has(gid)) {
+            if ((!groupIds.has(gid) && gid !== SPECIAL_GROUP_UNGROUPED) || seenGroups.has(gid)) {
                 removed += 1;
                 continue;
             }
@@ -519,9 +523,8 @@ export function pruneOrphanAssignments(bookConfig, validUidSet) {
 export function setGroupPinned(bookConfig, groupId, forcePinned) {
     if (!bookConfig || typeof bookConfig !== 'object') return { changed: false, pinned: false };
     const gid = String(groupId ?? '').trim();
-    if (!gid || gid === SPECIAL_GROUP_UNGROUPED) return { changed: false, pinned: false };
     const existsInGroups = Array.isArray(bookConfig.groups) && bookConfig.groups.some((g) => g.id === gid);
-    if (!existsInGroups) return { changed: false, pinned: false };
+    if (!existsInGroups && gid !== SPECIAL_GROUP_UNGROUPED) return { changed: false, pinned: false };
 
     const current = [];
     const seen = new Set();
@@ -633,6 +636,8 @@ export function buildGroupedView(entries, rawBookConfig, { sortPinned = true, so
         const items = orderEntries(bucketMap.get(grp.id) || []);
         const totalCount = items.length;
         const enabledCount = items.filter((e) => !e.disabled).length;
+        const toggleable = items.filter((entry) => !entry.isPureBanner);
+        const enabledToggleable = toggleable.filter((entry) => !entry.disabled).length;
         return {
             id: grp.id,
             name: grp.name,
@@ -645,25 +650,21 @@ export function buildGroupedView(entries, rawBookConfig, { sortPinned = true, so
             entries: items,
             totalCount,
             enabledCount,
-            allEnabled: totalCount > 0 && enabledCount === totalCount,
-            someEnabled: enabledCount > 0 && enabledCount < totalCount,
+            allEnabled: toggleable.length > 0 && enabledToggleable === toggleable.length,
+            someEnabled: enabledToggleable > 0 && enabledToggleable < toggleable.length,
         };
     });
 
-    const orderedCustomSections = sortPinned && pinnedGroupSet.size > 0
-        ? [...customSections.filter((s) => s.pinned), ...customSections.filter((s) => !s.pinned)]
-        : customSections;
-
     const sortedUngrouped = orderEntries(ungroupedEntries);
     const ungroupedEnabledCount = sortedUngrouped.filter((e) => !e.disabled).length;
-    const sections = [
-        ...orderedCustomSections,
+    const sourceSections = [
+        ...customSections,
         {
             id: SPECIAL_GROUP_UNGROUPED,
             name: '未分组',
             mode: GROUP_MODES.NORMAL,
             collapsed: Boolean(bookConfig.ungroupedCollapsed),
-            pinned: false,
+            pinned: pinnedGroupSet.has(SPECIAL_GROUP_UNGROUPED),
             sceneKeywords: [],
             cooldownTurns: 2,
             isUngrouped: true,
@@ -674,6 +675,9 @@ export function buildGroupedView(entries, rawBookConfig, { sortPinned = true, so
             someEnabled: ungroupedEnabledCount > 0 && ungroupedEnabledCount < sortedUngrouped.length,
         },
     ];
+    const sections = sortPinned && pinnedGroupSet.size > 0
+        ? [...sourceSections.filter((section) => section.pinned), ...sourceSections.filter((section) => !section.pinned)]
+        : sourceSections;
 
     const ifLineSections = sections.filter((s) => !s.isUngrouped && s.mode === GROUP_MODES.IF_LINE);
     const activeIfLineSections = ifLineSections.filter((s) => s.enabledCount > 0);
@@ -711,8 +715,8 @@ export function countPinnedEntries(entries, rawBookConfig) {
         if (!entry) continue;
         const uid = String(entry.uid ?? '').trim();
         if (!uid) continue;
-        const gid = bookConfig.assignments[uid];
-        if (pinnedEntrySet.has(uid) || (gid && pinnedGroupSet.has(gid))) {
+        const gid = bookConfig.assignments[uid] || SPECIAL_GROUP_UNGROUPED;
+        if (pinnedEntrySet.has(uid) || pinnedGroupSet.has(gid)) {
             count += 1;
         }
     }
@@ -750,8 +754,8 @@ export function matchEntries(
         if (statusFilter === 'disabled' && !entry.disabled) continue;
         if (statusFilter === 'pinned') {
             const isEntryPinned = Boolean(pinUidSet?.has(entry.uid));
-            const gid = assignMap ? assignMap[entry.uid] : '';
-            const isGroupPinned = Boolean(gid && pinGrpSet?.has(gid));
+            const gid = assignMap?.[entry.uid] || SPECIAL_GROUP_UNGROUPED;
+            const isGroupPinned = Boolean(pinGrpSet?.has(gid));
             if (!isEntryPinned && !isGroupPinned) continue;
         }
 
@@ -795,7 +799,7 @@ export function sliceGroupedSectionsForRender(
         const sourceEntries = Array.isArray(sec.visibleEntries)
             ? sec.visibleEntries
             : (Array.isArray(sec.entries) ? sec.entries : []);
-        const isCollapsed = isFiltering ? false : Boolean(sec.effectiveCollapsed ?? sec.collapsed);
+        const isCollapsed = Boolean(sec.effectiveCollapsed ?? (!isFiltering && sec.collapsed));
 
         if (isCollapsed) {
             slicedSections.push({
@@ -859,7 +863,7 @@ export function computeGroupTogglePlan(entries, rawBookConfig, groupId, targetEn
     const targetGroup = bookConfig.groups.find((g) => g.id === groupId);
     if (!targetGroup) return plan;
 
-    const groupEntries = list.filter((e) => bookConfig.assignments[e.uid] === groupId);
+    const groupEntries = list.filter((e) => bookConfig.assignments[e.uid] === groupId && !e.isPureBanner);
     if (groupEntries.length === 0) return plan;
 
     if (targetGroup.mode === GROUP_MODES.RADIO) {
@@ -889,7 +893,7 @@ export function computeGroupTogglePlan(entries, rawBookConfig, groupId, targetEn
         if (siblingIfIds.size > 0) {
             for (const entry of list) {
                 const assigned = bookConfig.assignments[entry.uid];
-                if (assigned && siblingIfIds.has(assigned)) {
+                if (!entry.isPureBanner && assigned && siblingIfIds.has(assigned)) {
                     plan.set(entry.uid, true);
                 }
             }
@@ -908,7 +912,7 @@ export function computeEntryTogglePlan(entries, rawBookConfig, uid, targetEnable
 
     plan.set(targetUid, !targetEnabled);
 
-    if (!targetEnabled) return plan;
+    if (!targetEnabled || list.find((entry) => entry.uid === targetUid)?.isPureBanner) return plan;
 
     const groupId = bookConfig.assignments[targetUid];
     if (!groupId) return plan;
@@ -918,7 +922,7 @@ export function computeEntryTogglePlan(entries, rawBookConfig, uid, targetEnable
 
     if (group.mode === GROUP_MODES.RADIO) {
         for (const entry of list) {
-            if (bookConfig.assignments[entry.uid] === groupId && entry.uid !== targetUid) {
+            if (!entry.isPureBanner && bookConfig.assignments[entry.uid] === groupId && entry.uid !== targetUid) {
                 plan.set(entry.uid, true);
             }
         }
@@ -931,7 +935,7 @@ export function computeEntryTogglePlan(entries, rawBookConfig, uid, targetEnable
         if (siblingIfIds.size > 0) {
             for (const entry of list) {
                 const assigned = bookConfig.assignments[entry.uid];
-                if (assigned && siblingIfIds.has(assigned)) {
+                if (!entry.isPureBanner && assigned && siblingIfIds.has(assigned)) {
                     plan.set(entry.uid, true);
                 }
             }
@@ -1000,7 +1004,7 @@ export function evaluateSceneAutoToggle({
     const sample = String(recentText ?? '').slice(-1500).toLowerCase();
 
     for (const grp of sceneGroups) {
-        const groupEntries = list.filter((e) => bookConfig.assignments[e.uid] === grp.id);
+        const groupEntries = list.filter((e) => bookConfig.assignments[e.uid] === grp.id && !e.isPureBanner);
         if (groupEntries.length === 0) continue;
 
         const keywords = grp.sceneKeywords && grp.sceneKeywords.length > 0
@@ -2091,6 +2095,8 @@ export function extractEntryTitlePrefix(rawTitle) {
         text = strippedIndex;
     }
 
+    if (/^[（(]缝思维链内/.test(text)) return '思维链';
+
     const bracketMatch = text.match(/^(?:【([^】]{1,18})】|\[([^\]]{1,18})\]|「([^」]{1,18})」|（([^）]{1,18})）|\(([^)]{1,18})\))\s*(.+)$/);
     if (bracketMatch) {
         let candidate = (bracketMatch[1] || bracketMatch[2] || bracketMatch[3] || bracketMatch[4] || bracketMatch[5] || '').trim();
@@ -2115,21 +2121,29 @@ export function extractEntryTitlePrefix(rawTitle) {
     return null;
 }
 
+export function normalizeAutoGroupSchemes(value) {
+    return (Array.isArray(value) ? value : []).flatMap((scheme) => {
+        const id = String(scheme?.id ?? '').trim();
+        const name = String(scheme?.name ?? '').trim();
+        const rules = (Array.isArray(scheme?.rules) ? scheme.rules : []).flatMap((rule) => {
+            const group = String(rule?.group ?? '').trim();
+            const keywords = normalizeKeywordList(rule?.keywords);
+            return group && keywords.length ? [{ group, keywords }] : [];
+        });
+        return id && name && rules.length ? [{ id, name, rules }] : [];
+    });
+}
+
 /**
- * Detect candidate entry groups automatically across real-world worldbook authoring styles:
- * 1. Bounded paired dividers (`——⬇️⬇️USER身份自选⬇️⬇️——` ... `——⬆️⬆️USER身份自选⬆️⬆️——`)
- *    and single section dividers (`——🐰🐰背景信息选择🦊🦊——`, `=== 基础设定 ===`),
- *    skipping pure empty banner entries from toggle membership!
- * 2. Bracket / delimiter prefixes (`【通用线】`, `【将军线】`, `[18岁线]`) on remaining entries,
- *    never mislabeling `通用线` / `常规线` as mutually-exclusive IF lines!
- * 3. NSFW / intimate entries (`NSFW`, `nfsw`, `R18`, `床笫`, `敏感带`).
- * 4. Optional non-overlapping greeting `<!-- lore -->` branches (when greetings have disjoint UIDs).
+ * Propose groups from paired dividers, section banners, title prefixes, scene cues,
+ * or greeting tags. A custom scheme instead matches literal keywords against titles.
  */
 export function detectAutoGroups(entries, {
     strategy = 'smart',
     onlyUngrouped = true,
     existingAssignments = {},
     greetingIndex = null,
+    customRules,
 } = {}) {
     const list = Array.isArray(entries) ? entries : [];
     const assignedObj = existingAssignments && typeof existingAssignments === 'object' ? existingAssignments : {};
@@ -2137,28 +2151,74 @@ export function detectAutoGroups(entries, {
 
     const isEligible = (uid) => !onlyUngrouped || !assignedObj[uid];
 
-    // 1. Divider block detection (supports both `⬇️...⬆️` bounded blocks and `section` headers!)
-    const detectFromDividers = (claimedSet, { boundedOnly = false } = {}) => {
+    if (customRules) {
+        const rules = customRules.map(({ group, keywords }) => ({ group, keywords: keywords.map((word) => word.toLowerCase()) }));
+        const matches = new Map();
+        for (const entry of list) {
+            if (!isEligible(entry.uid) || (entry.isDivider && entry.isPureBanner)) continue;
+            const title = String(entry.rawComment || entry.title || '').toLowerCase();
+            const rule = rules.find(({ keywords }) => keywords.some((word) => title.includes(word)));
+            if (!rule) continue;
+            if (!matches.has(rule.group)) matches.set(rule.group, []);
+            matches.get(rule.group).push(entry.uid);
+        }
+        return [...matches].map(([name, uids]) => ({
+            key: `custom_${name}`, name, uids, source: 'custom', suggestedMode: GROUP_MODES.NORMAL,
+        }));
+    }
+
+    const pairedOpeners = new Map();
+    const pairedClosers = new Set();
+    if (strategy === 'smart' || strategy === 'divider') {
+        let opener = null;
+        let hasBody = false;
+        for (const entry of list) {
+            if (entry.isDivider && entry.dividerKind === 'section' && !entry.dividerLabel) continue;
+            if (entry.isDivider) {
+                const title = String(entry.rawComment || entry.title || '').trim();
+                if (entry.dividerKind === 'section' && hasBody && opener?.title === title) {
+                    pairedOpeners.set(opener.uid, entry.uid);
+                    pairedClosers.add(entry.uid);
+                    opener = null;
+                } else {
+                    opener = entry.dividerKind === 'section' && title ? { uid: entry.uid, title } : null;
+                }
+                hasBody = false;
+            } else if (opener) {
+                hasBody = true;
+            }
+        }
+    }
+
+    const detectFromDividers = (claimedSet, { boundedOnly = false, pairedOnly = false } = {}) => {
         const rawBlocks = [];
         let currentBlock = null;
 
         for (const entry of list) {
             if (entry.isDivider) {
+                if (pairedClosers.has(entry.uid)) {
+                    if (currentBlock?.closer === entry.uid && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
+                        currentBlock.entries.push(entry);
+                    }
+                    currentBlock = null;
+                    continue;
+                }
                 if (entry.dividerKind === 'end') {
                     currentBlock = null;
                     continue;
                 }
-                if (boundedOnly && entry.dividerKind !== 'start') {
+                const closer = pairedOpeners.get(entry.uid);
+                if (!closer && (pairedOnly || (boundedOnly && entry.dividerKind !== 'start'))) {
                     continue;
                 }
                 if (entry.dividerLabel) {
                     currentBlock = {
                         label: entry.dividerLabel,
                         kind: entry.dividerKind,
+                        closer,
                         entries: [],
                     };
-                    // Include divider entry ONLY if it carries actual prompt content or trigger keys!
-                    if (!entry.isPureBanner && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
+                    if ((closer || !entry.isPureBanner) && isEligible(entry.uid) && !claimedSet.has(entry.uid)) {
                         currentBlock.entries.push(entry);
                     }
                     rawBlocks.push(currentBlock);
@@ -2172,22 +2232,22 @@ export function detectAutoGroups(entries, {
         }
 
         const meaningful = rawBlocks.filter((b) => b.entries.length >= 1);
-        if (!boundedOnly && meaningful.length < 2) return [];
-        if (boundedOnly && meaningful.length < 1) return [];
+        if (!boundedOnly && meaningful.length < 2 && !meaningful.some((block) => block.closer)) return [];
 
         const mergedByLabel = new Map();
         for (const b of meaningful) {
-            if (!mergedByLabel.has(b.label)) mergedByLabel.set(b.label, []);
-            mergedByLabel.get(b.label).push(...b.entries);
+            if (!mergedByLabel.has(b.label)) mergedByLabel.set(b.label, { entries: [], paired: false });
+            const merged = mergedByLabel.get(b.label);
+            merged.entries.push(...b.entries);
+            merged.paired ||= Boolean(b.closer);
         }
 
         const out = [];
         let idx = 0;
-        for (const [label, memberEntries] of mergedByLabel.entries()) {
-            if (memberEntries.length === 0) continue;
+        for (const [label, { entries: memberEntries, paired }] of mergedByLabel) {
             // In smart mode, if a bounded block's entries ALREADY share a cleaner `【前缀】` (like `⬇️⬇️神女线⬇️⬇️` containing `【神女线】...`),
             // let prefix clustering handle prefixed ones UNLESS the entries lack prefixes (like `USER身份自选` -> `高门贵女user` / `公主user`)!
-            if (boundedOnly) {
+            if (boundedOnly && !paired) {
                 const unprefixed = memberEntries.filter((e) => !extractEntryTitlePrefix(e.rawComment || e.title));
                 if (unprefixed.length === 0) continue;
             }
@@ -2322,10 +2382,10 @@ export function detectAutoGroups(entries, {
         trialDividerClaimed.size / nonBannerCount >= 0.65 &&
         !list.some((e) => e.dividerKind === 'end');
 
-    const results = [];
+    const results = detectFromDividers(claimed, { pairedOnly: true });
     if (hasComprehensiveSectionLayers) {
         // Book is already cleanly layered top-to-bottom by author section banners! Preserve exact author layers!
-        return detectFromDividers(claimed, { boundedOnly: false });
+        return [...results, ...detectFromDividers(claimed, { boundedOnly: false })];
     }
 
     // Otherwise:
@@ -2348,7 +2408,7 @@ export function applyAutoGroupProposals(rawBookConfig, proposals, { replaceExist
             groups: [],
             assignments: {},
             ungroupedCollapsed: false,
-            pinnedGroupIds: [],
+            pinnedGroupIds: cloned.pinnedGroupIds.filter((id) => id === SPECIAL_GROUP_UNGROUPED),
             pinnedEntryUids: [...cloned.pinnedEntryUids],
         }
         : cloned;
@@ -2420,7 +2480,7 @@ export function migrateSettingsOnWorldRename(settings, oldName, newName) {
             const validNewGroupIds = new Set(merged.groups.map((x) => x.id));
             for (const oldGid of oldCfg.pinnedGroupIds) {
                 const mappedId = idRemap.get(oldGid) || oldGid;
-                if (validNewGroupIds.has(mappedId)) {
+                if (validNewGroupIds.has(mappedId) || mappedId === SPECIAL_GROUP_UNGROUPED) {
                     mergedPinnedGroups.add(mappedId);
                 }
             }

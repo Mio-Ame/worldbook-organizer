@@ -36,6 +36,7 @@ import {
     openEntryGroupsModal,
     refreshOpenModalBook,
     syncAllNativeEntryPoints,
+    syncEntryGroupsTheme,
     teardownPanels,
 } from './panel.js';
 import { hasEnabledLegacyGrouping, isLegacyGroupingMounted } from './legacy.js';
@@ -215,6 +216,7 @@ export async function startEntryGrouping(styleVersion, { onRevealNativeEditor } 
     syncAllNativeEntryPoints();
 
     if (typeof window !== 'undefined') {
+        window.addEventListener('wbo:panel-theme-changed', syncEntryGroupsTheme);
         if (!_onWboRenamed) {
             _onWboRenamed = (ev) => {
                 const oldName = String(ev?.detail?.oldName ?? '').trim();
@@ -401,6 +403,7 @@ export function stopEntryGrouping() {
     _nativeMountTarget = null;
 
     if (typeof window !== 'undefined') {
+        window.removeEventListener('wbo:panel-theme-changed', syncEntryGroupsTheme);
         if (_onWboRenamed) {
             window.removeEventListener('wbo:worldbook-renamed', _onWboRenamed);
             _onWboRenamed = null;

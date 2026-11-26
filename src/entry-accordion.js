@@ -76,6 +76,7 @@ const SORT_LABELS = { custom: '自定义排序', order: '顺序 (order)', title:
  * @param {number} [opts.pageSize=60]
  * @param {boolean} [opts.showToolbar=true]
  * @param {string} [opts.extraHeaderActionsHtml='']
+ * @param {() => void} [opts.onOpenEntryGroups]
  * @param {() => boolean} [opts.getMonoFont]
  * @param {(nextMono: boolean) => void} [opts.onToggleMonoFont]
  * @param {() => boolean} [opts.getTallMode]
@@ -95,6 +96,7 @@ export function mountEntryAccordion(
         pageSize = 60,
         showToolbar = true,
         extraHeaderActionsHtml = '',
+        onOpenEntryGroups = null,
         getMonoFont = () => false,
         onToggleMonoFont = null,
         getTallMode = () => false,
@@ -149,9 +151,14 @@ export function mountEntryAccordion(
                         <i class="fa-solid fa-magnifying-glass"></i>
                         <input type="search" class="wbo-search-input wbo-acc-search" placeholder="搜索条目标题、触发词或正文..." autocomplete="off" spellcheck="false">
                     </div>
-                    <button type="button" class="wbo-btn wbo-btn-primary wbo-acc-new-btn">
-                        <i class="fa-solid fa-plus"></i> 新建条目
-                    </button>
+                    <div class="wbo-acc-toolbar-actions">
+                        ${onOpenEntryGroups ? `<button type="button" class="wbo-btn wbo-acc-group-btn" data-acc-extra="open-entry-groups">
+                            <i class="fa-solid fa-folder-tree" aria-hidden="true"></i> 条目分组
+                        </button>` : ''}
+                        <button type="button" class="wbo-btn wbo-btn-primary wbo-acc-new-btn">
+                            <i class="fa-solid fa-plus" aria-hidden="true"></i> 新建条目
+                        </button>
+                    </div>
                 </div>
             ` : ''}
             <div class="wbo-acc-list"></div>
@@ -1314,7 +1321,8 @@ export function mountEntryAccordion(
             ev.preventDefault();
             ev.stopPropagation();
             const act = extraBtn.getAttribute('data-acc-extra');
-            if (act) onExtraAction?.(act, extraBtn);
+            if (act === 'open-entry-groups') onOpenEntryGroups?.();
+            else if (act) onExtraAction?.(act, extraBtn);
             return;
         }
 

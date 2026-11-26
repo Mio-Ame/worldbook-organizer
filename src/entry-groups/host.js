@@ -33,7 +33,7 @@ import {
     normalizeSettings,
     upsertStoredChatProfile,
 } from './core.js';
-import { scrollNativeWorldEntry } from '../content-scroll.js';
+import { findScrollableContent, scrollNativeWorldEntry } from '../content-scroll.js';
 
 let _worldInfoModule = null;
 let _worldInfoModuleTried = false;
@@ -43,6 +43,7 @@ let _selfWriteGuardUntil = 0;
 const _sceneCooldownByChat = new Map();
 /** @type {Map<string, Map<string, boolean>>} worldName -> (uid -> disabled) lightweight state cache */
 const _knownEntryDisabledByBook = new Map();
+const _bannersByDisabledSnapshot = new WeakMap();
 
 export function getHostContext() {
     try {
@@ -112,7 +113,14 @@ function getSettingsContainer() {
 
 export function getNativeGroupingState(worldName) {
     const settings = getSettingsContainer()?.[MODULE_NAME];
-    return { config: settings?.books?.[worldName], showButton: settings?.showNativeEntryBtn !== false };
+    const disabledByUid = _knownEntryDisabledByBook.get(worldName);
+    return {
+        config: settings?.books?.[worldName],
+        showButton: settings?.showNativeEntryBtn !== false,
+        themeSettings: settings,
+        disabledByUid,
+        banners: _bannersByDisabledSnapshot.get(disabledByUid),
+    };
 }
 
 export function getSettings() {
@@ -149,10 +157,14 @@ function cacheLightDisabledSnapshot(worldName, summaries) {
         const oldest = _knownEntryDisabledByBook.keys().next().value;
         if (oldest !== undefined) _knownEntryDisabledByBook.delete(oldest);
     }
-    _knownEntryDisabledByBook.set(
-        worldName,
-        new Map(summaries.map((s) => [s.uid, Boolean(s.disabled)])),
-    );
+    const disabledByUid = new Map();
+    const banners = new Set();
+    for (const entry of summaries) {
+        disabledByUid.set(entry.uid, Boolean(entry.disabled));
+        if (entry.isPureBanner) banners.add(entry.uid);
+    }
+    _knownEntryDisabledByBook.set(worldName, disabledByUid);
+    _bannersByDisabledSnapshot.set(disabledByUid, banners);
 }
 
 export function clearRuntimeBookSnapshots(worldName = '') {
@@ -352,7 +364,7 @@ export function getPreferredDefaultBook(settings) {
     return names[0];
 }
 
-async function fetchWorldInfoUncached(worldName) {
+async function fetchWorldInfoUncached(worldName, signal) {
     const clean = String(worldName ?? '').trim();
     if (!clean) return null;
 
@@ -361,6 +373,7 @@ async function fetchWorldInfoUncached(worldName) {
             method: 'POST',
             headers: buildRequestHeaders(),
             body: JSON.stringify({ name: clean }),
+            signal,
         });
         if (res.ok) {
             return await res.json();
@@ -369,9 +382,11 @@ async function fetchWorldInfoUncached(worldName) {
         // Fallback below
     }
 
+    if (signal?.aborted) return null;
     try {
         const ctx = getHostContext();
         await ensureWorldInfoModule();
+        if (signal?.aborted) return null;
         const loader = ctx?.loadWorldInfo || _worldInfoModule?.loadWorldInfo;
         if (typeof loader === 'function') {
             return await loader(clean);
@@ -382,11 +397,11 @@ async function fetchWorldInfoUncached(worldName) {
     return null;
 }
 
-export async function loadWorldbookSummariesUncached(worldName) {
+export async function loadWorldbookSummariesUncached(worldName, { signal } = {}) {
     const clean = String(worldName ?? '').trim();
     if (!clean) return { ok: false, summaries: [], error: '未选择世界书' };
 
-    let payload = await fetchWorldInfoUncached(clean);
+    let payload = await fetchWorldInfoUncached(clean, signal);
     if (!payload || typeof payload !== 'object' || !('entries' in payload)) {
         return { ok: false, summaries: [], error: `无法读取世界书「${clean}」` };
     }
@@ -542,9 +557,11 @@ export function syncWorldInfoCacheEntry(cache, worldName, uid, updatedEntry) {
 
 export function syncNativeEditorDomFallback(listEl, appliedChanges) {
     if (!listEl || !Array.isArray(appliedChanges)) return 0;
+    const rows = appliedChanges.length > 1 ? listEl.querySelectorAll?.('.world_entry[uid]') : null;
+    const rowsByUid = rows ? new Map(Array.from(rows, (row) => [row.getAttribute('uid'), row])) : null;
     let updated = 0;
     for (const { uid, disabled } of appliedChanges) {
-        const row = listEl.querySelector(`.world_entry[uid="${escapeCssAttr(String(uid))}"]`);
+        const row = rowsByUid ? rowsByUid.get(String(uid)) : listEl.querySelector(`.world_entry[uid="${escapeCssAttr(String(uid))}"]`);
         if (!row) continue;
         const nextDisabled = Boolean(disabled);
         row.classList.toggle('disabledWIEntry', nextDisabled);
@@ -559,27 +576,67 @@ export function syncNativeEditorDomFallback(listEl, appliedChanges) {
     return updated;
 }
 
-async function syncHostCacheAndOpenEditorIfPresent(worldName, updatedPayload, appliedChanges) {
+function getNativePagination() {
+    const pagination = document.getElementById('world_info_pagination');
+    const $ = globalThis.jQuery;
+    return pagination && typeof $ === 'function' ? $(pagination) : null;
+}
+
+async function refreshNativeEditorAfterGroupToggle(worldName, list, appliedChanges) {
+    const first = list?.querySelector('.world_entry[uid]');
+    const scroller = findScrollableContent(first, document.getElementById('WorldInfo')?.parentElement);
+    const scrollTop = scroller?.scrollTop;
+    let page = 1;
+    try {
+        page = Number(getNativePagination()?.pagination?.('getCurrentPageNum')) || 1;
+    } catch {
+        // Some hosts supply a different pager.
+    }
+    if (typeof _worldInfoModule.showWorldEditor === 'function') await _worldInfoModule.showWorldEditor(worldName);
+    else await _worldInfoModule.reloadEditor(worldName);
+    if (!first || !list) return;
+    const stillEditing = () => list.isConnected && getCurrentEditorWorldName() === worldName;
+    const rendered = await waitForCondition(
+        () => !stillEditing() || (!first.isConnected && list.querySelector('.world_entry[uid]')),
+        { timeoutMs: 1500, intervalMs: 32 },
+    );
+    if (!stillEditing()) return;
+    if (rendered && page > 1) {
+        const pager = getNativePagination();
+        if (Number(pager?.pagination?.('getCurrentPageNum')) !== page) {
+            const selector = `.world_entry[uid="${escapeCssAttr(first.getAttribute('uid'))}"]`;
+            pager?.pagination?.('go', page);
+            await waitForCondition(() => !stillEditing() || list.querySelector(selector), { timeoutMs: 1500, intervalMs: 32 });
+        }
+    }
+    if (!stillEditing()) return;
+    syncNativeEditorDomFallback(list, appliedChanges);
+    if (scroller?.isConnected) scroller.scrollTop = scrollTop;
+}
+
+async function syncHostCacheAndOpenEditorIfPresent(worldName, updatedPayload, appliedChanges, preserveNativePosition) {
     await ensureWorldInfoModule();
     const cache = _worldInfoModule?.worldInfoCache;
     const wasInCache = syncWorldInfoCacheMap(cache, worldName, updatedPayload, appliedChanges);
 
     if (getCurrentEditorWorldName() === worldName && typeof document !== 'undefined') {
-        if (typeof _worldInfoModule?.reloadEditor === 'function' && wasInCache) {
+        const listEl = document.getElementById('world_popup_entries_list');
+        if (wasInCache && (typeof _worldInfoModule?.reloadEditor === 'function'
+            || (preserveNativePosition && typeof _worldInfoModule?.showWorldEditor === 'function'))) {
             try {
-                _worldInfoModule.reloadEditor(worldName);
+                if (preserveNativePosition) await refreshNativeEditorAfterGroupToggle(worldName, listEl, appliedChanges);
+                else _worldInfoModule.reloadEditor(worldName);
                 return;
             } catch {
                 // Fall back to lightweight DOM class sync below
             }
         }
 
-        const listEl = document.getElementById('world_popup_entries_list');
-        syncNativeEditorDomFallback(listEl, appliedChanges);
+        if (getCurrentEditorWorldName() === worldName) syncNativeEditorDomFallback(listEl, appliedChanges);
     }
 }
 
-export async function applyWorldbookTogglePlan(worldName, togglePlan) {
+export async function applyWorldbookTogglePlan(worldName, togglePlan, { preserveNativePosition = false } = {}) {
     const clean = String(worldName ?? '').trim();
     if (!clean) {
         return { ok: false, changedCount: 0, appliedChanges: [], summaries: [], error: '未选择世界书' };
@@ -590,9 +647,11 @@ export async function applyWorldbookTogglePlan(worldName, togglePlan) {
         return { ok: false, changedCount: 0, appliedChanges: [], summaries: [], error: `无法读取世界书「${clean}」` };
     }
 
-    const { changedCount, appliedChanges } = applyTogglePlanToPayload(payload, togglePlan);
+    const before = typeof togglePlan === 'function' ? extractWorldbookEntrySummaries(payload) : null;
+    const plan = before ? togglePlan(before) : togglePlan;
+    const { changedCount, appliedChanges } = applyTogglePlanToPayload(payload, plan);
     if (changedCount === 0) {
-        const summaries = extractWorldbookEntrySummaries(payload);
+        const summaries = before || extractWorldbookEntrySummaries(payload);
         payload = null;
         cacheLightDisabledSnapshot(clean, summaries);
         return { ok: true, changedCount: 0, appliedChanges: [], summaries };
@@ -620,9 +679,15 @@ export async function applyWorldbookTogglePlan(worldName, togglePlan) {
         };
     }
 
-    await syncHostCacheAndOpenEditorIfPresent(clean, payload, appliedChanges);
+    await syncHostCacheAndOpenEditorIfPresent(clean, payload, appliedChanges, preserveNativePosition);
 
-    const summaries = extractWorldbookEntrySummaries(payload);
+    const summaries = before || extractWorldbookEntrySummaries(payload);
+    if (before) {
+        const changes = new Map(appliedChanges.map(({ uid, disabled }) => [uid, disabled]));
+        for (const entry of summaries) {
+            if (changes.has(entry.uid)) entry.disabled = changes.get(entry.uid);
+        }
+    }
     payload = null;
     cacheLightDisabledSnapshot(clean, summaries);
 

@@ -33,8 +33,9 @@ import {
     togglePinnedBook,
 } from './core.js';
 import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
-import { scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
+import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
 import { revealNativeEntryGroup } from './entry-groups/native-view.js';
+import { closeGroupVisibilityPopover } from './panel-window.js';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -128,7 +129,7 @@ export function closeAllOpenWorldDropdowns({ except = null } = {}) {
     }
 
     if (typeof document !== 'undefined') {
-        document.querySelectorAll('#wbo-quick-exclude-backdrop, #wbo-vis-popover-backdrop, #wbo-search-opts-backdrop').forEach((el) => el.remove());
+        closeGroupVisibilityPopover();
 
         document.querySelectorAll(ENHANCED_POPOVER_SELECTORS.containerSelector).forEach((el) => {
             if (!(el instanceof HTMLElement) || !el.isConnected) return;
@@ -2902,6 +2903,7 @@ export function attachGroupedSelectControl(
 
     let openOverlay = null;
     let removeGlobalDismiss = null;
+    let lastSelection = null;
     const closePopover = () => {
         if (!openOverlay) return false;
         _openCustomPickerClosers.delete(popoverCloserEntry);
@@ -2932,7 +2934,13 @@ export function attachGroupedSelectControl(
             prioritizeCharGroup,
             pinSelectedSection: multiple,
         });
+        const selection = lastSelection?.value === selectEl.value ? lastSelection : null;
+        const selectionGroup = selection && sections.find((section) => section.books.some((book) => book.value === selection.value));
         let activePillId = SPECIAL_GROUPS.ALL;
+        if (selection?.pillId === SPECIAL_GROUPS.PINNED || (selectionGroup && selectionGroup.id === selection.pillId)) {
+            activePillId = selection.pillId;
+        }
+        if (selectionGroup) localCollapsed[selectionGroup.id] = false;
         let searchQuery = '';
 
         // CRITICAL: mount inside `<dialog>` when inside SillyTavern's native Popup so we stay in top-layer!
@@ -3234,6 +3242,9 @@ export function attachGroupedSelectControl(
             if (!btn) return;
             const gid = btn.getAttribute('data-pop-pill') || SPECIAL_GROUPS.ALL;
             activePillId = (gid === activePillId && gid !== SPECIAL_GROUPS.ALL) ? SPECIAL_GROUPS.ALL : gid;
+            if (panelRoot && activePillId === gid && sections.some((section) => section.id === gid)) {
+                localCollapsed[gid] = false;
+            }
             renderPills();
             renderList();
             if (listEl) listEl.scrollTop = 0;
@@ -3322,6 +3333,16 @@ export function attachGroupedSelectControl(
             const rowBtn = target.closest('[data-pop-val]');
             if (rowBtn) {
                 const val = rowBtn.getAttribute('data-pop-val') ?? '';
+                if (panelRoot) {
+                    const row = rowBtn.closest('.wbo-mp-row');
+                    lastSelection = {
+                        value: val,
+                        pillId: activePillId,
+                        offset: row.getBoundingClientRect().top - listEl.getBoundingClientRect().top,
+                        scrollTop: listEl.scrollTop,
+                        searching: Boolean(searchQuery.trim()),
+                    };
+                }
                 selectEl.value = val;
                 fireSelectChange();
                 closePopover();
@@ -3348,6 +3369,26 @@ export function attachGroupedSelectControl(
 
         renderPills();
         renderList();
+        if (selection && listEl) {
+            const selector = `[data-pop-val="${CSS.escape(selection.value)}"]`;
+            let row = listEl.querySelector(selector)?.closest('.wbo-mp-row');
+            if (!row && activePillId !== SPECIAL_GROUPS.ALL) {
+                activePillId = SPECIAL_GROUPS.ALL;
+                renderPills();
+                renderList();
+                row = listEl.querySelector(selector)?.closest('.wbo-mp-row');
+            }
+            if (row) {
+                if (!selection.searching && activePillId === selection.pillId) {
+                    listEl.scrollTop = selection.scrollTop;
+                } else {
+                    restoreContentAnchor(listEl, row, selection.offset);
+                }
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    if (openOverlay === overlay) restoreContentAnchor(listEl, row, selection.offset);
+                }));
+            }
+        }
     };
 
     trigger.addEventListener('click', (ev) => {
@@ -4828,7 +4869,13 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const blankRow = placeholders.find((row) => row.getAttribute('data-value') === '');
-    if (activeEditName && editorSel && useEnhancedStyle && blankRow) {
+    const nativeClear = editorSel && document.getElementById('select2-world_editor_select-container')
+        ?.closest('.select2-selection')?.querySelector('.select2-selection__clear');
+    const hasNativeClear = Boolean(nativeClear?.getClientRects().length);
+    if (activeEditName && useEnhancedStyle && blankRow && hasNativeClear) {
+        blankRow.classList.add('wbo-enhanced-clear-option');
+    }
+    if (activeEditName && editorSel && useEnhancedStyle && blankRow && !hasNativeClear) {
         const clear = document.createElement('button');
         clear.type = 'button';
         clear.className = 'wbo-enhanced-picker-clear';

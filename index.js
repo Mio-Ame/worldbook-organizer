@@ -61,7 +61,7 @@ import { startEntryGrouping, stopEntryGrouping } from './src/entry-groups/lifecy
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.5';
+export const STYLE_ASSET_VERSION = '2.35.6';
 let _initialized = false;
 let _initialAutoScanRunning = false;
 let _initialAutoScanTimer = null;

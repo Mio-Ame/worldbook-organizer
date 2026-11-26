@@ -699,6 +699,42 @@ test('locateEntryInNativeEditor clears stale search before searching and clears 
     }
 });
 
+test('the shorthand for a thinking-chain title only groups matching prefixes', () => {
+    const entries = [
+        { uid: '0', title: '（缝思维链内 测试甲', keys: [] },
+        { uid: '1', title: '(缝思维链内 测试乙', keys: [] },
+        { uid: '2', title: '关于思维链的测试备注', keys: [] },
+        { uid: '3', title: '一般条目', content: '（缝思维链内 测试', keys: [] },
+    ];
+    for (const strategy of ['smart', 'prefix']) {
+        const proposals = detectAutoGroups(entries, { strategy });
+        assert.deepEqual(proposals.map(({ name, uids }) => [name, uids]), [['思维链', ['0', '1']]]);
+        assert.deepEqual(detectAutoGroups(entries.slice(1), { strategy }), []);
+    }
+});
+
+test('matching divider titles group both markers and only the entries between them', () => {
+    const entries = extractWorldbookEntrySummaries({ entries: {
+        0: { uid: 0, comment: '===== 测试规范 =====', content: '', key: [], disable: true },
+        1: { uid: 1, comment: '规范正文', content: '测试内容', key: ['规范'], disable: true },
+        2: { uid: 2, comment: '===== 测试规范 =====', content: '', key: [], disable: true },
+        3: { uid: 3, comment: '区间以外', content: '测试内容', key: ['测试'], disable: true },
+    } });
+    for (const strategy of ['smart', 'divider']) {
+        const proposals = detectAutoGroups(entries, { strategy });
+        assert.equal(proposals.length, 1);
+        assert.equal(proposals[0].name, '测试规范');
+        assert.deepEqual(proposals[0].uids, ['0', '1', '2']);
+        const config = applyAutoGroupProposals(null, proposals);
+        const group = config.groups[0].id;
+        assert.deepEqual([...computeGroupTogglePlan(entries, config, group, true)], [['1', false]]);
+        delete config.assignments['2'];
+        const repair = detectAutoGroups(entries, { strategy, existingAssignments: config.assignments });
+        assert.deepEqual(repair[0].uids, ['2']);
+        assert.equal(applyAutoGroupProposals(config, repair).assignments['2'], group);
+    }
+});
+
 test('parseDividerComment handles single-wrapper empty banners, pure-emoji section banners, and rejects normal titles', () => {
     assert.deepEqual(parseDividerComment('—字字—', { hasContent: false, keyCount: 0 }), {
         isDivider: true,
@@ -997,7 +1033,7 @@ test('Pin/favorite groups & entries float to top, retain empty-group books, and 
     });
     assert.ok(pinOnlySettings.books['纯置顶书']);
     assert.deepEqual(pinOnlySettings.books['纯置顶书'].pinnedEntryUids, ['2']);
-    assert.deepEqual(pinOnlySettings.books['纯置顶书'].pinnedGroupIds, []);
+    assert.deepEqual(pinOnlySettings.books['纯置顶书'].pinnedGroupIds, [SPECIAL_GROUP_UNGROUPED]);
     assert.equal(isBookConfigEmpty({ groups: [], assignments: {}, pinnedEntryUids: ['2'] }), false);
     assert.equal(isBookConfigEmpty({ groups: [], assignments: {} }), true);
 
@@ -1021,7 +1057,6 @@ test('Pin/favorite groups & entries float to top, retain empty-group books, and 
 
     assert.deepEqual(setGroupPinned(cfg, 'g3'), { changed: true, pinned: true });
     assert.deepEqual(setGroupPinned(cfg, 'g2'), { changed: true, pinned: true });
-    assert.deepEqual(setGroupPinned(cfg, SPECIAL_GROUP_UNGROUPED), { changed: false, pinned: false });
     assert.deepEqual(setEntryPinned(cfg, '2'), { changed: true, pinned: true });
     assert.deepEqual(setEntryPinned(cfg, '4'), { changed: true, pinned: true });
     assert.deepEqual(setEntryPinned(cfg, '6'), { changed: true, pinned: true });
@@ -1034,21 +1069,26 @@ test('Pin/favorite groups & entries float to top, retain empty-group books, and 
     assert.deepEqual(view.sections[0].entries.map((e) => e.uid), ['4', '3']);
     assert.deepEqual(view.sections[2].entries.map((e) => e.uid), ['2', '1']);
     assert.deepEqual(view.sections[3].entries.map((e) => e.uid), ['6', '5']);
+    assert.deepEqual(setGroupPinned(cfg, SPECIAL_GROUP_UNGROUPED), { changed: true, pinned: true });
+    const withUngrouped = buildGroupedView(summaries, cfg);
+    assert.deepEqual(withUngrouped.sections.map((s) => s.id), ['g2', 'g3', SPECIAL_GROUP_UNGROUPED, 'g1']);
+    assert.equal(withUngrouped.sections[2].pinned, true);
 
     // 3. Replace-mode auto-group keeps pinnedEntryUids while clearing obsolete pinnedGroupIds
     const replaced = applyAutoGroupProposals(cfg, [{ name: '新组', uids: ['1'], mode: 'normal' }], { replaceExisting: true });
     assert.deepEqual(replaced.pinnedEntryUids, ['2', '4', '6']);
-    assert.deepEqual(replaced.pinnedGroupIds, []);
+    assert.deepEqual(replaced.pinnedGroupIds, [SPECIAL_GROUP_UNGROUPED]);
 
     // 4. Group dissolution removes groupId from pinnedGroupIds
     assert.equal(removeGroupFromBookConfig(cfg, 'g2'), true);
-    assert.deepEqual(cfg.pinnedGroupIds, ['g3']);
+    assert.deepEqual(cfg.pinnedGroupIds, ['g3', SPECIAL_GROUP_UNGROUPED]);
 
     // 5. Orphan pruning cleans deleted UIDs from pinnedEntryUids
     cfg.pinnedEntryUids.push('999');
     const pruned = pruneOrphanAssignments(cfg, new Set(['1', '2', '3', '4', '5', '6']));
     assert.ok(pruned >= 1);
     assert.equal(cfg.pinnedEntryUids.includes('999'), false);
+    assert.ok(cfg.pinnedGroupIds.includes(SPECIAL_GROUP_UNGROUPED));
 
     // 6. Rename merge remaps pinnedGroupIds and merges pinnedEntryUids
     const mergeSettings = normalizeSettings({

@@ -23,7 +23,7 @@ let _callbacks = null;
 
 /** @type {{ left?: number, top?: number, width: number, height: number } | null} */
 let _sessionManagerModalBox = null;
-let _sessionManagerMobileBox = null;
+const _sessionMobileBoxes = new Map();
 
 /** @type {Map<string, { total: number, enabledCount: number, entries: Array<any> }>} */
 const _previewCache = new Map();
@@ -89,17 +89,20 @@ const THEME_PALETTES = Object.freeze([
  */
 function applyThemeClass(el) {
     if (!el) return;
-    const settings = _callbacks?.getState?.()?.settings;
-    const mode = settings?.themeMode || 'auto';
-    const palette = settings?.themePalette || 'classic';
-    const cls = mode === 'light'
-        ? 'wbo-theme-light'
-        : mode === 'dark'
-            ? 'wbo-theme-dark'
-            : detectHostThemeClass();
+    const { mode, palette } = getPanelTheme();
     el.classList.remove('wbo-theme-light', 'wbo-theme-dark');
-    el.classList.add(cls);
+    el.classList.add(`wbo-theme-${mode}`);
     el.setAttribute('data-wbo-palette', palette);
+}
+
+function getPanelTheme() {
+    const settings = _callbacks?.getState?.()?.settings;
+    const palette = settings?.themePalette || 'classic';
+    const preference = settings?.themeMode;
+    const mode = preference === 'light' || preference === 'dark'
+        ? preference
+        : (detectHostThemeClass() === 'wbo-theme-light' ? 'light' : 'dark');
+    return { mode, palette };
 }
 
 /**
@@ -109,6 +112,7 @@ function syncAllOpenModalsTheme() {
     document.querySelectorAll('.wbo-modal, #wbo-restore-pill').forEach((el) => {
         if (el instanceof HTMLElement) applyThemeClass(el);
     });
+    window.dispatchEvent(new Event('wbo:panel-theme-changed'));
 }
 
 /**
@@ -138,7 +142,9 @@ function bindPanelCallbacks(callbacks) {
 }
 
 function closeGroupVisibilityPopover() {
-    document.getElementById('wbo-vis-popover-backdrop')?.remove();
+    const visibilityPopover = document.getElementById('wbo-vis-popover-backdrop');
+    visibilityPopover?.dispatchEvent(new Event('wbo:popover-close'));
+    visibilityPopover?.remove();
     document.getElementById('wbo-quick-exclude-backdrop')?.remove();
     document.getElementById('wbo-search-opts-backdrop')?.remove();
 }
@@ -175,6 +181,8 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
     const isManager = modal.classList.contains('wbo-manager-modal');
     const fullScreen = modal.querySelector('[data-wbo-fullscreen-btn]');
+    const mobileWindowKey = fullScreen?.dataset.wboFullscreenBtn;
+    const storageKey = `wbo-window-size:${mobileWindowKey}`;
     const stableHeight = modal.style.getPropertyValue('--wbo-stable-h');
     let posLeft = 0;
     let posTop = 0;
@@ -193,7 +201,10 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const getBounds = () => {
         const vw = Math.max(globalThis.innerWidth || document.documentElement?.clientWidth || 1200, 280);
         const vh = Math.max(globalThis.innerHeight || document.documentElement?.clientHeight || 800, 320);
-        const isMobile = vw <= 680;
+        const isMobile = vw <= 680 || Boolean(mobileWindowKey && (
+            globalThis.__TAURITAVERN_HOST__?.kind === 'mobile'
+            || globalThis.matchMedia?.('(pointer: coarse)')?.matches
+        ));
         const minW = isMobile ? Math.min(310, Math.max(240, vw - 16)) : 340;
         const minH = isMobile ? 250 : 280;
         const maxW = isMobile ? Math.max(minW, Math.round(vw - 16)) : Math.max(minW, vw);
@@ -201,7 +212,15 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         return { vw, vh, isMobile, minW, minH, maxW, maxH };
     };
 
-    const isMobileFloating = () => isManager && modal.classList.contains('is-resized');
+    const isMobileFloating = () => Boolean(mobileWindowKey && modal.classList.contains('is-resized'));
+
+    const updateFullscreenButton = () => {
+        if (!fullScreen) return;
+        const label = isMobileFloating() ? '最大化' : '还原窗口';
+        fullScreen.querySelector('span').textContent = label;
+        fullScreen.title = isMobileFloating() ? '最大化' : '还原窗口后可移动和调整大小';
+        fullScreen.querySelector('i').className = `fa-solid ${isMobileFloating() ? 'fa-expand' : 'fa-compress'}`;
+    };
 
     const getMobileArea = ({ vw, vh }) => {
         const surface = isMobileFloating() ? modal.parentElement : modal;
@@ -244,14 +263,15 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         modal.style.maxHeight = `${height}px`;
         modal.style.setProperty('--wbo-stable-h', `${height}px`);
         applyFixedPosition(
-            Math.max(area.left, Math.min(area.right - width, box.left)),
-            Math.max(area.top, Math.min(area.bottom - height, box.top)),
+            Math.max(area.left, Math.min(area.right - width, box.left ?? area.left + (maxW - width) / 2)),
+            Math.max(area.top, Math.min(area.bottom - height, box.top ?? area.top + (maxH - height) / 2)),
         );
+        updateFullscreenButton();
     };
 
-    const saveManagerBoxSession = () => {
-        if (!isManager) return;
+    const saveWindowBox = ({ rememberSize = false } = {}) => {
         const { isMobile } = getBounds();
+        if (!isManager && !isMobileFloating()) return;
         const r = modal.getBoundingClientRect();
         const box = {
             left: hasFixedPos ? posLeft : Math.round(r.left),
@@ -259,8 +279,32 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
             width: Math.round(r.width),
             height: Math.round(r.height),
         };
-        if (isMobile && isMobileFloating()) _sessionManagerMobileBox = box;
-        if (!isMobile && r.width >= 300 && r.height >= 260) _sessionManagerModalBox = box;
+        if (isMobile && isMobileFloating()) {
+            _sessionMobileBoxes.set(mobileWindowKey, box);
+            if (rememberSize) {
+                try {
+                    const saved = JSON.stringify({ width: box.width, height: box.height });
+                    if (globalThis.localStorage?.getItem(storageKey) !== saved) globalThis.localStorage?.setItem(storageKey, saved);
+                } catch { /* Session geometry still works without browser storage. */ }
+            }
+        }
+        if (isManager && !isMobile && r.width >= 300 && r.height >= 260) _sessionManagerModalBox = box;
+    };
+
+    const restoreMobileWindow = () => {
+        const area = getMobileArea(getBounds());
+        let box = _sessionMobileBoxes.get(mobileWindowKey);
+        if (!box) {
+            try {
+                const saved = JSON.parse(globalThis.localStorage?.getItem(storageKey) || 'null');
+                if (Number.isFinite(saved?.width) && saved.width > 0 && Number.isFinite(saved?.height) && saved.height > 0) {
+                    box = { width: saved.width, height: saved.height };
+                }
+            } catch { /* Invalid or unavailable stored geometry uses the default size. */ }
+        }
+        if (!box) box = { width: (area.right - area.left) * 0.9, height: (area.bottom - area.top) * 0.76 };
+        _sessionMobileBoxes.set(mobileWindowKey, box);
+        fitMobileBox(box, area);
     };
 
     const clampIntoViewport = (preferredMobileBox = null) => {
@@ -308,9 +352,9 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
 
     // Initialize desktop fixed anchoring & optional initial/saved box
     const initBounds = getBounds();
-    if (initBounds.isMobile) {
-        if (isManager && _sessionManagerMobileBox) fitMobileBox(_sessionManagerMobileBox);
-    } else {
+    modal.classList.toggle('wbo-touch-window', Boolean(mobileWindowKey && initBounds.isMobile));
+    updateFullscreenButton();
+    if (!initBounds.isMobile) {
         if (isManager && _sessionManagerModalBox) {
             const savedW = Math.max(initBounds.minW, Math.min(initBounds.maxW, _sessionManagerModalBox.width));
             const savedH = Math.max(initBounds.minH, Math.min(initBounds.maxH, _sessionManagerModalBox.height));
@@ -344,16 +388,22 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         }
     }
 
-    fullScreen?.addEventListener('click', () => {
-        if (!getBounds().isMobile) return;
-        _sessionManagerMobileBox = null;
+    const maximizeMobileWindow = () => {
+        if (!getBounds().isMobile || !mobileWindowKey) return;
         hasFixedPos = false;
         modal.classList.remove('is-positioned', 'is-resized');
         for (const property of ['left', 'top', 'width', 'height', 'max-height', 'transform']) {
             modal.style.removeProperty(property);
         }
         modal.style.setProperty('--wbo-stable-h', stableHeight);
+        updateFullscreenButton();
+    };
+    fullScreen?.addEventListener('click', () => {
+        if (!getBounds().isMobile) return;
+        if (isMobileFloating()) maximizeMobileWindow();
+        else restoreMobileWindow();
     });
+    modal.addEventListener('wbo:window-reopened', maximizeMobileWindow);
 
     handleEl.addEventListener('pointerdown', (ev) => {
         if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
@@ -403,7 +453,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         dragging = false;
         modal.classList.remove('is-dragging-modal');
         try { handleEl.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
-        saveManagerBoxSession();
+        saveWindowBox();
     };
     handleEl.addEventListener('pointerup', endDrag);
     handleEl.addEventListener('pointercancel', endDrag);
@@ -416,12 +466,12 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
             const edge = document.createElement('div');
             edge.className = `wbo-resize-edge wbo-resize-${dir}`;
             edge.setAttribute('data-resize-dir', dir);
-            if (isManager && dir === 'se') edge.title = '拖动调整窗口大小';
+            if (mobileWindowKey && dir === 'se') edge.title = '拖动调整窗口大小';
             modal.appendChild(edge);
 
             edge.addEventListener('pointerdown', (ev) => {
                 if (ev.isPrimary === false || (ev.pointerType === 'mouse' && ev.button !== 0)) return;
-                if (getBounds().isMobile && (!isManager || dir !== 'se')) return;
+                if (getBounds().isMobile && (!mobileWindowKey || dir !== 'se')) return;
                 ev.stopPropagation();
                 ev.preventDefault();
                 pinToFixedPosition();
@@ -448,7 +498,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
                 const dxPtr = ev.clientX - startX;
                 const dyPtr = ev.clientY - startY;
                 if (bounds.isMobile) {
-                    if (!isManager || dir !== 'se' || (!isMobileFloating() && dxPtr >= -4 && dyPtr >= -4)) return;
+                    if (!mobileWindowKey || dir !== 'se' || (!isMobileFloating() && dxPtr >= -4 && dyPtr >= -4)) return;
                     const area = getMobileArea(bounds);
                     const left = Math.max(area.left, startRect.left);
                     const top = Math.max(area.top, startRect.top);
@@ -503,7 +553,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
                 modal.classList.remove('is-resizing-modal');
                 try { edge.releasePointerCapture(ev.pointerId); } catch { /* ignore */ }
                 clampIntoViewport();
-                saveManagerBoxSession();
+                saveWindowBox({ rememberSize: true });
             };
             edge.addEventListener('pointerup', endResize);
             edge.addEventListener('pointercancel', endResize);
@@ -513,6 +563,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const onViewportChange = () => {
         if (!modal.isConnected) return;
         const { isMobile } = getBounds();
+        modal.classList.toggle('wbo-touch-window', Boolean(mobileWindowKey && isMobile));
         if (isMobile && !isMobileFloating()) {
             hasFixedPos = false;
             modal.classList.remove('is-positioned');
@@ -522,7 +573,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
             return;
         }
         pinToFixedPosition();
-        clampIntoViewport(isMobile && !dragging && !resizing ? _sessionManagerMobileBox : null);
+        clampIntoViewport(isMobile && !dragging && !resizing ? _sessionMobileBoxes.get(mobileWindowKey) : null);
     };
     globalThis.addEventListener('resize', onViewportChange);
     globalThis.addEventListener('orientationchange', onViewportChange);
@@ -530,6 +581,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     return () => {
         globalThis.removeEventListener('resize', onViewportChange);
         globalThis.removeEventListener('orientationchange', onViewportChange);
+        modal.removeEventListener('wbo:window-reopened', maximizeMobileWindow);
     };
 }
 
@@ -800,6 +852,7 @@ export {
     createSubModal,
     detectHostThemeClass,
     esc,
+    getPanelTheme,
     GROUP_MGR_OVERLAY_ID,
     isDesktopAutoFocusAllowed,
     MANAGER_OVERLAY_ID,

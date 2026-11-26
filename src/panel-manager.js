@@ -164,13 +164,6 @@ function invalidatePreviewCache(worldName = null) {
     }
 }
 
-function getEntryGroupsSummary(worldName) {
-    if (!isEntryGroupingAvailable()) return [];
-    const ctx = getHostContext();
-    const groups = ctx?.extensionSettings?.worldbook_entry_groups?.books?.[worldName]?.groups;
-    return Array.isArray(groups) ? groups : [];
-}
-
 function openEntryGroupsForBook(worldName) {
     try {
         if (typeof window !== 'undefined' && typeof CustomEvent === 'function') {
@@ -322,10 +315,6 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
     const personaHint = book.personaOwners?.length
         ? `<span class="wbo-tag" title="绑定人设：${esc(book.personaOwners.join('、'))}">人设</span>`
         : '';
-    const entryGroups = getEntryGroupsSummary(book.realName);
-    const entryGroupsTag = entryGroups.length > 0
-        ? `<span class="wbo-tag" title="条目分组已配置 ${entryGroups.length} 个分组">${entryGroups.length} 组</span>`
-        : '';
     const subHtml = book.subtitle
         ? `<span class="wbo-book-sub" title="${esc(book.realName)}">${esc(book.subtitle)}</span>`
         : '';
@@ -372,7 +361,6 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                             ${extraTag}
                             ${ownerHint}
                             ${personaHint}
-                            ${entryGroupsTag}
                         </span>
                         ${noteHtml}
                     </span>
@@ -382,7 +370,7 @@ function renderBookRowHtml(book, activeGlobals, currentEditor, embeddedMatchSet 
                     <button type="button" class="wbo-icon-btn wbo-icon-danger wbo-book-delete-btn" data-action="delete-single-book" title="删除世界书" aria-label="删除世界书">
                         <i class="fa-regular fa-trash-can" aria-hidden="true"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作">
+                    <button type="button" class="wbo-icon-btn wbo-book-more-btn" data-action="book-more-menu" title="更多操作" aria-label="更多操作" aria-expanded="false">
                         <i class="fa-solid fa-ellipsis" aria-hidden="true"></i>
                     </button>
                     <button type="button"
@@ -440,6 +428,7 @@ async function toggleInlineBookPreview(itemEl, bookName) {
         worldName: bookName,
         pageSize: 60,
         showToolbar: true,
+        onOpenEntryGroups: isEntryGroupingAvailable() ? () => openEntryGroupsForBook(bookName) : null,
         getMonoFont: () => Boolean(_callbacks?.getState?.()?.settings?.entryEditorMonoFont),
         onToggleMonoFont: (nextMono) => {
             const curSettings = _callbacks?.getState?.()?.settings;
@@ -691,14 +680,71 @@ function restoreManagerModal() {
     });
 }
 
+function getManagerScrollHost(listEl) {
+    return listEl?.closest('.wbo-touch-window.is-resized')?.querySelector('.wbo-mgr-window-scroll') || listEl;
+}
+
+function bindFloatingManagerTools(modal) {
+    const toggle = modal.querySelector('#wbo-mgr-floating-tools-btn');
+    const flyout = modal.querySelector('#wbo-mgr-floating-tools');
+    const scrollHost = modal.querySelector('.wbo-mgr-window-scroll');
+    const tools = ['.wbo-mgr-header-tools', '.wbo-mgr-subbar'].map((selector) => modal.querySelector(selector));
+    let locations = [];
+
+    const close = () => {
+        if (flyout.hidden) return;
+        const top = scrollHost.scrollTop;
+        for (const [placeholder, controls] of locations) placeholder.replaceWith(controls);
+        locations = [];
+        flyout.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+        scrollHost.scrollTop = top;
+    };
+
+    toggle.addEventListener('click', () => {
+        if (!flyout.hidden) {
+            close();
+            return;
+        }
+        if (!modal.matches('.wbo-touch-window.is-resized')) return;
+        const top = scrollHost.scrollTop;
+        locations = tools.map((controls) => {
+            const placeholder = document.createElement('div');
+            placeholder.style.height = `${controls.getBoundingClientRect().height}px`;
+            placeholder.setAttribute('aria-hidden', 'true');
+            return [placeholder, controls];
+        });
+        for (const [placeholder, controls] of locations) {
+            controls.replaceWith(placeholder);
+            flyout.append(controls);
+        }
+        flyout.scrollTop = 0;
+        flyout.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+        scrollHost.scrollTop = top;
+    });
+
+    modal.addEventListener('pointerdown', (event) => {
+        if (!flyout.contains(event.target) && !toggle.contains(event.target)) close();
+    });
+    modal.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && !event.isComposing && !_isComposing && !flyout.hidden) {
+            event.stopPropagation();
+            close();
+        }
+    });
+    return close;
+}
+
 function minimizeManagerModal() {
     const overlay = document.getElementById(MANAGER_OVERLAY_ID);
     if (!(overlay instanceof HTMLElement)) return;
+    closeGroupVisibilityPopover();
 
     // Snapshot scroll positions of scrollable containers so hiding via display:none preserves 100% scroll offset
     const snaps = [];
-    const listEl = overlay.querySelector('#wbo-mgr-groups-list');
-    if (listEl instanceof HTMLElement) snaps.push({ el: listEl, top: listEl.scrollTop });
+    const scrollHost = getManagerScrollHost(overlay.querySelector('#wbo-mgr-groups-list'));
+    if (scrollHost instanceof HTMLElement) snaps.push({ el: scrollHost, top: scrollHost.scrollTop });
     overlay.querySelectorAll('.wbo-step-scroll').forEach((el) => {
         if (el instanceof HTMLElement && el.scrollTop > 0) snaps.push({ el, top: el.scrollTop });
     });
@@ -1317,7 +1363,7 @@ function openManagerModal() {
     const stableH = Math.round(Math.min(baseVh * 0.84, 720));
     modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
 
-    modal.innerHTML = `
+    modal.innerHTML = `<div class="wbo-mgr-window-scroll">
         <div class="wbo-modal-header wbo-draggable-header">
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">世界书分组管理</span>
@@ -1325,8 +1371,11 @@ function openManagerModal() {
                     <button type="button" class="wbo-icon-btn wbo-modal-settings-btn" data-action="open-settings-modal" title="显示与行为设置" aria-label="设置">
                         <i class="fa-solid fa-gear"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn title="恢复全屏" aria-label="恢复全屏">
-                        <i class="fa-solid fa-expand" aria-hidden="true"></i>
+                    <button type="button" class="wbo-icon-btn wbo-mgr-floating-tools-btn" id="wbo-mgr-floating-tools-btn" aria-controls="wbo-mgr-floating-tools" aria-expanded="false" title="展开或收起搜索与分组工具">
+                        <i class="fa-solid fa-sliders" aria-hidden="true"></i><span>工具</span>
+                    </button>
+                    <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn="manager" title="还原窗口后可移动和调整大小">
+                        <i class="fa-solid fa-compress" aria-hidden="true"></i><span>还原窗口</span>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-minimize-btn" data-wbo-minimize-btn title="最小化（保留草稿）" aria-label="最小化">
                         <i class="fa-solid fa-minus"></i>
@@ -1419,7 +1468,7 @@ function openManagerModal() {
             </div>
         </div>
         <div class="wbo-groups-list wbo-mgr-list" id="wbo-mgr-groups-list"></div>
-    `;
+    </div><div class="wbo-mgr-floating-tools" id="wbo-mgr-floating-tools" role="region" aria-label="世界书工具" hidden></div>`;
 
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
@@ -1427,8 +1476,10 @@ function openManagerModal() {
     // Isolate modal events from SillyTavern's unpinned-drawer auto-closer, and close ONLY via the `×` button!
     bindDrawerSafeBubbleGuard(modal);
     const cleanupWinCtrl = attachModalWindowControls(modal, modal.querySelector('.wbo-modal-header'));
+    const closeFloatingTools = bindFloatingManagerTools(modal);
     const pillsResizeObserver = typeof globalThis.ResizeObserver === 'function'
         ? new globalThis.ResizeObserver(() => {
+            if (!modal.matches('.wbo-touch-window.is-resized')) closeFloatingTools();
             syncManagerPillsExpansion(overlay, _callbacks?.getState()?.settings?.groupPanelExpanded);
         })
         : null;
@@ -1467,6 +1518,7 @@ function openManagerModal() {
         searchInput.addEventListener('keydown', (ev) => {
             if (ev.isComposing || ev.keyCode === 229 || _isComposing) return;
             if (ev.key === 'Enter') {
+                closeFloatingTools();
                 const curSettings = _callbacks?.getState?.()?.settings;
                 if (curSettings?.mgrSearchInEntries) {
                     ev.preventDefault();
@@ -1863,6 +1915,11 @@ function openManagerModal() {
 
         const action = target.getAttribute('data-action');
         const { settings, classification } = _callbacks.getState();
+
+        if (target.closest('#wbo-mgr-floating-tools') && [
+            'select-filter', 'create-group', 'open-manage-groups', 'open-ai-organize',
+            'open-combos-modal', 'open-scan-modal', 'toggle-batch-mode', 'run-inline-entry-search',
+        ].includes(action)) closeFloatingTools();
 
         switch (action) {
             case 'reveal-char-books': {
@@ -2506,7 +2563,8 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
     _lastModalListSig = structSig;
     listEl.dataset.wboActiveGlobals = activeGlobalKey;
 
-    const prevScroll = listEl.scrollTop;
+    const scrollHost = getManagerScrollHost(listEl);
+    const prevScroll = scrollHost.scrollTop;
     _renderedGroupBooksMap.clear();
     const hasCustomGroups = classification.customGroups.length > 0;
     const includeCharExplicitly = filterId === SPECIAL_GROUPS.CHARACTER || isAllView;
@@ -2721,7 +2779,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             ? '<div class="wbo-empty-hint">按回车或点上方「搜索」开始检索条目内容</div>'
             : '<div class="wbo-empty-hint">无匹配世界书</div>');
 
-    listEl.scrollTop = prevScroll;
+    scrollHost.scrollTop = prevScroll;
     syncBatchBarUi();
     return true;
 }
@@ -3363,8 +3421,9 @@ function openMoveGroupModal(bookMeta) {
  * @param {object} bookMeta
  */
 function openBookMorePopover(anchorBtn, bookMeta) {
+    const wasOpen = anchorBtn.getAttribute('aria-expanded') === 'true';
     closeGroupVisibilityPopover();
-    if (!bookMeta?.realName) return;
+    if (wasOpen || !bookMeta?.realName) return;
 
     const backdrop = document.createElement('div');
     backdrop.id = 'wbo-vis-popover-backdrop';
@@ -3373,14 +3432,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     const pop = document.createElement('div');
     pop.className = 'wbo-modal wbo-vis-popover wbo-book-more-popover';
     applyThemeClass(pop);
-    const hasEntryGroups = isEntryGroupingAvailable();
     const deleteInMenu = !anchorBtn.parentElement?.querySelector('.wbo-book-delete-btn')?.offsetWidth;
-    const entryGroupsItemHtml = hasEntryGroups
-        ? `
-        <button type="button" class="wbo-book-more-item" data-more-act="open-entry-groups">
-            <i class="fa-solid fa-folder-tree"></i><span>条目分组</span>
-        </button>`
-        : '';
     pop.innerHTML = `
         <button type="button" class="wbo-book-more-item" data-more-act="bind-book-to-character">
             <i class="fa-solid fa-globe" aria-hidden="true"></i><span>绑定到角色</span>
@@ -3388,7 +3440,6 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         <button type="button" class="wbo-book-more-item" data-more-act="edit-book">
             <i class="fa-solid fa-arrow-up-right-from-square"></i><span>在编辑器中打开</span>
         </button>
-        ${entryGroupsItemHtml}
         <button type="button" class="wbo-book-more-item" data-more-act="rename-alias">
             <i class="fa-solid fa-pen-to-square"></i><span>编辑名称与备注</span>
         </button>
@@ -3404,6 +3455,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
 
     backdrop.appendChild(pop);
     document.body.appendChild(backdrop);
+    anchorBtn.setAttribute('aria-expanded', 'true');
     bindDrawerSafeBubbleGuard(backdrop);
     bindDrawerSafeBubbleGuard(pop);
 
@@ -3411,11 +3463,13 @@ function openBookMorePopover(anchorBtn, bookMeta) {
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
     const vh = globalThis.innerHeight || document.documentElement.clientHeight || 800;
     const popW = 164;
-    const minH = 152 + (hasEntryGroups ? 32 : 0) + (deleteInMenu ? 32 : 0);
     const left = Math.max(10, Math.min(rect.right - popW, vw - popW - 10));
-    const openAbove = vh - rect.bottom < minH && rect.top > minH;
     pop.style.width = `${popW}px`;
     pop.style.left = `${Math.round(left)}px`;
+    const below = vh - rect.bottom - 14;
+    const above = rect.top - 14;
+    const openAbove = pop.offsetHeight > below && above > below;
+    pop.style.setProperty('max-height', `${Math.max(0, Math.floor(openAbove ? above : below))}px`, 'important');
     if (openAbove) {
         pop.style.bottom = `${Math.round(vh - rect.top + 4)}px`;
         pop.style.top = 'auto';
@@ -3435,12 +3489,15 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         }
     };
     const cleanup = (restoreFocus = false) => {
-        document.removeEventListener('keydown', onKeyDown, true);
         closeGroupVisibilityPopover();
         if (restoreFocus && anchorBtn.isConnected && isDesktopAutoFocusAllowed()) {
-            anchorBtn.focus();
+            anchorBtn.focus({ preventScroll: true });
         }
     };
+    backdrop.addEventListener('wbo:popover-close', () => {
+        anchorBtn.setAttribute('aria-expanded', 'false');
+        document.removeEventListener('keydown', onKeyDown, true);
+    }, { once: true });
     document.addEventListener('keydown', onKeyDown, true);
 
     backdrop.addEventListener('click', (ev) => {
@@ -3456,8 +3513,6 @@ function openBookMorePopover(anchorBtn, bookMeta) {
             if (act === 'edit-book') {
                 openWorldInNativeEditor(bookMeta.realName);
                 closeManagerModal();
-            } else if (act === 'open-entry-groups') {
-                openEntryGroupsForBook(bookMeta.realName);
             } else if (act === 'rename-alias') {
                 openAliasNoteModal(bookMeta);
             } else if (act === 'move-group') {
@@ -3470,7 +3525,7 @@ function openBookMorePopover(anchorBtn, bookMeta) {
         });
     });
     if (isDesktopAutoFocusAllowed()) {
-        pop.querySelector('[data-more-act]')?.focus();
+        pop.querySelector('[data-more-act]')?.focus({ preventScroll: true });
     }
 }
 
