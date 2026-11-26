@@ -184,10 +184,10 @@ function bindDrawerSafeBubbleGuard(rootEl) {
  * resizing with fixed top/left anchoring (zero flex-center rebound!) and session box memory.
  * @param {HTMLElement} modal
  * @param {HTMLElement | null} handleEl
- * @param {{ initialBox?: { left?: number, top?: number, width?: number, height?: number } | null }} [opts]
+ * @param {{ initialBox?: { left?: number, top?: number, width?: number, height?: number } | null, initialMobileBox?: { width: number, height: number } | null }} [opts]
  * @returns {() => void}
  */
-function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) {
+function attachModalWindowControls(modal, handleEl, { initialBox = null, initialMobileBox = null } = {}) {
     if (!modal || !handleEl) return () => {};
 
     const isManager = modal.classList.contains('wbo-manager-modal');
@@ -268,6 +268,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         const width = Math.round(Math.max(Math.min(310, maxW), Math.min(maxW, box.width)));
         const height = Math.round(Math.max(Math.min(250, maxH), Math.min(maxH, box.height)));
         modal.classList.add('is-resized');
+        applyTauriSurface(modal, 'free-window');
         modal.style.width = `${width}px`;
         modal.style.height = `${height}px`;
         modal.style.maxHeight = `${height}px`;
@@ -312,7 +313,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
                 }
             } catch { /* Invalid or unavailable stored geometry uses the default size. */ }
         }
-        if (!box) box = { width: (area.right - area.left) * 0.9, height: (area.bottom - area.top) * 0.76 };
+        if (!box) box = initialMobileBox || { width: (area.right - area.left) * 0.9, height: (area.bottom - area.top) * 0.76 };
         _sessionMobileBoxes.set(mobileWindowKey, box);
         fitMobileBox(box, area);
     };
@@ -364,6 +365,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
     const initBounds = getBounds();
     modal.classList.toggle('wbo-touch-window', Boolean(mobileWindowKey && initBounds.isMobile));
     updateFullscreenButton();
+    if (initBounds.isMobile && mobileWindowKey && initialMobileBox) restoreMobileWindow();
     if (!initBounds.isMobile) {
         if (isManager && _sessionManagerModalBox) {
             const savedW = Math.max(initBounds.minW, Math.min(initBounds.maxW, _sessionManagerModalBox.width));
@@ -402,6 +404,7 @@ function attachModalWindowControls(modal, handleEl, { initialBox = null } = {}) 
         if (!getBounds().isMobile || !mobileWindowKey) return;
         hasFixedPos = false;
         modal.classList.remove('is-positioned', 'is-resized');
+        applyTauriSurface(modal, 'fullscreen-window');
         for (const property of ['left', 'top', 'width', 'height', 'max-height', 'transform']) {
             modal.style.removeProperty(property);
         }
@@ -628,12 +631,22 @@ function cleanupOverlayWindowControls(overlayEl) {
     }
 }
 
-function closeSubModal(opts = null) {
+let _finishInlinePrompt = null;
+
+function closeInlinePrompt() {
+    if (_finishInlinePrompt) {
+        _finishInlinePrompt(null);
+        return;
+    }
     const promptOverlay = document.getElementById(PROMPT_OVERLAY_ID);
     if (promptOverlay) {
         cleanupOverlayWindowControls(promptOverlay);
         promptOverlay.remove();
     }
+}
+
+function closeSubModal(opts = null) {
+    closeInlinePrompt();
     const closeAll = Boolean(opts && opts.all === true);
     if (closeAll) {
         while (_subModalStack.length > 0) {
@@ -684,12 +697,13 @@ function openInlineTextPrompt({
     confirmText = '确定',
     cancelText = '取消',
 } = {}) {
-    document.getElementById(PROMPT_OVERLAY_ID)?.remove();
+    closeInlinePrompt();
     return new Promise((resolve) => {
         let settled = false;
         const finish = (val) => {
             if (settled) return;
             settled = true;
+            _finishInlinePrompt = null;
             document.removeEventListener('keydown', onEsc, true);
             cleanupOverlayWindowControls(overlay);
             overlay.remove();
@@ -698,13 +712,13 @@ function openInlineTextPrompt({
 
         const overlay = document.createElement('div');
         overlay.id = PROMPT_OVERLAY_ID;
-        overlay.className = 'wbo-modal-overlay wbo-prompt-overlay';
+        overlay.className = 'wbo-modal-overlay wbo-submodal-overlay wbo-prompt-overlay';
         applyTauriSurface(overlay, 'backdrop');
 
         const modal = document.createElement('div');
         modal.className = 'wbo-modal wbo-prompt-modal';
         applyThemeClass(modal);
-        applyTauriSurface(modal, 'fullscreen-window');
+        applyTauriSurface(modal, 'free-window');
 
         modal.innerHTML = `
             <div class="wbo-modal-header wbo-draggable-header">
@@ -764,6 +778,7 @@ function openInlineTextPrompt({
                 finish(null);
             }
         };
+        _finishInlinePrompt = finish;
         document.addEventListener('keydown', onEsc, true);
 
         closeBtn?.addEventListener('click', () => finish(null));
@@ -819,6 +834,9 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">${esc(title)}</span>
                 <div class="wbo-modal-header-actions">
+                    ${floating && !prompt ? `<button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn="submodal:${esc(title)}" aria-label="还原窗口" title="还原窗口后可移动和调整大小">
+                        <i class="fa-solid fa-compress" aria-hidden="true"></i>
+                    </button>` : ''}
                     <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
                         <i class="fa-solid fa-xmark"></i>
                     </button>

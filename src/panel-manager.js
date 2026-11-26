@@ -1,6 +1,7 @@
 /** Worldbook group manager and inline previews. */
 
 import { scrollContentToItem } from './content-scroll.js';
+import { bindManagerTouchDrag } from './manager-touch-drag.js';
 import {
     _callbacks,
     _modalWindowCleanupMap,
@@ -698,7 +699,12 @@ function bindFloatingManagerTools(modal) {
     const flyout = modal.querySelector('#wbo-mgr-floating-tools');
     const scrollHost = modal.querySelector('.wbo-mgr-window-scroll');
     const tools = ['.wbo-mgr-header-tools', '.wbo-mgr-subbar'].map((selector) => modal.querySelector(selector));
+    const overlay = modal.parentElement;
+    const title = modal.querySelector('.wbo-modal-header-top');
     let locations = [];
+    let frame = 0;
+    let observing = false;
+    let disposed = false;
 
     const close = () => {
         if (flyout.hidden) return;
@@ -710,16 +716,95 @@ function bindFloatingManagerTools(modal) {
         scrollHost.scrollTop = top;
     };
 
-    toggle.addEventListener('click', () => {
+    // While portalled, measure the original slots rather than the visible flyout.
+    const isAvailable = (controls) => {
+        const slot = locations.find(([, el]) => el === controls)?.[0] || controls;
+        const rect = slot.getBoundingClientRect();
+        const viewport = window.visualViewport;
+        const bounds = modal.getBoundingClientRect();
+        let left = Math.max(bounds.left, viewport?.offsetLeft || 0);
+        let top = Math.max(bounds.top, viewport?.offsetTop || 0);
+        let right = Math.min(bounds.right, (viewport?.offsetLeft || 0) + (viewport?.width || window.innerWidth));
+        let bottom = Math.min(bounds.bottom, (viewport?.offsetTop || 0) + (viewport?.height || window.innerHeight));
+        const fixed = getComputedStyle(slot).position === 'fixed';
+        for (let parent = slot.parentElement; parent && parent !== modal; parent = parent.parentElement) {
+            const style = getComputedStyle(parent);
+            if (fixed || style.display === 'contents') continue;
+            const clip = parent.getBoundingClientRect();
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) {
+                left = Math.max(left, clip.left + parent.clientLeft);
+                right = Math.min(right, clip.left + parent.clientLeft + parent.clientWidth);
+            }
+            if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) {
+                top = Math.max(top, clip.top + parent.clientTop);
+                bottom = Math.min(bottom, clip.top + parent.clientTop + parent.clientHeight);
+            }
+        }
+        const titleRect = title?.getBoundingClientRect();
+        if (titleRect && titleRect.right > rect.left && titleRect.left < rect.right) {
+            top = Math.max(top, Math.min(titleRect.bottom, bottom));
+        }
+        return rect.width > 0 && rect.height > 0 && rect.left >= left - 1 && rect.right <= right + 1
+            && rect.top >= top - 1 && rect.bottom <= bottom + 1;
+    };
+
+    const sync = () => {
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+        if (!observing || disposed) return;
+        const needed = tools.some((controls) => !isAvailable(controls));
+        if (!needed) close();
+        toggle.hidden = !needed;
+    };
+    const schedule = () => {
+        if (observing && !frame && !disposed) frame = requestAnimationFrame(sync);
+    };
+    const resizeObserver = typeof globalThis.ResizeObserver === 'function'
+        ? new globalThis.ResizeObserver(schedule) : null;
+    const scrollOptions = { passive: true, capture: true };
+    const refresh = () => {
+        const active = !disposed && !document.hidden && modal.isConnected && !overlay.hidden
+            && overlay.style.display !== 'none' && modal.getClientRects().length > 0
+            && modal.matches('.wbo-touch-window');
+        if (active !== observing) {
+            observing = active;
+            if (active) {
+                scrollHost.addEventListener('scroll', schedule, scrollOptions);
+                window.addEventListener('resize', schedule);
+                window.addEventListener('scroll', schedule, { passive: true });
+                window.visualViewport?.addEventListener('resize', schedule);
+                window.visualViewport?.addEventListener('scroll', schedule);
+                for (const el of [modal, scrollHost, ...tools]) resizeObserver?.observe(el);
+            } else {
+                scrollHost.removeEventListener('scroll', schedule, scrollOptions);
+                window.removeEventListener('resize', schedule);
+                window.removeEventListener('scroll', schedule);
+                window.visualViewport?.removeEventListener('resize', schedule);
+                window.visualViewport?.removeEventListener('scroll', schedule);
+                resizeObserver?.disconnect();
+                if (frame) cancelAnimationFrame(frame);
+                frame = 0;
+                close();
+            }
+        }
+        if (active) schedule();
+        else toggle.hidden = true;
+    };
+
+    const onToggle = () => {
         if (!flyout.hidden) {
             close();
             return;
         }
-        if (!modal.matches('.wbo-touch-window.is-resized')) return;
+        refresh();
+        if (!observing) return;
+        sync();
+        if (toggle.hidden) return;
         const top = scrollHost.scrollTop;
         locations = tools.map((controls) => {
             const placeholder = document.createElement('div');
             placeholder.style.height = `${controls.getBoundingClientRect().height}px`;
+            placeholder.style.flexShrink = '0';
             placeholder.setAttribute('aria-hidden', 'true');
             return [placeholder, controls];
         });
@@ -731,17 +816,38 @@ function bindFloatingManagerTools(modal) {
         flyout.hidden = false;
         toggle.setAttribute('aria-expanded', 'true');
         scrollHost.scrollTop = top;
-    });
+    };
 
-    modal.addEventListener('pointerdown', (event) => {
+    const onPointerDown = (event) => {
         if (!flyout.contains(event.target) && !toggle.contains(event.target)) close();
-    });
-    modal.addEventListener('keydown', (event) => {
+    };
+    const onKeyDown = (event) => {
         if (event.key === 'Escape' && !event.isComposing && !_isComposing && !flyout.hidden) {
             event.stopPropagation();
             close();
         }
-    });
+    };
+    toggle.addEventListener('click', onToggle);
+    modal.addEventListener('pointerdown', onPointerDown);
+    modal.addEventListener('keydown', onKeyDown);
+    // Only these two roots are watched for lifecycle changes, never list rows.
+    const lifecycleObserver = typeof globalThis.MutationObserver === 'function'
+        ? new globalThis.MutationObserver(refresh) : null;
+    for (const el of [overlay, modal]) {
+        lifecycleObserver?.observe(el, { attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    }
+    document.addEventListener('visibilitychange', refresh);
+    close.dispose = () => {
+        disposed = true;
+        refresh();
+        lifecycleObserver?.disconnect();
+        document.removeEventListener('visibilitychange', refresh);
+        toggle.removeEventListener('click', onToggle);
+        modal.removeEventListener('pointerdown', onPointerDown);
+        modal.removeEventListener('keydown', onKeyDown);
+    };
+    toggle.hidden = true;
+    refresh();
     return close;
 }
 
@@ -891,8 +997,14 @@ function openManageGroupsModal() {
 
     const vw = Math.max(globalThis.innerWidth || document.documentElement?.clientWidth || 1200, 280);
     const vh = Math.max(globalThis.innerHeight || document.documentElement?.clientHeight || 800, 320);
+    const isMobile = (vw <= 680 && Boolean(globalThis.matchMedia?.('(pointer: coarse)')?.matches))
+        || globalThis.__TAURITAVERN_HOST__?.kind === 'mobile';
     let initialBox = null;
-    if (vw > 680) {
+    if (isMobile) {
+        // Measure the first list at its floating width, before the browser paints.
+        modal.classList.add('is-resized');
+        modal.style.width = `${Math.max(Math.min(310, vw - 16), Math.round((vw - 16) * 0.9))}px`;
+    } else if (vw > 680) {
         const mgrModal = document.querySelector(`#${MANAGER_OVERLAY_ID} .wbo-modal`);
         const mgrRect = mgrModal instanceof HTMLElement ? mgrModal.getBoundingClientRect() : null;
         const panelW = Math.min(400, Math.max(340, Math.round(vw * 0.28)));
@@ -915,6 +1027,9 @@ function openManageGroupsModal() {
             <div class="wbo-modal-header-top">
                 <span class="wbo-modal-title">管理分组</span>
                 <div class="wbo-modal-header-actions">
+                    <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn="group-manager" aria-label="还原窗口" title="还原窗口后可移动和调整大小">
+                        <i class="fa-solid fa-compress" aria-hidden="true"></i>
+                    </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-close" aria-label="关闭">
                         <i class="fa-solid fa-xmark"></i>
                     </button>
@@ -934,7 +1049,7 @@ function openManageGroupsModal() {
             </div>
             <div class="wbo-step-scroll">
                 <div class="wbo-gm-list" id="wbo-gm-list"></div>
-                <div class="wbo-subtle-tip">删除或解除分组仅取消归类，世界书本体不会被删除，相关世界书将回到「未分组」。可一边浏览底层世界书与条目，一边在此调整分组。</div>
+                <div class="wbo-subtle-tip wbo-gm-help">解除分组不会删除世界书，相关世界书将回到「未分组」。</div>
             </div>
             <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
                 <div class="wbo-ai-footer-left">
@@ -952,8 +1067,6 @@ function openManageGroupsModal() {
     overlay.appendChild(modal);
     document.body.appendChild(overlay);
     bindDrawerSafeBubbleGuard(modal);
-    const gmWinCleanup = attachModalWindowControls(modal, modal.querySelector('.wbo-modal-header'), { initialBox });
-    _modalWindowCleanupMap.set(modal, gmWinCleanup);
 
     const listEl = modal.querySelector('#wbo-gm-list');
     const selCountEl = modal.querySelector('#wbo-gm-sel-count');
@@ -1165,6 +1278,23 @@ function openManageGroupsModal() {
     });
 
     renderList();
+
+    // Fit only this opening's initial content; later list updates keep a stable box.
+    // Shared controls give saved manual geometry priority over this default.
+    let initialMobileBox = null;
+    if (isMobile) {
+        const scroll = modal.querySelector('.wbo-step-scroll');
+        const style = getComputedStyle(scroll);
+        const children = [...scroll.children].filter((el) => el.getClientRects().length);
+        const contentHeight = children.reduce((sum, el) => sum + el.getBoundingClientRect().height, 0)
+            + Math.max(0, children.length - 1) * (parseFloat(style.rowGap) || 0)
+            + (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+        const rect = modal.getBoundingClientRect();
+        const shellHeight = rect.height - scroll.getBoundingClientRect().height;
+        initialMobileBox = { width: rect.width, height: Math.min(vh * 0.75, Math.ceil(shellHeight + contentHeight)) };
+    }
+    const gmWinCleanup = attachModalWindowControls(modal, modal.querySelector('.wbo-modal-header'), { initialBox, initialMobileBox });
+    _modalWindowCleanupMap.set(modal, gmWinCleanup);
 }
 
 /**
@@ -1382,7 +1512,7 @@ function openManagerModal() {
                     <button type="button" class="wbo-icon-btn wbo-modal-settings-btn" data-action="open-settings-modal" title="显示与行为设置" aria-label="设置">
                         <i class="fa-solid fa-gear"></i>
                     </button>
-                    <button type="button" class="wbo-icon-btn wbo-mgr-floating-tools-btn" id="wbo-mgr-floating-tools-btn" aria-controls="wbo-mgr-floating-tools" aria-expanded="false" title="展开或收起搜索与分组工具">
+                    <button type="button" class="wbo-icon-btn wbo-mgr-floating-tools-btn" id="wbo-mgr-floating-tools-btn" aria-label="工具箱" aria-controls="wbo-mgr-floating-tools" aria-expanded="false" title="工具箱：展开或收起搜索与分组工具">
                         <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
                     </button>
                     <button type="button" class="wbo-icon-btn wbo-modal-fullscreen-btn" data-wbo-fullscreen-btn="manager" title="还原窗口后可移动和调整大小">
@@ -1490,13 +1620,13 @@ function openManagerModal() {
     const closeFloatingTools = bindFloatingManagerTools(modal);
     const pillsResizeObserver = typeof globalThis.ResizeObserver === 'function'
         ? new globalThis.ResizeObserver(() => {
-            if (!modal.matches('.wbo-touch-window.is-resized')) closeFloatingTools();
             syncManagerPillsExpansion(overlay, _callbacks?.getState()?.settings?.groupPanelExpanded);
         })
         : null;
     pillsResizeObserver?.observe(modal);
     _modalWindowCleanupMap.set(modal, () => {
         pillsResizeObserver?.disconnect();
+        closeFloatingTools.dispose();
         cleanupWinCtrl();
     });
     modal.querySelector('[data-wbo-minimize-btn]')?.addEventListener('click', (ev) => {
@@ -1649,6 +1779,7 @@ function openManagerModal() {
     };
 
     const enableHandleDraggable = (ev) => {
+        if (ev.pointerType && ev.pointerType !== 'mouse') return;
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
         if (target.closest('.wbo-book-preview')) return;
@@ -1675,7 +1806,7 @@ function openManagerModal() {
     modal.addEventListener('pointerup', clearTempDraggable, true);
     modal.addEventListener('mouseup', clearTempDraggable, true);
 
-    modal.addEventListener('dragstart', (ev) => {
+    const startManagerDrag = (ev) => {
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
         if (target.closest('.wbo-book-preview')) return;
@@ -1719,13 +1850,16 @@ function openManagerModal() {
             }
             groupHeader.closest('.wbo-group')?.classList.add('is-dragging');
         }
-    });
+    };
 
-    modal.addEventListener('dragover', (ev) => {
+    const updateManagerDrag = (ev) => {
         if (!dragState) return;
         const target = ev.target instanceof Element ? ev.target : null;
         if (!target) return;
 
+        modal.querySelectorAll('.wbo-drop-target, .wbo-drop-before, .wbo-drop-after').forEach((el) => {
+            el.classList.remove('wbo-drop-target', 'wbo-drop-before', 'wbo-drop-after');
+        });
         if (dragState.type === 'book') {
             const dropPill = target.closest('.wbo-pill[data-group-id]');
             const pillGid = dropPill?.getAttribute('data-group-id');
@@ -1799,9 +1933,9 @@ function openManagerModal() {
             targetGroup.classList.toggle('wbo-drop-before', isBefore);
             targetGroup.classList.toggle('wbo-drop-after', !isBefore);
         }
-    });
+    };
 
-    modal.addEventListener('drop', async (ev) => {
+    const dropManagerDrag = async (ev) => {
         if (!dragState || !_callbacks) return;
         const activeDrag = dragState;
         const target = ev.target instanceof Element ? ev.target : null;
@@ -1901,12 +2035,24 @@ function openManagerModal() {
 
         clearDropHighlights();
         dragState = null;
-    });
+    };
 
-    modal.addEventListener('dragend', () => {
+    const cancelManagerDrag = () => {
         clearTempDraggable();
         clearDropHighlights();
         dragState = null;
+    };
+    modal.addEventListener('dragstart', startManagerDrag);
+    modal.addEventListener('dragover', updateManagerDrag);
+    modal.addEventListener('drop', dropManagerDrag);
+    modal.addEventListener('dragend', cancelManagerDrag);
+    const cleanupTouchDrag = bindManagerTouchDrag(modal, {
+        start: startManagerDrag, over: updateManagerDrag, drop: dropManagerDrag, cancel: cancelManagerDrag,
+    });
+    const cleanupManager = _modalWindowCleanupMap.get(modal);
+    _modalWindowCleanupMap.set(modal, () => {
+        cleanupTouchDrag();
+        cleanupManager?.();
     });
 
     modal.addEventListener('keydown', (ev) => {

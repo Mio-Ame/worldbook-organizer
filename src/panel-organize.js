@@ -518,7 +518,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
             <div class="wbo-ai-step" id="wbo-ai-step-preview" hidden>
                 <div class="wbo-step-scroll">
                 <div class="wbo-ai-section-head">
-                    <span>预览分组结果</span>
+                    <span>预览分组结果 <small class="wbo-subtle-tip">点击分组查看</small></span>
                     <button type="button" class="wbo-link-btn" id="wbo-ai-back-btn">返回重选</button>
                 </div>
                 <div class="wbo-radio-row" id="wbo-preview-apply-mode-row">
@@ -535,7 +535,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                     将按修改后的名称真实重命名世界书文件，并同步更新角色卡主/附绑定、User 人设绑定、当前聊天与全局激活。
                 </div>
                 <div class="wbo-preview-toolbar">
-                    <div class="wbo-preview-group-pills" id="wbo-preview-group-pills"></div>
+                    <div class="wbo-preview-group-pills" id="wbo-preview-group-pills" role="group" aria-label="按分组筛选预览"></div>
                     <div class="wbo-preview-select-tools">
                         <span class="wbo-preview-sel-count" id="wbo-preview-sel-count">已选 0/0</span>
                         <button type="button" class="wbo-link-btn" id="wbo-preview-clear-notes" hidden>清空说明</button>
@@ -1816,7 +1816,7 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 .map((p) => `
                     <button type="button"
                         class="wbo-pill${activePreviewGroupFilter === p.key ? ' is-active' : ''}"
-                        data-preview-filter="${esc(p.key)}">
+                        data-preview-filter="${esc(p.key)}" aria-pressed="${activePreviewGroupFilter === p.key}">
                         <span>${esc(p.label)}</span>
                     </button>
                 `)

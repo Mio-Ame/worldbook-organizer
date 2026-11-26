@@ -1537,13 +1537,15 @@
     cursor: nwse-resize;
 }
 
+.wbo-modal .wbo-icon-btn[data-wbo-fullscreen-btn],
 [data-wbo-fullscreen-btn],
 .wbo-mgr-floating-tools-btn {
     display: none !important;
 }
 
+.wbo-modal.wbo-touch-window .wbo-icon-btn[data-wbo-fullscreen-btn],
 .wbo-touch-window [data-wbo-fullscreen-btn],
-.wbo-touch-window.is-resized .wbo-mgr-floating-tools-btn {
+.wbo-touch-window .wbo-mgr-floating-tools-btn:not([hidden]) {
     display: inline-flex !important;
     align-items: center;
     justify-content: center;
@@ -1561,7 +1563,7 @@
     display: none !important;
 }
 
-.wbo-manager-modal.wbo-touch-window.is-resized .wbo-icon-btn.wbo-mgr-floating-tools-btn,
+.wbo-manager-modal.wbo-touch-window .wbo-icon-btn.wbo-mgr-floating-tools-btn:not([hidden]),
 .wbo-manager-modal.wbo-touch-window .wbo-icon-btn.wbo-modal-fullscreen-btn,
 .weg-modal.wbo-touch-window [data-wbo-fullscreen-btn] {
     display: inline-flex !important;
@@ -1573,6 +1575,21 @@
     flex: 0 0 30px;
     padding: 0 !important;
     margin: 0 !important;
+}
+
+.wbo-manager-modal .wbo-icon-btn.wbo-mgr-floating-tools-btn[hidden] {
+    display: none !important;
+}
+
+.wbo-manager-modal.wbo-touch-window .wbo-mgr-floating-tools-btn:not([hidden]) {
+    border-color: var(--wbo-accent) !important;
+    background: var(--wbo-accent-soft) !important;
+    color: var(--wbo-accent) !important;
+}
+
+.wbo-manager-modal.wbo-touch-window .wbo-mgr-floating-tools-btn[aria-expanded="true"] {
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
 }
 
 .wbo-touch-window:not(.is-resized) {
@@ -1633,6 +1650,10 @@
     height: 36px;
 }
 
+.wbo-touch-window:has(> .wbo-resize-se) .wbo-modal-footer {
+    padding-inline-end: 48px !important;
+}
+
 .wbo-touch-window.is-resized > .wbo-resize-se {
     right: 2px;
     bottom: 2px;
@@ -1660,7 +1681,7 @@
     display: contents;
 }
 
-.wbo-manager-modal.wbo-touch-window.is-resized {
+.wbo-manager-modal.wbo-touch-window {
     --wbo-floating-title-height: 44px;
 }
 
@@ -2219,6 +2240,10 @@
 
 .wbo-group-drag-handle,
 .wbo-drag-handle {
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -2736,6 +2761,11 @@
 .wbo-modal.is-pinned-layout .wbo-gm-list {
     max-height: none;
     flex: 1 1 auto;
+}
+
+.wbo-modal.wbo-gm-floating-panel .wbo-gm-list {
+    flex: 0 0 auto;
+    overflow: visible;
 }
 
 /* Remove SillyTavern's global multiselect checkbox ONLY on single-select `#world_editor_select` */
@@ -5133,6 +5163,16 @@ details[open] > summary .wbo-details-chev {
     padding-bottom: 2px;
 }
 
+.wbo-preview-group-pills .wbo-pill {
+    flex-shrink: 0;
+    border-color: var(--wbo-border-strong);
+}
+
+.wbo-preview-group-pills .wbo-pill.is-active {
+    border-color: var(--wbo-accent);
+    font-weight: 600;
+}
+
 .wbo-preview-group-sec {
     display: flex;
     flex-direction: column;
@@ -6619,7 +6659,7 @@ details[open] > summary .wbo-details-chev {
         min-width: 0 !important;
         width: 100% !important;
     }
-    .wbo-modal-overlay.wbo-submodal-overlay.wbo-prompt-overlay {
+    .wbo-modal-overlay.wbo-prompt-overlay {
         align-items: center;
         justify-content: center;
         padding: 12px;
@@ -6706,7 +6746,12 @@ details[open] > summary .wbo-details-chev {
 
 @media (max-width: 680px), (pointer: coarse) {
     .wbo-drag-handle,
-    .wbo-group-drag-handle,
+    .wbo-group-drag-handle {
+        display: inline-flex !important;
+        width: 28px;
+        height: 36px;
+        font-size: 14px;
+    }
     .wbo-mgr-drag-hint {
         display: none !important;
     }
@@ -7871,6 +7916,9 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
 }
 
 @container plugin-win (max-width: 440px) {
+    .wbo-gm-help {
+        display: none;
+    }
     .wbo-mgr-header-tools {
         gap: 5px;
     }

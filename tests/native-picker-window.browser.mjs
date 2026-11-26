@@ -894,6 +894,10 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         assert.ok(metrics.createBelow < metrics.createAbove && metrics.titleStable);
         const toolsButton = '#wbo-mgr-floating-tools-btn';
         const toolsPanel = '#wbo-mgr-floating-tools';
+        await waitForCondition(cdp, () => {
+            const button = document.querySelector('#wbo-mgr-floating-tools-btn');
+            return !button.hidden && button.getBoundingClientRect().width > 0;
+        });
         await cdp.evalFn(() => { window.wboTestSearch = document.querySelector('#wbo-mgr-search-input'); });
         assert.ok((await cdp.clickSelector(toolsButton, { scroll: false })).hit);
         assert.deepEqual(await cdp.evalFn((selector) => {
