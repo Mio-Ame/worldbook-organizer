@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.80';
+export const PLUGIN_VERSION = '2.35.81';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7157,6 +7157,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     for (const ph of placeholders) {
         optionsHost.appendChild(ph);
     }
+    // The "选择以编辑" line must stay at the very top; remember where our blocks go.
+    const topAnchor = placeholders.length > 0 ? placeholders[placeholders.length - 1].nextSibling : optionsHost.firstChild;
     for (const optEl of bareEditorItems) {
         optionsHost.appendChild(optEl);
     }
@@ -7341,8 +7343,21 @@ function enhanceCustomDropdownPopover(containerEl) {
         bodyEl.className = 'wbo-pop-group-body';
         for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
         globalsSectionEl.append(headEl, bodyEl);
-        // Above every other section, and above the favorites one.
-        optionsHost.insertBefore(globalsSectionEl, optionsHost.firstChild);
+        // After the 「选择以编辑」 line, above every other section (native keeps that line first).
+        optionsHost.insertBefore(globalsSectionEl, topAnchor && topAnchor.parentElement === optionsHost ? topAnchor : optionsHost.firstChild);
+        // The book currently being edited is hoisted right under that line, like native does.
+        if (!isGlobalPopover) {
+            const select = document.getElementById('world_editor_select');
+            const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
+            const currentName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
+            const currentRow = currentName
+                ? realOptionNodes.find((row) => (getOptionText(row) || '') === currentName)
+                : null;
+            if (currentRow) {
+                optionsHost.insertBefore(currentRow, globalsSectionEl);
+                pushDiagTrace('enh-globals:current-hoisted=1');
+            }
+        }
         pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`);
     } else {
         pushDiagTrace(`enh-globals:block=0,count=0,role=${isGlobalPopover ? 'global' : 'editor'}`);
