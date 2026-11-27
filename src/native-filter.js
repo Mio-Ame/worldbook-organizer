@@ -4591,7 +4591,7 @@ function enhanceOpenEditorDropdown() {
             clone.classList.remove('wbo-dd-current-char', 'wbo-dd-pin-hidden');
             // Mirrors are pure pickers: drop the star button and every dynamic badge so the row
             // never duplicates 当前编辑 / 已全局 markers.
-            clone.querySelectorAll('.wbo-s2-pin-btn, .wbo-s2-right .wbo-s2-badge').forEach((el) => el.remove());
+            clone.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
             mirrors.push(clone);
         }
         if (mirrors.length === 0) return false;
@@ -4722,10 +4722,10 @@ function enhanceOpenEditorDropdown() {
             }
         }
         layoutEditorSearchMatches();
-        // Mirror rows are pickers only; never let a 当前编辑 badge survive any later re-render.
+        // Mirror rows never carry the 当前编辑 badge.
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
-    };
+    };;
     // Keep folding in the current group filter and leave search results visible.
     const onResultsMouseDown = (ev) => {
         const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
@@ -5222,7 +5222,8 @@ function enhanceOpenGlobalDropdown() {
         const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')];
         for (const row of rows) {
             const meta = _latestClassification.byName.get(rowWorldName(row));
-            row.classList.toggle('wbo-dd-pin-hidden', !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
+            const searching = Boolean(searchField?.value?.trim());
+            row.classList.toggle('wbo-dd-pin-hidden', !searching && !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
         }
         layoutGlobalGroupRows(rows);
         const group = _activeGlobalPillId === SPECIAL_GROUPS.PINNED

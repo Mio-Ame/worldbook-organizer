@@ -1,3 +1,8 @@
+### Mirror stars and global search filter (2026-11-28 v2.35.36)
+- Mirror rows keep their star button so globals/favorites can be pinned from the block.
+- Global dropdown stops filtering by the active pill while searching, so matches from other groups stay visible.
+- Tests: native-picker-window 24/24.
+
 ### Badge layout and mirror guards (2026-11-28 v2.35.35)
 - Search rows: badges no longer shrink or ellipsize (group name / 当前角色 stay complete); only the title ellipsizes, actions stay right aligned.
 - Mirror rows never render the 当前编辑 badge at template level, removing the flaky duplicate that pushed 当前角色 left.
