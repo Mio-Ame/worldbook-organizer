@@ -1,3 +1,16 @@
+### 普通下拉全局书去重（2026-11-28 · v2.35.38）
+- 用户反馈（HANDOFF U1）：电脑端普通选书下拉里，挂载的全局书会显示 2～3 遍——「全局世界书」块 + 顶部裸行，既收藏又挂载时再多「已收藏」块一遍。
+- 本轮追加确认（用户原话）：①「已收藏」分组里不再列那本既收藏又挂载的书，标题旁保留「X 本已全局…」说明；②只有一本、两本全局书时（哪怕其中一本是已收藏的）不建分组，按「当前角色」那样用原名裸行显示；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但要在原分组里置顶。
+- 改动：
+  - src/native-filter.js 的 enhanceOpenEditorDropdown：新增 syncEditorDupeRows()，仅在存在「全局世界书」块时把该块已收录的真实行用 wbo-dd-dupe-hidden 藏起来；每轮 decorateGroupItems 先清标记再重算（幂等，切 pill／搜索自动还原，搜索期间不隐藏）。
+  - uildEditorMirrorBlock() 增加 llowEmpty / countOverride / ote：「已收藏」块可只留标题（≥3 本全局且收藏全被全局块收录时），标题按收藏总数计数并带「X 本已全局，位于全局分组」。
+  - 「已收藏」块不再镜像已挂载的收藏书；不足 3 本（无全局块）时该块不渲染空标题，说明文案改为「X 本已全局，显示在下方」；全局书本身按裸行显示。
+  - 新增 hoistPinnedRowsInsideGroups()：收藏书在自己所属分组里排到组内第一行（同组其它书顺序不变，已正确时不重排，避免观察器抖动）。
+  - 「当前角色」置顶判定跳过镜像行，避免把块内克隆行当成真实行顶到最上面。
+  - style.css 增加 li.wbo-dd-dupe-hidden { display: none !important; }。
+- 验证：单测 245/245；ative-picker-window 27/27（新增 3 项：≥3 本全局每本只可见一次 + 「已收藏 (2)1 本已全局，位于全局分组」+ 镜像行点击仍可选中；1～2 本全局走裸行且不渲染空的「已收藏」标题；普通收藏在原分组置顶）。
+- 边界：全局书自己就是当前角色书时，块内那份副本被隐藏、只留顶部置顶行，块头计数仍是全量；隐藏行仍留在 Select2 的 [aria-selected] 集合里，键盘上下可能短暂停在不可见行（与既有 wbo-dd-group-hidden 同性质）。
+
 ### Mirror stars and global search filter (2026-11-28 v2.35.36)
 - Mirror rows keep their star button so globals/favorites can be pinned from the block.
 - Global dropdown stops filtering by the active pill while searching, so matches from other groups stay visible.

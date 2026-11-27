@@ -855,7 +855,8 @@ function syncOpenEditingBadges() {
     const select = document.getElementById('world_editor_select');
     const dropdown = $ && select ? $(select).data('select2')?.$dropdown?.[0] : null;
     dropdown?.querySelectorAll('.wbo-s2-item[data-wbo-world]').forEach((row) => {
-        updateBadge(row.querySelector('.wbo-s2-right'), row.getAttribute('data-wbo-world') === active);
+        const isMirror = Boolean(row.closest('li.wbo-dd-global-mirror'));
+        updateBadge(row.querySelector('.wbo-s2-right'), !isMirror && row.getAttribute('data-wbo-world') === active);
     });
     document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.querySelectorAll('.wbo-mp-row').forEach((row) => {
         const current = row.querySelector('[data-mp-world]')?.getAttribute('data-mp-world') === active;
@@ -4514,10 +4515,13 @@ function enhanceOpenEditorDropdown() {
 
     // Three or more mounted globals get their own foldable block, right below the pinned row.
     const editorGlobalNames = [...getActiveGlobalWorldSet()].filter((name) => _latestClassification?.byName?.has(name));
+    const editorGlobalNameSet = new Set(editorGlobalNames);
     const pinnedEditorNames = [...(_latestClassification?.byName?.values?.() || [])]
         .filter((meta) => meta?.isPinned)
         .map((meta) => meta.realName)
         .filter((name) => Boolean(name && [...selectEl.options].some((opt) => (opt.textContent || '').trim() === name)));
+    /** Favorites that are mounted as globals as well; they live in the global area, not in 已收藏. */
+    const mountedPinnedNames = pinnedEditorNames.filter((name) => editorGlobalNameSet.has(name));
     const hasEditorGlobalBlock = editorGlobalNames.length >= 3;
     if (hasEditorGlobalBlock) {
         const entry = {
@@ -4553,26 +4557,28 @@ function enhanceOpenEditorDropdown() {
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
     /**
-     * Build the "全局世界书" block: a mirror of every mounted global so the originals can stay
-     * in their own groups. Mirrors select the real option when pressed.
-     */
-    /**
-     * Build a mirror block (globals / favorites): the originals stay in their own groups and
-     * mirrors select the real option when pressed.
+     * Build a mirror block (globals / favorites): mirrors select the real option when pressed.
+     * The real row of every book that a block lists is parked with `wbo-dd-dupe-hidden`, so a
+     * book is never visible twice (U1: 分组块 + 裸行 + 已收藏三遍重复).
      * @param {string} gid
      * @param {string} label
      * @param {string[]} names
+     * @param {{ allowEmpty?: boolean, countOverride?: number, note?: string }} opts
      */
-    const buildEditorMirrorBlock = (gid, label, names, note = '') => {
+    const buildEditorMirrorBlock = (gid, label, names, opts = {}) => {
+        const { allowEmpty = false, countOverride = 0, note = '' } = opts;
         const existing = resultsList.querySelector(`li[data-wbo-dd-group="${gid}"]`);
-        if (names.length === 0) {
+        if (names.length === 0 && !allowEmpty) {
             if (existing) {
                 existing.remove();
                 return true;
             }
             return false;
         }
-        const sig = names.join('|');
+        // The head keeps counting every book of the block, including the ones listed under
+        // "全局世界书" instead (see the "X 本已全局，位于全局分组" note).
+        const total = Math.max(countOverride || 0, names.length);
+        const sig = `${names.join('|')}::${total}::${note}`;
         if (existing
             && existing.getAttribute('data-wbo-mirror-sig') === sig
             && existing.querySelectorAll('li.wbo-dd-global-mirror').length === names.length) {
@@ -4594,7 +4600,7 @@ function enhanceOpenEditorDropdown() {
             clone.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
             mirrors.push(clone);
         }
-        if (mirrors.length === 0) return false;
+        if (mirrors.length === 0 && !allowEmpty) return false;
         const groupLi = document.createElement('li');
         groupLi.className = 'select2-results__option select2-results__option--group';
         groupLi.setAttribute('data-wbo-dd-group', gid);
@@ -4602,7 +4608,7 @@ function enhanceOpenEditorDropdown() {
         groupLi.setAttribute('aria-label', label);
         const head = document.createElement('span');
         head.className = 'select2-results__group';
-        head.textContent = `${label} (${mirrors.length})`;
+        head.textContent = `${label} (${total})`;
         if (note) {
             const noteEl = document.createElement('span');
             noteEl.className = 'wbo-dd-group-note';
@@ -4626,17 +4632,77 @@ function enhanceOpenEditorDropdown() {
         let rebuilt = buildEditorMirrorBlock(EDITOR_GLOBALS_GROUP_ID, '全局世界书', hasEditorGlobalBlock ? editorGlobalNames : []);
         // Favorites only get their own block in the "all" view; the pill itself already filters.
         if (activePillGroupId === SPECIAL_GROUPS.ALL && pinnedEditorNames.length > 0) {
-            const pinnedMountedCount = pinnedEditorNames.filter((name) => getActiveGlobalWorldSet().has(name)).length;
-            rebuilt = buildEditorMirrorBlock(
-                SPECIAL_GROUPS.PINNED,
-                '已收藏',
-                pinnedEditorNames,
-                pinnedMountedCount > 0 ? `${pinnedMountedCount} 本已全局，位于全局分组` : '',
-            ) || rebuilt;
+            // A book that is both favorited and mounted belongs to the global area only, so it
+            // never shows up twice; the head keeps counting it and points at the global rows.
+            const favoriteNames = pinnedEditorNames.filter((name) => !editorGlobalNameSet.has(name));
+            let note = '';
+            if (mountedPinnedNames.length > 0) {
+                note = hasEditorGlobalBlock
+                    ? `${mountedPinnedNames.length} 本已全局，位于全局分组`
+                    : `${mountedPinnedNames.length} 本已全局，显示在下方`;
+            }
+            rebuilt = buildEditorMirrorBlock(SPECIAL_GROUPS.PINNED, '已收藏', favoriteNames, {
+                // With a globals block the favorites head stays as a counter. Below the block
+                // threshold the head only appears when something is actually listed in it.
+                allowEmpty: hasEditorGlobalBlock && mountedPinnedNames.length > 0 && favoriteNames.length === 0,
+                countOverride: pinnedEditorNames.length,
+                note,
+            }) || rebuilt;
         } else {
             resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`)?.remove();
         }
         return rebuilt;
+    };
+
+    /**
+     * Hide the real row of every book the "全局世界书" block already lists, so a mounted global
+     * is visible exactly once (U1). Below the block threshold the globals stay as untitled top
+     * rows instead — that is the "当前角色"-style display the user asked for.
+     * @param {HTMLElement | null} currentRow
+     */
+    const syncEditorDupeRows = (currentRow) => {
+        resultsList.querySelectorAll('li.wbo-dd-dupe-hidden').forEach((row) => row.classList.remove('wbo-dd-dupe-hidden'));
+        if (isSearching() || !hasEditorGlobalBlock) return;
+        const wanted = new Set(editorGlobalNames);
+        if (wanted.size === 0) return;
+        const currentName = currentRow ? getDropdownOptionWorldName(currentRow) : '';
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const name = getDropdownOptionWorldName(row);
+                if (!wanted.has(name)) return;
+                const isMirror = row.classList.contains('wbo-dd-global-mirror');
+                // The chat character's own book keeps its untitled top row; its block copy is
+                // the one that steps aside instead.
+                if (!isMirror && row === currentRow) return;
+                if (isMirror && name !== currentName) return;
+                row.classList.add('wbo-dd-dupe-hidden');
+            });
+    };
+
+    /**
+     * A favorited book also stays in its own group (v2.35.24); inside that group it now sits
+     * on top so the favorite shortcut and the real list agree (user request 2026-11-28).
+     * @param {boolean} searching
+     */
+    const hoistPinnedRowsInsideGroups = (searching) => {
+        if (searching) return;
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((groupLi) => {
+            if (!(groupLi instanceof HTMLElement)) return;
+            const gid = groupLi.getAttribute('data-wbo-dd-group');
+            if (gid === EDITOR_GLOBALS_GROUP_ID || gid === SPECIAL_GROUPS.PINNED || gid === SEARCH_MATCHES_GROUP_ID) return;
+            const nested = groupLi.querySelector(':scope > ul.select2-results__options--nested');
+            if (!(nested instanceof HTMLElement)) return;
+            const rows = [...nested.children].filter((row) => row.classList.contains('select2-results__option'));
+            if (rows.length < 2) return;
+            const isPinnedRow = (row) => Boolean(_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.isPinned);
+            const pinnedRows = rows.filter((row) => isPinnedRow(row));
+            if (pinnedRows.length === 0) return;
+            const ordered = [...pinnedRows, ...rows.filter((row) => !isPinnedRow(row))];
+            // Only re-append when the order is actually wrong, so repeated decorate passes settle.
+            if (ordered.every((row, index) => row === rows[index])) return;
+            ordered.forEach((row) => nested.appendChild(row));
+        });
     };
 
     /**
@@ -4694,14 +4760,18 @@ function enhanceOpenEditorDropdown() {
             }
         });
 
+        // Favorites also sit on top of their own group.
+        hoistPinnedRowsInsideGroups(searching);
         // The chat character's own worldbook sits above every group, in any pill view.
         resultsList.querySelectorAll('li.wbo-dd-current-char').forEach((row) => row.classList.remove('wbo-dd-current-char'));
+        let currentRow = null;
         if (!searching) {
             const avatar = getCurrentCharacterAvatar();
-            let currentRow = null;
             if (avatar) {
                 for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
                     if (!(row instanceof HTMLElement)) continue;
+                    // Never pick a mirror row: the real row must keep the 当前角色 spot.
+                    if (row.classList.contains('wbo-dd-global-mirror')) continue;
                     const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
                     if (meta?.charOwners?.some((owner) => owner.avatar === avatar)) {
                         currentRow = row;
@@ -4721,6 +4791,8 @@ function enhanceOpenEditorDropdown() {
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
         }
+        // Every mirror block owns its books: park the duplicated real rows (U1).
+        syncEditorDupeRows(currentRow);
         layoutEditorSearchMatches();
         // Mirror rows never carry the 当前编辑 badge.
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());

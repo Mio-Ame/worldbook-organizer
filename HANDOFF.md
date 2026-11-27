@@ -57,12 +57,13 @@
 15. 组合页去掉书单卡片与外层留白、去掉「已选 X 本」。
 16. 徽章不被压缩/截断；★ 右对齐。
 17. 组合页「已收藏」pill 不再空白（不排除全局书）。
+18. **U1 已修（v2.35.38）**：普通下拉里全局书不再显示 2～3 遍，且按用户追加确认的三条口径实现：①「已收藏」块里不再列既收藏又挂载的书，标题旁加「X 本已全局，位于全局分组」；②只有 1～2 本全局时（哪怕有一本是收藏的）不建分组，按「当前角色」那样用原名裸行显示，且不渲染空的「已收藏」标题；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但在原分组里置顶。实现要点：`syncEditorDupeRows()`（`wbo-dd-dupe-hidden`，每轮重算、搜索不隐藏）、`buildEditorMirrorBlock()` 的 `allowEmpty`/`countOverride`/`note`、`hoistPinnedRowsInsideGroups()`、「当前角色」判定跳过镜像行。测试：`native-picker-window` 新增 3 项。
 
 ### 未解决 / 部分解决（请接手修复）
 
 | # | 问题 | 现状与线索 |
 | --- | --- | --- |
-| U1 | 电脑端普通下拉：全局书显示两遍/三遍（分组块 + 原组 + 裸行；既收藏又挂载时三遍） | 试过「镜像存在即隐藏原组行」，会让 `editor dropdown groups 3+ mounted globals…` 与 `editor search inside a group…` 两个用例失败，已回退。需要让镜像行接管选中/收藏管线并同步更新断言 |
+| U1 | ~~电脑端普通下拉全局书重复~~ | **已解决（v2.35.38）**，口径见上。残留小问题：当前角色书自己就是挂载全局书时，块内副本被隐藏、只留顶部置顶行，块头计数仍按全量；隐藏行仍在 Select2 的 `[aria-selected]` 集合里（与既有隐藏类同性质）。 |
 | U2 | 绑定弹窗没有分组切换胶囊（pills） | 只有 optgroup。需复用 `createDropdownFilterBar` 给主 select 的 dropdown 挂 filter bar |
 | U3 | iOS 增强浮层（`syncSections`）路径：无「全局世界书」块、无搜索归组、置顶缺失 | 该路径与 mobile picker 是两套渲染；需在 `syncSections` 内实现同样逻辑 |
 | U4 | iOS 全局搜索出现原生 `NO RESULTS FOUND`、必须切到对应分组 | 增强浮层/原生 Select2 matcher 仍按 pill 过滤；需在该路径放开搜索过滤 |
@@ -100,16 +101,16 @@
 
 - 单测：`node --test tests/*.test.mjs` → 245/245 通过。
 - 浏览器：`WBO_E2E_SUITE=… node --test tests/*.browser.mjs`。
-  - 通过：`native-picker-window` 24/24、`native-mobile-picker-lifecycle` 22/22、`native-global-drawer` 8/8、`native-favorites-touch` 6/6、`organize-combos` 8/8、`native-extras-cleanup` 2/2。
+  - v2.35.38 复跑：`native-picker-window` 26/26、`native-mobile-picker-lifecycle` 22/22、`native-global-drawer` 8/8、`organize-combos` 8/8、`native-favorites-touch` 6/6、`native-extras-cleanup` 2/2、`feedback-round`／`native-editor-titles`／`native-empty-groups`／`native-favorites-script` 全通过。
   - 环境性失败（本机无 playwright）：`floating-window`、`manager-favorites`、`prompt-preview`、`manager-tools` 的触屏用例。
   - 偶发：`feedback-round` 某些用例在全量并发时超时，单文件复跑通过。
-- 新增测试：`native-picker-window` 中的镜像块、会话 pill、编辑下拉置顶/徽章、眼睛二次点击、绑定弹窗 optgroup、搜索单本/多本；`organize-combos` 中的 pill 两行、强调色、滚动记忆、折叠。
+- 新增测试：`native-picker-window` 中的镜像块、会话 pill、编辑下拉置顶/徽章、眼睛二次点击、绑定弹窗 optgroup、搜索单本/多本；`organize-combos` 中的 pill 两行、强调色、滚动记忆、折叠；v2.35.38 的两项去重用例（`editor dropdown shows every global book once…`、`editor dropdown lists a pinned global only once below the globals threshold`）。
 
 ---
 
 ## 5. 已知风险 / 审查建议
 
-1. **镜像块与原组行重复**（U1）：隐藏原组行会牵动搜索/选中/收藏三处逻辑，建议先写红测再改。
+1. **去重用的隐藏类**（U1 修法）：`syncEditorDupeRows` 给真实行加 `wbo-dd-dupe-hidden`（`display:none`），每轮 `decorateGroupItems` 先清空再加，幂等；搜索期间跳过。审查重点：① 角色书自己就是挂载全局书时，块内那份克隆被隐藏、只留顶部置顶行，块头计数仍是全量；② 隐藏行仍留在 Select2 的 `[aria-selected]` 集合里，键盘上下可能短暂落在不可见行（与既有 `wbo-dd-group-hidden`／`wbo-dd-pin-hidden` 同性质，未新增风险类别）；③ 若将来把「块收录的书」改成真实行搬进块内，`syncEditorDupeRows` 与镜像事件管线要一并重写。
 2. **`renderSelect2OptionResult` 的镜像判断**依赖 `state.element`，若某些 Select2 版本不传该字段，徽章守卫会失效（有兜底清理）。
 3. **搜索徽章回填**每次 `decorateGroupItems` 执行，若行被频繁重建可能抖动；已用存在性判断收敛。
 4. **全局下拉搜索放宽**后，非匹配 pill 的行可能短暂可见（Select2 matcher 仍会过滤，需复核）。
@@ -117,12 +118,13 @@
 6. **`_sessionGlobalPillId` 为页面级内存**，刷新即失；若用户期望持久化需改设置。
 7. **移动端两条渲染路径**（mobile picker / 增强浮层）逻辑重复且已漂移，建议后续合并为一套。
 8. **所有改动均为模拟视口验证**，未在真实 iOS/TauriTavern 与真实 ST 1.19 上验证；U3/U4/U9/U10 都需要真机证据。
+9. **普通收藏（未挂载）仍是「已收藏」块 + 原分组各一份**：用户 2026-11-28 明确要求保持这样，并要求收藏书在原分组里置顶（`hoistPinnedRowsInsideGroups`）。以后若要改成「只出现一次」，需连这条口径一起改。
 
 ---
 
 ## 6. 建议接手顺序
 
-1. U1（去重）——影响最大、最常被反馈。
+1. ~~U1（去重）~~ 已在 v2.35.38 完成；若用户要「普通收藏也只出现一次」，接一段与该改动同源的收尾。
 2. U5（全局下拉搜索分组）——与 U1 相邻，可共用一套「临时分组」实现。
 3. U3 + U4（iOS 增强浮层）——合并两条渲染路径后再改。
 4. U6（显示名回归）——回 core 层修 `charBookTitleMode`。

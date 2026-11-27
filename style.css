@@ -3047,6 +3047,11 @@ li.wbo-dd-group-hidden,
     display: none !important;
 }
 
+/* A book already listed inside a globals/favorites block must not repeat as a bare row. */
+li.wbo-dd-dupe-hidden {
+    display: none !important;
+}
+
 .wbo-s2-badge {
     font-size: 0.74em;
     padding: 1px 6px;

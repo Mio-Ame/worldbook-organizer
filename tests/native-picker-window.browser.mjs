@@ -1218,3 +1218,100 @@ test('editor search inside a group shows only the matches', async () => {
         await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]'));
     }, [], seed);
 });
+
+test('editor dropdown shows every global book once and folds mounted favorites into the note', async () => {
+    const threeGlobals = ['全局甲', '全局乙', '全局丙'];
+    const dedupeSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries([...threeGlobals, '普通甲', '普通乙'].map((name) => [name, { entries: {} }])),
+        selected_world_info: threeGlobals,
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }],
+            assignments: { 普通甲: 'g-style' },
+            pinnedBooks: ['全局乙', '普通乙'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')));
+        const visibleNames = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options [data-wbo-world]')]
+            .filter((item) => item.closest('li.select2-results__option')?.getBoundingClientRect().height > 0)
+            .map((item) => item.getAttribute('data-wbo-world')));
+        const names = await visibleNames();
+        // Every mounted global is visible exactly once (block + bare row + favorites triple-draw).
+        assert.deepEqual(names.filter((name) => threeGlobals.includes(name)).sort(), [...threeGlobals].sort());
+        assert.equal(names.filter((name) => name === '普通甲').length, 1);
+        assert.ok(names.includes('普通乙'));
+        // The mounted favorite is counted in the favorites head but listed under 全局世界书 only.
+        const favoritesHead = await cdp.evalFn(() => {
+            const group = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__pinned__"]');
+            return {
+                head: group?.querySelector('.select2-results__group')?.textContent || '',
+                rows: [...(group?.querySelectorAll('li.wbo-dd-global-mirror') || [])]
+                    .map((row) => row.textContent.replace(/\s+/g, ' ').trim()),
+            };
+        });
+        assert.match(favoritesHead.head, /已收藏 \(2\)1 本已全局，位于全局分组/);
+        assert.equal(favoritesHead.rows.length, 1);
+        assert.match(favoritesHead.rows[0], /普通乙/);
+        // A mirror row still selects the real book.
+        await cdp.evalFn(() => {
+            const row = [...document.querySelectorAll('.select2-dropdown li[data-wbo-dd-group="__globals__"] li.wbo-dd-global-mirror')]
+                .find((item) => item.getAttribute('data-wbo-mirror-of') === '全局乙');
+            row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        });
+        await waitForCondition(cdp, () => document.querySelector('#world_editor_select option:checked')?.textContent.trim() === '全局乙');
+    }, [], dedupeSeed);
+});
+
+test('editor dropdown shows 1-2 globals as untitled top rows without an empty favorites head', async () => {
+    const belowThresholdSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['全局测试书', '收藏测试书', '普通书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: ['全局测试书', '收藏测试书'],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-a', name: '测试分组甲' }],
+            assignments: { 收藏测试书: 'g-a', 普通书: 'g-a' },
+            pinnedBooks: ['收藏测试书'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill')));
+        const visibleNames = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options [data-wbo-world]')]
+            .filter((item) => item.closest('li.select2-results__option')?.getBoundingClientRect().height > 0)
+            .map((item) => item.getAttribute('data-wbo-world')));
+        // Each of the two mounted globals is an untitled top row; the favorited one is not
+        // repeated inside a favorites block, and that block is not rendered at all here.
+        assert.deepEqual(visibleNames.filter((name) => name === '收藏测试书'), ['收藏测试书']);
+        assert.deepEqual(visibleNames.filter((name) => name === '全局测试书'), ['全局测试书']);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__pinned__"]'))), false);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]'))), false);
+    }, [], belowThresholdSeed);
+});
+
+test('editor dropdown keeps a plain favorite at the top of its own group', async () => {
+    const pinnedSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['收藏书', '同组书甲', '同组书乙'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-a', name: '测试分组甲' }],
+            assignments: { 收藏书: 'g-a', 同组书甲: 'g-a' },
+            pinnedBooks: ['收藏书'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="g-a"]')));
+        const groupOrder = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown li[data-wbo-dd-group="g-a"] > ul > li')]
+            .map((row) => row.querySelector('[data-wbo-world]')?.getAttribute('data-wbo-world')));
+        assert.deepEqual(groupOrder, ['收藏书', '同组书甲']);
+        const head = await cdp.evalFn(() => document.querySelector('.select2-dropdown li[data-wbo-dd-group="__pinned__"] .select2-results__group')?.textContent || '');
+        assert.match(head, /已收藏 \(1\)/);
+        assert.doesNotMatch(head, /已全局/);
+    }, [], pinnedSeed);
+});
