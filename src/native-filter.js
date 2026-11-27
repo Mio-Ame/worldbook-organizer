@@ -133,6 +133,11 @@ function flushPinDirtyOnClose() {
 export function closeAllOpenWorldDropdowns({ except = null } = {}) {
     // Our search panel floats above the popover, so it has to go with it.
     document.querySelectorAll('.wbo-enhanced-search-panel').forEach((el) => el.remove());
+    // Release the drawer guards installed by every enhanced popover that was opened.
+    document.querySelectorAll('[data-wbo-popover-role]').forEach((el) => {
+        el._wboDrawerGuard?.dispose?.();
+        el._wboDrawerGuard = null;
+    });
     const $ = globalThis.jQuery;
     if ($ && except !== 'editor') {
         try {
@@ -1125,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.73';
+export const PLUGIN_VERSION = '2.35.74';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1192,6 +1197,47 @@ function pushDiagUi(kind, target) {
         _diag.ui.push(`${kind}:${describeDiagTarget(target)}`);
         if (_diag.ui.length > 30) _diag.ui.shift();
     } catch { /* logging must never break the UI */ }
+}
+
+/**
+ * The host closes an unpinned drawer on any document click, which fires while the opening click
+ * of a worldbook dropdown is still settling — the drawer then disappears on the very first click.
+ * Re-open it once per opening, but only when the pointer was actually inside the drawer.
+ * @returns {{ dispose: () => void }}
+ */
+function installDrawerOpenGuard() {
+    const drawer = typeof document === 'undefined' ? null : document.getElementById('WorldInfo');
+    const timers = [];
+    let observer = null;
+    let kept = false;
+    let pointerInside = false;
+    const onPointer = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        pointerInside = Boolean(target && drawer && drawer.contains(target));
+    };
+    const isClosed = () => Boolean(drawer) && (drawer.classList.contains('closedDrawer')
+        || !drawer.classList.contains('openDrawer'));
+    const restore = (stage) => {
+        if (kept || !drawer || !drawer.isConnected || !isClosed()) return;
+        if (!pointerInside && stage !== 'open') return;
+        kept = true;
+        drawer.classList.add('openDrawer');
+        drawer.classList.remove('closedDrawer');
+        pushDiagTrace(`drawer:kept-open@${stage}`);
+    };
+    if (drawer) {
+        document.addEventListener('pointerdown', onPointer, true);
+        observer = new MutationObserver(() => restore('mutation'));
+        observer.observe(drawer, { attributes: true, attributeFilter: ['class'] });
+        for (const delay of [30, 120, 260]) timers.push(setTimeout(() => restore(String(delay)), delay));
+    }
+    return {
+        dispose: () => {
+            observer?.disconnect();
+            for (const timer of timers.splice(0)) clearTimeout(timer);
+            if (typeof document !== 'undefined') document.removeEventListener('pointerdown', onPointer, true);
+        },
+    };
 }
 
 /**
@@ -6727,6 +6773,14 @@ function enhanceCustomDropdownPopover(containerEl) {
     containerEl.dataset.wboPopoverRole = detectedRole;
     const isGlobalPopover = detectedRole === 'global';
     const isGlobalOpening = isGlobalPopover && !containerEl.hidden && containerEl.style.display !== 'none' && !containerEl.dataset.wboGlobalOpen;
+
+    // The host's unpinned-drawer closer fires while the opening click is still settling, which
+    // closes the whole worldbook drawer on the very first click of the global field. Restore it
+    // once per opening (this path is separate from the Select2 global dropdown).
+    if (isGlobalPopover) {
+        containerEl._wboDrawerGuard?.dispose?.();
+        containerEl._wboDrawerGuard = installDrawerOpenGuard(containerEl);
+    }
 
     if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
         return;

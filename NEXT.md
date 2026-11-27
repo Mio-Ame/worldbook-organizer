@@ -1,3 +1,12 @@
+### 抽屉守卫挂到增强浮层的全局下拉（2026-11-28 · v2.35.74）
+- 用户 v2.35.73 反馈：搜索正常了，但「第一次点全局世界书框关闭抽屉」再次出现。
+- 诊断证据：`ui` 里有 `down:div.gr-select2-display inDrawer`，但 trace 里**没有** `drawer:kept-open` —— 说明守卫没装上。原因：之前只挂在 Select2 的全局下拉（`enhanceOpenGlobalDropdown`），而该用户走的是**美化脚本浮层**里的全局下拉（`role=global`，由 `enhanceCustomDropdownPopover` 处理），是另一条路径。
+- 修复（`src/native-filter.js`）：
+  - 新增模块级 `installDrawerOpenGuard()`：记录指针是否落在抽屉内，`#WorldInfo` class 变化 + 打开后 30/120/260ms 三次检查，被收起则恢复一次（`drawer:kept-open@…`），返回 `dispose`。
+  - `enhanceCustomDropdownPopover()` 检测到 `role=global` 时安装该守卫（`containerEl._wboDrawerGuard`），重复打开先 dispose 旧的。
+  - `closeAllOpenWorldDropdowns()` 遍历 `[data-wbo-popover-role]` 释放所有守卫，避免监听泄漏。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
 ### 面板回归原位、配色交还宿主、搜索不认 pill（2026-11-28 · v2.35.73）
 - 用户 v2.35.72 反馈：黑底蓝字；面板浮起来盖住 pill 条；切分组后结果消失（别的分组的书看不到）。
 - 诊断证据：`enh-panel:mount=in-flow` + `enh-panel:box=590,225,520` —— 明明是就地挂载，却仍被写上了 fixed 的内联定位；`matches=0` 是我按 pill 过滤造成的。
