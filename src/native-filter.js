@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.77';
+export const PLUGIN_VERSION = '2.35.78';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7314,14 +7314,14 @@ function enhanceCustomDropdownPopover(containerEl) {
                 favoriteOptionHomes.set(optEl, optEl.closest('.wbo-pop-section')?.querySelector('.wbo-pop-group-body') || optionsHost);
             }
         }
-        if (mountedGlobalOptions.length >= 3) {
+        if (mountedGlobalOptions.length >= 1) {
             globalsSectionEl = document.createElement('div');
             globalsSectionEl.className = 'wbo-pop-section';
             globalsSectionEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
             const headEl = document.createElement('div');
             headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
             headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
-            headEl.textContent = `全局世界书 (${mountedGlobalOptions.length})`;
+            headEl.textContent = `已开启的全局世界书 (${mountedGlobalOptions.length})`;
             headEl.title = '点击展开或折叠该分组';
             const bodyEl = document.createElement('div');
             bodyEl.className = 'wbo-pop-group-body';
