@@ -1125,7 +1125,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.69';
+export const PLUGIN_VERSION = '2.35.70';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7465,6 +7465,8 @@ function enhanceCustomDropdownPopover(containerEl) {
             panel.remove();
         }
         containerEl._wboSearchPanel = null;
+        containerEl._wboSearchPanelMount = null;
+        containerEl.classList.remove('wbo-enhanced-searching');
         containerEl._wboSearchPanelWatcher?.disconnect?.();
         containerEl._wboSearchPanelWatcher = null;
         for (const entry of searchPanelListeners.splice(0)) {
@@ -7547,8 +7549,15 @@ function enhanceCustomDropdownPopover(containerEl) {
         panel.className = 'wbo-enhanced-search-panel';
         panel.setAttribute('data-wbo-ui', '1');
         panel.setAttribute('data-wbo-panel-owner', String(containerEl.dataset.wboSourceRole || 'editor'));
-        document.body.appendChild(panel);
+        // Mount inside the same top-layer/dialog subtree as the popover: a `position: fixed`
+        // element on <body> is painted *below* a <dialog>/top-layer drawer no matter its z-index.
+        const mount = containerEl.closest('#WorldInfo, dialog, .drawer, [role="dialog"]') || document.body;
+        mount.appendChild(panel);
+        containerEl._wboSearchPanelMount = mount;
+        pushDiagTrace('enh-panel:mount=' + (mount.id || mount.tagName.toLowerCase()) + ',' + (mount === document.body ? 'body' : 'toplayer'));
         containerEl._wboSearchPanel = panel;
+        // Searching hides the host group heads: otherwise they linger over an empty list.
+        containerEl.classList.add('wbo-enhanced-searching');
         bindDrawerSafeBubbleGuard(panel);
         const anchor = containerEl.parentElement;
         if (anchor) {

@@ -1,3 +1,10 @@
+### 面板挂进抽屉层、搜索时隐藏分组标题（2026-11-28 · v2.35.69→v2.35.70）
+- v2.35.69 诊断：`enh-panel:box=590,225,520,98,rectOk=0` —— 面板在视口内、有高度，却看不见；`rectOk=0` 说明浮层几何退化（改走居中兜底）。结论：面板被**更高层**遮住，`<body>` 上的 `position: fixed` 会落在 `<dialog>`/顶层容器之下，z-index 无效。
+- 修复（`src/native-filter.js` `ensureSearchPanel`）：挂载点改为 `containerEl.closest("#WorldInfo, dialog, .drawer, [role=dialog]")`，与浮层同层渲染，并 trace `enh-panel:mount=…,toplayer|body`。
+- 「分组名残留」：v2.35.66 换成自绘面板时删掉了「搜索时隐藏宿主分组标题」的逻辑，于是宿主列表被它自己过滤成空、标题还留着。现在打开面板即给容器加 `wbo-enhanced-searching`（CSS 隐藏 `.wbo-pop-section > .wbo-dd-group-head`），关闭面板移除。
+- 诊断：`ime` 计数已在 v2.35.69 落地，本轮新增 `enh-panel:mount` 面包屑，便于确认层级。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-global-drawer` 8/8。
+
 ### 面板几何兜底 + 输入法/搜索框诊断（2026-11-28 · v2.35.69）
 - 用户 v2.35.68 诊断：`enh-panel:matches=1,shown=1`（面板生成了）但界面仍大片空白 → 面板被放在视口之外或尺寸为 0。
 - 修复（`src/native-filter.js` 的 `positionEnhancedSearchPanel`）：
