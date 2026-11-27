@@ -1,3 +1,13 @@
+### 面板几何兜底 + 输入法/搜索框诊断（2026-11-28 · v2.35.69）
+- 用户 v2.35.68 诊断：`enh-panel:matches=1,shown=1`（面板生成了）但界面仍大片空白 → 面板被放在视口之外或尺寸为 0。
+- 修复（`src/native-filter.js` 的 `positionEnhancedSearchPanel`）：
+  - 若浮层 `getBoundingClientRect()` 退化（宽<160 / 高<80 / 完全在视口外），不再用它定位，改为**视口居中**的 520px 面板；
+  - 宽高与 `top` 都夹进 `visualViewport`，并显式写回 `zIndex/visibility/opacity/display`，避免被宿主样式压掉；
+  - 新增 trace `enh-panel:box=left,top,width,height,rectOk,searchBox`，下次报告能直接看出面板落在哪里。
+- 诊断扩展：新增 `ime` 计数（`compositionStart/compositionEnd/focus/blur/blurDuringComposition`），并在 UI 日志里记录 `ime-start` / `ime-end` / `search-blur`，用于验证「点搜索框秒关、输入法残留」这类问题；短报告新增一行 `输入法 组合a/b 失焦n(打字中m)`，宿主为 TauriTavern 时附带 `Tauri <版本>`。
+- 关于「是否需要检测输入法」：不采集输入法名称（浏览器不提供，且属于隐私），只判断「打字过程中是否发生失去焦点 / 搜索框是否被移除」——这足以区分是宿主的 blur 逻辑关闭浮层，还是插件自己开的搜索控件被移除。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 面板加固（审查结论落地）+ 诊断补版本（2026-11-28 · v2.35.68）
 - 独立审查（subagent）对 v2.35.66/67 的自绘面板列出 5 高危 / 6 中危；本轮把高危与可立即执行的中危全部落地（`src/native-filter.js`）：
   - **面板单例**：面板存在 `containerEl._wboSearchPanel`，同一容器二次 enhance 会先复用/重建，不再出现两块面板叠加。

@@ -1125,7 +1125,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.68';
+export const PLUGIN_VERSION = '2.35.69';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1140,6 +1140,8 @@ const _diag = {
     trace: [],
     /** Last UI interactions, sanitized to tag/id/class/role plus a short hash. @type {string[]} */
     ui: [],
+    /** IME / soft-keyboard signals (the "search box closes while typing, keyboard stays" bug). */
+    ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
     foreignRowsUpgraded: 0,
     lastRenderPath: '',
     searchLayoutRuns: 0,
@@ -1367,6 +1369,7 @@ function buildDiagnosticReport(mode = 'short') {
             actions,
             errors,
             ui: _diag.ui,
+            ime: _diag.ime,
             dom: diagDomSnapshot(),
             trace: _diag.trace,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
@@ -1384,6 +1387,7 @@ function buildDiagnosticReport(mode = 'short') {
         `标题 ${titleStats.mode} | 缺归属${charWithoutOwner} 原名${charTitleIsFileName} 副标题${charWithSubtitle}`,
         `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
         `渲染计数 s2行${dom.s2Options ?? 0}/${dom.s2OptionsVisible ?? 0} gr行${dom.grOptions ?? 0}/${dom.grOptionsVisible ?? 0} 搜索头${dom.searchHead ?? 0} 装饰${_diag.decorateRuns}`,
+        `输入法 组合${_diag.ime.compositionStart}/${_diag.ime.compositionEnd} 失焦${_diag.ime.blur}(打字中${_diag.ime.blurDuringComposition})` + (env.tauriVersion ? ` | Tauri ${env.tauriVersion}` : ''),
         `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
         `错误 ${errors.length}`,
     ].join('\n');
@@ -7472,15 +7476,33 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (!panel) return;
         const rect = containerEl.getBoundingClientRect();
         const viewportH = globalThis.visualViewport?.height || globalThis.innerHeight || 768;
+        const viewportW = globalThis.visualViewport?.width || globalThis.innerWidth || 1024;
         const viewportTop = globalThis.visualViewport?.offsetTop || 0;
         const searchRect = searchInput instanceof HTMLElement ? searchInput.getBoundingClientRect() : null;
-        const top = Math.max(viewportTop + 4, (searchRect?.bottom ?? rect.top + 44) + 2);
+        // If the popover reports a degenerate/off-screen box the panel would land outside the
+        // viewport; fall back to a centred overlay instead of an invisible panel.
+        const rectUsable = rect.width >= 160 && rect.height >= 80
+            && rect.bottom > viewportTop && rect.top < viewportTop + viewportH;
+        const width = rectUsable ? Math.min(Math.max(rect.width - 8, 240), viewportW - 12) : Math.min(520, viewportW - 24);
+        const left = rectUsable
+            ? Math.min(Math.max(4, rect.left + 4), Math.max(4, viewportW - width - 8))
+            : Math.max(4, Math.round((viewportW - width) / 2));
+        const rawTop = (searchRect?.bottom ?? (rectUsable ? rect.top + 44 : viewportTop + 72)) + 2;
+        const top = Math.min(Math.max(viewportTop + 4, rawTop), viewportTop + viewportH - 160);
         const available = Math.max(120, viewportTop + viewportH - top - 8);
         panel.style.position = 'fixed';
-        panel.style.left = Math.max(4, rect.left + 4) + 'px';
-        panel.style.width = Math.max(240, rect.width - 8) + 'px';
+        panel.style.left = left + 'px';
+        panel.style.width = width + 'px';
         panel.style.top = top + 'px';
-        panel.style.maxHeight = Math.min(available, Math.max(160, rect.height - 40)) + 'px';
+        panel.style.maxHeight = Math.min(available, Math.max(160, (rectUsable ? rect.height : viewportH) - 40)) + 'px';
+        panel.style.zIndex = '100090';
+        panel.style.visibility = 'visible';
+        panel.style.opacity = '1';
+        panel.style.display = 'flex';
+        pushDiagTrace('enh-panel:box=' + [left, top, width, panel.getBoundingClientRect().height]
+            .map((value) => Math.round(value)).join(',')
+            + ',rectOk=' + (rectUsable ? 1 : 0)
+            + ',searchBox=' + (searchInput instanceof HTMLElement ? 1 : 0));
     };
     /** Books that can actually be picked: the select may have detached hidden options. */
     const pickableNames = () => {
@@ -7937,6 +7959,33 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         const logKey = (event) => pushDiagUi(`key:${String(event.key || '').slice(0, 8)}`, event.target instanceof Element ? event.target : null);
         document.addEventListener('pointerdown', logDown, true);
         document.addEventListener('keydown', logKey, true);
+        // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
+        // report can only be proven with composition + blur counters.
+        let composing = false;
+        document.addEventListener('compositionstart', (event) => {
+            composing = true;
+            _diag.ime.compositionStart += 1;
+            pushDiagUi('ime-start', event.target instanceof Element ? event.target : null);
+        }, true);
+        document.addEventListener('compositionend', (event) => {
+            composing = false;
+            _diag.ime.compositionEnd += 1;
+            pushDiagUi('ime-end', event.target instanceof Element ? event.target : null);
+        }, true);
+        document.addEventListener('focusin', (event) => {
+            const target = event.target;
+            if (target instanceof Element && target.closest('.gr-search-input, .gr-search-box, .wbo-enhanced-search-panel')) {
+                _diag.ime.focus += 1;
+            }
+        }, true);
+        document.addEventListener('focusout', (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            if (!target.closest('.gr-search-input, .gr-search-box')) return;
+            _diag.ime.blur += 1;
+            if (composing) _diag.ime.blurDuringComposition += 1;
+            pushDiagUi('search-blur', target);
+        }, true);
         globalThis.window.addEventListener?.('error', (event) => {
             const message = String(event?.message || event?.error?.message || 'error');
             _diag.errors.push(sanitizeDiagText(message));
