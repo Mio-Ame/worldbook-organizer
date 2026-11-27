@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.82';
+export const PLUGIN_VERSION = '2.35.83';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7342,14 +7342,21 @@ function enhanceCustomDropdownPopover(containerEl) {
     };
     // The 「已开启的全局世界书」 block applies to BOTH dropdowns: native SillyTavern pins those books
     // to the top of the list, and the scripted dropdown has to do the same.
+    const mountedAndPinned = [];
     for (const optEl of realOptionNodes) {
         const name = getOptionText(optEl);
         const meta = _latestClassification?.byName?.get(name);
         const realName = meta?.realName || name;
-        if (isActiveGlobalName(realName)) mountedGlobalOptions.push(optEl);
+        const isMounted = isActiveGlobalName(realName);
+        if (isMounted) {
+            mountedGlobalOptions.push(optEl);
+            if (meta?.isPinned) mountedAndPinned.push(optEl);
+        }
         if (!isGlobalPopover) {
-            // A book that is both favorited and mounted lives in the globals area only.
-            if (meta?.isPinned && !isActiveGlobalName(realName)) {
+            // 已收藏 lists the pinned books that are NOT mounted; mounted ones stay in the block
+            // above (except inside the ★已收藏 pill, where they are appended so they can be
+            // switched off).
+            if (meta?.isPinned && !isMounted) {
                 favoriteOptions.push(optEl);
                 favoriteOptionHomes.set(optEl, optEl.closest('.wbo-pop-section')?.querySelector('.wbo-pop-group-body') || optionsHost);
             }
@@ -7383,22 +7390,30 @@ function enhanceCustomDropdownPopover(containerEl) {
                 pushDiagTrace('enh-globals:current-hoisted=1');
             }
         }
-        pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`);
+        pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`
+            + `,pinnedMounted=${mountedAndPinned.length}`);
     } else {
         pushDiagTrace(`enh-globals:block=0,count=0,role=${isGlobalPopover ? 'global' : 'editor'}`);
     }
-    if (!isGlobalPopover && favoriteOptions.length > 0) {
+    if (!isGlobalPopover && (favoriteOptions.length > 0 || mountedAndPinned.length > 0)) {
             favoritesSectionEl = document.createElement('div');
             favoritesSectionEl.className = 'wbo-pop-section';
             favoritesSectionEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
             const headEl = document.createElement('div');
             headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
             headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
-            headEl.textContent = `★ 已收藏 (${favoriteOptions.length})`;
+            headEl.textContent = `★ 已收藏 (${favoriteOptions.length + mountedAndPinned.length})`;
             headEl.title = '点击展开或折叠该分组';
             const bodyEl = document.createElement('div');
             bodyEl.className = 'wbo-pop-group-body';
             favoritesSectionEl.append(headEl, bodyEl);
+            // The note native ST shows: how many favorites already live in the globals block.
+            if (mountedAndPinned.length > 0) {
+                const noteEl = document.createElement('div');
+                noteEl.className = 'wbo-dd-group-note';
+                noteEl.textContent = `其中 ${mountedAndPinned.length} 本已全局，显示在上方；在此可关闭`;
+                bodyEl.append(noteEl);
+            }
             optionsHost.insertBefore(favoritesSectionEl, globalsSectionEl ? globalsSectionEl.nextElementSibling : optionsHost.firstChild);
             for (const optEl of favoriteOptions) {
                 const right = optEl.querySelector('.wbo-s2-right');
@@ -7409,6 +7424,10 @@ function enhanceCustomDropdownPopover(containerEl) {
                     right.prepend(origin);
                 }
             }
+    }
+    // The 「选择以编辑」 row has to lead the whole list, above every block we insert.
+    for (const ph of [...placeholders].reverse()) {
+        optionsHost.insertBefore(ph, optionsHost.firstChild);
     }
 
     /**
@@ -7448,13 +7467,19 @@ function enhanceCustomDropdownPopover(containerEl) {
             globalsSectionEl?.classList.add('wbo-dd-group-hidden');
             if (favoritesSectionEl) {
                 const bodyEl = favoritesSectionEl.querySelector('.wbo-pop-group-body');
-                for (const optEl of favoriteOptions) bodyEl?.appendChild(optEl);
+                // Mounted + favorited books are listed here too, so their global switch can be
+                // turned off from the favorites view (they were unreachable before).
+                for (const optEl of [...favoriteOptions, ...mountedAndPinned]) bodyEl?.appendChild(optEl);
                 favoritesSectionEl.classList.remove('wbo-dd-group-hidden');
             }
         } else if (favoritesSectionEl) {
             for (const optEl of favoriteOptions) {
                 const home = favoriteOptionHomes.get(optEl);
                 if (home && optEl.parentElement !== home) home.appendChild(optEl);
+            }
+            const globalsBody = globalsSectionEl?.querySelector('.wbo-pop-group-body');
+            for (const optEl of mountedAndPinned) {
+                if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
             }
         }
         // The origin badge only belongs to the flat favorites list.

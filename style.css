@@ -3112,6 +3112,13 @@ li.wbo-dd-group-hidden,
     opacity: 0.75;
 }
 
+.wbo-dd-group-note {
+    padding: 4px 8px 6px;
+    font-size: 0.82em;
+    opacity: 0.7;
+    white-space: normal;
+}
+
 .wbo-esp-check {
     flex: 0 0 auto;
     width: 1em;
