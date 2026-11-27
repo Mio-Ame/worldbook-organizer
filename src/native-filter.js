@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.78';
+export const PLUGIN_VERSION = '2.35.79';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7176,9 +7176,11 @@ function enhanceCustomDropdownPopover(containerEl) {
     const hasMemory = isGlobalPopover
         ? _dropdownMemory.globalPillMemorySet === true
         : true;
+    // A saved choice wins over the container's stale runtime state: a reused container keeps
+    // reporting the pill it was created with (已收藏), which made every reopen snap back to it.
     const previousGroup = isGlobalPopover
-        ? (containerEl._wboPopState?.getActivePillId()
-            || (hasMemory && validGroupIds.has(remembered) ? remembered : (isGlobalOpening ? SPECIAL_GROUPS.PINNED : null)))
+        ? ((hasMemory && validGroupIds.has(remembered)) ? remembered
+            : (containerEl._wboPopState?.getActivePillId() || (isGlobalOpening ? SPECIAL_GROUPS.PINNED : null)))
         : remembered;
     let activePillGroupId = validGroupIds.has(previousGroup) ? previousGroup : SPECIAL_GROUPS.ALL;
     const rememberPill = (gid) => {
@@ -7189,7 +7191,8 @@ function enhanceCustomDropdownPopover(containerEl) {
             _dropdownMemory.activePillGroupId = gid;
         }
     };
-    rememberPill(activePillGroupId);
+    // Do not let the first render overwrite a real user choice with the default.
+    if (!hasMemory) rememberPill(activePillGroupId);
 
     let isRestoringScroll = true;
     let searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
