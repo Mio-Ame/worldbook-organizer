@@ -771,11 +771,10 @@ function syncEnhancedPinButton(button, pinned) {
 function syncEnhancedWorldOptionTitle(row, meta) {
     if (!meta) return;
     if (!meta.isCharBound && !meta.isInCharGroup && meta.primaryTitle === meta.realName) {
-        const originalText = _borrowedRowText.get(row);
-        if (originalText) {
-            row.querySelector(':scope > .wbo-gr-world-title')?.replaceWith(...originalText);
-            _borrowedRowText.delete(row);
-        }
+        // Back to the plain file name: drop our title and give the original text back.
+        row.querySelector(':scope > .wbo-gr-world-title')?.remove();
+        const holder = row.querySelector(':scope > .wbo-orig-text');
+        if (holder) holder.replaceWith(...holder.childNodes);
         return;
     }
     row.dataset.wboEnhancedWorld = meta.realName;
@@ -793,9 +792,17 @@ function syncEnhancedWorldOptionTitle(row, meta) {
     }
     let label = row.querySelector(':scope > .wbo-gr-world-title');
     if (!label) {
-        const originalText = [...row.childNodes].filter((node) => node.nodeType === 3);
-        _borrowedRowText.set(row, originalText);
-        for (const node of originalText) node.remove();
+        // Keep the original text nodes in the DOM (just visually hidden): the host script may
+        // search by `row.textContent`, and deleting them made its search return nothing.
+        const originalText = [...row.childNodes].filter((node) => node.nodeType === 3 && (node.textContent || '').trim());
+        if (originalText.length > 0 && !row.querySelector(':scope > .wbo-orig-text')) {
+            const holder = document.createElement('span');
+            holder.className = 'wbo-orig-text';
+            holder.hidden = true;
+            holder.setAttribute('aria-hidden', 'true');
+            for (const node of originalText) holder.appendChild(node);
+            row.appendChild(holder);
+        }
         label = document.createElement('span');
         label.className = 'wbo-gr-world-title';
         row.prepend(label);
@@ -1074,7 +1081,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.57';
+export const PLUGIN_VERSION = '2.35.58';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1196,7 +1203,7 @@ function buildDiagnosticReport(mode = 'short') {
         ungrouped,
         collapsedMemory: Object.keys(settings.dropdownCollapsed || {}).length,
         hiddenDupeRows: typeof document !== 'undefined' ? document.querySelectorAll('li.wbo-dd-dupe-hidden').length : 0,
-        searchBlocks: typeof document !== 'undefined' ? document.querySelectorAll('li[data-wbo-dd-group="__search_matches__"], .wbo-bind-dd-bar').length : 0,
+        searchBlocks: typeof document !== 'undefined' ? document.querySelectorAll('li[data-wbo-dd-group="__search_matches__"], .wbo-bind-dd-bar, [data-wbo-search-head]').length : 0,
         foreignRowsUpgraded: _diag.foreignRowsUpgraded,
     };
     const titleStats = { mode: settings.charBookTitleMode, charWithoutOwner, charTitleIsFileName, charWithSubtitle };
@@ -7229,6 +7236,9 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.querySelectorAll('[data-wbo-search-head]').forEach((el) => {
             el.removeAttribute('data-wbo-search-head');
         });
+        optionsHost.querySelectorAll('.wbo-enhanced-search-hidden').forEach((el) => {
+            el.classList.remove('wbo-enhanced-search-hidden');
+        });
         containerEl.classList.remove('wbo-enhanced-searching');
         _lastEnhancedSearchSig = '';
     };
@@ -7260,6 +7270,18 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
             return;
         }
+        // Own the visibility ourselves: the host script may hide every row (it loses track after
+        // we swap in the display title), which left the list blank even though hits existed.
+        for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+            if (!(row instanceof HTMLElement)) continue;
+            const hit = rows.includes(row);
+            row.classList.toggle('wbo-enhanced-search-hidden', !hit);
+            if (hit) {
+                if (row.style.display === 'none') row.style.removeProperty('display');
+                if (row.hidden) row.hidden = false;
+                row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
+            }
+        }
         const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
         const headRow = optionsHost.querySelector('[data-wbo-search-head]');
         const domIntact = rows.length <= 1
@@ -7275,8 +7297,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (row.hidden) row.hidden = false;
             row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
         }
-        containerEl.classList.toggle('wbo-enhanced-searching', true);
-        const originOf = (row) => _latestClassification?.byName?.get(getOptionText(row))?.groupName || '未分组';
+        containerEl.classList.toggle('wbo-enhanced-searching', true);        const originOf = (row) => _latestClassification?.byName?.get(getOptionText(row))?.groupName || '未分组';
         if (rows.length === 1) {
             const right = rows[0].querySelector('.wbo-s2-right');
             if (right instanceof HTMLElement) {

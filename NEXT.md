@@ -1,3 +1,13 @@
+### 增强浮层搜索：保留原文 + 自主控制可见性（2026-11-28 · v2.35.58）
+- 用户反馈（v2.35.57，`renderPath=enhanced-script`）：搜索依旧整片空白。
+- 定位：`syncEnhancedWorldOptionTitle()` 早期实现把行的原始文本节点**删掉**、换成我们的标题 span，于是美化脚本按 `row.textContent` 做搜索匹配时匹配不到任何行 → 它自己把整表隐藏 → 我们看到的空白。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - 原始文本节点改为**保留但隐藏**：新 `<span class="wbo-orig-text" hidden>` 包住原文本（`textContent` 仍包含它），宿主脚本的搜索恢复正常；恢复原名时把该 span 拆掉还原。
+  - 搜索可见性改由插件自己掌控：命中行强制显示（清 `display:none`/`hidden`/常见隐藏类），非命中行加 `.wbo-enhanced-search-hidden` 隐藏；清空搜索时全部复原。即使宿主脚本把整表藏起来，命中行也一定能看到。
+  - 诊断的 `search/胶囊` 计数现在也包含 `[data-wbo-search-head]`，便于确认搜索块是否生效。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` + `native-favorites-script` 18/18。
+- 边界：同时开两份美化脚本仍属宿主侧冲突；插件不再删除任何脚本节点，只删已无任何脚本 DOM 残留时的 `<style>`。
+
 ### 增强浮层：零侵入搜索头 / 不删外来 DOM / 标题自愈（2026-11-28 · v2.35.57）
 - 用户反馈：开着脚本时搜索只看到「搜索匹配到的世界书 (17)」一行、下面还是整块等高空白且必须点分组才见结果；当前角色书仍显示全名；关掉脚本后全局世界书抽屉的触发器与已勾选显示消失（刷新才恢复）。
 - 定位：①上一版把「搜索块标题」作为新节点插进宿主列表，破坏了宿主自己的布局/高度计算；②上一版的残留清理会删除 `.gr-select2-display`、`#gr-global-dropdown-container`，而用户同时装了两份美化脚本，删掉的正是**仍在运行**那一份的触发器（全局书无法选择）。

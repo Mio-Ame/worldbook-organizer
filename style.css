@@ -3053,6 +3053,11 @@ li.wbo-dd-group-hidden,
     display: none !important;
 }
 
+/* Search visibility is owned by the plugin: the host script can hide every row at once. */
+.wbo-enhanced-search-hidden {
+    display: none !important;
+}
+
 /* The search block title is drawn on the first hit instead of inserting a node, so the host
    script's list layout and height calculation stay untouched. */
 .wbo-enhanced-searching .gr-option[data-wbo-search-head]::before {
@@ -7150,6 +7155,11 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
 .wbo-gr-world-title {
     min-width: 0;
     overflow-wrap: anywhere;
+}
+
+/* Original row text is kept in the DOM (host search reads textContent) but never shown. */
+.wbo-orig-text {
+    display: none !important;
 }
 
 /* 角色名 + 原名 放在同一行，只有窄屏（手机）才允许折行 */
