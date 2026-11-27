@@ -164,6 +164,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     adaptMoveEntryPopup: true,
     adaptEnhancedPresetGroups: false,
     overrideEnhancedDropdownStyle: false,
+    // How to decide whether the compatible dropdown-beautify script is in use:
+    // 'auto' = detect it, 'on' = user forces it, 'off' = ignore it.
+    enhancedScriptMode: 'auto',
     showNativeOptgroups: true,
     pinCurrentChatCharBookInEditor: true,
     showNativeCharToggleBtn: true,
@@ -271,6 +274,10 @@ export function normalizeSettings(raw) {
         }));
 
     merged.importOrganize = normalizeImportOrganize(merged.importOrganize, merged.groups);
+
+    if (!['auto', 'on', 'off'].includes(merged.enhancedScriptMode)) {
+        merged.enhancedScriptMode = 'auto';
+    }
 
     for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed', 'bookOrders']) {
         if (!merged[dictKey] || typeof merged[dictKey] !== 'object' || Array.isArray(merged[dictKey])) {

@@ -1,3 +1,11 @@
+### 诊断改为点开菜单 + 美化脚本检测可见（2026-11-28 · v2.35.53）
+- 用户反馈：移动端没有悬停，「连点 3 下」这种靠提示才发现的交互不成立；另外希望主动检测下拉框美化脚本是否启用。
+- 诊断交互（`src/panel-settings.js` + `style.css`）：页脚仍只有「诊断」一个按钮，点一下弹出小菜单（`#wbo-diag-menu`，`pointerdown` 外部关闭，触屏/鼠标一致）：「复制简要诊断」约 10 行可直接贴 Discord；「下载详细诊断」生成 `wbo-diagnostic-<时间>.txt`。菜单底部标注「都不含任何书名 / 角色名」。
+- 美化脚本检测：新增 `detectEnhancedScriptSignals()`（脚本树 / `style[data-gr-dropdown-style]` / 运行中的 `.gr-container-enhanced`、`.gr-select2-display` 三类信号）与 `isEnhancedScriptActive()`（受新设置 `enhancedScriptMode: auto|on|off` 约束）。设置页「下拉框美化酒馆脚本适配」卡片现在**始终显示**，带「检测状态：已识别（信号）/未识别」+ 三态选择「自动检测 / 当作已启用（强制适配）/ 当作未启用」，解决脚本较新、标记不同就看不到适配开关的问题。
+- 诊断内容：短文本改为 `美化脚本 有(auto)|无(on)|…`；详细 JSON 增加 `enhancedScript: { active, mode, scriptTree, styleMarker, runtimeDom }`。
+- 验证：单测 245/245（新增 `enhancedScriptMode` 归一化）；`native-picker-window` 33/33（原「未检测到就不显示卡片」的断言改为「始终显示 + 状态为未识别/已识别」，并新增点开诊断菜单断言两个选项 + 点外部关闭）；`native-editor-titles` 12/12。
+- 边界：`enhancedScriptMode=on` 只影响我们对「是否装了美化脚本」的判断与适配开关的可用性，不会去启用别人的脚本。
+
 ### 诊断收成一个按钮（2026-11-28 · v2.35.52）
 - 用户反馈：设置页放两个诊断按钮太拥挤。
 - 改动（`src/panel-settings.js`）：页脚只保留「复制诊断」一个按钮——点一下把 10 行短诊断复制到剪贴板；**2 秒内连点 3 下**改为下载 `wbo-diagnostic-<时间>.txt` 详细诊断。按钮提示里写明了这个手势，界面不再多占位置。

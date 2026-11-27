@@ -668,9 +668,18 @@ test('preset group switching is offered only when the compatible script is detec
             await cdp.clickSelector('#wbo-manager-overlay .wbo-modal-close');
         };
         await openSettings();
-        assert.equal(await cdp.evalFn((selector) => Boolean(document.querySelector(selector)), setting), false);
-        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]'))), false);
-        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-dropdown-script-settings]'))), false);
+        // The card is always visible now, with an explicit detection verdict.
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-dropdown-script-settings]'))), true);
+        assert.match(await cdp.evalFn(() => document.querySelector('[data-enhanced-script-status]')?.textContent || ''), /未识别/);
+        // Diagnostics open a two-choice sheet on tap (no hover needed on touch devices).
+        await cdp.clickSelector('#wbo-modal-diag-btn');
+        await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-diag-menu')));
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#wbo-diag-menu [data-diag]')]
+            .map((btn) => btn.getAttribute('data-diag'))), ['short', 'dev']);
+        await cdp.evalFn(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
+        await waitForCondition(cdp, () => !document.getElementById('wbo-diag-menu'));
+        assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);
+        assert.equal(await cdp.evalFn(() => document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]')?.checked), false);
         await closeSettings();
 
         await cdp.evalFn(() => {
@@ -678,12 +687,13 @@ test('preset group switching is offered only when the compatible script is detec
                 content: 'gr-global-dropdown-container gr-select2-display data-gr-dropdown-style' }] }] };
         });
         await openSettings();
+        assert.match(await cdp.evalFn(() => document.querySelector('[data-enhanced-script-status]')?.textContent || ''), /已识别/);
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);
         assert.equal(await cdp.evalFn(() => document.querySelector('[data-setting="overrideEnhancedDropdownStyle"]')?.checked), false);
         assert.deepEqual(await cdp.evalFn(() => {
             const card = document.querySelector('[data-dropdown-script-settings]');
             return { title: card?.querySelector('.wbo-ai-section-head')?.textContent.trim(),
-                options: [...(card?.querySelectorAll('[data-setting]') || [])].map((input) => input.dataset.setting),
+                options: [...(card?.querySelectorAll('input[data-setting]') || [])].map((input) => input.dataset.setting),
                 isolated: !card?.querySelector('[data-setting="adaptCharBindPopup"]') };
         }), { title: '下拉框美化酒馆脚本适配', options: ['adaptEnhancedPresetGroups', 'overrideEnhancedDropdownStyle'], isolated: true });
         await closeSettings();

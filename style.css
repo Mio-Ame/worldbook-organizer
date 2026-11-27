@@ -3047,6 +3047,54 @@ li.wbo-dd-group-hidden,
     display: none !important;
 }
 
+/* Tap-to-open diagnostic chooser (works on touch, no hover required). */
+.wbo-diag-menu {
+    position: fixed;
+    z-index: 100000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 240px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.32));
+    background: var(--wbo-surface, #1f2228);
+    color: inherit;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.wbo-diag-menu button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.28));
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.wbo-diag-menu button > span {
+    font-size: 0.82em;
+    opacity: 0.68;
+}
+
+.wbo-diag-menu button:active,
+.wbo-diag-menu button:hover {
+    background: rgba(128, 128, 128, 0.16);
+}
+
+.wbo-diag-menu-note {
+    font-size: 0.78em;
+    opacity: 0.6;
+    text-align: center;
+}
+
 /* Group pills above the bind-popup's primary worldbook list (U2). */
 .wbo-bind-dd-bar {
     display: flex;

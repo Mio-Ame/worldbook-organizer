@@ -19,7 +19,7 @@ import {
     SPECIAL_GROUPS,
 } from './core.js';
 import { showToast } from './host.js';
-import { hasCompatibleDropdownScript } from './native-filter.js';
+import { detectEnhancedScriptSignals, hasCompatibleDropdownScript, isEnhancedScriptActive } from './native-filter.js';
 import { openImportRulesModal } from './panel-import-rules.js';
 import { getNativeGroupingPreferences } from './entry-groups/host.js';
 import { canConfigureNativeGrouping, setNativeEntryButtonVisible } from './entry-groups/panel.js';
@@ -422,8 +422,20 @@ function openSettingsModal() {
                     </label>
                 </div>
 
-                ${hasCompatibleDropdownScript() ? `<div class="wbo-card" data-dropdown-script-settings>
+                <div class="wbo-card" data-dropdown-script-settings>
                     <div class="wbo-ai-section-head"><span>下拉框美化酒馆脚本适配</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>检测状态</span>
+                        <span class="wbo-hint" data-enhanced-script-status></span>
+                    </div>
+                    <label class="wbo-check-line">
+                        <span>这个脚本在用吗</span>
+                        <select data-setting-select="enhancedScriptMode">
+                            <option value="auto">自动检测（推荐）</option>
+                            <option value="on">当作已启用（强制适配）</option>
+                            <option value="off">当作未启用</option>
+                        </select>
+                    </label>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="adaptEnhancedPresetGroups">
                         <span>预设下拉框显示分组切换</span>
@@ -432,7 +444,8 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="overrideEnhancedDropdownStyle">
                         <span>覆盖脚本配色，跟随酒馆主题</span>
                     </label>
-                </div>` : ''}
+                    <div class="wbo-hint" data-enhanced-script-hint></div>
+                </div>
             </div>
             </div>
 
@@ -444,8 +457,8 @@ function openSettingsModal() {
                     <i class="fa-solid fa-upload"></i> 导入配置
                 </button>
                 <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
-                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="点一下复制诊断文本（约 10 行，可直接贴 Discord）；连点 3 下改为下载详细诊断文件。均不含任何书名。">
-                    <i class="fa-solid fa-clipboard-list"></i> 复制诊断
+                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="生成问题诊断信息">
+                    <i class="fa-solid fa-clipboard-list"></i> 诊断
                 </button>
                 <span class="wbo-spacer"></span>
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
@@ -642,41 +655,20 @@ function openSettingsModal() {
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
-    // Diagnostics in a single button (the footer stays uncluttered): one click copies the short
-    // Discord-friendly text, three quick clicks download the detailed file instead.
+    // One footer button that opens a two-choice sheet, so touch devices work without hover:
+    // 「复制简要诊断」 (Discord-friendly text) or 「下载详细诊断」 (a .txt file).
     // Both are structure-only — no book, character or group name ever leaves the user's machine.
-    let diagClicks = 0;
-    let diagClickTimer = null;
-    modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', async () => {
-        diagClicks += 1;
-        if (diagClickTimer) clearTimeout(diagClickTimer);
-        diagClickTimer = setTimeout(() => { diagClicks = 0; diagClickTimer = null; }, 2000);
-        const wantDetailed = diagClicks >= 3;
-        if (wantDetailed) {
-            diagClicks = 0;
-            clearTimeout(diagClickTimer);
-            diagClickTimer = null;
-        }
-        if (wantDetailed) {
-            const text = (() => {
-                try { return globalThis.window?.wboBuildDiagnostic?.('dev') || ''; } catch { return ''; }
-            })();
-            if (!text) {
-                showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
-                return;
-            }
-            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-            const blob = new Blob([text], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `wbo-diagnostic-${stamp}.txt`;
-            a.click();
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 2000);
-            showToast('success', '已生成详细诊断文件');
-            return;
-        }
+    const closeDiagMenu = () => {
+        const menu = document.getElementById('wbo-diag-menu');
+        menu?.remove();
+        document.removeEventListener('pointerdown', onDiagOutside, true);
+    };
+    const onDiagOutside = (event) => {
+        const menu = document.getElementById('wbo-diag-menu');
+        if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+        closeDiagMenu();
+    };
+    const copyShortDiagnostics = async () => {
         const text = (() => {
             try { return globalThis.window?.wboBuildDiagnostic?.('short') || ''; } catch { return ''; }
         })();
@@ -686,12 +678,64 @@ function openSettingsModal() {
         }
         try {
             await navigator.clipboard.writeText(text);
-            showToast('success', '诊断已复制（约 10 行，不含任何书名），可直接粘贴');
+            showToast('success', '已复制简要诊断（约 10 行，不含任何书名）');
         } catch {
             console.log('[worldbook-organizer] 诊断\n' + text);
             showToast('warning', '自动复制失败，已打印到控制台');
         }
+    };
+    const downloadDetailedDiagnostics = () => {
+        const text = (() => {
+            try { return globalThis.window?.wboBuildDiagnostic?.('dev') || ''; } catch { return ''; }
+        })();
+        if (!text) {
+            showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+            return;
+        }
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `wbo-diagnostic-${stamp}.txt`;
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        showToast('success', '已生成详细诊断文件');
+    };
+    modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', (event) => {
+        const existing = document.getElementById('wbo-diag-menu');
+        if (existing) {
+            closeDiagMenu();
+            return;
+        }
+        const anchor = event.currentTarget;
+        if (!(anchor instanceof HTMLElement)) return;
+        const rect = anchor.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.id = 'wbo-diag-menu';
+        menu.className = 'wbo-diag-menu';
+        menu.innerHTML = `
+            <button type="button" data-diag="short"><i class="fa-solid fa-clipboard"></i> 复制简要诊断<span>约 10 行，可直接贴 Discord</span></button>
+            <button type="button" data-diag="dev"><i class="fa-solid fa-file-arrow-down"></i> 下载详细诊断<span>生成 .txt，含运行环境与报错</span></button>
+            <div class="wbo-diag-menu-note">都不含任何书名 / 角色名</div>
+        `;
+        const maxLeft = Math.max(8, (globalThis.innerWidth || 1024) - 260);
+        menu.style.left = `${Math.min(Math.max(8, rect.left), maxLeft)}px`;
+        menu.style.bottom = `${Math.max(8, (globalThis.innerHeight || 768) - rect.top + 6)}px`;
+        document.body.append(menu);
+        menu.addEventListener('click', (ev) => {
+            const btn = ev.target instanceof Element ? ev.target.closest('[data-diag]') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            const kind = btn.getAttribute('data-diag');
+            closeDiagMenu();
+            if (kind === 'dev') downloadDetailedDiagnostics();
+            else copyShortDiagnostics();
+        });
+        document.addEventListener('pointerdown', onDiagOutside, true);
     });
+    modal.addEventListener('close', closeDiagMenu);
     const importInput = modal.querySelector('#wbo-modal-import-file');
     modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
         if (importInput instanceof HTMLInputElement) {
@@ -711,6 +755,34 @@ function openSettingsModal() {
         }
     });
     modal.querySelector('[data-open-import-rules]')?.addEventListener('click', () => openImportRulesModal({ stack: true }));
+
+    // Explain the dropdown-beautify detection instead of silently hiding/showing the card.
+    const renderEnhancedScriptStatus = () => {
+        const signals = detectEnhancedScriptSignals();
+        const mode = _callbacks?.getState?.().settings?.enhancedScriptMode || 'auto';
+        const active = isEnhancedScriptActive();
+        const statusEl = modal.querySelector('[data-enhanced-script-status]');
+        const hintEl = modal.querySelector('[data-enhanced-script-hint]');
+        const matched = [
+            signals.scriptTree ? '脚本树' : '',
+            signals.styleMarker ? '样式标记' : '',
+            signals.runtimeDom ? '运行中的下拉' : '',
+        ].filter(Boolean);
+        if (statusEl) {
+            statusEl.textContent = active
+                ? `已识别（${mode === 'on' ? '手动指定' : matched.join(' + ') || '自动'}）`
+                : '未识别';
+        }
+        if (hintEl) {
+            hintEl.textContent = active
+                ? '下面两项只在装了该脚本时才有意义；已识别的功能会按它自动适配。'
+                : '没检测到该脚本。如果你确实装了但它较新、标记不同，可把「这个脚本在用吗」改成「当作已启用」强制适配。';
+        }
+    };
+    renderEnhancedScriptStatus();
+    modal.querySelector('select[data-setting-select="enhancedScriptMode"]')?.addEventListener('change', () => {
+        setTimeout(renderEnhancedScriptStatus, 0);
+    });
     modal.querySelector('#wbo-settings-close-btn')?.addEventListener('click', closeSubModal);
 }
 

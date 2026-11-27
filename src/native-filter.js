@@ -349,6 +349,45 @@ export function hasCompatibleDropdownScript() {
     return Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR));
 }
 
+/**
+ * Which signals actually matched, so the settings page can explain the verdict instead of
+ * silently hiding the adaptation card.
+ * @returns {{ scriptTree: boolean, styleMarker: boolean, runtimeDom: boolean }}
+ */
+export function detectEnhancedScriptSignals() {
+    if (typeof document === 'undefined') return { scriptTree: false, styleMarker: false, runtimeDom: false };
+    let scriptTree = false;
+    try {
+        const scripts = globalThis.TavernHelper?.getScriptTrees?.({ type: 'global' });
+        if (Array.isArray(scripts)) {
+            scriptTree = scripts.flatMap((item) => item?.type === 'folder' ? (item.scripts || []) : [item]).some((item) => {
+                const code = item?.content;
+                return typeof code === 'string'
+                    && code.includes('gr-global-dropdown-container')
+                    && code.includes('gr-select2-display');
+            });
+        }
+    } catch { /* ignore */ }
+    return {
+        scriptTree,
+        styleMarker: Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR)),
+        runtimeDom: Boolean(document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container, .gr-select2-display')),
+    };
+}
+
+/**
+ * Effective answer to "is the dropdown-beautify script in use?", honouring the user's
+ * `enhancedScriptMode` override (auto / on / off).
+ * @returns {boolean}
+ */
+export function isEnhancedScriptActive() {
+    const mode = _latestSettings?.enhancedScriptMode || 'auto';
+    if (mode === 'on') return true;
+    if (mode === 'off') return false;
+    const signals = detectEnhancedScriptSignals();
+    return Boolean(signals.scriptTree || signals.styleMarker || signals.runtimeDom);
+}
+
 function syncEnhancedHostTheme(element, eligible = true) {
     if (!element) return;
     const enabled = eligible && _latestSettings?.overrideEnhancedDropdownStyle === true;
@@ -931,7 +970,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.52';
+export const PLUGIN_VERSION = '2.35.53';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1029,6 +1068,8 @@ function buildDiagnosticReport(mode = 'short') {
     const settings = _latestSettings || {};
     const cls = _latestClassification;
     const mounted = getActiveGlobalWorldSet?.() || new Set();
+    const enhancedSignals = detectEnhancedScriptSignals();
+    const enhancedActive = isEnhancedScriptActive();
     let charBooks = 0;
     let charWithoutOwner = 0;
     let charTitleIsFileName = 0;
@@ -1071,6 +1112,7 @@ function buildDiagnosticReport(mode = 'short') {
             },
             actions,
             errors,
+            enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
             ua: String(globalThis.navigator?.userAgent || ''),
         }, null, 2);
     }
@@ -1079,7 +1121,7 @@ function buildDiagnosticReport(mode = 'short') {
         `宿主 ${env.host} | ST ${env.stVersion}`,
         `环境 ${env.browser} / ${env.os} / ${env.viewport} / ${env.mobileViewport ? 'mobile' : 'desktop'}`,
         `渲染 ${env.renderPath} | 外来行升级 ${counts.foreignRowsUpgraded}`,
-        `美化脚本 ${env.compatDropdownScript ? '有' : '无'} | 原生分组 ${settings.showNativeOptgroups ? 'true' : 'false'}`,
+        `美化脚本 ${enhancedActive ? '有' : '无'}(${settings.enhancedScriptMode || 'auto'}) | 原生分组 ${settings.showNativeOptgroups ? 'true' : 'false'}`,
         `数据 书${counts.books} 组${counts.groups} 收藏${counts.pinned} 挂载${counts.mounted} 角色书${counts.charBooks} 未分组${counts.ungrouped}`,
         `标题 ${titleStats.mode} | 缺归属${charWithoutOwner} 原名${charTitleIsFileName} 副标题${charWithSubtitle}`,
         `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
