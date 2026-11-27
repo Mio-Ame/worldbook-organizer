@@ -913,6 +913,10 @@ function matchesGlobalDropdownGroup(meta, groupId) {
 }
 
 function globalSelect2Matcher(params, data) {
+    // Searching must look across every group, not only inside the active pill: the hits are
+    // regrouped afterwards into 「搜索匹配到的世界书」.
+    const term = String(params?.term ?? '').trim();
+    if (term) return customSelect2Matcher(params, data);
     const meta = _latestClassification?.byName?.get(String(data.text ?? '').trim());
     return matchesGlobalDropdownGroup(meta, _activeGlobalPillId) ? customSelect2Matcher(params, data) : null;
 }
@@ -5000,7 +5004,7 @@ function enhanceOpenEditorDropdown() {
      */
     let _lastSearchMatchSig = '';
     const clearEditorSearchMatches = () => {
-        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match').forEach((el) => el.remove());
+        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin').forEach((el) => el.remove());
         const group = resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`);
         if (group) {
             [...group.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)')]
@@ -5041,15 +5045,21 @@ function enhanceOpenEditorDropdown() {
             row.classList.add('wbo-dd-search-row');
             const right = row.querySelector('.wbo-s2-right');
             if (right) {
-                const badge = document.createElement('span');
-                badge.className = 'wbo-s2-badge is-search-match';
-                badge.setAttribute('data-wbo-search-badge', '1');
-                badge.textContent = '搜索匹配到的世界书';
-                right.prepend(badge);
-                const originBadge = document.createElement('span');
-                originBadge.className = 'wbo-s2-badge is-search-origin';
-                originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
-                right.prepend(originBadge);
+                // Idempotent: repeated decorate passes must never stack banners (one pill switch
+                // used to add another group badge).
+                if (!right.querySelector('.is-search-match')) {
+                    const badge = document.createElement('span');
+                    badge.className = 'wbo-s2-badge is-search-match';
+                    badge.setAttribute('data-wbo-search-badge', '1');
+                    badge.textContent = '搜索匹配到的世界书';
+                    right.prepend(badge);
+                }
+                if (!right.querySelector('.is-search-origin')) {
+                    const originBadge = document.createElement('span');
+                    originBadge.className = 'wbo-s2-badge is-search-origin';
+                    originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                    right.prepend(originBadge);
+                }
             }
             resultsList.prepend(row);
             return;

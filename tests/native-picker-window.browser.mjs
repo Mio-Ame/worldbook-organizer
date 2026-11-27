@@ -1224,7 +1224,54 @@ test('global dropdown collects search hits into one 搜索匹配到的世界书 
         });
         await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]'));
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('.select2-dropdown .is-search-origin').length), 0);
+        // Searching inside a pill still finds books of other groups.
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-plot"]');
+        await cdp.typeInto('.select2-dropdown .select2-search__field', '许文');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown [data-wbo-search-badge]')));
+        const crossPill = await cdp.evalFn(() => {
+            const row = [...document.querySelectorAll('.select2-dropdown li.select2-results__option')]
+                .find((item) => (item.textContent || '').includes('许文风') && item.getBoundingClientRect().height > 0);
+            return {
+                found: Boolean(row),
+                badges: row ? [...row.querySelectorAll('.wbo-s2-badge')].map((badge) => badge.textContent.trim()) : [],
+            };
+        });
+        assert.equal(crossPill.found, true);
+        assert.ok(crossPill.badges.includes('文风'));
     }, [], searchSeed);
+});
+
+test('editor search badges never stack when the pill changes', async () => {
+    const badgeSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['许文风', '许剧情甲', '别的书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }, { id: 'g-plot', name: '剧情' }],
+            assignments: { 许文风: 'g-style', 许剧情甲: 'g-plot', 别的书: 'g-plot' },
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-plot"]')));
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-plot"]');
+        await cdp.typeInto('.select2-dropdown .select2-search__field', '文风');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown [data-wbo-search-badge]')));
+        for (const pill of ['g-style', 'g-plot', '__all__', 'g-plot']) {
+            await cdp.clickSelector(`.select2-dropdown .wbo-dd-pill[data-wbo-pill="${pill}"]`);
+        }
+        const badges = await cdp.evalFn(() => {
+            const row = [...document.querySelectorAll('.select2-dropdown li.select2-results__option')]
+                .find((item) => (item.textContent || '').includes('许文风'));
+            return {
+                origins: [...row.querySelectorAll('.is-search-origin')].map((badge) => badge.textContent.trim()),
+                matches: row.querySelectorAll('.is-search-match').length,
+            };
+        });
+        assert.deepEqual(badges.origins, ['文风']);
+        assert.equal(badges.matches, 1);
+    }, [], badgeSeed);
 });
 
 test('global dropdown re-buckets a book as soon as it is mounted', async () => {
