@@ -7169,6 +7169,40 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     margin-top: 6px;
 }
 
+/* Combo picker: no boxed card around the rows, headings sit right under the search bar. */
+.wbo-cmb-pick-list .wbo-gp-sec {
+    margin-top: 2px;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 6px;
+    padding: 3px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-body {
+    border: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+    gap: 1px;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 4px !important;
+    padding: 2px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
 .wbo-gp-sec:first-child {
     margin-top: 0;
 }

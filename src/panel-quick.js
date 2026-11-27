@@ -467,7 +467,6 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                         </button>
                         <span class="wbo-ai-subview-title" id="wbo-cmb-edit-heading">新建全局组合</span>
                         <span class="wbo-spacer"></span>
-                        <span class="wbo-tag" id="wbo-cmb-picked-badge">已选 0 本</span>
                     </div>
                     <div class="wbo-cmb-name-bar">
                         <input type="text" class="wbo-input" id="wbo-cmb-name-input" placeholder="输入组合名称，例如：现代日常套、古风通用套、跑团检定套" spellcheck="false">
@@ -1576,9 +1575,10 @@ let _visPopoverJustClosedGid = '';
 let _visPopoverClosedAt = 0;
 
 function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
-    // A tap on the already-open eye closes the popover in the capture listener below; never reopen it.
-    if (groupId === _visPopoverJustClosedGid && Date.now() - _visPopoverClosedAt < 300) {
-        _visPopoverJustClosedGid = '';
+    // Pressing the same eye again closes its own popover, whatever the event order was.
+    const currentBackdrop = document.getElementById('wbo-vis-popover-backdrop');
+    if (currentBackdrop && currentBackdrop.dataset.wboGid === groupId) {
+        closeGroupVisibilityPopover();
         return;
     }
     _visPopoverJustClosedGid = '';
@@ -1609,26 +1609,20 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
     `;
 
     backdrop.appendChild(pop);
+    backdrop.dataset.wboGid = groupId;
     document.body.appendChild(backdrop);
     bindDrawerSafeBubbleGuard(backdrop);
     bindDrawerSafeBubbleGuard(pop);
 
     // Close on any outside press (the shared bubble guard stops normal bubbling, so listen in capture).
+    // Taps on the eye itself are left to the click handler, which closes it as a second press.
     const onOutsidePress = (ev) => {
         if (!backdrop.isConnected) {
             document.removeEventListener('pointerdown', onOutsidePress, true);
             return;
         }
         const target = ev.target instanceof Element ? ev.target : null;
-        if (target && (pop.contains(target) || anchorBtn.contains(target))) {
-            if (target.closest('[data-action="open-group-visibility"]')) {
-                _visPopoverJustClosedGid = groupId;
-                _visPopoverClosedAt = Date.now();
-                closeGroupVisibilityPopover();
-            }
-            return;
-        }
-        _visPopoverJustClosedGid = '';
+        if (target && (pop.contains(target) || anchorBtn.contains(target))) return;
         closeGroupVisibilityPopover();
     };
     document.addEventListener('pointerdown', onOutsidePress, true);

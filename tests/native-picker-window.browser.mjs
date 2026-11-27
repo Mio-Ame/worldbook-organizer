@@ -1061,11 +1061,12 @@ test('group visibility popover closes on outside press and on a second eye tap',
         assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-vis-popover-backdrop'))), false);
         await cdp.clickSelector(eye);
         await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-vis-popover-backdrop')));
-        await cdp.evalFn((selector) => document.querySelector(selector).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), eye);
-        await waitForCondition(cdp, () => !document.getElementById('wbo-vis-popover-backdrop'));
+        // Pressing the same eye again closes it (event order independent).
         await cdp.evalFn((selector) => document.querySelector(selector).click(), eye);
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-vis-popover-backdrop'))), false);
+        await waitForCondition(cdp, () => !document.getElementById('wbo-vis-popover-backdrop'));
+        // A third press opens it again; it must not be swallowed by a stale "just closed" flag.
+        await cdp.evalFn((selector) => document.querySelector(selector).click(), eye);
+        await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-vis-popover-backdrop')));
     });
 });
 test('editor dropdown groups 3+ mounted globals into a foldable block above the opened group', async () => {

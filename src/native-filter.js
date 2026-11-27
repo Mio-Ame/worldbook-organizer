@@ -4359,6 +4359,10 @@ function enhanceOpenEditorDropdown() {
 
     // Three or more mounted globals get their own foldable block, right below the pinned row.
     const editorGlobalNames = [...getActiveGlobalWorldSet()].filter((name) => _latestClassification?.byName?.has(name));
+    const pinnedEditorNames = [...(_latestClassification?.byName?.values?.() || [])]
+        .filter((meta) => meta?.isPinned)
+        .map((meta) => meta.realName)
+        .filter((name) => Boolean(name && [...selectEl.options].some((opt) => (opt.textContent || '').trim() === name)));
     const hasEditorGlobalBlock = editorGlobalNames.length >= 3;
     if (hasEditorGlobalBlock) {
         const entry = {
@@ -4397,50 +4401,68 @@ function enhanceOpenEditorDropdown() {
      * Build the "全局世界书" block: a mirror of every mounted global so the originals can stay
      * in their own groups. Mirrors select the real option when pressed.
      */
-    const layoutEditorGlobalBlock = () => {
-        const existing = resultsList.querySelector(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`);
-        if (!hasEditorGlobalBlock) {
+    /**
+     * Build a mirror block (globals / favorites): the originals stay in their own groups and
+     * mirrors select the real option when pressed.
+     * @param {string} gid
+     * @param {string} label
+     * @param {string[]} names
+     */
+    const buildEditorMirrorBlock = (gid, label, names) => {
+        const existing = resultsList.querySelector(`li[data-wbo-dd-group="${gid}"]`);
+        if (names.length === 0) {
             if (existing) {
                 existing.remove();
                 return true;
             }
             return false;
         }
-        const sig = editorGlobalNames.join('|');
+        const sig = names.join('|');
         if (existing
             && existing.getAttribute('data-wbo-mirror-sig') === sig
-            && existing.querySelectorAll('li.wbo-dd-global-mirror').length === editorGlobalNames.length) {
+            && existing.querySelectorAll('li.wbo-dd-global-mirror').length === names.length) {
             return false;
         }
         existing?.remove();
         const allRows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
-            .filter((row) => !row.closest(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`));
+            .filter((row) => !row.closest(`li[data-wbo-dd-group="${gid}"]`));
         const mirrors = [];
-        for (const name of editorGlobalNames) {
+        for (const name of names) {
             const source = allRows.find((row) => getDropdownOptionWorldName(row) === name);
             if (!source) continue;
             const clone = source.cloneNode(true);
             clone.classList.add('wbo-dd-global-mirror');
             clone.setAttribute('data-wbo-mirror-of', name);
             clone.classList.remove('wbo-dd-current-char', 'wbo-dd-pin-hidden');
-            clone.querySelectorAll('.wbo-s2-pin-btn').forEach((btn) => btn.remove());
+            clone.querySelectorAll('.wbo-s2-pin-btn, [data-wbo-editing-badge]').forEach((el) => el.remove());
             mirrors.push(clone);
         }
         if (mirrors.length === 0) return false;
         const groupLi = document.createElement('li');
         groupLi.className = 'select2-results__option select2-results__option--group';
-        groupLi.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        groupLi.setAttribute('data-wbo-dd-group', gid);
         groupLi.setAttribute('data-wbo-mirror-sig', sig);
-        groupLi.setAttribute('aria-label', '全局世界书');
+        groupLi.setAttribute('aria-label', label);
         const head = document.createElement('span');
         head.className = 'select2-results__group';
-        head.textContent = `全局世界书 (${mirrors.length})`;
+        head.textContent = `${label} (${mirrors.length})`;
         const nested = document.createElement('ul');
         nested.className = 'select2-results__options select2-results__options--nested';
         for (const mirror of mirrors) nested.appendChild(mirror);
         groupLi.append(head, nested);
         resultsList.prepend(groupLi);
         return true;
+    };
+
+    const layoutEditorGlobalBlock = () => {
+        let rebuilt = buildEditorMirrorBlock(EDITOR_GLOBALS_GROUP_ID, '全局世界书', hasEditorGlobalBlock ? editorGlobalNames : []);
+        // Favorites only get their own block in the "all" view; the pill itself already filters.
+        if (activePillGroupId === SPECIAL_GROUPS.ALL && pinnedEditorNames.length > 0) {
+            rebuilt = buildEditorMirrorBlock(SPECIAL_GROUPS.PINNED, '已收藏', pinnedEditorNames) || rebuilt;
+        } else {
+            resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`)?.remove();
+        }
+        return rebuilt;
     };
 
     /**
@@ -4487,10 +4509,12 @@ function enhanceOpenEditorDropdown() {
                 li.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
                 li.classList.toggle('wbo-dd-collapsed', !searching && Boolean(_latestSettings.dropdownCollapsed[gid]));
             } else {
-                // The globals block stays visible above whatever group the user opened.
+                // The globals block stays visible above whatever group the user opened,
+                // but it starts folded there instead of eating the whole list.
                 const hiddenByPill = isGroupIsolated && gid !== activePillGroupId && gid !== EDITOR_GLOBALS_GROUP_ID;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const isCollapsed = !searching && isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId);
+                const forceFold = gid === EDITOR_GLOBALS_GROUP_ID && isGroupIsolated;
+                const isCollapsed = !searching && (forceFold || isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId));
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
@@ -4512,6 +4536,12 @@ function enhanceOpenEditorDropdown() {
             }
             if (currentRow) {
                 currentRow.classList.add('wbo-dd-current-char');
+                // Keep the friendly title (character name / alias) instead of the raw file name.
+                const rowMeta = _latestClassification?.byName?.get(getDropdownOptionWorldName(currentRow));
+                const titleEl = currentRow.querySelector('.wbo-s2-title');
+                if (rowMeta?.primaryTitle && titleEl && titleEl.textContent !== rowMeta.primaryTitle) {
+                    titleEl.textContent = rowMeta.primaryTitle;
+                }
                 currentRow.classList.remove('wbo-dd-pin-hidden');
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
