@@ -932,7 +932,9 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
     if (!$) return state.text;
 
     const hasCustomGroups = (_latestClassification?.customGroups?.length || 0) > 0;
-    const isEditing = showEditingBadge && realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
+    // Mirror rows never carry the 当前编辑 badge, even if Select2 re-renders them.
+    const isMirrorRow = Boolean(state.element?.closest?.('li.wbo-dd-global-mirror'));
+    const isEditing = !isMirrorRow && showEditingBadge && realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
     const editingBadge = isEditing
         ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>'
         : '';

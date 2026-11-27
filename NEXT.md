@@ -1,3 +1,8 @@
+### Badge layout and mirror guards (2026-11-28 v2.35.35)
+- Search rows: badges no longer shrink or ellipsize (group name / 当前角色 stay complete); only the title ellipsizes, actions stay right aligned.
+- Mirror rows never render the 当前编辑 badge at template level, removing the flaky duplicate that pushed 当前角色 left.
+- Tests: unit 245/245; native-picker-window 24/24; native-mobile-picker-lifecycle 22/22.
+
 ### Mobile search chips layout (2026-11-28 v2.35.34)
 - Origin chip no longer truncates group names; row actions stay right-aligned.
 - Tests: native-picker-window 24/24, native-mobile-picker-lifecycle 22/22.

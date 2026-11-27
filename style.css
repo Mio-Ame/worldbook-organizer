@@ -8702,3 +8702,37 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+/* Search rows: badges must stay complete; only the book title may ellipsize. */
+.wbo-s2-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.wbo-s2-right .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.wbo-s2-main {
+    min-width: 0;
+}
+
+.wbo-mp-row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+    gap: 4px;
+}
+
+.wbo-mp-row-actions .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}
