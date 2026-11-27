@@ -3059,14 +3059,41 @@ li.wbo-dd-group-hidden,
 }
 
 /* The search block title is drawn on the first hit instead of inserting a node, so the host
-   script's list layout and height calculation stay untouched. */
+   script's list layout and height calculation stay untouched. Host rows are usually flex, so the
+   pseudo element has to claim a whole line of its own — otherwise it sits beside the title and
+   gets squeezed into vertical text. */
+.wbo-enhanced-searching .gr-option[data-wbo-search-head] {
+    flex-wrap: wrap;
+    align-items: flex-start;
+}
+
 .wbo-enhanced-searching .gr-option[data-wbo-search-head]::before {
     content: attr(data-wbo-search-head);
+    flex: 0 0 100%;
+    width: 100%;
     display: block;
     padding: 4px 8px;
     font-weight: 600;
     font-size: 0.92em;
+    line-height: 1.4;
+    white-space: normal;
+    writing-mode: horizontal-tb;
+    text-shadow: none;
+    box-shadow: none;
     opacity: 0.85;
+}
+
+/* A group without hits is removed entirely, so no tall blank strip is left behind. */
+.wbo-enhanced-searching .wbo-pop-section.wbo-enhanced-section-hidden {
+    display: none !important;
+}
+
+/* Shown by the plugin when the term matches nothing at all. */
+.wbo-enhanced-search-empty {
+    padding: 10px 8px;
+    font-size: 0.94em;
+    opacity: 0.75;
+    white-space: normal;
 }
 
 /* Tap-to-open diagnostic chooser (works on touch, no hover required). */

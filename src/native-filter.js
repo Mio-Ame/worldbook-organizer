@@ -469,12 +469,16 @@ function resolveEnhancedRowMeta(row) {
         const meta = findMetaByAnyName(candidate);
         if (meta) return meta;
     }
-    // Last resort: map the row back to its `<option>` through `data-value`. The host script can
-    // build rows before any text exists, and those rows carry no name at all.
-    const value = row.dataset?.value;
-    if (value !== undefined) {
-        const select = document.getElementById('world_editor_select');
-        const option = select ? [...select.options].find((item) => item.value === value) : null;
+    // Last resort: map the row back to its `<option>` through `data-value` / `data-index`. The
+    // host script can build rows before any text exists, and those rows carry no name at all.
+    const select = document.getElementById('world_editor_select');
+    if (select) {
+        const value = row.dataset?.value;
+        let option = value !== undefined ? [...select.options].find((item) => item.value === value) : null;
+        if (!option) {
+            const index = Number(row.dataset?.index);
+            if (Number.isInteger(index) && index >= 0) option = select.options[index] || null;
+        }
         const name = (option?.dataset?.wboRealName || option?.textContent || '').trim();
         if (name) {
             const meta = findMetaByAnyName(name);
@@ -1113,7 +1117,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.62';
+export const PLUGIN_VERSION = '2.35.63';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7352,6 +7356,10 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.querySelectorAll('.wbo-enhanced-search-hidden').forEach((el) => {
             el.classList.remove('wbo-enhanced-search-hidden');
         });
+        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
+        optionsHost.querySelectorAll('.wbo-enhanced-section-hidden').forEach((el) => {
+            el.classList.remove('wbo-enhanced-section-hidden');
+        });
         containerEl.classList.remove('wbo-enhanced-searching');
         if (_enhSearchReapply) {
             clearTimeout(_enhSearchReapply);
@@ -7398,9 +7406,18 @@ function enhanceCustomDropdownPopover(containerEl) {
             + `,secHidden=${optionsHost.querySelectorAll('.wbo-pop-section.wbo-dd-group-hidden').length}`
             + `,collapsed=${optionsHost.querySelectorAll('.wbo-dd-collapsed').length}`);
         if (rows.length === 0) {
-            // Nothing matched: leave the popover to the host script (its own empty state) instead
-            // of leaving our class/head behind and a blank fixed-height area.
-            if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
+            // Nothing matched: give an explicit hint instead of a full-width blank strip.
+            clearEnhancedSearchBlock();
+            _lastEnhancedSearchSig = 'empty';
+            containerEl.classList.add('wbo-enhanced-searching');
+            for (const sectionEl of optionsHost.querySelectorAll('.wbo-pop-section')) {
+                sectionEl.classList.add('wbo-enhanced-section-hidden');
+            }
+            const hint = document.createElement('div');
+            hint.className = 'wbo-enhanced-search-empty';
+            hint.textContent = '没有匹配的世界书';
+            optionsHost.insertBefore(hint, optionsHost.firstChild);
+            pushDiagTrace('enh-search:empty');
             return;
         }
         // Own the visibility ourselves: the host script may hide every row (it loses track after
@@ -7415,6 +7432,13 @@ function enhanceCustomDropdownPopover(containerEl) {
                 row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
             }
         }
+        // Hide whole groups that hold no hit; otherwise their empty bodies leave tall gaps.
+        for (const sectionEl of optionsHost.querySelectorAll('.wbo-pop-section')) {
+            const hasHit = [...sectionEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)]
+                .some((row) => rows.includes(row));
+            sectionEl.classList.toggle('wbo-enhanced-section-hidden', !hasHit);
+        }
+        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
         // The hits can still be invisible because an ancestor (the script's list wrapper or a
         // section) is hidden; walk up and clear that too.
         let unhidAncestors = 0;

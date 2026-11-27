@@ -1,3 +1,13 @@
+### 搜索块排版 / 空态 / data-index 反查（2026-11-28 · v2.35.63）
+- 用户反馈（v2.35.62，`renderPath=enhanced-script`）：命中结果里「搜索匹配到的世界书」跑到书名旁边、被压成竖排并带蓝色阴影；每个命中之间出现大段空白；无命中时整条仍是空白。
+- 原因：宿主行是 flex 布局，我们的 `::before` 被当成并排的 flex item；另外只隐藏了 `.gr-option`，没隐藏「不含命中的整个分组」，分组空体留下了大段高度。
+- 修复（`style.css` + `src/native-filter.js`）：
+  - `[data-wbo-search-head]` 行改为 `flex-wrap: wrap`，`::before` 用 `flex: 0 0 100%` 独占一行，并显式 `white-space: normal` / `writing-mode: horizontal-tb` / 清除 `text-shadow`、`box-shadow`（蓝色阴影来自宿主 hover 样式）。
+  - 不含命中的 `.wbo-pop-section` 整段加 `wbo-enhanced-section-hidden` 隐藏，不再留空白高度。
+  - 命中 0 本时由插件插入 `没有匹配的世界书` 提示（`.wbo-enhanced-search-empty`）并隐藏所有分组；清空搜索时移除。
+  - `resolveEnhancedRowMeta()` 增加 `data-index` 兜底（宿主行可能只有 index 没有 value），并保留 `data-value` 反查。
+- 验证：单测 245/245；`native-picker-window` 36/36（增强搜索用例新增：空态提示出现、所有分区块被隐藏、清空后提示移除）。
+
 ### 搜索重套 + 行→option 反查 + 抽屉关闭说明（2026-11-28 · v2.35.62）
 - 用户 v2.35.61 诊断结论：`enh-titles:titled=2,fileOnly=140`（142 行只有 2 行拿到标题）、`enh-live:optionsVisible=140,hitH=39`（命中行其实可见有高度）。
 - 改动（`src/native-filter.js`）：

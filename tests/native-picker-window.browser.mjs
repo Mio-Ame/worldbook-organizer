@@ -1733,6 +1733,23 @@ test('enhanced dropdown groups search hits under one 搜索匹配到的世界书
         await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]'));
         assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section > .wbo-dd-group-head')]
             .every((head) => getComputedStyle(head).display !== 'none')), true);
+        // A term that matches nothing shows an explicit hint instead of a blank strip.
+        await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            const input = pop.querySelector('input[type="search"]');
+            input.value = 'zzz-无此世界书';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-empty')));
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section')]
+            .every((section) => section.classList.contains('wbo-enhanced-section-hidden'))), true);
+        await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            const input = pop.querySelector('input[type="search"]');
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-empty'));
     }, [], bookSeed);
 });
 
