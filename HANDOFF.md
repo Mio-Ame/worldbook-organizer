@@ -58,6 +58,7 @@
 16. 徽章不被压缩/截断；★ 右对齐。
 17. 组合页「已收藏」pill 不再空白（不排除全局书）。
 18. **U1 已修（v2.35.38）**：普通下拉里全局书不再显示 2～3 遍，且按用户追加确认的三条口径实现：①「已收藏」块里不再列既收藏又挂载的书，标题旁加「X 本已全局，位于全局分组」；②只有 1～2 本全局时（哪怕有一本是收藏的）不建分组，按「当前角色」那样用原名裸行显示，且不渲染空的「已收藏」标题；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但在原分组里置顶。实现要点：`syncEditorDupeRows()`（`wbo-dd-dupe-hidden`，每轮重算、搜索不隐藏）、`buildEditorMirrorBlock()` 的 `allowEmpty`/`countOverride`/`note`、`hoistPinnedRowsInsideGroups()`、「当前角色」判定跳过镜像行。测试：`native-picker-window` 新增 3 项。
+19. **普通下拉块顺序 / 已全局徽章 / 全局组展开（v2.35.39）**：「已收藏」块排到「全局世界书」块下方（`orderEditorBlocks()`）；1～2 本全局的裸行补上「已全局」徽章（`syncGlobalBadges()` 每轮按实时挂载集合补建，解决 Select2 只渲染一次导致的缺徽章）；点进「全局」pill 直接展开，在其它分组 pill 下默认折叠但点块标题可展开（`forceFold` 让位于 `_isolatedFoldOverride`）。测试：`native-picker-window` 新增 1 项 + 加 2 处断言，28/28。
 
 ### 未解决 / 部分解决（请接手修复）
 

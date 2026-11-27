@@ -1255,6 +1255,10 @@ test('editor dropdown shows every global book once and folds mounted favorites i
         assert.match(favoritesHead.head, /已收藏 \(2\)1 本已全局，位于全局分组/);
         assert.equal(favoritesHead.rows.length, 1);
         assert.match(favoritesHead.rows[0], /普通乙/);
+        // 已收藏 sits right below 全局世界书, same as the global drawer.
+        const blockOrder = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options > li.select2-results__option--group')]
+            .map((row) => row.getAttribute('data-wbo-dd-group')));
+        assert.deepEqual(blockOrder.slice(0, 2), ['__globals__', '__pinned__']);
         // A mirror row still selects the real book.
         await cdp.evalFn(() => {
             const row = [...document.querySelectorAll('.select2-dropdown li[data-wbo-dd-group="__globals__"] li.wbo-dd-global-mirror')]
@@ -1289,6 +1293,11 @@ test('editor dropdown shows 1-2 globals as untitled top rows without an empty fa
         assert.deepEqual(visibleNames.filter((name) => name === '全局测试书'), ['全局测试书']);
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__pinned__"]'))), false);
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]'))), false);
+        // Both bare rows still advertise their mounted state.
+        const badges = await cdp.evalFn(() => Object.fromEntries([...document.querySelectorAll('.select2-dropdown .select2-results__options [data-wbo-world]')]
+            .map((item) => [item.getAttribute('data-wbo-world'), Boolean(item.closest('li')?.querySelector('[data-wbo-global-badge]'))])));
+        assert.equal(badges['全局测试书'], true);
+        assert.equal(badges['收藏测试书'], true);
     }, [], belowThresholdSeed);
 });
 
@@ -1314,4 +1323,39 @@ test('editor dropdown keeps a plain favorite at the top of its own group', async
         assert.match(head, /已收藏 \(1\)/);
         assert.doesNotMatch(head, /已全局/);
     }, [], pinnedSeed);
+});
+
+test('editor dropdown expands the globals block when its pill or its head is used', async () => {
+    const threeGlobals = ['全局甲', '全局乙', '全局丙'];
+    const seedWithGroup = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries([...threeGlobals, '普通甲'].map((name) => [name, { entries: {} }])),
+        selected_world_info: threeGlobals,
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }],
+            assignments: { 普通甲: 'g-style' },
+            pinnedBooks: [],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const globalsRowsVisible = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown li[data-wbo-dd-group="__globals__"] li.wbo-dd-global-mirror')]
+            .filter((row) => row.getBoundingClientRect().height > 0).length);
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="__globals__"]')));
+        // Opening the globals pill shows its rows instead of a folded head.
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="__globals__"]');
+        await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+        assert.equal(await globalsRowsVisible(), 3);
+        // Inside another group's pill it starts folded, but its head still expands it.
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-style"]');
+        await waitForCondition(cdp, () => document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+        assert.equal(await globalsRowsVisible(), 0);
+        await cdp.evalFn(() => {
+            const head = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"] .wbo-dd-group-head');
+            head.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+        assert.equal(await globalsRowsVisible(), 3);
+    }, [], seedWithGroup);
 });

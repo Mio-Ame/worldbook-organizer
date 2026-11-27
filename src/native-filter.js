@@ -4651,7 +4651,23 @@ function enhanceOpenEditorDropdown() {
         } else {
             resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`)?.remove();
         }
+        // Same order as the global drawer: 全局世界书 first, 已收藏 right below it.
+        if (orderEditorBlocks()) rebuilt = true;
         return rebuilt;
+    };
+
+    /**
+     * Keep 全局世界书 above 已收藏 no matter which block was rebuilt last.
+     * @returns {boolean} true when the DOM order had to change
+     */
+    const orderEditorBlocks = () => {
+        const globalsBlock = resultsList.querySelector(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`);
+        const pinnedBlock = resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`);
+        if (!globalsBlock || !pinnedBlock) return false;
+        const alreadyOrdered = Boolean(pinnedBlock.compareDocumentPosition(globalsBlock) & Node.DOCUMENT_POSITION_PRECEDING);
+        if (alreadyOrdered) return false;
+        globalsBlock.after(pinnedBlock);
+        return true;
     };
 
     /**
@@ -4706,6 +4722,34 @@ function enhanceOpenEditorDropdown() {
     };
 
     /**
+     * Keep the 已全局 marker in sync with the live mount state. Select2 only renders a row once,
+     * so a book mounted while the dropdown is open (or a row rendered before the refresh) would
+     * otherwise lose its badge — the user asked for the badge on the 1-2 global bare rows too.
+     */
+    const syncGlobalBadges = () => {
+        const mounted = getActiveGlobalWorldSet();
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const right = row.querySelector('.wbo-s2-right');
+                if (!(right instanceof HTMLElement)) return;
+                const badge = right.querySelector('[data-wbo-global-badge]');
+                const wanted = mounted.has(getDropdownOptionWorldName(row));
+                if (wanted && !badge) {
+                    const el = document.createElement('span');
+                    el.className = 'wbo-s2-badge is-global';
+                    el.setAttribute('data-wbo-ui', '1');
+                    el.setAttribute('data-wbo-global-badge', '1');
+                    el.textContent = '已全局';
+                    const editing = right.querySelector('[data-wbo-editing-badge]');
+                    if (editing) editing.after(el); else right.prepend(el);
+                } else if (!wanted && badge) {
+                    badge.remove();
+                }
+            });
+    };
+
+    /**
      * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
@@ -4751,11 +4795,16 @@ function enhanceOpenEditorDropdown() {
                 li.classList.toggle('wbo-dd-collapsed', !searching && Boolean(_latestSettings.dropdownCollapsed[gid]));
             } else {
                 // The globals block stays visible above whatever group the user opened,
-                // but it starts folded there instead of eating the whole list.
+                // but it starts folded there instead of eating the whole list — unless the
+                // user opened the globals group itself, which must open expanded and stay
+                // clickable (2026-11-28 feedback).
+                const globalsIsActivePill = activePillGroupId === EDITOR_GLOBALS_GROUP_ID;
                 const hiddenByPill = isGroupIsolated && gid !== activePillGroupId && gid !== EDITOR_GLOBALS_GROUP_ID;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const forceFold = gid === EDITOR_GLOBALS_GROUP_ID && isGroupIsolated;
-                const isCollapsed = !searching && (forceFold || isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId));
+                const forceFold = gid === EDITOR_GLOBALS_GROUP_ID && isGroupIsolated && !globalsIsActivePill;
+                // Folded by default inside another group's pill, but the head click expands it.
+                const foldedGlobalsInGroupView = forceFold && !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID);
+                const isCollapsed = !searching && (foldedGlobalsInGroupView || isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId));
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
@@ -4793,6 +4842,7 @@ function enhanceOpenEditorDropdown() {
         }
         // Every mirror block owns its books: park the duplicated real rows (U1).
         syncEditorDupeRows(currentRow);
+        syncGlobalBadges();
         layoutEditorSearchMatches();
         // Mirror rows never carry the 当前编辑 badge.
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
@@ -4830,8 +4880,20 @@ function enhanceOpenEditorDropdown() {
         if (head.classList.contains('is-isolated')) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
-        const isolated = !isSearching() && activePillGroupId === gid && gid !== SPECIAL_GROUPS.PINNED && gid !== SPECIAL_GROUPS.ALL;
-        toggleDropdownGroupCollapsed(gid, isolated);
+        // Inside another group's pill the globals block starts folded; a click on its head must
+        // still expand it, so that view keeps its own override instead of forcing it shut.
+        const globalsInGroupView = !isSearching()
+            && gid === EDITOR_GLOBALS_GROUP_ID
+            && activePillGroupId !== SPECIAL_GROUPS.ALL
+            && activePillGroupId !== SPECIAL_GROUPS.PINNED
+            && activePillGroupId !== EDITOR_GLOBALS_GROUP_ID;
+        if (globalsInGroupView) {
+            if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+            else _isolatedFoldOverride.add(gid);
+        } else {
+            const isolated = !isSearching() && activePillGroupId === gid && gid !== SPECIAL_GROUPS.PINNED && gid !== SPECIAL_GROUPS.ALL;
+            toggleDropdownGroupCollapsed(gid, isolated);
+        }
         decorateGroupItems();
     };
     const onResultsClick = (ev) => {
