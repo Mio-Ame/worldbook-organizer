@@ -1,3 +1,10 @@
+### 搜索空白=滚动位置；抽屉守卫；界面交互日志（2026-11-28 · v2.35.64）
+- v2.35.63 的诊断 trace：`enh-show:hits=2,hitH=74`、`hostH` 从 6355 缩到 1718 —— 说明命中行确实生成且可见，列表也只剩命中行。用户仍看到空白，指向**滚动位置**：列表保留了搜索前的 scrollTop，2 条结果在顶部、视口停在下方。
+- 修复（`src/native-filter.js`）：应用到搜索结果后把滚动宿主 `scrollTop` 归零，并对首条命中的行做一次 `scrollIntoView({ block: 'nearest' })`。
+- 抽屉被关（用户判断非原生，稳定复现且只在第一次）：全局下拉打开期间监听 `#WorldInfo` 的 class 变化；若「指针确实落在抽屉内部」且抽屉刚被收起，则恢复一次（每次打开最多一次），并在 trace 里记 `drawer:kept-open`。下拉关闭时移除监听。
+- 诊断再升级：新增 `_diag.ui`（最近 30 条界面交互），记录 `pointerdown` / `keydown` 的**脱敏**描述——`tag#id.class`、`role=`、是否 `inDrawer`、书名的 6 位哈希；绝不记录书名/角色名正文。详细 JSON 增加 `ui` 字段。
+- 验证：单测 245/245（`describeDiagTarget` 对 mock DOM 做防御，日志不得影响 UI）；`native-picker-window` + `native-editor-titles` 48/48。
+
 ### 搜索块排版 / 空态 / data-index 反查（2026-11-28 · v2.35.63）
 - 用户反馈（v2.35.62，`renderPath=enhanced-script`）：命中结果里「搜索匹配到的世界书」跑到书名旁边、被压成竖排并带蓝色阴影；每个命中之间出现大段空白；无命中时整条仍是空白。
 - 原因：宿主行是 flex 布局，我们的 `::before` 被当成并排的 flex item；另外只隐藏了 `.gr-option`，没隐藏「不含命中的整个分组」，分组空体留下了大段高度。

@@ -1117,7 +1117,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.63';
+export const PLUGIN_VERSION = '2.35.64';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1130,11 +1130,59 @@ const _diag = {
     errors: [],
     /** Rare, short breadcrumbs of the render pipeline (never user text). @type {string[]} */
     trace: [],
+    /** Last UI interactions, sanitized to tag/id/class/role plus a short hash. @type {string[]} */
+    ui: [],
     foreignRowsUpgraded: 0,
     lastRenderPath: '',
     searchLayoutRuns: 0,
     decorateRuns: 0,
 };
+
+/**
+ * Short stable hash so a diagnostic can correlate elements without exposing names.
+ * @param {string} text
+ * @returns {string}
+ */
+function hashDiagLabel(text) {
+    let h = 5381;
+    for (const ch of String(text || '')) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+    return h.toString(16).padStart(8, '0').slice(0, 6);
+}
+
+/**
+ * Describe an element for the UI log without leaking any book / character name.
+ * @param {Element | null} el
+ * @returns {string}
+ */
+function describeDiagTarget(el) {
+    if (!(el instanceof Element)) return 'unknown';
+    try {
+        const tag = el.tagName.toLowerCase();
+        const id = el.id ? `#${el.id}` : '';
+        let classes = '';
+        try {
+            classes = [...Array.from(el.classList || [])].slice(0, 3).map((cls) => `.${cls}`).join('');
+        } catch { /* mock DOM without iterable classList */ }
+        const world = el.closest?.('[data-wbo-world]')?.getAttribute('data-wbo-world');
+        const role = el.closest?.('[data-wbo-popover-role]')?.getAttribute('data-wbo-popover-role');
+        const insideDrawer = el.closest?.('#WorldInfo') ? ' inDrawer' : '';
+        return `${tag}${id}${classes}${world ? ` w=${hashDiagLabel(world)}` : ''}${role ? ` role=${role}` : ''}${insideDrawer}`;
+    } catch {
+        return 'element';
+    }
+}
+
+/**
+ * Record one UI interaction (sanitized) for the detailed diagnostic.
+ * @param {string} kind
+ * @param {Element | null} target
+ */
+function pushDiagUi(kind, target) {
+    try {
+        _diag.ui.push(`${kind}:${describeDiagTarget(target)}`);
+        if (_diag.ui.length > 30) _diag.ui.shift();
+    } catch { /* logging must never break the UI */ }
+}
 
 /**
  * Record one breadcrumb for the detailed diagnostic (label only, never user text).
@@ -1301,6 +1349,7 @@ function buildDiagnosticReport(mode = 'short') {
             },
             actions,
             errors,
+            ui: _diag.ui,
             dom: diagDomSnapshot(),
             trace: _diag.trace,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
@@ -6301,7 +6350,35 @@ function enhanceOpenGlobalDropdown() {
     renderBar();
     refreshResults();
 
+    // While this dropdown is open, a click inside the drawer (创建/删除/其它控件) makes the host's
+    // unpinned-drawer closer fire and the whole drawer disappears — the first time only. Put the
+    // drawer back once, and only for clicks that landed inside the drawer itself.
+    const wiDrawer = document.getElementById('WorldInfo');
+    let pointerInsideDrawer = false;
+    let drawerKeptOpen = false;
+    const onDocPointerForDrawer = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        pointerInsideDrawer = Boolean(target && wiDrawer && wiDrawer.contains(target));
+    };
+    let drawerGuard = null;
+    if (wiDrawer) {
+        document.addEventListener('pointerdown', onDocPointerForDrawer, true);
+        drawerGuard = new MutationObserver(() => {
+            if (drawerKeptOpen || !pointerInsideDrawer) return;
+            const closed = wiDrawer.classList.contains('closedDrawer')
+                || !wiDrawer.classList.contains('openDrawer');
+            if (!closed) return;
+            drawerKeptOpen = true;
+            wiDrawer.classList.add('openDrawer');
+            wiDrawer.classList.remove('closedDrawer');
+            pushDiagTrace('drawer:kept-open');
+        });
+        drawerGuard.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
+    }
+
     _openGlobalDropdownCleanup = () => {
+        drawerGuard?.disconnect();
+        document.removeEventListener('pointerdown', onDocPointerForDrawer, true);
         observer.disconnect();
         unbindPin();
         if (mountSyncFrame !== null) cancelAnimationFrame(mountSyncFrame);
@@ -7471,6 +7548,15 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (sig === _lastEnhancedSearchSig && domIntact) return;
         clearEnhancedSearchBlock();
         _lastEnhancedSearchSig = sig;
+        // The list keeps the pre-search scroll position, so a couple of hits at the top look like
+        // an empty panel. Bring the first hit back into view.
+        const scrollHost = getScrollHost();
+        if (scrollHost && scrollHost.scrollTop > 0) {
+            scrollHost.scrollTop = 0;
+        }
+        requestAnimationFrame(() => {
+            rows[0]?.scrollIntoView?.({ block: 'nearest' });
+        });
         // Show the hits even if the host script decided to hide them itself (it can lose track of
         // rows once we swap in the display title).
         for (const row of rows) {
@@ -7797,6 +7883,11 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     // through the settings panel (both never emit a book, character or group name).
     if (typeof globalThis.window !== 'undefined') {
         globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
+        // Sanitized UI log: enough to replay a broken interaction, no names.
+        const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
+        const logKey = (event) => pushDiagUi(`key:${String(event.key || '').slice(0, 8)}`, event.target instanceof Element ? event.target : null);
+        document.addEventListener('pointerdown', logDown, true);
+        document.addEventListener('keydown', logKey, true);
         globalThis.window.addEventListener?.('error', (event) => {
             const message = String(event?.message || event?.error?.message || 'error');
             _diag.errors.push(sanitizeDiagText(message));
