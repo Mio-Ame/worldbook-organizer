@@ -1005,6 +1005,28 @@ test('character bind worldbook keeps the native select and only groups its optio
         await waitForCondition(cdp, () => document.querySelector('#fixture-char-world .character_world_info_selector')?.dataset.wboSingleGrouped === '1');
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('#fixture-char-world .character_world_info_selector optgroup[data-wbo-group]').length > 0), true);
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.wbo-mp-popover'))), false);
+        // v2.35.45: the dropdown gets the same group pills as the ordinary picker (U2).
+        await cdp.evalFn(() => {
+            jQuery(document.querySelector('#fixture-char-world .character_world_info_selector')).select2('open');
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-bind-dd-bar .wbo-dd-pill')));
+        const pills = await cdp.evalFn(() => [...document.querySelectorAll('.wbo-bind-dd-bar .wbo-dd-pill')]
+            .map((pill) => pill.textContent.trim()));
+        assert.deepEqual(pills, ['全部', '测试分组甲', '测试分组乙']);
+        const visibleTitles = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options li[data-wbo-world], .select2-dropdown .select2-results__options .wbo-s2-item')]
+            .map((item) => item.closest('li'))
+            .filter((row, index, all) => row && row.getBoundingClientRect().height > 0 && all.indexOf(row) === index)
+            .map((row) => row.querySelector('.wbo-s2-title')?.textContent || ''));
+        await cdp.evalFn(() => {
+            [...document.querySelectorAll('.wbo-bind-dd-bar .wbo-dd-pill')]
+                .find((pill) => pill.textContent.trim() === '测试分组甲')?.click();
+        });
+        await waitForCondition(cdp, () => [...document.querySelectorAll('.select2-dropdown .select2-results__options > li')]
+            .filter((row) => row.getBoundingClientRect().height > 0).length <= 2);
+        assert.ok((await visibleTitles()).includes('收藏测试书'));
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options li')]
+            .filter((row) => row.getBoundingClientRect().height > 0)
+            .some((row) => (row.textContent || '').includes('普通测试书'))), false);
     });
 });
 test('editor dropdown pins the current chat character book above every group', async () => {

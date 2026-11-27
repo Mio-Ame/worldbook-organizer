@@ -3047,6 +3047,17 @@ li.wbo-dd-group-hidden,
     display: none !important;
 }
 
+/* Group pills above the bind-popup's primary worldbook list (U2). */
+.wbo-bind-dd-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.24));
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
 /* A book already listed inside a globals/favorites block must not repeat as a bare row. */
 li.wbo-dd-dupe-hidden {
     display: none !important;

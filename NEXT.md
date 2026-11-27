@@ -1,3 +1,9 @@
+### 绑定主世界书的分组胶囊与 U6 复核（2026-11-28 · v2.35.45）
+- U2：`enhanceDesktopSingleWorldSelect2` 现在给绑定弹窗的主世界书下拉挂分组胶囊——`attachBindWorldGroupPills()` 在 `select2:open` 时按 `optgroup[data-wbo-group]` 生成「全部 + 各分组」胶囊，点胶囊只显示对应 optgroup（裸行只在「全部」显示），下拉结果被 Select2 重渲染后自动重套过滤（MutationObserver），关闭下拉即拆除。
+- U6 复核：新增用例「绑定的角色书被手动移到自定义分组后，普通下拉仍显示角色名」——通过（书被置顶为「当前角色」裸行，标题取 `primaryTitle`）。结论：U6 早在 v2.35.33 的 `data-wboRealName` 取值修复里一并解决，交接文档该条可关闭。
+- 验证：单测 245/245；`native-picker-window` 34/34、`native-extras-cleanup` 2/2、`character-binding` 1/1（合计 37/37）。
+- 边界：胶囊只在桌面原生 Select2 的绑定弹窗里出现（移动端走插件分组控件，本身已有分组）；胶囊过滤不写设置，重新打开回到「全部」。
+
 ### 全局下拉跨分组搜索与搜索徽章去重（2026-11-28 · v2.35.44）
 - 用户反馈：①全局下拉在「剧情」pill 下搜「文风」的书仍然搜不到（只有「全部」能搜到）；②普通下拉搜索命中 1～2 本时，每切一次分组就多叠一个分组徽章，还可能显示成别的书的徽章。
 - 原因与改动（`src/native-filter.js`）：

@@ -48,6 +48,26 @@ test('desktop ordinary Select2: character group uses the requested name', async 
     });
 });
 
+test('desktop ordinary Select2: bound book moved to a custom group keeps the role name', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ groups: [{ id: 'custom-a', name: '自定义组甲' }], assignments: { [realName]: 'custom-a' } }), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill')));
+        const result = await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return {
+                visible: !!row?.getBoundingClientRect().height,
+                title: row?.querySelector('.wbo-s2-title')?.textContent,
+                // Bound books are hoisted to the untitled top row, so they carry no group head.
+                currentChar: row?.closest('li')?.classList.contains('wbo-dd-current-char'),
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.visible, true);
+        assert.equal(result.title, charName);
+        assert.equal(result.currentChar, true);
+    });
+});
+
 test('mobile grouped ordinary picker: character group uses the requested name', async t => {
     await withHost(VIEWPORTS.mobile, seed(), async cdp => {
         await cdp.clickSelector('#wbo-mobile-editor-trigger');

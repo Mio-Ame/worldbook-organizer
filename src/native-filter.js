@@ -4153,6 +4153,95 @@ function renderSingleWorldSelection(state) {
 }
 
 /**
+ * Give the bind-popup primary worldbook dropdown the same group pills as the ordinary picker:
+ * the optgroups already carry `data-wbo-group`, so a pill simply shows one of them (U2).
+ * @param {HTMLSelectElement} selectEl
+ */
+function attachBindWorldGroupPills(selectEl) {
+    const $jq = globalThis.jQuery;
+    if (!$jq || !(selectEl instanceof HTMLSelectElement)) return;
+    if (selectEl.dataset.wboBindPills === '1') return;
+    selectEl.dataset.wboBindPills = '1';
+
+    let detachCurrent = null;
+    const onOpen = () => {
+        detachCurrent?.();
+        detachCurrent = null;
+        const inst = $jq(selectEl).data('select2');
+        const dropdownEl = inst?.$dropdown?.[0];
+        if (!(dropdownEl instanceof HTMLElement)) return;
+        const results = dropdownEl.querySelector('.select2-results__options');
+        if (!(results instanceof HTMLElement) || !results.parentElement) return;
+        const groups = [...selectEl.querySelectorAll('optgroup[data-wbo-group]')].map((og) => ({
+            id: og.getAttribute('data-wbo-group'),
+            label: (og.label || '').replace(/\s*\(\d+\)\s*$/, '').trim() || og.label || '',
+            rawLabel: og.label || '',
+        }));
+        if (groups.length === 0) return;
+
+        let activeId = SPECIAL_GROUPS.ALL;
+        const built = createDropdownFilterBar(
+            // 全部 is rendered by the shared filter bar itself.
+            groups.map((group) => ({ id: group.id, label: group.label })),
+            activeId,
+        );
+        const barEl = built.barEl;
+        barEl.classList.add('wbo-bind-dd-bar');
+        const byLabel = new Map();
+        for (const group of groups) {
+            byLabel.set(group.rawLabel, group.id);
+            byLabel.set(group.label, group.id);
+        }
+        const applyFilter = () => {
+            results.querySelectorAll(':scope > li').forEach((li) => {
+                if (!(li instanceof HTMLElement)) return;
+                if (li.classList.contains('select2-results__option--group')) {
+                    const label = li.getAttribute('aria-label')
+                        || li.querySelector('.select2-results__group')?.textContent?.trim()
+                        || '';
+                    const gid = byLabel.get(label) || byLabel.get(label.replace(/\s*\(\d+\)\s*$/, '').trim());
+                    li.style.display = activeId === SPECIAL_GROUPS.ALL || gid === activeId ? '' : 'none';
+                    return;
+                }
+                if (li.classList.contains('select2-results__message')) return;
+                // Bare (ungrouped) rows only belong to 全部.
+                li.style.display = activeId === SPECIAL_GROUPS.ALL ? '' : 'none';
+            });
+        };
+        barEl.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        });
+        barEl.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            activeId = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+            barEl.querySelectorAll('.wbo-dd-pill').forEach((pill) => {
+                pill.classList.toggle('is-active', pill.getAttribute('data-wbo-pill') === activeId);
+            });
+            applyFilter();
+        });
+        results.parentElement.insertBefore(barEl, results);
+        const observer = new MutationObserver(applyFilter);
+        observer.observe(results, { childList: true });
+        applyFilter();
+        detachCurrent = () => {
+            observer.disconnect();
+            barEl.remove();
+            detachCurrent = null;
+        };
+    };
+    $jq(selectEl)
+        .off('select2:open.wboBindPills select2:close.wboBindPills')
+        .on('select2:open.wboBindPills', onOpen)
+        .on('select2:close.wboBindPills', () => {
+            detachCurrent?.();
+        });
+}
+
+/**
  * Give a desktop single worldbook select the same in-place experience as the extras select:
  * searchable, grouped optgroups, friendly titles, and a dropdown anchored under the select.
  * @param {HTMLSelectElement} selectEl
@@ -4164,6 +4253,7 @@ function enhanceDesktopSingleWorldSelect2(selectEl, currentAvatar, hostEl) {
     if (!$jq || !(selectEl instanceof HTMLSelectElement)) return;
     if (selectEl.dataset.wboSingleEnhanced === '1') {
         groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+        attachBindWorldGroupPills(selectEl);
         return;
     }
     const config = {
@@ -4179,6 +4269,7 @@ function enhanceDesktopSingleWorldSelect2(selectEl, currentAvatar, hostEl) {
         $jq(selectEl).select2({ ...config, placeholder: '--- 无主世界书 ---', allowClear: true });
     }
     groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+    attachBindWorldGroupPills(selectEl);
     selectEl.dataset.wboSingleEnhanced = '1';
 }
 
