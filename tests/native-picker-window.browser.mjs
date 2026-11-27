@@ -1561,10 +1561,12 @@ test('editor dropdown expands the globals block when its pill or its head is use
 test('a disabled dropdown script leaves no stale styles or shells behind', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
         const result = await cdp.evalFn(async () => {
+            const mod = await import('/scripts/extensions/third-party/worldbook-organizer/src/native-filter.js');
             const marker = document.createElement('style');
             marker.dataset.grDropdownStyle = '1';
             marker.textContent = '.wbo-gr-world-title > small { display: block !important; }';
             document.head.append(marker);
+            // Another copy of the script may still be alive: never touch foreign DOM then.
             const shell = document.createElement('div');
             shell.className = 'gr-container-enhanced';
             document.body.append(shell);
@@ -1572,16 +1574,28 @@ test('a disabled dropdown script leaves no stale styles or shells behind', async
                 getScriptTrees: () => [{ type: 'script', enabled: false,
                     content: 'gr-global-dropdown-container gr-select2-display data-gr-dropdown-style' }],
             };
-            const mod = await import('/scripts/extensions/third-party/worldbook-organizer/src/native-filter.js');
+            const guarded = mod.cleanupStaleEnhancedArtifacts();
+            const shellLeftWhileLive = Boolean(document.querySelector('.gr-container-enhanced'));
+            const styleLeftWhileLive = Boolean(document.querySelector('style[data-gr-dropdown-style]'));
+            shell.remove();
             const cleaned = mod.cleanupStaleEnhancedArtifacts();
             return {
+                guarded,
+                shellLeftWhileLive,
+                styleLeftWhileLive,
                 cleaned,
                 styleLeft: Boolean(document.querySelector('style[data-gr-dropdown-style]')),
-                shellLeft: Boolean(document.querySelector('.gr-container-enhanced')),
                 scriptActive: mod.isEnhancedScriptActive(),
             };
         });
-        assert.deepEqual(result, { cleaned: true, styleLeft: false, shellLeft: false, scriptActive: false });
+        assert.deepEqual(result, {
+            guarded: false,
+            shellLeftWhileLive: true,
+            styleLeftWhileLive: true,
+            cleaned: true,
+            styleLeft: false,
+            scriptActive: false,
+        });
     });
 });
 
@@ -1676,11 +1690,14 @@ test('enhanced dropdown groups search hits under one 搜索匹配到的世界书
             return { total: rows.length, kept: rows.filter(keep).length };
         });
         assert.equal(search.kept, 3);
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-head')));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-head]')));
         const grouped = await cdp.evalFn(() => {
             const pop = document.querySelector('#gr-global-dropdown-container');
+            const headRow = pop.querySelector('[data-wbo-search-head]');
             return {
-                head: pop.querySelector('.wbo-enhanced-search-head')?.textContent?.trim(),
+                head: headRow?.getAttribute('data-wbo-search-head'),
+                sameRowHasHits: headRow ? headRow.getBoundingClientRect().height > 0 : false,
+                extraNodes: pop.querySelectorAll('.wbo-enhanced-search-head').length,
                 visibleRows: [...pop.querySelectorAll('.gr-option')]
                     .filter((row) => row.getBoundingClientRect().height > 0)
                     .map((row) => (row.textContent || '').trim()),
@@ -1690,6 +1707,8 @@ test('enhanced dropdown groups search hits under one 搜索匹配到的世界书
         });
         t.diagnostic(JSON.stringify(grouped));
         assert.match(grouped.head, /搜索匹配到的世界书 \(3\)/);
+        assert.equal(grouped.sameRowHasHits, true);
+        assert.equal(grouped.extraNodes, 0);
         assert.equal(grouped.groupHeadsHidden, true);
         // A single hit switches to a row badge instead of the head.
         await cdp.evalFn(() => {
@@ -1702,7 +1721,7 @@ test('enhanced dropdown groups search hits under one 搜索匹配到的世界书
             input.dispatchEvent(new Event('input', { bubbles: true }));
         });
         await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]')));
-        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-head'))), false);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-head]'))), false);
         // Clearing the search restores the group heads.
         await cdp.evalFn(() => {
             const pop = document.querySelector('#gr-global-dropdown-container');

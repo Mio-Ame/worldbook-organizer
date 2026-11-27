@@ -417,13 +417,14 @@ function compatScriptEnabledState() {
 export function cleanupStaleEnhancedArtifacts() {
     if (typeof document === 'undefined') return false;
     if (compatScriptEnabledState() !== 'disabled') return false;
+    // Foreign DOM is never touched: a second copy of the script may still be running, and
+    // deleting its trigger broke the global worldbook drawer.
+    if (document.querySelector('.gr-select2-display, .gr-container-enhanced, #gr-global-dropdown-container')) return false;
     let cleaned = false;
-    for (const selector of ['style[data-gr-dropdown-style]', '#gr-global-dropdown-container', '.gr-container-enhanced', '.gr-select2-display']) {
-        document.querySelectorAll(selector).forEach((el) => {
-            el.remove();
-            cleaned = true;
-        });
-    }
+    document.querySelectorAll('style[data-gr-dropdown-style]').forEach((el) => {
+        el.remove();
+        cleaned = true;
+    });
     return cleaned;
 }
 
@@ -1073,7 +1074,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.56';
+export const PLUGIN_VERSION = '2.35.57';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7197,6 +7198,15 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }
         syncSpecialSections({ searching, isPinFilter, isIsolated });
+        // Rows the host script (re)created after our pass have no title markup yet: fill them in,
+        // otherwise that book keeps showing its plain file name.
+        if (!isGlobalPopover) {
+            for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+                if (!(row instanceof HTMLElement) || row.querySelector('.wbo-gr-world-title')) continue;
+                const meta = resolveEnhancedRowMeta(row);
+                if (meta) syncEnhancedWorldOptionTitle(row, meta);
+            }
+        }
         syncEnhancedSearchBlock(searching);
     };
 
@@ -7213,6 +7223,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         optionsHost.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin.is-enhanced-search').forEach((el) => el.remove());
         optionsHost.querySelectorAll('[data-wbo-enhanced-search-origin]').forEach((el) => {
             el.removeAttribute('data-wbo-enhanced-search-origin');
+        });
+        // The head is drawn by CSS on the first hit (`::before`), so there is no node to remove —
+        // only the marker attribute.
+        optionsHost.querySelectorAll('[data-wbo-search-head]').forEach((el) => {
+            el.removeAttribute('data-wbo-search-head');
         });
         containerEl.classList.remove('wbo-enhanced-searching');
         _lastEnhancedSearchSig = '';
@@ -7246,16 +7261,20 @@ function enhanceCustomDropdownPopover(containerEl) {
             return;
         }
         const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
-        const head = optionsHost.querySelector('.wbo-enhanced-search-head');
+        const headRow = optionsHost.querySelector('[data-wbo-search-head]');
         const domIntact = rows.length <= 1
             ? Boolean(optionsHost.querySelector('.wbo-s2-badge.is-search-match'))
-            : Boolean(head);
+            : Boolean(headRow && rows.includes(headRow));
         if (sig === _lastEnhancedSearchSig && domIntact) return;
         clearEnhancedSearchBlock();
         _lastEnhancedSearchSig = sig;
-        if (rows.length === 0) return;
-        // Hide the group heads through a container class (CSS), because the host script may
-        // rebuild the section nodes at any time and inline styles would be lost.
+        // Show the hits even if the host script decided to hide them itself (it can lose track of
+        // rows once we swap in the display title).
+        for (const row of rows) {
+            if (row.style.display === 'none') row.style.removeProperty('display');
+            if (row.hidden) row.hidden = false;
+            row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
+        }
         containerEl.classList.toggle('wbo-enhanced-searching', true);
         const originOf = (row) => _latestClassification?.byName?.get(getOptionText(row))?.groupName || '未分组';
         if (rows.length === 1) {
@@ -7282,13 +7301,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             origin.textContent = originOf(row);
             right.prepend(origin);
         }
-        const headEl = document.createElement('div');
-        headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head wbo-enhanced-search-head is-isolated`;
-        headEl.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
-        headEl.textContent = `搜索匹配到的世界书 (${rows.length})`;
-        // Section level, above the (head-less) sections: keeps the host script's row layout and
-        // its height calculation intact.
-        optionsHost.insertBefore(headEl, optionsHost.firstChild);
+        // No extra node: the block title is a CSS ::before on the first hit, so the host script's
+        // layout and height calculations stay untouched.
+        rows[0].setAttribute('data-wbo-search-head', `搜索匹配到的世界书 (${rows.length})`);
     };
 
     const popoverScrollHost = getScrollHost();
