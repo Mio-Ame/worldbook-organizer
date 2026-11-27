@@ -1,3 +1,10 @@
+### iOS 当前角色书置顶与标签（2026-11-28 · v2.35.30）
+- 用户反馈：iOS TauriTavern 进入其他分组后，当前角色世界书不再置顶；建议加「当前角色」标签。
+- 改动：移动选书面板新增 getMobileCurrentCharBooks() 与 pinCurrentCharRows()：在「全部」、具体分组、「已收藏」、「全局世界书」各视图渲染后，把当前聊天角色的书作为无标题行插到列表最前，并从原分组/收藏组/全局组中去重移除；enderMpRowHtml 对 __currentChar 行加 当前角色 徽章（.wbo-s2-badge.is-current-char）。leader 使用 wbo-mp-bare-sec 类，保持单测里「当前角色书在最上、无分组头」的约定。
+- 验证：单测 245/245；
+ative-mobile-picker-lifecycle 22/22、
+ative-picker-window 24/24。
+- 仍未完成：iOS 增强浮层（syncSections）路径的置顶/搜索归组/全局块；桌面「已收藏」pill 搜索归组现场复核；美化脚本共存。
 # `worldbook-organizer` 精修交接说明（v2.35.16）
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）

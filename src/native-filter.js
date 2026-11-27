@@ -2277,12 +2277,47 @@ function openMobileEditorPickerSheet() {
                 <div class="wbo-mp-row-actions">
                     ${b.__searchMatch ? '<span class="wbo-s2-badge is-search-match">搜索匹配到的世界书</span>' : ''}
                     ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">原属：${escHtml(b.__origin)}</span>` : ''}
+                    ${b.__currentChar ? '<span class="wbo-s2-badge is-current-char">当前角色</span>' : ''}
                     ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                     <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消收藏' : '收藏世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
                 </div>
             </div>
         `;
+    };
+
+    
+    // The chat character's own books stay pinned above every pill, like the desktop picker.
+    const getMobileCurrentCharBooks = () => {
+        const avatar = getCurrentCharacterAvatar();
+        if (!avatar) return [];
+        const pool = [...bareBooks, ...sections.flatMap((sec) => sec.books)];
+        const out = [];
+        const seen = new Set();
+        for (const meta of _latestClassification?.byName?.values?.() || []) {
+            if (!meta?.charOwners?.some((owner) => owner.avatar === avatar)) continue;
+            if (seen.has(meta.realName)) continue;
+            seen.add(meta.realName);
+            const found = pool.find((book) => book.realName === meta.realName);
+            out.push({ ...(found || { realName: meta.realName, primaryTitle: meta.primaryTitle, subtitle: "", isPinned: false }), __currentChar: true });
+        }
+        return out;
+    };
+
+    const pinCurrentCharRows = () => {
+        if (!listEl) return;
+        const currentBooks = getMobileCurrentCharBooks();
+        if (currentBooks.length === 0) return;
+        const leader = document.createElement('div');
+        leader.className = 'wbo-mp-sec wbo-mp-bare-sec wbo-mp-current-char';
+        leader.innerHTML = `<div class="wbo-mp-sec-body">${currentBooks.map(renderMpRowHtml).join('')}</div>`;
+        listEl.prepend(leader);
+        const names = new Set(currentBooks.map((book) => book.realName));
+        listEl.querySelectorAll('.wbo-mp-row').forEach((row) => {
+            if (leader.contains(row)) return;
+            const world = row.querySelector('[data-mp-world]')?.getAttribute('data-mp-world');
+            if (world && names.has(world)) row.remove();
+        });
     };
 
     const renderList = () => {
@@ -2335,6 +2370,7 @@ function openMobileEditorPickerSheet() {
             listEl.innerHTML = pinned.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${SPECIAL_GROUPS.PINNED}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">★ 已收藏</span><span class="wbo-group-count">${pinned.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${pinned.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无收藏世界书，点击行右侧 ☆ 可收藏</div>';
+            pinCurrentCharRows();
             return;
         }
         if (!q && activePillId === EDITOR_GLOBALS_GROUP_ID) {
@@ -2343,6 +2379,7 @@ function openMobileEditorPickerSheet() {
             listEl.innerHTML = globals.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">全局世界书</span><span class="wbo-group-count">${globals.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${globals.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无已开启的全局世界书</div>';
+            pinCurrentCharRows();
             return;
         }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
@@ -2382,6 +2419,7 @@ function openMobileEditorPickerSheet() {
 
         const html = `${bareHtml}${secHtml}`;
         listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
+        pinCurrentCharRows();
     };
 
     const selectOptionValue = (val) => {
