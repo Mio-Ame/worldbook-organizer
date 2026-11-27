@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.79';
+export const PLUGIN_VERSION = '2.35.80';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7305,35 +7305,49 @@ function enhanceCustomDropdownPopover(containerEl) {
     const favoriteOptionHomes = new WeakMap();
     const favoriteOptions = [];
     const mountedGlobalOptions = [];
-    if (!isGlobalPopover) {
-        for (const optEl of realOptionNodes) {
-            const name = getOptionText(optEl);
-            const meta = _latestClassification?.byName?.get(name);
-            const realName = meta?.realName || name;
-            if (editorActiveGlobals.has(realName)) mountedGlobalOptions.push(optEl);
+    /** Whether a book is currently active globally (the global dropdown itself is that list). */
+    const isActiveGlobalName = (realName) => {
+        if (editorActiveGlobals.has(realName)) return true;
+        const select = document.getElementById('world_info');
+        if (!select) return false;
+        const option = [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+        return Boolean(option?.selected);
+    };
+    // The 「已开启的全局世界书」 block applies to BOTH dropdowns: native SillyTavern pins those books
+    // to the top of the list, and the scripted dropdown has to do the same.
+    for (const optEl of realOptionNodes) {
+        const name = getOptionText(optEl);
+        const meta = _latestClassification?.byName?.get(name);
+        const realName = meta?.realName || name;
+        if (isActiveGlobalName(realName)) mountedGlobalOptions.push(optEl);
+        if (!isGlobalPopover) {
             // A book that is both favorited and mounted lives in the globals area only.
-            if (meta?.isPinned && !editorActiveGlobals.has(realName)) {
+            if (meta?.isPinned && !isActiveGlobalName(realName)) {
                 favoriteOptions.push(optEl);
                 favoriteOptionHomes.set(optEl, optEl.closest('.wbo-pop-section')?.querySelector('.wbo-pop-group-body') || optionsHost);
             }
         }
-        if (mountedGlobalOptions.length >= 1) {
-            globalsSectionEl = document.createElement('div');
-            globalsSectionEl.className = 'wbo-pop-section';
-            globalsSectionEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
-            const headEl = document.createElement('div');
-            headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
-            headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
-            headEl.textContent = `已开启的全局世界书 (${mountedGlobalOptions.length})`;
-            headEl.title = '点击展开或折叠该分组';
-            const bodyEl = document.createElement('div');
-            bodyEl.className = 'wbo-pop-group-body';
-            for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
-            globalsSectionEl.append(headEl, bodyEl);
-            // Above every other section, and above the favorites one.
-            optionsHost.insertBefore(globalsSectionEl, optionsHost.firstChild);
-        }
-        if (favoriteOptions.length > 0) {
+    }
+    if (mountedGlobalOptions.length >= 1) {
+        globalsSectionEl = document.createElement('div');
+        globalsSectionEl.className = 'wbo-pop-section';
+        globalsSectionEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        const headEl = document.createElement('div');
+        headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+        headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        headEl.textContent = `已开启的全局世界书 (${mountedGlobalOptions.length})`;
+        headEl.title = '点击展开或折叠该分组';
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'wbo-pop-group-body';
+        for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
+        globalsSectionEl.append(headEl, bodyEl);
+        // Above every other section, and above the favorites one.
+        optionsHost.insertBefore(globalsSectionEl, optionsHost.firstChild);
+        pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`);
+    } else {
+        pushDiagTrace(`enh-globals:block=0,count=0,role=${isGlobalPopover ? 'global' : 'editor'}`);
+    }
+    if (!isGlobalPopover && favoriteOptions.length > 0) {
             favoritesSectionEl = document.createElement('div');
             favoritesSectionEl.className = 'wbo-pop-section';
             favoritesSectionEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
@@ -7355,7 +7369,6 @@ function enhanceCustomDropdownPopover(containerEl) {
                     right.prepend(origin);
                 }
             }
-        }
     }
 
     /**
@@ -7363,7 +7376,6 @@ function enhanceCustomDropdownPopover(containerEl) {
      * @param {{ searching: boolean, isPinFilter: boolean, isIsolated: boolean }} flags
      */
     const syncSpecialSections = ({ searching, isPinFilter, isIsolated }) => {
-        if (isGlobalPopover) return;
         for (const sectionEl of [globalsSectionEl, favoritesSectionEl]) {
             if (!sectionEl) continue;
             const gid = sectionEl.getAttribute('data-wbo-dd-group') || '';
@@ -7391,7 +7403,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
         // The favorites pill is one flat list (origin shown as a badge), so its per-group
         // sections and the globals block stay hidden while it is active.
-        if (isPinFilter) {
+        if (isPinFilter && !isGlobalPopover) {
             for (const secEl of sectionEls) secEl.classList.add('wbo-dd-group-hidden');
             globalsSectionEl?.classList.add('wbo-dd-group-hidden');
             if (favoritesSectionEl) {

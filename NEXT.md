@@ -1,3 +1,13 @@
+### 全局下拉也有「已开启的全局世界书」置顶块（2026-11-28 · v2.35.80）
+- 用户（TauriTavern / iOS）：全局下拉里既没有「已开启的全局世界书」分组，全局书也没有被顶到最上面；并提示可能与美化脚本自身的「置顶」功能冲突。
+- 真正原因：这段置顶块的代码整体被包在 `if (!isGlobalPopover)` 里——**只对编辑器下拉生效**，全局下拉从来没建过这个块，与脚本的置顶无关。
+- 修复（`src/native-filter.js`）：
+  - 置顶块改为**两个下拉都建**：新增 `isActiveGlobalName()`，编辑器看 `editorActiveGlobals`、全局看 `#world_info` 中被选中的 option；命中行移入该块并插到列表最前面。
+  - `syncSpecialSections()` 不再对全局下拉整体早退（只跳过「已收藏」扁平列表那段），保证置顶块在全局下拉里也参与显示/折叠，且任何 pill 下都在最上方。
+  - 新增诊断面包屑 `enh-globals:block=0|1,count=N,role=global|editor`，下次报告可直接确认块有没有建、几本。
+- 测试更新：全局下拉用例改为断言「置顶块在最前 + 首行是全局书」；编辑器 pin 按钮用例选择器从 `> .gr-option` 改为后代选择器（行已移入分组容器内）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（其中一条并发下偶发超时，单独跑通过）。
+
 ### 全局下拉重开时优先使用保存的分组（2026-11-28 · v2.35.79）
 - 用户（TauriTavern / iOS）：关闭全局选择框再打开，又默认回到「已收藏」。
 - 诊断证据：每次重开 `ui` 里紧跟 `down:button.wbo-dd-pill.is-pinned-all`，即活动 pill 仍是「已收藏」；`trace` 显示搜索面板正常。

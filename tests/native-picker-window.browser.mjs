@@ -401,7 +401,7 @@ test('shared enhanced dropdown uses the actual opener, friendly role titles and 
         assert.deepEqual(theme.day, ['rgb(40, 57, 75)', 'rgb(40, 57, 75)', 'rgb(255, 255, 255)'], 'headers use the actual script surface, including its opaque parent background');
         assert.deepEqual(theme.night, theme.day, 'a host theme change must not override an unchanged script palette');
         const pin = '#gr-global-dropdown-container [data-pin-world="普通测试书"]';
-        assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .gr-options-container > .gr-option .wbo-gr-pin-btn')?.getAttribute('data-pin-world')), '全局测试书');
+        assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .gr-options-container .gr-option .wbo-gr-pin-btn')?.getAttribute('data-pin-world')), '全局测试书');
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelectorAll('.gr-option-pin').length, pin), 1);
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).textContent, pin), '☆');
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector).closest('.gr-option').querySelector('.gr-option-pin:not(.wbo-gr-pin-btn) svg path')?.getAttribute('d'), pin), 'M0 0H12V12Z');
@@ -777,11 +777,13 @@ test('mobile global dropdown handles direct option rows without native search', 
             .filter((row) => row.getBoundingClientRect().height > 0)
             .map((row) => row.querySelector('[data-pin-world]').getAttribute('data-pin-world')));
         assert.equal(await activePill(), '已收藏 1');
-        assert.deepEqual(await visible(), [favorite]);
+        // v2.35.80: mounted books sit in their own block above everything, like native ST.
+        assert.deepEqual(await visible(), [globalBook, favorite]);
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-pop-search').getAttribute('spellcheck')), 'false');
         await cdp.clickSelector(`${bar} [data-wbo-pill="__all__"]`);
-        assert.match(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-dd-group-head').textContent), /收藏/);
-        assert.equal((await visible())[0], favorite);
+        // The globals block stays on top in every pill, so the first head is the globals one.
+        assert.match(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-pop-section .wbo-dd-group-head').textContent), /已开启的全局世界书/);
+        assert.equal((await visible())[0], globalBook);
         await cdp.clickSelector(`${bar} [data-wbo-pill="g-b"]`);
         await cdp.typeInto(`${pop} .wbo-pop-search`, '普通');
         // v2.35.77: the global list also renders the plugin-owned panel instead of filtering rows.
