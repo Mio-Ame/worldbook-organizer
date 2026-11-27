@@ -131,6 +131,8 @@ function flushPinDirtyOnClose() {
  * @param {{ except?: 'global' | 'editor' | null }} [opts]
  */
 export function closeAllOpenWorldDropdowns({ except = null } = {}) {
+    // Our search panel floats above the popover, so it has to go with it.
+    document.querySelectorAll('.wbo-enhanced-search-panel').forEach((el) => el.remove());
     const $ = globalThis.jQuery;
     if ($ && except !== 'editor') {
         try {
@@ -416,6 +418,12 @@ function compatScriptEnabledState() {
  */
 export function cleanupStaleEnhancedArtifacts() {
     if (typeof document === 'undefined') return false;
+    // Legacy markers from earlier plugin versions can survive a soft update (no reload): they
+    // showed stale group badges / a leftover search head on rows that no longer match.
+    document.querySelectorAll('[data-wbo-search-head]').forEach((el) => el.removeAttribute('data-wbo-search-head'));
+    document.querySelectorAll('.wbo-enhanced-search-hidden').forEach((el) => el.classList.remove('wbo-enhanced-search-hidden'));
+    document.querySelectorAll('.wbo-enhanced-section-hidden').forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
+    document.querySelectorAll('.wbo-s2-badge.is-enhanced-search').forEach((el) => el.remove());
     if (compatScriptEnabledState() !== 'disabled') return false;
     // Foreign DOM is never touched: a second copy of the script may still be running, and
     // deleting its trigger broke the global worldbook drawer.
@@ -1247,7 +1255,16 @@ function detectDiagnosticEnv() {
     return {
         pluginVersion: PLUGIN_VERSION,
         host: isTauriTavern?.() ? 'TauriTavern' : 'SillyTavern',
-        stVersion: String(ctx?.version || ctx?.versionName || 'unknown'),
+        // SillyTavern often leaves `ctx.version` empty; fall back to the visible badge and DOM hints.
+        stVersion: String(
+            ctx?.version
+            || ctx?.versionName
+            || globalThis.SillyTavern?.version
+            || document.querySelector('#version_display, #versionDisplay')?.textContent?.trim()
+            || document.querySelector('.versionDisplay')?.textContent?.trim()
+            || 'unknown',
+        ),
+        tauriVersion: String(globalThis.__TAURITAVERN__?.version || globalThis.__TAURITAVERN_VERSION__ || ''),
         browser,
         os,
         viewport: `${width}×${height}@${globalThis.devicePixelRatio || 1}x`,
@@ -7421,94 +7438,212 @@ function enhanceCustomDropdownPopover(containerEl) {
     };
 
     /**
-     * Searching in the enhanced popover: draw our OWN result panel over the host list.
-     * The host script re-renders rows, pins heights and hides things at will, which defeated every
+     * Searching in the enhanced popover: draw our OWN result panel over the host list. The host
+     * script re-renders rows, pins heights and hides things at will, which defeated every
      * DOM-level attempt — owning the panel removes all of that from the equation.
-     * @type {HTMLElement | null}
+     * The panel is a per-container singleton, mounted on <body> (the popover clips and may
+     * create a containing block), and it only lists books that actually exist in the select.
      */
-    let enhancedSearchPanel = null;
+    /** @type {Array<{ target: EventTarget, event: string, handler: any, options?: any }>} */
+    const searchPanelListeners = [];
+    const listenPanel = (target, event, handler, options) => {
+        target.addEventListener(event, handler, options);
+        searchPanelListeners.push({ target, event, handler, options });
+    };
+    const getSearchPanel = () => {
+        const existing = containerEl._wboSearchPanel;
+        return existing instanceof HTMLElement && existing.isConnected ? existing : null;
+    };
     const removeEnhancedSearchPanel = () => {
-        enhancedSearchPanel?.remove();
-        enhancedSearchPanel = null;
+        const panel = containerEl._wboSearchPanel;
+        if (panel instanceof HTMLElement) {
+            unbindDrawerSafeBubbleGuard?.(panel);
+            panel.remove();
+        }
+        containerEl._wboSearchPanel = null;
+        containerEl._wboSearchPanelWatcher?.disconnect?.();
+        containerEl._wboSearchPanelWatcher = null;
+        for (const entry of searchPanelListeners.splice(0)) {
+            entry.target.removeEventListener(entry.event, entry.handler, entry.options);
+        }
     };
     const positionEnhancedSearchPanel = () => {
-        if (!(enhancedSearchPanel instanceof HTMLElement)) return;
+        const panel = getSearchPanel();
+        if (!panel) return;
         const rect = containerEl.getBoundingClientRect();
-        const viewportH = globalThis.innerHeight || 768;
-        enhancedSearchPanel.style.position = 'fixed';
-        enhancedSearchPanel.style.left = `${Math.max(4, rect.left + 4)}px`;
-        enhancedSearchPanel.style.width = `${Math.max(240, rect.width - 8)}px`;
-        enhancedSearchPanel.style.top = `${Math.max(4, rect.top + 44)}px`;
-        enhancedSearchPanel.style.maxHeight = `${Math.max(180, Math.min(rect.height - 52, viewportH * 0.7))}px`;
+        const viewportH = globalThis.visualViewport?.height || globalThis.innerHeight || 768;
+        const viewportTop = globalThis.visualViewport?.offsetTop || 0;
+        const searchRect = searchInput instanceof HTMLElement ? searchInput.getBoundingClientRect() : null;
+        const top = Math.max(viewportTop + 4, (searchRect?.bottom ?? rect.top + 44) + 2);
+        const available = Math.max(120, viewportTop + viewportH - top - 8);
+        panel.style.position = 'fixed';
+        panel.style.left = Math.max(4, rect.left + 4) + 'px';
+        panel.style.width = Math.max(240, rect.width - 8) + 'px';
+        panel.style.top = top + 'px';
+        panel.style.maxHeight = Math.min(available, Math.max(160, rect.height - 40)) + 'px';
+    };
+    /** Books that can actually be picked: the select may have detached hidden options. */
+    const pickableNames = () => {
+        const select = document.getElementById('world_editor_select');
+        const names = new Set();
+        if (!select) return names;
+        for (const option of select.options) {
+            const name = (option.dataset?.wboRealName || option.textContent || '').trim();
+            if (name) names.add(name);
+        }
+        return names;
+    };
+    const pickEnhancedSearchRow = (realName) => {
+        const select = document.getElementById('world_editor_select');
+        const option = select
+            ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName)
+            : null;
+        if (!select || !option) {
+            // The book exists in the classification but not in this select (hidden group): keep the
+            // term and the panel so the user is not left with an empty search.
+            pushDiagTrace('enh-panel:missing-option');
+            return;
+        }
+        const $jq = globalThis.jQuery;
+        if ($jq) $jq(select).val(option.value).trigger('change');
+        else {
+            select.value = option.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (searchInput instanceof HTMLInputElement && searchInput.value) {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        removeEnhancedSearchPanel();
+        containerEl._wboPopState?.syncSections?.();
+        pushDiagTrace('enh-panel:pick');
+    };
+    const ensureSearchPanel = () => {
+        const existing = getSearchPanel();
+        if (existing) return existing;
+        const panel = document.createElement('div');
+        panel.className = 'wbo-enhanced-search-panel';
+        panel.setAttribute('data-wbo-ui', '1');
+        panel.setAttribute('data-wbo-panel-owner', String(containerEl.dataset.wboSourceRole || 'editor'));
+        document.body.appendChild(panel);
+        containerEl._wboSearchPanel = panel;
+        bindDrawerSafeBubbleGuard(panel);
+        const anchor = containerEl.parentElement;
+        if (anchor) {
+            const watcher = new MutationObserver(() => {
+                if (containerEl.isConnected) return;
+                watcher.disconnect();
+                containerEl._wboSearchPanelWatcher = null;
+                removeEnhancedSearchPanel();
+            });
+            watcher.observe(anchor, { childList: true });
+            containerEl._wboSearchPanelWatcher = watcher;
+        }
+        listenPanel(panel, 'pointerdown', (ev) => {
+            // Keep the search box focused: otherwise the host's blur handler closes the popover
+            // before our click/pointerup ever fires.
+            ev.preventDefault();
+            ev.stopPropagation();
+        }, true);
+        const handlePick = (ev) => {
+            ev.stopPropagation();
+            const btn = ev.target instanceof Element ? ev.target.closest('[data-wbo-esp]') : null;
+            if (btn) pickEnhancedSearchRow(btn.getAttribute('data-wbo-esp'));
+        };
+        listenPanel(panel, 'pointerup', handlePick, true);
+        listenPanel(panel, 'click', handlePick, true);
+        listenPanel(globalThis, 'resize', positionEnhancedSearchPanel);
+        globalThis.visualViewport?.addEventListener?.('resize', positionEnhancedSearchPanel);
+        globalThis.visualViewport?.addEventListener?.('scroll', positionEnhancedSearchPanel);
+        searchPanelListeners.push({ target: globalThis.visualViewport, event: 'resize', handler: positionEnhancedSearchPanel });
+        searchPanelListeners.push({ target: globalThis.visualViewport, event: 'scroll', handler: positionEnhancedSearchPanel });
+        listenPanel(getScrollHost(), 'scroll', positionEnhancedSearchPanel, { passive: true });
+        return panel;
     };
     const renderEnhancedSearchPanel = (tokens) => {
         const byName = _latestClassification?.byName;
-        if (!byName) return;
+        if (!byName) {
+            removeEnhancedSearchPanel();
+            return;
+        }
+        const available = pickableNames();
         const matches = [];
         for (const meta of byName.values()) {
             if (!meta?.realName) continue;
+            if (available.size > 0 && !available.has(meta.realName)) continue;
             const hay = String(meta.searchableText || meta.realName.toLowerCase());
             if (tokens.every((token) => hay.includes(token))) matches.push(meta);
         }
         matches.sort((a, b) => String(a.primaryTitle || a.realName)
             .localeCompare(String(b.primaryTitle || b.realName), 'zh-Hans-CN'));
         const shown = matches.slice(0, 120);
-        if (!(enhancedSearchPanel instanceof HTMLElement) || !enhancedSearchPanel.isConnected) {
-            enhancedSearchPanel = document.createElement('div');
-            enhancedSearchPanel.className = 'wbo-enhanced-search-panel';
-            enhancedSearchPanel.setAttribute('data-wbo-ui', '1');
-            containerEl.appendChild(enhancedSearchPanel);
-            enhancedSearchPanel.addEventListener('pointerdown', (ev) => ev.stopPropagation());
-            enhancedSearchPanel.addEventListener('click', (ev) => {
-                ev.stopPropagation();
-                const btn = ev.target instanceof Element ? ev.target.closest('[data-wbo-esp]') : null;
-                if (!btn) return;
-                const realName = btn.getAttribute('data-wbo-esp');
-                const select = document.getElementById('world_editor_select');
-                const option = select
-                    ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName)
-                    : null;
-                if (select && option) {
-                    const $jq = globalThis.jQuery;
-                    if ($jq) $jq(select).val(option.value).trigger('change');
-                    else {
-                        select.value = option.value;
-                        select.dispatchEvent(new Event('change', { bubbles: true }));
-                    }
-                }
-                removeEnhancedSearchPanel();
-                if (searchInput instanceof HTMLInputElement) searchInput.value = '';
-                pushDiagTrace('enh-panel:pick');
-            });
-        }
-        positionEnhancedSearchPanel();
+        const panel = ensureSearchPanel();
+        const keepScroll = panel.scrollTop;
         if (matches.length === 0) {
-            enhancedSearchPanel.innerHTML = '<div class="wbo-esp-empty">没有匹配的世界书</div>';
+            panel.innerHTML = '<div class="wbo-esp-empty">没有匹配的世界书</div>';
         } else {
-            enhancedSearchPanel.innerHTML = [
-                `<div class="wbo-esp-head">搜索匹配到的世界书 (${matches.length})</div>`,
-                ...shown.map((meta) => `<button type="button" class="wbo-esp-row" data-wbo-esp="${escHtml(meta.realName)}">
-                    <span class="wbo-esp-main">
-                        <span class="wbo-esp-title">${escHtml(meta.primaryTitle || meta.realName)}</span>
-                        ${meta.subtitle ? `<span class="wbo-esp-sub">${escHtml(meta.subtitle)}</span>` : ''}
-                    </span>
-                    <span class="wbo-esp-origin">${escHtml(meta.groupName || '未分组')}</span>
-                </button>`),
-            ].join('');
+            const head = matches.length > shown.length
+                ? '搜索匹配到的世界书 (' + matches.length + '，显示前 ' + shown.length + ')'
+                : '搜索匹配到的世界书 (' + matches.length + ')';
+            const rowsHtml = shown.map((meta) => [
+                '<button type="button" class="wbo-esp-row" data-wbo-esp="' + escHtml(meta.realName) + '">',
+                '    <span class="wbo-esp-main">',
+                '        <span class="wbo-esp-title">' + escHtml(meta.primaryTitle || meta.realName) + '</span>',
+                (meta.subtitle ? '        <span class="wbo-esp-sub">' + escHtml(meta.subtitle) + '</span>' : ''),
+                '    </span>',
+                '    <span class="wbo-esp-origin">' + escHtml(meta.groupName || '未分组') + '</span>',
+                '</button>',
+            ].join(''));
+            panel.innerHTML = '<div class="wbo-esp-head">' + head + '</div>' + rowsHtml.join('');
         }
-        pushDiagTrace(`enh-panel:matches=${matches.length},shown=${shown.length}`);
+        panel.scrollTop = keepScroll;
+        positionEnhancedSearchPanel();
+        pushDiagTrace('enh-panel:matches=' + matches.length + ',shown=' + shown.length);
     };
+    let _lastEnhancedSearchTerm = '';
     const syncEnhancedSearchBlock = (searching) => {
         if (isGlobalPopover) return;
-        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim().toLowerCase() : '';
-        const tokens = term ? term.split(/\s+/).filter(Boolean) : [];
-        pushDiagTrace(`enh-search:searching=${searching ? 1 : 0},tokens=${tokens.length}`);
+        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        const tokens = term.toLowerCase().split(/\s+/).filter(Boolean);
         if (!searching || tokens.length === 0) {
             removeEnhancedSearchPanel();
+            _lastEnhancedSearchTerm = '';
             return;
         }
+        if (term === _lastEnhancedSearchTerm && getSearchPanel()) {
+            positionEnhancedSearchPanel();
+            return;
+        }
+        _lastEnhancedSearchTerm = term;
+        pushDiagTrace('enh-search:searching=1,tokens=' + tokens.length);
         renderEnhancedSearchPanel(tokens);
     };
+    // Keyboard: while the panel is open, arrows/enter act on it instead of the hidden host list.
+    if (searchInput instanceof HTMLInputElement) {
+        listenPanel(searchInput, 'keydown', (ev) => {
+            const panel = getSearchPanel();
+            if (!panel) return;
+            const rows = [...panel.querySelectorAll('.wbo-esp-row')];
+            if (rows.length === 0) return;
+            const current = rows.findIndex((row) => row.classList.contains('is-active'));
+            if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                const next = ev.key === 'ArrowDown'
+                    ? Math.min(rows.length - 1, current + 1)
+                    : Math.max(0, current <= 0 ? 0 : current - 1);
+                rows.forEach((row, index) => row.classList.toggle('is-active', index === next));
+                rows[next]?.scrollIntoView?.({ block: 'nearest' });
+                return;
+            }
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                const target = rows[current >= 0 ? current : 0];
+                if (target) pickEnhancedSearchRow(target.getAttribute('data-wbo-esp'));
+                return;
+            }
+            if (ev.key === 'Escape') removeEnhancedSearchPanel();
+        }, true);
+    }
 
     const popoverScrollHost = getScrollHost();
     const restoreTimers = [];

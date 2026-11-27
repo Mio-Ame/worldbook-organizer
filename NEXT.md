@@ -1,3 +1,17 @@
+### 面板加固（审查结论落地）+ 诊断补版本（2026-11-28 · v2.35.68）
+- 独立审查（subagent）对 v2.35.66/67 的自绘面板列出 5 高危 / 6 中危；本轮把高危与可立即执行的中危全部落地（`src/native-filter.js`）：
+  - **面板单例**：面板存在 `containerEl._wboSearchPanel`，同一容器二次 enhance 会先复用/重建，不再出现两块面板叠加。
+  - **点击时序**：面板 `pointerdown` 做 `preventDefault + stopPropagation`（保住搜索框焦点，避免宿主 blur 先关浮层），拾取改在 `pointerup` 并保留 `click` 兜底。
+  - **只列可选书**：命中先用 `#world_editor_select` 现存 option 过滤（隐藏组里的书会被 detach）；选不到对应 option 时**不清词、不关面板**，只记 `enh-panel:missing-option`。
+  - **位置跟随**：`positionEnhancedSearchPanel()` 按「搜索框底边」定位并夹到视口内，监听 `window.resize`、`visualViewport.resize/scroll`、列表滚动宿主 scroll，软键盘改变高度也跟随。
+  - **键盘**：面板打开时 `ArrowUp/Down` 在面板内移动高亮、`Enter` 选中、`Esc` 收起，不再打到看不见的宿主列表。
+  - **清理**：`removeEnhancedSearchPanel()` 统一移除面板、解绑 `bindDrawerSafeBubbleGuard`、断开 watcher、移除所有监听；浮层从 DOM 移除时 watcher 兜底清理；`closeAllOpenWorldDropdowns()` 仍全局兜底。
+  - **残留标记**：启动/打开下拉时清理旧版本遗留的 `[data-wbo-search-head]`、`.wbo-enhanced-search-hidden`、`.wbo-enhanced-section-hidden`、`.is-enhanced-search`（用户反馈的「分组名残留」）。
+  - 选中后清词会派发 `input` 事件并调用 `_wboPopState.syncSections()`，避免「半过滤」状态。
+- 诊断：`stVersion` 增加 `SillyTavern.version` / `#version_display` / `.versionDisplay` 兜底，并新增 `tauriVersion`（读 `__TAURITAVERN__`），短报告宿主行可显示 `TauriTavern 2.4.x` / `SillyTavern 1.19.x`。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-favorites-script` 6/6。
+- 未采纳（记录在此，后续可做）：面板 owner 精确删除（目前按类名全局删除）、按 IP 的 120 条截断提示已加标题、IME composition 单测覆盖。
+
 ### 增强浮层搜索改为插件自绘面板（2026-11-28 · v2.35.66）
 - 背景：连续多版都在和美化脚本的列表博弈（行被重建、高度固定、命中被藏），用户已多次遇到「搜索空白、滚到底才看到一本」。
 - 方案切换（`src/native-filter.js`）：搜索时**不再改动宿主列表**，改为在浮层内自绘一个结果面板 `.wbo-enhanced-search-panel`（`position: fixed` 按浮层 rect 定位，`max-height` 取浮层高度与 70vh 的较小值）。
