@@ -2276,7 +2276,7 @@ function openMobileEditorPickerSheet() {
                 </button>
                 <div class="wbo-mp-row-actions">
                     ${b.__searchMatch ? '<span class="wbo-s2-badge is-search-match">搜索匹配到的世界书</span>' : ''}
-                    ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">原属：${escHtml(b.__origin)}</span>` : ''}
+                    ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">${escHtml(b.__origin)}</span>` : ''}
                     ${b.__currentChar ? '<span class="wbo-s2-badge is-current-char">当前角色</span>' : ''}
                     ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
@@ -2324,26 +2324,17 @@ function openMobileEditorPickerSheet() {
         if (!listEl) return;
         const q = searchQuery.trim().toLowerCase();
         const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
-        // Searching stays inside the active pill but regroups the hits, so other groups never leak in.
         if (q) {
+            // Search across every group so favorites / globals pills never come up empty.
             const matchesTokens = (book) => tokens.every((tok) => (book.searchableText || book.realName.toLowerCase()).includes(tok));
             const originOf = (book) => _latestClassification?.byName?.get(book.realName)?.groupName || '未分组';
+            const pool = [...bareBooks, ...sections.flatMap((sec) => sec.books)];
+            const seen = new Set();
             const matched = [];
-            const push = (book, origin) => {
-                if (matchesTokens(book)) matched.push({ ...book, __origin: origin });
-            };
-            if (activePillId === SPECIAL_GROUPS.ALL) {
-                bareBooks.forEach((book) => push(book, originOf(book)));
-                sections.forEach((sec) => sec.books.forEach((book) => push(book, sec.name)));
-            } else if (activePillId === SPECIAL_GROUPS.PINNED) {
-                [...bareBooks, ...sections.flatMap((sec) => sec.books)]
-                    .filter((book) => book.isPinned)
-                    .forEach((book) => push(book, originOf(book)));
-            } else if (activePillId === EDITOR_GLOBALS_GROUP_ID) {
-                getMobileGlobalBooks().forEach((book) => push(book, '全局'));
-            } else {
-                const sec = sections.find((item) => item.id === activePillId);
-                (sec?.books || []).forEach((book) => push(book, sec.name));
+            for (const book of pool) {
+                if (seen.has(book.realName) || !matchesTokens(book)) continue;
+                seen.add(book.realName);
+                matched.push({ ...book, __origin: originOf(book) });
             }
             if (matched.length === 0) {
                 listEl.innerHTML = '<div class="wbo-empty-hint">无匹配世界书</div>';
@@ -2364,6 +2355,7 @@ function openMobileEditorPickerSheet() {
             `;
             return;
         }
+
         if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
             const pinned = getPinnedBooks();
             const collapsed = isDropdownGroupCollapsed(SPECIAL_GROUPS.PINNED, true);
@@ -4808,7 +4800,7 @@ function enhanceOpenEditorDropdown() {
     };
 
     const layoutEditorSearchMatches = () => {
-        const skip = !isSearching() || activePillGroupId === SPECIAL_GROUPS.ALL;
+        const skip = !isSearching();
         if (skip) {
             if (_lastSearchMatchSig !== '') {
                 clearEditorSearchMatches();
@@ -4842,7 +4834,7 @@ function enhanceOpenEditorDropdown() {
                 right.prepend(badge);
                 const originBadge = document.createElement('span');
                 originBadge.className = 'wbo-s2-badge is-search-origin';
-                originBadge.textContent = `原属：${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
                 right.prepend(originBadge);
             }
             resultsList.prepend(row);
@@ -4862,7 +4854,7 @@ function enhanceOpenEditorDropdown() {
             if (right && !right.querySelector('.is-search-origin')) {
                 const originBadge = document.createElement('span');
                 originBadge.className = 'wbo-s2-badge is-search-origin';
-                originBadge.textContent = `原属：${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
                 right.prepend(originBadge);
             }
             nested.appendChild(row);

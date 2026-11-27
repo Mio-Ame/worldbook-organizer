@@ -8685,3 +8685,19 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
         min-height: 34px !important;
     }
 }
+
+.wbo-mp-row-actions {
+    flex-wrap: nowrap !important;
+    min-width: 0;
+}
+
+.wbo-mp-row-text {
+    min-width: 0;
+}
+
+.wbo-s2-badge.is-search-origin {
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
