@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.81';
+export const PLUGIN_VERSION = '2.35.82';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -4943,12 +4943,31 @@ let _lastWorldSelectMouseDownAt = 0;
  */
 const _dropdownMemory = {
     activePillGroupId: SPECIAL_GROUPS.ALL,
+    /** The global dropdown keeps its own choice (module-level, survives container rebuilds). */
+    globalPillGroupId: null,
+    globalPillMemorySet: false,
     pillBarScrollLeft: 0,
     pillsExpanded: false,
     /** @type {Record<string, number>} */
     scrollTopByGroup: {},
     editorAnchor: null,
 };
+
+/**
+ * Persist the pill the user picked, independently of which click handler ran.
+ * @param {'global' | 'editor'} role
+ * @param {string} gid
+ */
+function rememberDropdownPill(role, gid) {
+    if (!gid) return;
+    if (role === 'global') {
+        _dropdownMemory.globalPillGroupId = gid;
+        _dropdownMemory.globalPillMemorySet = true;
+    } else {
+        _dropdownMemory.activePillGroupId = gid;
+    }
+    pushDiagTrace(`enh-pill:remember=${gid},role=${role}`);
+}
 
 function rememberEditorListAnchor(name, row, host, groupId) {
     if (!name || !row || !host.clientHeight) return;
@@ -7185,16 +7204,17 @@ function enhanceCustomDropdownPopover(containerEl) {
             : (containerEl._wboPopState?.getActivePillId() || (isGlobalOpening ? SPECIAL_GROUPS.PINNED : null)))
         : remembered;
     let activePillGroupId = validGroupIds.has(previousGroup) ? previousGroup : SPECIAL_GROUPS.ALL;
-    const rememberPill = (gid) => {
-        if (isGlobalPopover) {
-            _dropdownMemory.globalPillGroupId = gid;
-            _dropdownMemory.globalPillMemorySet = true;
-        } else {
-            _dropdownMemory.activePillGroupId = gid;
-        }
-    };
+    const rememberPill = (gid) => rememberDropdownPill(isGlobalPopover ? 'global' : 'editor', gid);
     // Do not let the first render overwrite a real user choice with the default.
     if (!hasMemory) rememberPill(activePillGroupId);
+    pushDiagTrace(`enh-pill:open=${activePillGroupId},hasMemory=${hasMemory ? 1 : 0},remembered=${remembered || '-'},role=${isGlobalPopover ? 'global' : 'editor'}`);
+    // Safety net: persist the pick straight from the DOM, whatever handler the host script runs.
+    containerEl.addEventListener('click', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        const pill = target?.closest('.wbo-dd-pill');
+        if (!pill || !containerEl.contains(pill)) return;
+        rememberPill(pill.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL);
+    }, true);
 
     let isRestoringScroll = true;
     let searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
@@ -7310,10 +7330,15 @@ function enhanceCustomDropdownPopover(containerEl) {
     /** Whether a book is currently active globally (the global dropdown itself is that list). */
     const isActiveGlobalName = (realName) => {
         if (editorActiveGlobals.has(realName)) return true;
-        const select = document.getElementById('world_info');
-        if (!select) return false;
-        const option = [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
-        return Boolean(option?.selected);
+        try {
+            const select = document.getElementById('world_info');
+            const options = select?.options;
+            if (!options) return false;
+            const option = [...options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+            return Boolean(option?.selected);
+        } catch {
+            return false;
+        }
     };
     // The 「已开启的全局世界书」 block applies to BOTH dropdowns: native SillyTavern pins those books
     // to the top of the list, and the scripted dropdown has to do the same.
@@ -7651,10 +7676,15 @@ function enhanceCustomDropdownPopover(containerEl) {
         return names;
     };
     const isGloballySelected = (realName) => {
-        const select = document.getElementById('world_info');
-        if (!select) return false;
-        const option = [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
-        return Boolean(option?.selected);
+        try {
+            const select = document.getElementById('world_info');
+            const options = select?.options;
+            if (!options) return false;
+            const option = [...options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+            return Boolean(option?.selected);
+        } catch {
+            return false;
+        }
     };
     const pickEnhancedSearchRow = (realName) => {
         const select = searchSelectEl();

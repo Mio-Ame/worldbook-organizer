@@ -1,3 +1,13 @@
+### 分组记忆改为 DOM 级兜底 + 诊断（2026-11-28 · v2.35.82）
+- 用户（TauriTavern / iOS，v2.35.80）：全局下拉切分组后重开仍回到「已收藏」；报告里 `enh-globals:block=1,count=6,role=global` 说明置顶块已正常。
+- 原因排查：之前记忆只写在某个点击处理器里，若宿主脚本自己接管/重绑 pill 点击，记忆就写不进去，重开只能回默认值。
+- 修复（`src/native-filter.js`）：
+  - 记忆下沉到模块级 `rememberDropdownPill(role, gid)`；全局与编辑器各自独立字段（`globalPillGroupId` / `activePillGroupId`）。
+  - 浮层容器上再加一层 **capture `click`** 监听：只要点到 `.wbo-dd-pill` 就写记忆，不依赖任何具体处理器。
+  - 新增诊断：`enh-pill:open=<pill>,hasMemory=0|1,remembered=<pill>,role=…` 与 `enh-pill:remember=<pill>,role=…`，可确认“有没有记住/有没有读回”。
+  - `isActiveGlobalName()` / `isGloballySelected()` 增加 `select.options` 兜底与 try/catch：参考脚本的模拟宿主里 `#world_info` 不是原生 select，之前会抛错导致整个增强中断（`coexist` 用例因此失败）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 「选择以编辑」保持在最上、当前编辑书置顶（2026-11-28 · v2.35.81）
 - 用户反馈：普通下拉里脚本自带的「选择以编辑」提示行被我们的「已开启的全局世界书」块挤到下面；正在编辑的那本书也没有置顶。
 - 修复（`src/native-filter.js`）：
