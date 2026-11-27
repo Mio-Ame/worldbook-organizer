@@ -113,8 +113,11 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
         assert.deepEqual(await groupBadges(), ['测试分组乙']);
         await cdp.evalFn(() => { window.jQuery('#world_info').select2('close').select2('open'); });
-        await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.textContent === '已收藏 1');
-        assert.deepEqual(await visible(), [favorite]);
+        // The last pill chosen in this session is restored instead of resetting to favorites.
+        await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.getAttribute('data-wbo-pill') === '__all__');
+        // Favorites stay folded as remembered, so only the open blocks are visible.
+        assert.deepEqual(await visible(), [globalBook, characterBook, other]);
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes('已收藏'))?.getAttribute('aria-expanded')), 'false');
     });
 });
 
@@ -976,31 +979,31 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         assert.deepEqual([restored.width, restored.height], [short.width, short.height]);
     }, books);
 });
-test('character bind worldbook popover stays fully inside the viewport near the right edge', async () => {
+test('character bind worldbook keeps the native select and only groups its options', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
         await cdp.evalFn(() => {
-            const host = document.createElement('dialog');
+            const host = document.createElement('div');
             host.className = 'character_world';
             host.id = 'fixture-char-world';
-            host.setAttribute('open', '');
-            // A transformed dialog makes its fixed children resolve against the dialog box,
-            // which is what pushed the panel half outside the page in the real host.
-            host.style.cssText = 'position:fixed;right:0;bottom:120px;width:220px;padding:8px;z-index:9999;background:#222;transform:translateZ(0);';
+            host.style.cssText = 'position:fixed;right:0;bottom:120px;width:220px;padding:8px;';
             host.innerHTML = `<select class="character_world_info_selector">
                 <option value="">--- 无主世界书 ---</option>
+                <option value="收藏测试书">收藏测试书</option>
                 <option value="普通测试书">普通测试书</option>
                 <option value="全局测试书">全局测试书</option>
             </select>`;
             document.body.appendChild(host);
         });
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#fixture-char-world .wbo-popup-select-trigger')));
-        await cdp.clickSelector('#fixture-char-world .wbo-popup-select-trigger');
-        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-mp-popover')));
-        assert.equal(await cdp.evalFn(() => {
-            const pop = document.querySelector('.wbo-mp-popover');
-            const r = pop.getBoundingClientRect();
-            return r.left >= 6 && r.right <= globalThis.innerWidth - 6 && r.top >= 6 && r.bottom <= globalThis.innerHeight - 6;
-        }), true);
+        await waitForCondition(cdp, () => document.querySelector('#fixture-char-world')?.dataset.wboEnhanced === '1');
+        // No plugin popover at all: the host's own Select2 opens right under the select.
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#fixture-char-world .wbo-popup-select-trigger'))), false);
+        await cdp.evalFn(() => {
+            const sel = document.querySelector('#fixture-char-world .character_world_info_selector');
+            jQuery(sel).select2({ width: '100%' });
+        });
+        await waitForCondition(cdp, () => document.querySelector('#fixture-char-world .character_world_info_selector')?.dataset.wboSingleGrouped === '1');
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('#fixture-char-world .character_world_info_selector optgroup[data-wbo-group]').length > 0), true);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.wbo-mp-popover'))), false);
     });
 });
 test('editor dropdown pins the current chat character book above every group', async () => {
@@ -1139,5 +1142,78 @@ test('manager current character block survives its book leaving the character gr
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.wbo-group[data-group-id="__current_char_book__"]'))), true);
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-group[data-group-id="__current_char_book__"] .wbo-book-item')?.getAttribute('data-book')), charBook);
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-group[data-group-id="g-other"] .wbo-book-item')?.getAttribute('data-book')), charBook);
+    }, [], seed);
+});
+test('global dropdown keeps a pinned+mounted book only in the mounted block and remembers the pill', async () => {
+    const seed = createDefaultSeed({
+        characters: [],
+        worldbooks: { 双标书: { entries: {} }, 普通书: { entries: {} } },
+        selected_world_info: ['双标书'],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [],
+            assignments: {},
+            pinnedBooks: ['双标书'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        await cdp.clickSelector('.wbo-manager-modal .wbo-modal-close');
+        await cdp.clickSelector('#WIMultiSelector .select2-container');
+        await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
+        const activePill = () => cdp.evalFn(() => document.querySelector('.wbo-global-dd-bar .is-active')?.getAttribute('data-wbo-pill'));
+        assert.equal(await activePill(), '__pinned__');
+        await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
+        const heads = await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].map((head) => head.textContent.trim()));
+        assert.deepEqual(heads, ['已开启的全局世界书 (1)', '未分组 (1)']);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown .wbo-global-search-wrap, .select2-dropdown .select2-search__field'))), true);
+        await cdp.evalFn(() => window.jQuery('#world_info').select2('close'));
+        await cdp.clickSelector('#WIMultiSelector .select2-container');
+        await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
+        assert.equal(await activePill(), '__all__');
+    }, [], seed);
+});
+
+test('editor search inside a group shows only the matches', async () => {
+    const seed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['许文风', '许剧情甲', '许剧情乙', '别的书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }, { id: 'g-plot', name: '剧情' }],
+            assignments: { 许文风: 'g-style', 许剧情甲: 'g-plot', 许剧情乙: 'g-plot', 别的书: 'g-plot' },
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-plot"]')));
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-plot"]');
+        await cdp.typeInto('.select2-dropdown .select2-search__field', '许文');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown [data-wbo-search-badge]')));
+        const single = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options > li')]
+            .filter((row) => row.getBoundingClientRect().height > 0)
+            .map((row) => (row.textContent || '').trim()));
+        assert.equal(single.length, 1);
+        assert.match(single[0], /许文风/);
+        assert.match(single[0], /搜索匹配到的世界书/);
+        await cdp.evalFn(() => {
+            const field = document.querySelector('.select2-dropdown .select2-search__field');
+            field.value = '许';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]')));
+        const matches = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown li[data-wbo-dd-group="__search_matches__"] li')]
+            .map((row) => (row.textContent || '').trim()));
+        assert.equal(matches.length, 3);
+        for (const name of ['许文风', '许剧情甲', '许剧情乙']) {
+            assert.ok(matches.some((text) => text.includes(name)), name);
+        }
+        await cdp.evalFn(() => {
+            const field = document.querySelector('.select2-dropdown .select2-search__field');
+            field.value = '';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]'));
     }, [], seed);
 });

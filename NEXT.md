@@ -2,6 +2,14 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 全局下拉归属、会话 pill、搜索匹配与绑定面板（2026-11-28 · v2.35.23）
+- 用户要求：① 既收藏又挂载的书只在「已开启的全局世界书」里出现一次，不进「已收藏」；② 全局下拉记住本次会话最后选的分组 pill，不再每次回到「已收藏」；③ 普通选书下拉在当前分组里搜索时不能夹带其他分组：1 本匹配→只显示该行并打「搜索匹配到的世界书」徽章，≥2 本→在当前分组上方建同名临时分组，清空搜索后不残留；④ 全局下拉补上和普通下拉一样的搜索框；⑤ 角色卡「绑定主世界书」改成像附加世界书那样由原生 Select2 就地展开，不再用插件弹层。
+- 改动：
+  - `src/native-filter.js`：`layoutGlobalGroupRows` 里 `isPinned && isMounted` 归入 mounted 块（收藏组不再重复）；新增 `_sessionGlobalPillId`（内存，页面会话级）并在打开时校验（ALL 恒有效），pill 点击后记录；`layoutEditorSearchMatches()` 在具体分组 + 搜索时隐藏原组、单行加 `is-search-match` 徽章/多行建 `__search_matches__` 临时分组，清空搜索即拆掉；全局下拉在宿主无 `.select2-search__field` 时自建同款搜索输入并驱动 `query`；`enhanceCharBindPopup` 桌面端改为等待宿主 Select2 后调用新函数 `groupDesktopSingleWorldSelect()`（只重建 optgroup，保留原生就地展开），移动端仍用插件分组控件。
+  - `style.css`：新增 `.wbo-s2-badge.is-search-match`（琥珀色徽章）。
+- 验证：单测 245/245；`native-picker-window` 24/24（新增：双标书只出现在全局块、胶囊会话记忆、全局下拉搜索框存在、分组内搜索单本徽章/多本临时组/清空后消失、绑定主世界书不再生成插件 trigger 且 optgroup 分组生效）；`native-extras-cleanup` 2/2（弹窗观察判定改为 `.character_world` 的 `wboEnhanced` 标记）；全量浏览器结果见下。
+- 边界：搜索匹配的临时分组只在编辑下拉、具体分组 pill 下生效（ALL/PINNED/全局块视图不启用）；绑定主世界书的 optgroup 重建依赖宿主已初始化 Select2。
+
 ### 主面板折叠与组合页强调色（2026-11-28 · v2.35.22）
 - 用户要求：主面板（管理分组）里「已开启的全局世界书」在「全部」「非角色书」视图可折叠；当前角色书被移到其他分组后「当前角色世界书」块不能消失；组合页「已选」用暗红底白字；全局下拉的「已收藏」组恢复折叠记忆（手动折叠后切 pill 再回「全部」不自动展开）。
 - 改动：

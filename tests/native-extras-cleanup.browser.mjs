@@ -209,7 +209,7 @@ test('desktop extras cannot attach after disable wins delayed Select2 initializa
             // Remove the fixture's immediate widget before the popup observer runs.
             jQuery(select).select2('destroy');
             await new Promise((resolve) => setTimeout(resolve, 0));
-            const popupObserved = Boolean(popup.querySelector('.wbo-popup-select-trigger'));
+            const popupObserved = popup.querySelector('.character_world')?.dataset.wboEnhanced === '1';
             const readyBeforeDisable = Boolean(jQuery(select).data('select2'));
             const plugin = await import(`${base}index.js`);
             plugin.onDisable();

@@ -41,6 +41,8 @@ import { closeGroupVisibilityPopover } from './panel-window.js';
 const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
 /** Group id for the editor dropdown's mounted-globals block (shown once 3+ globals are mounted). */
 const EDITOR_GLOBALS_GROUP_ID = '__globals__';
+/** Temporary block holding search hits that live outside the opened group. */
+const SEARCH_MATCHES_GROUP_ID = '__search_matches__';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -3940,6 +3942,54 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
  *   and an in-place multi-select grouped+searchable dropdown on mobile!
  * @param {HTMLElement} charWorldEl
  */
+/**
+ * Group a desktop single-select worldbook `<select>` in place (no custom popover), so the host's
+ * own Select2 keeps opening right under the select box.
+ * @param {HTMLSelectElement} selectEl
+ * @param {string | null} currentAvatar
+ */
+function groupDesktopSingleWorldSelect(selectEl, currentAvatar) {
+    if (!(selectEl instanceof HTMLSelectElement) || selectEl.dataset.wboSingleGrouped === '1') return;
+    const $jq = globalThis.jQuery;
+    if (!$jq || !_latestClassification) return;
+    const { bareBooks, sections } = buildPopupGroupedSections(selectEl, {
+        currentAvatar,
+        prioritizeCharGroup: true,
+    });
+    if (sections.length < 2) return;
+    const optMap = new Map();
+    for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
+        if (opt.value !== '') optMap.set(opt.value, opt);
+    }
+    const existingGroups = Array.from(selectEl.querySelectorAll('optgroup'));
+    if (existingGroups.length > 0) {
+        const unwrap = document.createDocumentFragment();
+        for (const group of existingGroups) {
+            while (group.firstChild) unwrap.appendChild(group.firstChild);
+            group.remove();
+        }
+        selectEl.appendChild(unwrap);
+    }
+    const build = document.createDocumentFragment();
+    for (const book of bareBooks) {
+        const opt = optMap.get(book.value);
+        if (opt) build.appendChild(opt);
+    }
+    for (const section of sections) {
+        const group = document.createElement('optgroup');
+        group.label = `${section.name} (${section.books.length})`;
+        group.setAttribute('data-wbo-group', section.id);
+        for (const book of section.books) {
+            const opt = optMap.get(book.value);
+            if (opt) group.appendChild(opt);
+        }
+        if (group.childElementCount > 0) build.appendChild(group);
+    }
+    selectEl.appendChild(build);
+    selectEl.dataset.wboSingleGrouped = '1';
+    $jq(selectEl).trigger('change.select2');
+}
+
 function enhanceCharBindPopup(charWorldEl) {
     if (!charWorldEl || charWorldEl.dataset.wboEnhanced === '1') return;
     if (!_latestClassification || !_latestSettings) return;
@@ -3953,16 +4003,35 @@ function enhanceCharBindPopup(charWorldEl) {
     const currentAvatar = getCurrentCharacterAvatar();
     const collapseChar = Boolean(_latestSettings.autoHideInCharBindPopup);
 
-    // Primary worldbook: always plain `<select>` in ST -> upgrade directly to grouped+searchable dropdown!
-    // Pin `当前角色` at top and keep `角色世界书` immediately available via pill/expand/search.
+    // Primary worldbook: on desktop stay with the host's own Select2 (it opens right under the
+    // select and never drifts); only rebuild its optgroups so the list is grouped. On mobile the
+    // host has no Select2, so keep the plugin's grouped control.
     if (primarySelect instanceof HTMLSelectElement) {
-        attachGroupedSelectControl(primarySelect, {
-            multiple: false,
-            currentAvatar,
-            collapseCharByDefault: collapseChar,
-            prioritizeCharGroup: true,
-            placeholder: '--- 无主世界书 ---',
-        });
+        if (isNativeMobileSelectMode()) {
+            attachGroupedSelectControl(primarySelect, {
+                multiple: false,
+                currentAvatar,
+                collapseCharByDefault: collapseChar,
+                prioritizeCharGroup: true,
+                placeholder: '--- 无主世界书 ---',
+            });
+        } else {
+            let primaryAttempts = 0;
+            const waitPrimarySelect2 = () => {
+                if (!_observersActive || !primarySelect.isConnected) return;
+                const $jq = globalThis.jQuery;
+                const hasS2 = Boolean($jq && ($jq(primarySelect).data('select2') || $jq(primarySelect).hasClass('select2-hidden-accessible')));
+                if (hasS2) {
+                    groupDesktopSingleWorldSelect(primarySelect, currentAvatar);
+                    return;
+                }
+                if (primaryAttempts < 10) {
+                    primaryAttempts += 1;
+                    setTimeout(waitPrimarySelect2, 60);
+                }
+            };
+            waitPrimarySelect2();
+        }
     }
 
     // Extra worldbooks:
@@ -4447,9 +4516,9 @@ function enhanceOpenEditorDropdown() {
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
         }
+        layoutEditorSearchMatches();
         if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
     };
-
     // Keep folding in the current group filter and leave search results visible.
     const onResultsMouseDown = (ev) => {
         const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
@@ -4505,6 +4574,79 @@ function enhanceOpenEditorDropdown() {
     };
 
     const getScrollHost = () => findScrollableListEl(resultsList, dropdownEl);
+
+    /**
+     * Searching inside a concrete group must not dump other groups' books into it.
+     * One hit becomes a single row with a badge; several hits get their own block above.
+     */
+    let _lastSearchMatchSig = '';
+    const clearEditorSearchMatches = () => {
+        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match').forEach((el) => el.remove());
+        const group = resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`);
+        if (group) {
+            [...group.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)')]
+                .forEach((row) => resultsList.append(row));
+            group.remove();
+        }
+        resultsList.querySelectorAll('li.wbo-dd-search-row').forEach((row) => row.classList.remove('wbo-dd-search-row'));
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((group) => {
+            if (group instanceof HTMLElement) group.style.display = '';
+        });
+    };
+
+    const layoutEditorSearchMatches = () => {
+        const skip = !isSearching()
+            || activePillGroupId === SPECIAL_GROUPS.ALL
+            || activePillGroupId === SPECIAL_GROUPS.PINNED
+            || activePillGroupId === EDITOR_GLOBALS_GROUP_ID;
+        if (skip) {
+            if (_lastSearchMatchSig !== '') {
+                clearEditorSearchMatches();
+                _lastSearchMatchSig = '';
+            }
+            return;
+        }
+        const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+            .filter((row) => !row.classList.contains('wbo-dd-global-mirror'));
+        if (rows.length === 0) return;
+        const sig = `${activePillGroupId}|${rows.length}|${rows.map(getDropdownOptionWorldName).join('|')}`;
+        const alreadyShown = Boolean(
+            resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`)
+            || resultsList.querySelector('li.wbo-dd-search-row'),
+        );
+        if (sig === _lastSearchMatchSig && alreadyShown) return;
+        clearEditorSearchMatches();
+        _lastSearchMatchSig = sig;
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((group) => {
+            if (group.getAttribute('data-wbo-dd-group') !== SEARCH_MATCHES_GROUP_ID) group.style.display = 'none';
+        });
+        if (rows.length === 1) {
+            const row = rows[0];
+            row.classList.add('wbo-dd-search-row');
+            const right = row.querySelector('.wbo-s2-right');
+            if (right) {
+                const badge = document.createElement('span');
+                badge.className = 'wbo-s2-badge is-search-match';
+                badge.setAttribute('data-wbo-search-badge', '1');
+                badge.textContent = '搜索匹配到的世界书';
+                right.prepend(badge);
+            }
+            resultsList.prepend(row);
+            return;
+        }
+        const groupLi = document.createElement('li');
+        groupLi.className = 'select2-results__option select2-results__option--group';
+        groupLi.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        const head = document.createElement('span');
+        head.className = 'select2-results__group wbo-dd-group-head is-isolated';
+        head.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        head.textContent = `搜索匹配到的世界书 (${rows.length})`;
+        const nested = document.createElement('ul');
+        nested.className = 'select2-results__options select2-results__options--nested';
+        for (const row of rows) nested.appendChild(row);
+        groupLi.append(head, nested);
+        resultsList.prepend(groupLi);
+    };
 
     const syncPinnedPillBtn = () => {
         if (!filterBar) return;
@@ -4707,6 +4849,8 @@ function enhanceOpenEditorDropdown() {
 let _openGlobalDropdownCleanup = null;
 /** @type {string} */
 let _activeGlobalPillId = SPECIAL_GROUPS.ALL;
+/** Pill the user last picked in this page session; the dropdown reopens there. */
+let _sessionGlobalPillId = null;
 
 function cleanupOpenGlobalDropdown() {
     if (_openGlobalDropdownCleanup) {
@@ -4734,8 +4878,26 @@ function enhanceOpenGlobalDropdown() {
     if (!(resultsList instanceof HTMLElement) || !resultsWrap?.parentElement) return;
     bindDrawerSafeBubbleGuard(dropdownEl);
 
-    const searchField = dropdownEl.querySelector('.select2-search__field')
+    let searchField = dropdownEl.querySelector('.select2-search__field')
         || globalSel.parentElement?.querySelector('.select2-search__field');
+    if (!(searchField instanceof HTMLInputElement)) {
+        // The host's multi-select can arrive without its own search box; add the same one the
+        // ordinary picker has, right above the results.
+        const wrap = document.createElement('div');
+        wrap.className = 'select2-search select2-search--dropdown wbo-global-search-wrap';
+        const input = document.createElement('input');
+        input.type = 'search';
+        input.className = 'select2-search__field';
+        input.placeholder = '搜索世界书...';
+        input.setAttribute('autocomplete', 'off');
+        input.setAttribute('spellcheck', 'false');
+        wrap.appendChild(input);
+        resultsList.parentElement.insertBefore(wrap, resultsList);
+        searchField = input;
+        input.addEventListener('input', () => {
+            inst.trigger?.('query', { term: input.value });
+        });
+    }
     const readGroups = () => {
         const counts = new Map();
         let favorites = 0;
@@ -4751,7 +4913,12 @@ function enhanceOpenGlobalDropdown() {
         if (favorites) groups.unshift({ id: SPECIAL_GROUPS.PINNED, label: `已收藏 ${favorites}` });
         return groups;
     };
-    _activeGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
+    const defaultGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
+    const rememberedPillId = _sessionGlobalPillId
+        && (_sessionGlobalPillId === SPECIAL_GROUPS.ALL || readGroups().some((group) => group.id === _sessionGlobalPillId))
+        ? _sessionGlobalPillId
+        : defaultGlobalPillId;
+    _activeGlobalPillId = rememberedPillId;
 
     const groupHeading = document.createElement('button');
     groupHeading.type = 'button';
@@ -4787,7 +4954,8 @@ function enhanceOpenGlobalDropdown() {
             const meta = _latestClassification.byName.get(name);
             if (!meta) continue;
             const isMounted = mountedNames.has(name);
-            if (meta.isPinned) {
+            // A book that is both pinned and mounted shows up once, in the globals block only.
+            if (meta.isPinned && !isMounted) {
                 pinnedRows.push({ row, isMounted });
                 continue;
             }
@@ -4909,6 +5077,7 @@ function enhanceOpenGlobalDropdown() {
             ev.preventDefault();
             const id = button.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             _activeGlobalPillId = id === _activeGlobalPillId ? SPECIAL_GROUPS.ALL : id;
+            _sessionGlobalPillId = _activeGlobalPillId;
             _isolatedFoldOverride.clear();
             barEl.querySelectorAll('[data-wbo-pill]').forEach((pill) => {
                 const active = pill.getAttribute('data-wbo-pill') === _activeGlobalPillId;
