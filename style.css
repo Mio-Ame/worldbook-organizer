@@ -7084,6 +7084,27 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     scrollbar-width: thin;
 }
 
+/* Global combo editor: group pills on the first row, scopes on the second. */
+.wbo-cmb-pill-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis {
+    border-color: #16181d !important;
+    background: #16181d !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis .wbo-pill-count {
+    opacity: 0.82;
+    color: #ffffff;
+}
+
 .wbo-book-group-switcher > .wbo-pill {
     flex: 0 0 auto;
     white-space: nowrap;

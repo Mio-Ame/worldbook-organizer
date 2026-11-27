@@ -50,6 +50,13 @@ test('desktop native global picker keeps its search, filters by group and opens 
             document.querySelector('#wbo-mgr-floating-tools-btn'),
             document.querySelector('[data-wbo-fullscreen-btn="manager"]'),
         ].map((button) => getComputedStyle(button).display)), ['none', 'none']);
+        await cdp.clickSelector('#wbo-mgr-pills [data-group-id="__pinned__"]');
+        assert.equal(await cdp.evalFn(() => {
+            const group = document.querySelector('#wbo-mgr-groups-list [data-group-id="__pinned__"]');
+            return Boolean(group)
+                && Boolean(group.querySelector('.wbo-group-toggle.is-static'))
+                && !group.querySelector('.wbo-chevron');
+        }), true);
         await cdp.clickSelector('.wbo-manager-modal .wbo-modal-close');
         await cdp.clickSelector('#WIMultiSelector .select2-container');
         await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
@@ -66,10 +73,11 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
         const groupHeads = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-results__options > li.wbo-global-group-head')]
             .map((head) => `${head.textContent.trim()}|${head.getAttribute('aria-expanded')}`));
-        assert.deepEqual(await groupHeads(), ['已收藏 (1)|true', '角色世界书 (1)|true', '测试分组乙 (2)|true']);
+        assert.deepEqual(await groupHeads(), ['已开启的全局世界书 (1)|true', '已收藏 (1)|true', '角色世界书 (1)|true', '测试分组乙 (1)|true']);
         assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')]
-            .map((head) => getComputedStyle(head, '::before').width)), ['7px', '7px', '7px']);
-        assert.equal((await visible())[0], favorite);
+            .map((head) => getComputedStyle(head, '::before').width)), ['7px', '7px', '7px', '7px']);
+        // Mounted globals open the list, favorites come right after them.
+        assert.deepEqual(await visible(), [globalBook, favorite, characterBook, other]);
         const foldHead = (label) => cdp.evalFn((text) => {
             const head = [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes(text));
             if (!head) return false;
@@ -77,13 +85,21 @@ test('desktop native global picker keeps its search, filters by group and opens 
             return true;
         }, label);
         assert.equal(await foldHead('已收藏'), true);
-        assert.deepEqual(await visible(), [characterBook, other, globalBook]);
-        assert.deepEqual(await groupHeads(), ['已收藏 (1)|false', '角色世界书 (1)|true', '测试分组乙 (2)|true']);
+        assert.deepEqual(await visible(), [globalBook, characterBook, other]);
+        assert.deepEqual(await groupHeads(), ['已开启的全局世界书 (1)|true', '已收藏 (1)|false', '角色世界书 (1)|true', '测试分组乙 (1)|true']);
         await foldHead('已收藏');
-        assert.deepEqual(await visible(), [favorite, characterBook, other, globalBook]);
+        assert.deepEqual(await visible(), [globalBook, favorite, characterBook, other]);
         await foldHead('测试分组乙');
-        assert.deepEqual(await visible(), [favorite, characterBook]);
+        assert.deepEqual(await visible(), [globalBook, favorite, characterBook]);
         await foldHead('测试分组乙');
+        // Entering the favorites pill opens it expanded, exactly like the other groups.
+        await foldHead('已收藏');
+        await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__pinned__"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-global-group-heading').getAttribute('aria-expanded')), 'true');
+        assert.deepEqual(await visible(), [favorite]);
+        await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
+        // The global dropdown always reopens its favorites group expanded.
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes('已收藏'))?.getAttribute('aria-expanded')), 'true');
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         assert.deepEqual(await groupBadges(), []);
@@ -951,4 +967,53 @@ test('mobile manager can be resized and moved by touch and returned to full scre
         const restored = await rect(panel);
         assert.deepEqual([restored.width, restored.height], [short.width, short.height]);
     }, books);
+});
+test('character bind worldbook popover stays fully inside the viewport near the right edge', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => {
+            const host = document.createElement('dialog');
+            host.className = 'character_world';
+            host.id = 'fixture-char-world';
+            host.setAttribute('open', '');
+            // A transformed dialog makes its fixed children resolve against the dialog box,
+            // which is what pushed the panel half outside the page in the real host.
+            host.style.cssText = 'position:fixed;right:0;bottom:120px;width:220px;padding:8px;z-index:9999;background:#222;transform:translateZ(0);';
+            host.innerHTML = `<select class="character_world_info_selector">
+                <option value="">--- 无主世界书 ---</option>
+                <option value="普通测试书">普通测试书</option>
+                <option value="全局测试书">全局测试书</option>
+            </select>`;
+            document.body.appendChild(host);
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#fixture-char-world .wbo-popup-select-trigger')));
+        await cdp.clickSelector('#fixture-char-world .wbo-popup-select-trigger');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-mp-popover')));
+        assert.equal(await cdp.evalFn(() => {
+            const pop = document.querySelector('.wbo-mp-popover');
+            const r = pop.getBoundingClientRect();
+            return r.left >= 6 && r.right <= globalThis.innerWidth - 6 && r.top >= 6 && r.bottom <= globalThis.innerHeight - 6;
+        }), true);
+    });
+});
+test('editor dropdown pins the current chat character book above every group', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-b"]')));
+        const firstRow = () => cdp.evalFn(() => {
+            const row = document.querySelector('.select2-dropdown .select2-results__options > li');
+            if (!row) return null;
+            return {
+                text: (row.textContent || '').trim(),
+                pinnedClass: row.classList.contains('wbo-dd-current-char'),
+                hidden: row.getBoundingClientRect().height === 0,
+            };
+        });
+        assert.equal((await firstRow()).pinnedClass, true);
+        assert.match((await firstRow()).text, /角色测试书/);
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-b"]');
+        const pinned = await firstRow();
+        assert.equal(pinned.pinnedClass, true);
+        assert.match(pinned.text, /角色测试书/);
+        assert.equal(pinned.hidden, false);
+    });
 });

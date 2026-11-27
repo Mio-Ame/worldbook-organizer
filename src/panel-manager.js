@@ -2807,9 +2807,10 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
                 id: SPECIAL_GROUPS.PINNED,
                 name: '★ 已收藏',
                 color: '#e09f3e',
-                collapsed: Boolean(q) ? false : Boolean(settings.pinnedGroupCollapsed),
+                // Single-group view: same static header as every other group, no fold chevron.
+                collapsed: false,
                 isCustom: false,
-                isSingleView: false,
+                isSingleView: true,
                 isMovable: false,
                 books: pinnedList,
             });

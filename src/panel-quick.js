@@ -474,7 +474,10 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                         <button type="button" class="wbo-btn" id="wbo-cmb-seed-active-btn">加入已开启的全局世界书</button>
                         <button type="button" class="wbo-btn" id="wbo-cmb-clear-pick-btn">清空勾选</button>
                     </div>
-                    <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-pills" role="group" aria-label="世界书分组"></div>
+                    <div class="wbo-cmb-pill-rows" id="wbo-cmb-pill-rows">
+                        <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-group-pills" role="group" aria-label="世界书分组"></div>
+                        <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-pills" role="group" aria-label="世界书范围"></div>
+                    </div>
                     <div class="wbo-gp-toolbar">
                         <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-cmb-book-filter" placeholder="搜索世界书名 / 显示名 / 分组..." autocomplete="off" spellcheck="false">
                         <button type="button" class="wbo-btn wbo-gp-quick-btn" id="wbo-cmb-toggle-visible-btn">全选当前可见</button>
@@ -512,6 +515,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
     const nameInput = modal.querySelector('#wbo-cmb-name-input');
     const seedActiveBtn = modal.querySelector('#wbo-cmb-seed-active-btn');
     const pillsEl = modal.querySelector('#wbo-cmb-pills');
+    const pillRowsEl = modal.querySelector('#wbo-cmb-pill-rows');
+    const groupPillsEl = modal.querySelector('#wbo-cmb-group-pills');
     const filterInput = modal.querySelector('#wbo-cmb-book-filter');
     const toggleVisBtn = modal.querySelector('#wbo-cmb-toggle-visible-btn');
     const pickListEl = modal.querySelector('#wbo-cmb-pick-list');
@@ -624,7 +629,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
 
     const syncEditPickedBadge = () => {
         if (pickedBadgeEl) pickedBadgeEl.textContent = `已选 ${pickedSet.size} 本`;
-        const selPillCnt = pillsEl?.querySelector('#wbo-cmb-sel-pill-cnt');
+        const selPillCnt = pillsEl?.querySelector('[data-cmb-pill="__selected__"] .wbo-pill-count');
         if (selPillCnt) selPillCnt.textContent = String(pickedSet.size);
     };
 
@@ -646,9 +651,30 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         toggleVisBtn.textContent = allChecked ? '取消当前可见' : '全选当前可见';
     };
 
+    /** Scroll position per pill: each pill reopens exactly where it was left. */
+    const editPillScrollState = new Map();
+    const editScrollHost = () => {
+        if (!pickListEl) return null;
+        // The pick list itself scrolls once it is taller than its box; otherwise the step scrolls.
+        if (pickListEl.scrollHeight > pickListEl.clientHeight + 1) return pickListEl;
+        return pickListEl.closest('.wbo-step-scroll') || pickListEl;
+    };
+
+    const saveActivePillScroll = () => {
+        const host = editScrollHost();
+        if (!host) return;
+        editPillScrollState.set(activeEditPill, host.scrollTop);
+    };
+
+    const restorePillScroll = (pillId) => {
+        const host = editScrollHost();
+        if (!host) return;
+        host.scrollTop = Math.max(0, Number(editPillScrollState.get(pillId)) || 0);
+    };
+
     const applyEditFilters = () => {
         if (!pickListEl) return;
-        pickListEl.classList.toggle('wbo-cmb-single-group', !['__nonchar__', '__selected__', '__all__'].includes(activeEditPill));
+        pickListEl.classList.toggle('wbo-cmb-single-group', !['__nonchar__', '__selected__', '__all__', '__global__', '__pinned__'].includes(activeEditPill));
         const q = filterInput instanceof HTMLInputElement ? filterInput.value.trim().toLowerCase() : '';
         let visibleCount = 0;
 
@@ -656,6 +682,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             if (!(row instanceof HTMLElement)) return;
             const gid = row.getAttribute('data-cmb-gid') || '';
             const isChar = row.getAttribute('data-cmb-char') === '1';
+            const isGlobalBook = row.getAttribute('data-cmb-global') === '1';
+            const isPinned = row.getAttribute('data-cmb-pinned') === '1';
             const cb = row.querySelector('.wbo-cmb-book-check');
             const bookName = cb instanceof HTMLInputElement ? cb.value : '';
             const hay = row.getAttribute('data-pick-search') || '';
@@ -667,8 +695,14 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                 matchPill = Boolean(bookName && pickedSet.has(bookName));
             } else if (activeEditPill === '__all__') {
                 matchPill = true;
+            } else if (activeEditPill === '__global__') {
+                matchPill = isGlobalBook;
+            } else if (activeEditPill === '__pinned__') {
+                matchPill = isPinned && !isGlobalBook;
             } else {
-                matchPill = gid === activeEditPill;
+                // Inside one concrete group, the already-mounted globals stay out of the way;
+                // character books are never filtered by that rule.
+                matchPill = gid === activeEditPill && (!isGlobalBook || isChar);
             }
 
             const matchSearch = !q || hay.includes(q);
@@ -715,34 +749,44 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             filterInput.value = '';
         }
         activeEditPill = '__nonchar__';
+        editPillScrollState.clear();
         setEditStatus('');
         setPickFeedback('');
 
         const orderedSections = classification.orderedSections || [];
+        const pinnedBooks = classification.pinnedBooks || [];
+        const customSections = orderedSections.filter((section) => section.kind === 'custom' && (section.books?.length || 0) > 0);
+        const charSection = orderedSections.find((section) => section.kind === 'character' && (section.books?.length || 0) > 0);
+        const ungroupedSection = orderedSections.find((section) => section.kind === 'ungrouped' && (section.books?.length || 0) > 0);
+        const activeGlobalCount = [...activeGlobals].filter((name) => classification.byName.has(name)).length;
+
+        const pillHtml = (id, label, count, { dot = '', emphasis = false, active = false } = {}) => `
+            <button type="button" class="wbo-pill${emphasis ? ' is-emphasis' : ''}${active ? ' is-active' : ''}" data-cmb-pill="${esc(id)}" aria-pressed="${active ? 'true' : 'false'}">
+                ${dot}<span>${esc(label)}</span><span class="wbo-pill-count">${count}</span>
+            </button>
+        `;
+
+        // First row: the groups themselves — favorites, the user's own groups, then the leftovers.
+        // Character books live in the second row's own switch, never as a group pill here.
+        if (groupPillsEl) {
+            groupPillsEl.innerHTML = [
+                pinnedBooks.length > 0 ? pillHtml(SPECIAL_GROUPS.PINNED, '★ 已收藏', pinnedBooks.length) : '',
+                ...customSections.map((section) => pillHtml(section.id, section.name, section.books.length, {
+                    dot: `<span class="wbo-pill-dot" style="background:${esc(section.color)}"></span>`,
+                })),
+                ungroupedSection ? pillHtml(ungroupedSection.id, '未分组', ungroupedSection.books.length) : '',
+            ].join('');
+        }
+
+        // Second row: scopes. Picked stays emphasized so it never reads like a group.
         if (pillsEl) {
-            const sectionPills = orderedSections
-                .filter((s) => s.books?.length)
-                .map((s) => `
-                    <button type="button" class="wbo-pill" data-cmb-pill="${esc(s.id)}" aria-pressed="false">
-                        ${s.kind === 'custom' ? `<span class="wbo-pill-dot" style="background:${esc(s.color)}"></span>` : ''}
-                        <span>${esc(s.name)}</span>
-                        <span class="wbo-pill-count">${s.books.length}</span>
-                    </button>
-                `).join('');
-            pillsEl.innerHTML = `
-                <button type="button" class="wbo-pill is-active" data-cmb-pill="__nonchar__" aria-pressed="true">
-                    <span>非角色书</span><span class="wbo-pill-count">${classification.nonCharCount}</span>
-                </button>
-                <button type="button" class="wbo-pill" data-cmb-pill="__selected__" aria-pressed="false">
-                    <span>已选</span><span class="wbo-pill-count" id="wbo-cmb-sel-pill-cnt">${pickedSet.size}</span>
-                </button>
-                ${sectionPills}
-                ${classification.charCount > 0 ? `
-                    <button type="button" class="wbo-pill" data-cmb-pill="__all__" aria-pressed="false">
-                        <span>全部</span><span class="wbo-pill-count">${classification.totalCount}</span>
-                    </button>
-                ` : ''}
-            `;
+            pillsEl.innerHTML = [
+                pillHtml('__selected__', '已选', pickedSet.size, { emphasis: true }),
+                pillHtml('__all__', '全部', classification.totalCount),
+                activeGlobalCount > 0 ? pillHtml('__global__', '全局', activeGlobalCount) : '',
+                pillHtml('__nonchar__', '非角色书', classification.nonCharCount, { active: true }),
+                charSection ? pillHtml(charSection.id, '角色书', charSection.books.length) : '',
+            ].join('');
         }
 
         if (pickListEl) {
@@ -756,6 +800,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                             <label class="wbo-ai-pick-row wbo-cmb-pick-row"
                                 data-cmb-gid="${esc(sec.id)}"
                                 data-cmb-char="${sec.kind === 'character' ? '1' : '0'}"
+                                data-cmb-global="${isLiveGlobal ? '1' : '0'}"
+                                data-cmb-pinned="${b.isPinned ? '1' : '0'}"
                                 data-pick-search="${esc(b.searchableText || b.realName.toLowerCase())}">
                                 <input type="checkbox" class="wbo-cmb-book-check" value="${esc(b.realName)}"${checked}>
                                 <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
@@ -778,7 +824,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
 
         syncEditPickedBadge();
         applyEditFilters();
-
+        const initialScrollHost = editScrollHost();
+        if (initialScrollHost) initialScrollHost.scrollTop = 0;
         if (stepList instanceof HTMLElement) stepList.hidden = true;
         if (stepEdit instanceof HTMLElement) stepEdit.hidden = false;
         if (nameInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
@@ -937,18 +984,20 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         syncEditPickedBadge();
         applyEditFilters();
     });
-    pillsEl?.addEventListener('click', (ev) => {
+    pillRowsEl?.addEventListener('click', (ev) => {
         const btn = ev.target instanceof Element ? ev.target.closest('[data-cmb-pill]') : null;
         if (!btn) return;
-        activeEditPill = btn.getAttribute('data-cmb-pill') || '__nonchar__';
-        pillsEl.querySelectorAll('[data-cmb-pill]').forEach((b) => {
+        const nextPill = btn.getAttribute('data-cmb-pill') || '__nonchar__';
+        if (nextPill === activeEditPill) return;
+        saveActivePillScroll();
+        activeEditPill = nextPill;
+        pillRowsEl.querySelectorAll('[data-cmb-pill]').forEach((b) => {
             const selected = b.getAttribute('data-cmb-pill') === activeEditPill;
             b.classList.toggle('is-active', selected);
             b.setAttribute('aria-pressed', String(selected));
         });
         applyEditFilters();
-        const scroll = pickListEl?.closest('.wbo-step-scroll');
-        if (scroll) scroll.scrollTop = 0;
+        restorePillScroll(activeEditPill);
     });
     pickListEl?.addEventListener('change', (ev) => {
         const cb = ev.target;

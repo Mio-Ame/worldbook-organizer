@@ -37,6 +37,9 @@ import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } fro
 import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
 
+/** Group id for the "mounted global worldbooks" block; matches the manager's section id. */
+const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
+
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
 
@@ -2265,7 +2268,7 @@ function openMobileEditorPickerSheet() {
         const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
         if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
             const pinned = getPinnedBooks();
-            const collapsed = Boolean(_latestSettings.dropdownCollapsed[SPECIAL_GROUPS.PINNED]);
+            const collapsed = isDropdownGroupCollapsed(SPECIAL_GROUPS.PINNED, true);
             listEl.innerHTML = pinned.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${SPECIAL_GROUPS.PINNED}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">★ 已收藏</span><span class="wbo-group-count">${pinned.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${pinned.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无收藏世界书，点击行右侧 ☆ 可收藏</div>';
@@ -2390,7 +2393,7 @@ function openMobileEditorPickerSheet() {
             if (searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
-            const willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid && gid !== SPECIAL_GROUPS.PINNED);
+            const willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid);
             const prevTop = listEl.scrollTop;
             renderList();
             if (willCollapse) {
@@ -3213,6 +3216,34 @@ export function attachGroupedSelectControl(
         });
 
         let lockedOpenAbove = null;
+
+        /** Host dialogs can offset fixed boxes; nudge the panel back inside the viewport. */
+        const clampPopoverIntoViewport = () => {
+            const r = popover.getBoundingClientRect();
+            const vw = globalThis.innerWidth || document.documentElement.clientWidth || 0;
+            const vh = globalThis.innerHeight || document.documentElement.clientHeight || 0;
+            if (!vw || !vh) return;
+            const margin = 8;
+            let dx = 0;
+            if (r.left < margin) dx = margin - r.left;
+            else if (r.right > vw - margin) dx = vw - margin - r.right;
+            if (dx) {
+                const left = Number.parseFloat(popover.style.left) || 0;
+                popover.style.left = `${Math.round(left + dx)}px`;
+            }
+            let dy = 0;
+            if (r.top < margin) dy = margin - r.top;
+            else if (r.bottom > vh - margin) dy = vh - margin - r.bottom;
+            if (dy) {
+                if (popover.style.bottom && popover.style.bottom !== 'auto') {
+                    const bottom = Number.parseFloat(popover.style.bottom) || 0;
+                    popover.style.bottom = `${Math.round(bottom - dy)}px`;
+                } else {
+                    const top = Number.parseFloat(popover.style.top) || 0;
+                    popover.style.top = `${Math.round(top + dy)}px`;
+                }
+            }
+        };
         const positionPopover = ({ preserveDirection = false } = {}) => {
             const rect = trigger.getBoundingClientRect();
             const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
@@ -3268,6 +3299,7 @@ export function attachGroupedSelectControl(
                 popover.style.top = `${Math.round(topPx)}px`;
                 popover.style.maxHeight = `${maxH}px`;
             }
+            clampPopoverIntoViewport();
         };
         positionPopover();
 
@@ -4319,6 +4351,28 @@ function enhanceOpenEditorDropdown() {
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
+
+        // The chat character's own worldbook sits above every group, in any pill view.
+        resultsList.querySelectorAll('li.wbo-dd-current-char').forEach((row) => row.classList.remove('wbo-dd-current-char'));
+        if (!searching) {
+            const avatar = getCurrentCharacterAvatar();
+            let currentRow = null;
+            if (avatar) {
+                for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
+                    if (!(row instanceof HTMLElement)) continue;
+                    const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
+                    if (meta?.charOwners?.some((owner) => owner.avatar === avatar)) {
+                        currentRow = row;
+                        break;
+                    }
+                }
+            }
+            if (currentRow) {
+                currentRow.classList.add('wbo-dd-current-char');
+                currentRow.classList.remove('wbo-dd-pin-hidden');
+                if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
+            }
+        }
     };
 
     // Keep folding in the current group filter and leave search results visible.
@@ -4618,6 +4672,8 @@ function enhanceOpenGlobalDropdown() {
      * Build foldable group headings above the rows while the "all" pill is active, matching the
      * ordinary picker's group heads. The global dropdown renders one flat list, so the headings
      * are rebuilt next to the rows and folding hides the rows of that group.
+     * Mounted global books float to the very top; pinned books join the favorites group (mounted
+     * ones first) and are never repeated outside it.
      * @param {HTMLElement[]} rows
      */
     const layoutGlobalGroupRows = (rows) => {
@@ -4627,13 +4683,21 @@ function enhanceOpenGlobalDropdown() {
         if (searching || _activeGlobalPillId !== SPECIAL_GROUPS.ALL) return;
 
         const sections = _latestClassification.orderedSections || [];
+        const mountedNames = getActiveGlobalWorldSet();
         const buckets = new Map();
         const pinnedRows = [];
+        const mountedRows = [];
         for (const row of rows) {
-            const meta = _latestClassification.byName.get(rowWorldName(row));
+            const name = rowWorldName(row);
+            const meta = _latestClassification.byName.get(name);
             if (!meta) continue;
+            const isMounted = mountedNames.has(name);
             if (meta.isPinned) {
-                pinnedRows.push(row);
+                pinnedRows.push({ row, isMounted });
+                continue;
+            }
+            if (isMounted) {
+                mountedRows.push(row);
                 continue;
             }
             const gid = meta.groupId || SPECIAL_GROUPS.UNGROUPED;
@@ -4641,15 +4705,17 @@ function enhanceOpenGlobalDropdown() {
             if (bucket) bucket.push(row);
             else buckets.set(gid, [row]);
         }
+        // Pinned books that are also mounted stay inside favorites, just at its top.
+        pinnedRows.sort((a, b) => Number(b.isMounted) - Number(a.isMounted));
         const orderedIds = sections.map((section) => section.id).filter((id) => buckets.has(id));
         for (const gid of buckets.keys()) {
             if (!orderedIds.includes(gid)) orderedIds.push(gid);
         }
         const sectionName = (gid) => sections.find((section) => section.id === gid)?.name
             || (gid === SPECIAL_GROUPS.UNGROUPED ? '未分组' : gid);
-        const appendGroup = (gid, label, groupRows) => {
+        const appendGroup = (gid, label, groupRows, { openByDefault = false } = {}) => {
             if (groupRows.length === 0) return;
-            const collapsed = isDropdownGroupCollapsed(gid, false);
+            const collapsed = isDropdownGroupCollapsed(gid, openByDefault);
             const head = document.createElement('li');
             head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head';
             head.setAttribute('role', 'presentation');
@@ -4664,7 +4730,9 @@ function enhanceOpenGlobalDropdown() {
                 resultsList.append(row);
             }
         };
-        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows);
+        if (mountedRows.length > 0) appendGroup(ACTIVE_GLOBAL_SECTION_ID, '已开启的全局世界书', mountedRows);
+        // The global dropdown opens its favorites group every time; the ordinary picker keeps its memory.
+        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows.map((item) => item.row), { openByDefault: true });
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
     };
 
@@ -4680,7 +4748,7 @@ function enhanceOpenGlobalDropdown() {
             ? { id: SPECIAL_GROUPS.PINNED, name: '已收藏' }
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
         const searching = Boolean(searchField?.value?.trim());
-        const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, group.id !== SPECIAL_GROUPS.PINNED));
+        const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, true));
         groupHeading.hidden = !group || searching;
         groupHeading.textContent = group?.name || '';
         groupHeading.setAttribute('aria-expanded', String(!collapsed));
@@ -4694,7 +4762,7 @@ function enhanceOpenGlobalDropdown() {
     groupHeading.addEventListener('click', (event) => {
         event.stopPropagation();
         _latestSettings.dropdownCollapsed ??= {};
-        toggleDropdownGroupCollapsed(_activeGlobalPillId, _activeGlobalPillId !== SPECIAL_GROUPS.PINNED);
+        toggleDropdownGroupCollapsed(_activeGlobalPillId, true);
         syncResults();
     });
 
@@ -4706,7 +4774,8 @@ function enhanceOpenGlobalDropdown() {
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
         _latestSettings.dropdownCollapsed ??= {};
-        toggleDropdownGroupCollapsed(gid, false);
+        // The favorites group opens expanded here, so its fold is session-only as well.
+        toggleDropdownGroupCollapsed(gid, gid === SPECIAL_GROUPS.PINNED);
         syncResults();
     };
     const onGroupHeadClick = (event) => {
@@ -5607,7 +5676,8 @@ function enhanceCustomDropdownPopover(containerEl) {
             } else if (isPinFilter) {
                 const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
-                secEl.classList.toggle('wbo-dd-collapsed', Boolean(_latestSettings.dropdownCollapsed[gid]));
+                // Entering the favorites pill opens it expanded, like every other group.
+                secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, gid === SPECIAL_GROUPS.PINNED));
             } else if (isIsolated && gid === SPECIAL_GROUPS.PINNED) {
                 const hasOrigMatch = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasOrigMatch);
@@ -5676,7 +5746,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!st || !gid || head.classList.contains('is-isolated')) return;
             st.cancelRestore();
             const activePill = st.getActivePillId();
-            const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL && gid !== SPECIAL_GROUPS.PINNED;
+            const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL;
             const collapsed = toggleDropdownGroupCollapsed(gid, entered);
             const scroller = findScrollableListEl(optionsHost, containerEl);
             st.syncSections();

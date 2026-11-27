@@ -2,6 +2,20 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 主面板收藏组标题与组合页分组行（2026-11-27 · v2.35.19）
+- 用户要求（已确认）：主面板点进「★ 已收藏」后标题不要用折叠图标，要和其他分组的单组视图一样；全局世界书组合的「自由勾选新建组合」里，第一行 pill 是分组（★ 已收藏 → 用户自己的分组 → 未分组，不含角色书），第二行换行是范围（已选 → 全部 → 全局 → 非角色书 → 角色书），「已选」用黑底白字的强调样式；每个 pill 记住自己上一次的滚动位置（任意位置，不只底部），切回时恢复、首次进入在顶部；有挂载全局书时出现「全局」pill（紧跟「全部」），进入具体分组时隐藏已挂载的全局书行。
+- 追加确认（2026-11-27）：
+  - 全局下拉（`#world_info`）里已挂载的全局书单独置顶，排在「已收藏」上方；既已收藏又已挂载的书只进「已收藏」，并在该组内置顶。全局下拉的「全部」视图每次都默认展开「已收藏」组；普通选书下拉保持原来的折叠记忆，不默认展开。
+  - 「当前聊天角色的世界书置顶」只做在**普通选书下拉（编辑世界书）**：任何分组 pill 下都置顶在列表第一位、不加分组标题，原分组里不再重复。全局面板与全局下拉都不做。
+  - 电脑端角色卡「绑定世界书」的增强面板会探出酒馆页面：给该弹层加了打开后的实测夹紧（横向/纵向都拉回视口内 8px）。
+- 改动：
+  - `src/panel-manager.js` 的 PINNED 单组视图改为 `isSingleView: true` + `collapsed: false`，标题渲染成和其他分组相同的静态头，无 chevron。
+  - `src/panel-quick.js` 组合编辑：`#wbo-cmb-pills` 拆成 `#wbo-cmb-pill-rows` 内两行容器（`#wbo-cmb-group-pills` 分组 / `#wbo-cmb-pills` 范围）；pill 点名、数量、颜色点按上述顺序重建；行上新增 `data-cmb-global` / `data-cmb-pinned`；`__global__`/`__pinned__` 两个新范围，进入具体分组时 `(!isGlobalBook || isChar)`；`editPillScrollState` 只记 `scrollTop`，切换前保存、切换后恢复；滚动宿主优先取 `#wbo-cmb-pick-list` 自身。
+  - `src/native-filter.js` 全局下拉 `layoutGlobalGroupRows` 增加「已开启的全局世界书」置顶组（`ACTIVE_GLOBAL_SECTION_ID`），收藏组内已挂载书排最前，收藏组 `openByDefault: true`（只影响全局下拉）；普通编辑下拉的 `decorateGroupItems` 末尾把当前聊天角色书移出原组、预置到 `resultsList` 首位并加 `wbo-dd-current-char`，搜索时不干预；`attachGroupedSelectControl` 的 `positionPopover` 末尾新增 `clampPopoverIntoViewport()`。
+  - `style.css` 增加 `.wbo-cmb-pill-rows` 两行布局与 `.wbo-pill.is-emphasis`（#16181d 底、白字、白计数）。
+- 验证：单测 245/245；`organize-combos` 8/8（两行 pill 顺序、已选强调色 `rgb(22, 24, 29)|rgb(255, 255, 255)`、进入分组隐藏已挂载全局书、「全局」pill 可见该书、未访问 pill 在顶部、中间位置 120 与底部位置分别记住）；`native-picker-window` 16/16（主面板收藏单组视图静态标题；全局下拉组头顺序 `已开启的全局世界书 → 已收藏 → 角色世界书 → 测试分组乙`、收藏组默认展开；编辑下拉里当前角色书始终排第一；角色绑定弹层在右边缘时完整落在视口内）；`feedback-round` 15/15。
+- 边界：仍为模拟视口验证；「其他」分组目前只有「未分组」，角色书只在第二行开关里；收藏分区不单独列书，只作为 pill 筛选；编辑下拉的角色书置顶在搜索中不生效（保留搜索结果顺序）。
+
 ### 敏感世界书检测排除角色世界书（2026-11-27 · v2.35.18）
 - 用户反馈：部分角色世界书的标题带「肉」「敏感」等字样，被当成疑似敏感书并归组；要求检测敏感书时直接排除角色世界书。
 - 改动：`src/core.js` 的 `analyzeSensitiveOrganizeState`、`src/panel-organize.js` 的 `sensitiveSet` 都按 `isInCharGroup` 排除角色组里的书——它们进普通书分区，不再出现在「疑似敏感世界书」页、敏感计数、全选敏感书与归组目标里；被用户显式 `exclude_from_char` 排除出角色组的绑定书仍按普通书检测（保留既有 M3 R4 一键归组行为）。导入归类路径本来就用 `eligibleNonCharacterTitles` 排除角色书，未改。
@@ -14,6 +28,7 @@
   - 点击标题走 `toggleDropdownGroupCollapsed(gid, false)`，与普通选书下拉共用 `settings.dropdownCollapsed` 记忆；折叠组内的行加 `wbo-global-group-collapsed` 隐藏，箭头旋转成折叠态。
   - 搜索中不插标题、不折叠，命中项直接平铺，与普通下拉一致；关闭下拉时清理标题行与新监听。
   - 收藏书只出现在「已收藏」组，所以它原来所属的分组会变空、不显示标题（与旧置顶行为一致）。
+  - 点进「★ 已收藏」pill 与点进其他分组一致：进入即默认展开，只有本次手动折叠才收；不再继承「全部」里对收藏组的折叠记忆（`isDropdownGroupCollapsed(gid, true)` + `_isolatedFoldOverride`，桌面全局下拉、手机选书列表、增强浮层的收藏分区与标题点击一并统一）。
 - 验证：单测 245/245；`tests/native-picker-window.browser.mjs` 14/14（「全部」下标题断言更新为 `已收藏 (1)`、`角色世界书 (1)`、`测试分组乙 (2)`，并断言标题 chevron 为 7px，新增折叠已收藏、折叠普通组、再次展开、重新打开下拉仍记住折叠状态的断言）；仓库全量浏览器测试 266 项中 262 通过，4 项因本机缺 `playwright` 未运行（floating-window、manager-favorites、prompt-preview 及 manager-tools 的触屏用例，与本次改动无关）。
 - 边界：仍为模拟视口（桌面 1280×860、手机 390×844）验证，未在真实 TauriTavern／iOS 上点过；折叠沿用普通下拉的 mousedown 事件，触屏合成事件尚未真机核对。
 
