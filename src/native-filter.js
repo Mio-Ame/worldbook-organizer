@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.83';
+export const PLUGIN_VERSION = '2.35.84';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7186,7 +7186,10 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
-    if (!isGlobalPopover && editorActiveGlobals.size >= 3) {
+    // Register the 「已开启的全局世界书」 pill whenever there is at least one mounted book: without
+    // this a remembered choice on that pill was judged invalid on reopen and fell back to 已收藏.
+    const activeGlobalCount = isGlobalPopover ? 0 : editorActiveGlobals.size;
+    if (activeGlobalCount >= 1) {
         validGroupIds.add(EDITOR_GLOBALS_GROUP_ID);
     }
     // Each dropdown keeps its own memory: a 已收藏 choice in the global list must not leak into
