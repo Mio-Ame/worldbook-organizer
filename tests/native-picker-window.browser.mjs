@@ -1166,7 +1166,7 @@ test('global dropdown keeps a pinned+mounted book only in the mounted block and 
         assert.equal(await activePill(), '__pinned__');
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
         const heads = await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].map((head) => head.textContent.trim()));
-        assert.deepEqual(heads, ['已开启的全局世界书 (1)', '未分组 (1)']);
+        assert.deepEqual(heads, ['已开启的全局世界书 (1)', '已收藏 (1)1 本已全局，位于全局分组', '未分组 (1)']);
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.select2-dropdown .wbo-global-search-wrap, .select2-dropdown .select2-search__field'))), true);
         await cdp.evalFn(() => window.jQuery('#world_info').select2('close'));
         await cdp.clickSelector('#WIMultiSelector .select2-container');

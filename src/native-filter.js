@@ -4408,7 +4408,7 @@ function enhanceOpenEditorDropdown() {
      * @param {string} label
      * @param {string[]} names
      */
-    const buildEditorMirrorBlock = (gid, label, names) => {
+    const buildEditorMirrorBlock = (gid, label, names, note = '') => {
         const existing = resultsList.querySelector(`li[data-wbo-dd-group="${gid}"]`);
         if (names.length === 0) {
             if (existing) {
@@ -4434,7 +4434,9 @@ function enhanceOpenEditorDropdown() {
             clone.classList.add('wbo-dd-global-mirror');
             clone.setAttribute('data-wbo-mirror-of', name);
             clone.classList.remove('wbo-dd-current-char', 'wbo-dd-pin-hidden');
-            clone.querySelectorAll('.wbo-s2-pin-btn, [data-wbo-editing-badge]').forEach((el) => el.remove());
+            // Mirrors are pure pickers: drop the star button and every dynamic badge so the row
+            // never duplicates 当前编辑 / 已全局 markers.
+            clone.querySelectorAll('.wbo-s2-pin-btn, .wbo-s2-right .wbo-s2-badge').forEach((el) => el.remove());
             mirrors.push(clone);
         }
         if (mirrors.length === 0) return false;
@@ -4446,6 +4448,12 @@ function enhanceOpenEditorDropdown() {
         const head = document.createElement('span');
         head.className = 'select2-results__group';
         head.textContent = `${label} (${mirrors.length})`;
+        if (note) {
+            const noteEl = document.createElement('span');
+            noteEl.className = 'wbo-dd-group-note';
+            noteEl.textContent = note;
+            head.appendChild(noteEl);
+        }
         const nested = document.createElement('ul');
         nested.className = 'select2-results__options select2-results__options--nested';
         for (const mirror of mirrors) nested.appendChild(mirror);
@@ -4458,7 +4466,13 @@ function enhanceOpenEditorDropdown() {
         let rebuilt = buildEditorMirrorBlock(EDITOR_GLOBALS_GROUP_ID, '全局世界书', hasEditorGlobalBlock ? editorGlobalNames : []);
         // Favorites only get their own block in the "all" view; the pill itself already filters.
         if (activePillGroupId === SPECIAL_GROUPS.ALL && pinnedEditorNames.length > 0) {
-            rebuilt = buildEditorMirrorBlock(SPECIAL_GROUPS.PINNED, '已收藏', pinnedEditorNames) || rebuilt;
+            const pinnedMountedCount = pinnedEditorNames.filter((name) => getActiveGlobalWorldSet().has(name)).length;
+            rebuilt = buildEditorMirrorBlock(
+                SPECIAL_GROUPS.PINNED,
+                '已收藏',
+                pinnedEditorNames,
+                pinnedMountedCount > 0 ? `${pinnedMountedCount} 本已全局，位于全局分组` : '',
+            ) || rebuilt;
         } else {
             resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`)?.remove();
         }
@@ -4979,14 +4993,21 @@ function enhanceOpenGlobalDropdown() {
         const buckets = new Map();
         const pinnedRows = [];
         const mountedRows = [];
+        let mountedPinnedCount = 0;
         for (const row of rows) {
             const name = rowWorldName(row);
             const meta = _latestClassification.byName.get(name);
             if (!meta) continue;
             const isMounted = mountedNames.has(name);
-            // A book that is both pinned and mounted shows up once, in the globals block only.
-            if (meta.isPinned && !isMounted) {
-                pinnedRows.push({ row, isMounted });
+            // A book that is both pinned and mounted shows up once, in the globals block only,
+            // while the favorites header keeps counting it.
+            if (meta.isPinned && isMounted) {
+                mountedRows.push(row);
+                mountedPinnedCount += 1;
+                continue;
+            }
+            if (meta.isPinned) {
+                pinnedRows.push(row);
                 continue;
             }
             if (isMounted) {
@@ -4998,23 +5019,27 @@ function enhanceOpenGlobalDropdown() {
             if (bucket) bucket.push(row);
             else buckets.set(gid, [row]);
         }
-        // Pinned books that are also mounted stay inside favorites, just at its top.
-        pinnedRows.sort((a, b) => Number(b.isMounted) - Number(a.isMounted));
         const orderedIds = sections.map((section) => section.id).filter((id) => buckets.has(id));
         for (const gid of buckets.keys()) {
             if (!orderedIds.includes(gid)) orderedIds.push(gid);
         }
         const sectionName = (gid) => sections.find((section) => section.id === gid)?.name
             || (gid === SPECIAL_GROUPS.UNGROUPED ? '未分组' : gid);
-        const appendGroup = (gid, label, groupRows, { openByDefault = false } = {}) => {
-            if (groupRows.length === 0) return;
+        const appendGroup = (gid, label, groupRows, { openByDefault = false, count = groupRows.length, note = '', allowEmpty = false } = {}) => {
+            if (groupRows.length === 0 && !allowEmpty) return;
             const collapsed = isDropdownGroupCollapsed(gid, openByDefault);
             const head = document.createElement('li');
             head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head';
             head.setAttribute('role', 'presentation');
             head.setAttribute('data-wbo-dd-group', gid);
             head.setAttribute('title', '点击展开或折叠该分组');
-            head.textContent = `${label} (${groupRows.length})`;
+            head.textContent = `${label} (${count})`;
+            if (note) {
+                const noteEl = document.createElement('span');
+                noteEl.className = 'wbo-dd-group-note';
+                noteEl.textContent = note;
+                head.appendChild(noteEl);
+            }
             head.classList.toggle('is-collapsed', collapsed);
             head.setAttribute('aria-expanded', String(!collapsed));
             resultsList.append(head);
@@ -5024,8 +5049,15 @@ function enhanceOpenGlobalDropdown() {
             }
         };
         if (mountedRows.length > 0) appendGroup(ACTIVE_GLOBAL_SECTION_ID, '已开启的全局世界书', mountedRows);
-        // Favorites follow the saved fold state here, exactly like the ordinary picker.
-        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows.map((item) => item.row));
+        // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
+        const pinnedTotal = pinnedRows.length + mountedPinnedCount;
+        if (pinnedTotal > 0) {
+            appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows, {
+                count: pinnedTotal,
+                note: mountedPinnedCount > 0 ? `${mountedPinnedCount} 本已全局，位于全局分组` : '',
+                allowEmpty: true,
+            });
+        }
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
     };
 
