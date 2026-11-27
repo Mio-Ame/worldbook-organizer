@@ -970,7 +970,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.54';
+export const PLUGIN_VERSION = '2.35.55';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7081,6 +7081,90 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }
         syncSpecialSections({ searching, isPinFilter, isIsolated });
+        syncEnhancedSearchBlock(searching);
+    };
+
+    /**
+     * Searching in the enhanced editor popover used to leave the rows scattered under their group
+     * heads. Collect the hits under one 「搜索匹配到的世界书」 head (≥2) or badge a single hit,
+     * matching the ordinary picker (U3). Rows stay where the host script put them; only the head
+     * is ours, so the script keeps full control of its own DOM.
+     * @param {boolean} searching
+     */
+    let _lastEnhancedSearchSig = '';
+    const clearEnhancedSearchBlock = () => {
+        optionsHost.querySelectorAll('.wbo-enhanced-search-head').forEach((el) => el.remove());
+        optionsHost.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin.is-enhanced-search').forEach((el) => el.remove());
+        optionsHost.querySelectorAll('[data-wbo-enhanced-search-origin]').forEach((el) => {
+            el.removeAttribute('data-wbo-enhanced-search-origin');
+        });
+        containerEl.classList.remove('wbo-enhanced-searching');
+        _lastEnhancedSearchSig = '';
+    };
+    const syncEnhancedSearchBlock = (searching) => {
+        if (isGlobalPopover) return;
+        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim().toLowerCase() : '';
+        const tokens = term ? term.split(/\s+/).filter(Boolean) : [];
+        if (!searching || tokens.length === 0) {
+            if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
+            return;
+        }
+        const rowWorld = (row) => row.dataset.wboEnhancedWorld
+            || row.querySelector('.wbo-gr-world-title')?.textContent?.trim()
+            || (row.textContent || '').trim();
+        // Match by the search term ourselves: the host script may rebuild rows (dropping any
+        // inline hiding), so reading their display state is not reliable.
+        const rows = [...optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)]
+            .filter((row) => {
+                if (!(row instanceof HTMLElement)) return false;
+                const name = rowWorld(row);
+                if (!name) return false;
+                const meta = _latestClassification?.byName?.get(name);
+                const haystack = String(meta?.searchableText || name.toLowerCase());
+                return tokens.every((token) => haystack.includes(token));
+            });
+        const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
+        const head = optionsHost.querySelector('.wbo-enhanced-search-head');
+        const domIntact = rows.length <= 1
+            ? Boolean(optionsHost.querySelector('.wbo-s2-badge.is-search-match'))
+            : Boolean(head);
+        if (sig === _lastEnhancedSearchSig && domIntact) return;
+        clearEnhancedSearchBlock();
+        _lastEnhancedSearchSig = sig;
+        if (rows.length === 0) return;
+        // Hide the group heads through a container class (CSS), because the host script may
+        // rebuild the section nodes at any time and inline styles would be lost.
+        containerEl.classList.toggle('wbo-enhanced-searching', true);
+        const originOf = (row) => _latestClassification?.byName?.get(getOptionText(row))?.groupName || '未分组';
+        if (rows.length === 1) {
+            const right = rows[0].querySelector('.wbo-s2-right');
+            if (right instanceof HTMLElement) {
+                const badge = document.createElement('span');
+                badge.className = 'wbo-s2-badge is-search-match';
+                badge.setAttribute('data-wbo-search-badge', '1');
+                badge.textContent = '搜索匹配到的世界书';
+                right.prepend(badge);
+                const origin = document.createElement('span');
+                origin.className = 'wbo-s2-badge is-search-origin is-enhanced-search';
+                origin.textContent = originOf(rows[0]);
+                right.prepend(origin);
+            }
+            return;
+        }
+        for (const row of rows) {
+            row.querySelectorAll(':scope > .wbo-s2-right > .is-search-match').forEach((el) => el.remove());
+            const right = row.querySelector('.wbo-s2-right');
+            if (!(right instanceof HTMLElement) || right.querySelector('.is-enhanced-search')) continue;
+            const origin = document.createElement('span');
+            origin.className = 'wbo-s2-badge is-search-origin is-enhanced-search';
+            origin.textContent = originOf(row);
+            right.prepend(origin);
+        }
+        const headEl = document.createElement('div');
+        headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head wbo-enhanced-search-head is-isolated`;
+        headEl.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        headEl.textContent = `搜索匹配到的世界书 (${rows.length})`;
+        rows[0].parentElement.insertBefore(headEl, rows[0]);
     };
 
     const popoverScrollHost = getScrollHost();

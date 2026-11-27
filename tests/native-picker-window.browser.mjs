@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
@@ -1555,6 +1556,134 @@ test('editor dropdown expands the globals block when its pill or its head is use
         await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
         assert.equal(await globalsRowsVisible(), 3);
     }, [], seedWithGroup);
+});
+
+test('reference dropdown script and the plugin coexist on the editor dropdown', async (t) => {
+    const script = JSON.parse(readFileSync(resolve('..', '参考仓库', '下拉框美化.json'), 'utf8')).content;
+    const storageKey = script.match(/const STORAGE_KEY = '([^']+)'/)?.[1];
+    const instanceFlag = script.match(/const INSTANCE_FLAG = '([^']+)'/)?.[1];
+    assert.ok(storageKey && instanceFlag);
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn((key, code) => {
+            localStorage.setItem(key, JSON.stringify({ settings: {}, pinned: {}, meta: { welcomePopupShown: true } }));
+            (0, eval)(code);
+        }, storageKey, script);
+        await cdp.evalFn(() => {
+            const select = document.getElementById('world_editor_select');
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            select.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+        });
+        const opened = await waitForCondition(cdp, () => Boolean(document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container')), 4000).then(() => true).catch(() => false);
+        if (!opened) {
+            t.skip('参考脚本在这个模拟宿主里没有打开编辑器下拉，U9 需真机核对');
+            return;
+        }
+        await waitForCondition(cdp, () => Boolean(document.querySelector('[data-wbo-popover-role="editor"]')));
+        // Our decorations land on the script's DOM instead of fighting it.
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-wbo-popover-role="editor"] .wbo-pop-filter-bar'))), true);
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-pop-section').length > 0), true);
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-gr-pin-btn').length > 0), true);
+        // No row is duplicated by our grouping.
+        const duplicated = await cdp.evalFn(() => {
+            const names = [...document.querySelectorAll('[data-wbo-popover-role="editor"] .gr-option')]
+                .map((row) => row.dataset.wboEnhancedWorld || (row.textContent || '').trim())
+                .filter(Boolean);
+            return names.filter((name, index) => names.indexOf(name) !== index);
+        });
+        assert.deepEqual(duplicated, []);
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    });
+});
+
+test('enhanced dropdown groups search hits under one 搜索匹配到的世界书 head', async (t) => {
+    const bookSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['许文风', '许剧情甲', '许剧情乙', '别的书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }, { id: 'g-plot', name: '剧情' }],
+            assignments: { 许文风: 'g-style', 许剧情甲: 'g-plot', 许剧情乙: 'g-plot', 别的书: 'g-plot' },
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => {
+            document.getElementById('gr-global-dropdown-container')?.remove();
+            const select = document.getElementById('world_editor_select');
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            const container = document.createElement('div');
+            container.id = 'gr-global-dropdown-container';
+            container.className = 'gr-container-enhanced open';
+            container.dataset.wboSourceRole = 'editor';
+            container.style.cssText = 'position:fixed;top:140px;left:20px;width:420px;z-index:9000;background:white;color:#28394b';
+            const scroller = document.createElement('div');
+            scroller.className = 'gr-options';
+            scroller.style.cssText = 'display:block;max-height:420px;overflow:auto';
+            scroller.innerHTML = '<div class="gr-search-box" style="position:sticky;bottom:0;padding:4px 8px"><input type="search" spellcheck="false" style="width:100%"></div><div class="gr-options-container"></div>';
+            const options = scroller.querySelector('.gr-options-container');
+            for (const [index, option] of [...select.options].entries()) {
+                const row = document.createElement('div');
+                row.className = 'gr-option';
+                row.style.minHeight = '29px';
+                row.dataset.index = String(index);
+                row.dataset.value = option.value;
+                row.textContent = option.textContent;
+                options.append(row);
+            }
+            container.append(scroller);
+            document.body.append(container);
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] .wbo-pop-filter-bar')));
+        const search = await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            const rows = [...pop.querySelectorAll('.gr-option')];
+            const keep = (row) => (row.textContent || '').includes('许');
+            rows.forEach((row) => { row.style.display = keep(row) ? '' : 'none'; });
+            const input = pop.querySelector('input[type="search"]');
+            input.value = '许';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            return { total: rows.length, kept: rows.filter(keep).length };
+        });
+        assert.equal(search.kept, 3);
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-head')));
+        const grouped = await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            return {
+                head: pop.querySelector('.wbo-enhanced-search-head')?.textContent?.trim(),
+                visibleRows: [...pop.querySelectorAll('.gr-option')]
+                    .filter((row) => row.getBoundingClientRect().height > 0)
+                    .map((row) => (row.textContent || '').trim()),
+                groupHeadsHidden: [...pop.querySelectorAll('.wbo-pop-section > .wbo-dd-group-head')]
+                    .every((head) => getComputedStyle(head).display === 'none'),
+            };
+        });
+        t.diagnostic(JSON.stringify(grouped));
+        assert.match(grouped.head, /搜索匹配到的世界书 \(3\)/);
+        assert.equal(grouped.groupHeadsHidden, true);
+        // A single hit switches to a row badge instead of the head.
+        await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            [...pop.querySelectorAll('.gr-option')].forEach((row) => {
+                row.style.display = (row.textContent || '').includes('许文风') ? '' : 'none';
+            });
+            const input = pop.querySelector('input[type="search"]');
+            input.value = '许文';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]')));
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-head'))), false);
+        // Clearing the search restores the group heads.
+        await cdp.evalFn(() => {
+            const pop = document.querySelector('#gr-global-dropdown-container');
+            [...pop.querySelectorAll('.gr-option')].forEach((row) => { row.style.display = ''; });
+            const input = pop.querySelector('input[type="search"]');
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]'));
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section > .wbo-dd-group-head')]
+            .every((head) => getComputedStyle(head).display !== 'none')), true);
+    }, [], bookSeed);
 });
 
 test('enhanced dropdown gets a globals block and a flat favorites list', async () => {
