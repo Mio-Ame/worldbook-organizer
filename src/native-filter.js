@@ -2224,14 +2224,31 @@ function openMobileEditorPickerSheet() {
         return list;
     };
 
+    // Mounted globals get their own block (3+ of them), matching the desktop dropdown.
+    const getMobileGlobalBooks = () => {
+        const mounted = getActiveGlobalWorldSet();
+        const out = [];
+        const seen = new Set();
+        for (const book of [...bareBooks, ...sections.flatMap((sec) => sec.books)]) {
+            if (!mounted.has(book.realName) || seen.has(book.realName)) continue;
+            seen.add(book.realName);
+            out.push(book);
+        }
+        return out;
+    };
+
     const renderPills = () => {
         if (!pillsEl) return;
+        const mobileGlobals = getMobileGlobalBooks();
         const totalCount = bareBooks.length + sections.reduce((sum, s) => sum + s.books.length, 0);
         const pinnedCount = getPinnedBooks().length;
         const items = [
             { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
             ...(pinnedCount > 0 || activePillId === SPECIAL_GROUPS.PINNED
                 ? [{ id: SPECIAL_GROUPS.PINNED, label: '★ 已收藏', count: pinnedCount, color: '' }]
+                : []),
+            ...(mobileGlobals.length >= 3
+                ? [{ id: EDITOR_GLOBALS_GROUP_ID, label: '全局世界书', count: mobileGlobals.length, color: '' }]
                 : []),
             ...sections.map((s) => ({ id: s.id, label: s.name, count: s.books.length, color: s.color })),
         ];
@@ -2287,6 +2304,8 @@ function openMobileEditorPickerSheet() {
                 [...bareBooks, ...sections.flatMap((sec) => sec.books)]
                     .filter((book) => book.isPinned)
                     .forEach((book) => push(book, originOf(book)));
+            } else if (activePillId === EDITOR_GLOBALS_GROUP_ID) {
+                getMobileGlobalBooks().forEach((book) => push(book, '全局'));
             } else {
                 const sec = sections.find((item) => item.id === activePillId);
                 (sec?.books || []).forEach((book) => push(book, sec.name));
@@ -2316,6 +2335,14 @@ function openMobileEditorPickerSheet() {
             listEl.innerHTML = pinned.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${SPECIAL_GROUPS.PINNED}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">★ 已收藏</span><span class="wbo-group-count">${pinned.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${pinned.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无收藏世界书，点击行右侧 ☆ 可收藏</div>';
+            return;
+        }
+        if (!q && activePillId === EDITOR_GLOBALS_GROUP_ID) {
+            const globals = getMobileGlobalBooks();
+            const collapsed = isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, false);
+            listEl.innerHTML = globals.length > 0
+                ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">全局世界书</span><span class="wbo-group-count">${globals.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${globals.map(renderMpRowHtml).join('')}</div>`}</div>`
+                : '<div class="wbo-empty-hint">暂无已开启的全局世界书</div>';
             return;
         }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
@@ -4103,7 +4130,7 @@ function enhanceCharBindPopup(charWorldEl) {
             attachGroupedSelectControl(primarySelect, {
                 multiple: false,
                 currentAvatar,
-                collapseCharByDefault: collapseChar,
+                collapseCharByDefault: false,
                 prioritizeCharGroup: true,
                 placeholder: '--- 无主世界书 ---',
             });
@@ -4141,7 +4168,7 @@ function enhanceCharBindPopup(charWorldEl) {
             attachGroupedSelectControl(extrasSelect, {
                 multiple: true,
                 currentAvatar,
-                collapseCharByDefault: collapseChar,
+                collapseCharByDefault: false,
                 prioritizeCharGroup: false,
                 placeholder: '未选择附加世界书，点击选择...',
             });
@@ -4585,6 +4612,7 @@ function enhanceOpenEditorDropdown() {
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
     const decorateGroupItems = () => {
+        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         const globalsRebuilt = layoutEditorGlobalBlock();
         const searching = isSearching();
         const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
