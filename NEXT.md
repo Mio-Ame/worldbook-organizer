@@ -1,3 +1,11 @@
+### 搜索后点 pill 面板被关：保住焦点（2026-11-28 · v2.35.76）
+- 用户反馈（TauriTavern 2.4.0 / iOS 440×860）：搜索结束后点插件面板（如切换分组）时下拉面板直接关闭。`ui` 日志顺序证实：`down:input.gr-search-input` → `search-blur` → `down:button.wbo-dd-pill`，即**点 pill 使搜索框失焦**，宿主的 blur 逻辑先关掉浮层。这也解释了早前「点搜索框秒关、输入法残留」的同类现象。
+- 修复（`src/native-filter.js`）：
+  - `createDropdownFilterBar()`：pill 条上 capture 监听 `pointerdown` / `mousedown`，命中 `.wbo-dd-pill` 时 `preventDefault()`——点击前保住焦点，`click` 仍会正常触发。
+  - `enhanceCustomDropdownPopover()`：容器上 capture 监听 `pointerdown`，命中 `.wbo-dd-pill` / `.wbo-dd-group-head` / `.wbo-s2-pin` 时 `preventDefault()`（排除 `input/textarea`，也**不拦行选择**，避免影响移动端滚动）。
+- 说明：搜索框失焦记录（`search-blur`）仍会出现于用户主动收起键盘/点外部，但已不会由插件自身的控件触发。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-mobile-picker-lifecycle` 23/23（59/59）。
+
 ### 全局下拉记住分组 + 分组条滚动不再顶歪（2026-11-28 · v2.35.75）
 - 用户反馈（TauriTavern 2.4.0 / iOS）：全局下拉切到别的分组后重开又回到「已收藏」，没记忆；分组条出现滚动条把胶囊挤高、且美化脚本里看不到滑块。
 - 修复（`src/native-filter.js`）：

@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.75';
+export const PLUGIN_VERSION = '2.35.76';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -5024,6 +5024,18 @@ function findScrollableListEl(startEl, boundaryEl) {
 function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '') {
     const barEl = document.createElement('div');
     barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}`;
+    // Mobile/iOS: tapping a pill blurs the search box, and the host closes the popover on that
+    // blur — the panel vanished right as the user picked a group. Keep the focus where it is.
+    barEl.addEventListener('pointerdown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest('.wbo-dd-pill')) return;
+        event.preventDefault();
+    }, true);
+    barEl.addEventListener('mousedown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest('.wbo-dd-pill')) return;
+        event.preventDefault();
+    }, true);
 
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
@@ -6770,6 +6782,13 @@ function enhanceCustomDropdownPopover(containerEl) {
         return;
     }
     bindDrawerSafeBubbleGuard(containerEl);
+    // Keep the search box focused when a popover control is tapped: on iOS the resulting blur
+    // closes the host popover ("panel disappears right after searching").
+    containerEl.addEventListener('pointerdown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target || target.closest('input, textarea')) return;
+        if (target.closest('.wbo-dd-pill, .wbo-dd-group-head, .wbo-s2-pin')) event.preventDefault();
+    }, true);
     containerEl.dataset.wboPopoverRole = detectedRole;
     const isGlobalPopover = detectedRole === 'global';
     const isGlobalOpening = isGlobalPopover && !containerEl.hidden && containerEl.style.display !== 'none' && !containerEl.dataset.wboGlobalOpen;
