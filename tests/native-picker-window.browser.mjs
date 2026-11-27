@@ -1325,6 +1325,33 @@ test('editor dropdown keeps a plain favorite at the top of its own group', async
     }, [], pinnedSeed);
 });
 
+test('editor dropdown puts the two bare globals above the favorites block', async () => {
+    const twoGlobalSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['全局甲', '全局乙', '收藏普通', '普通书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: ['全局甲', '全局乙'],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-a', name: '测试分组甲' }],
+            assignments: { 收藏普通: 'g-a', 普通书: 'g-a' },
+            pinnedBooks: ['收藏普通'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__pinned__"]')));
+        const order = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options > li')]
+            .filter((row) => row.getBoundingClientRect().height > 0)
+            .map((row) => row.getAttribute('data-wbo-dd-group')
+                || row.querySelector('[data-wbo-world]')?.getAttribute('data-wbo-world') || '?'));
+        // Both mounted globals are untitled rows right above the favorites block.
+        const firstFavorite = order.indexOf('__pinned__');
+        assert.ok(firstFavorite > 0);
+        assert.deepEqual(order.slice(0, firstFavorite).sort(), ['全局乙', '全局甲'].sort());
+        assert.deepEqual(order.slice(0, 2).sort(), ['全局乙', '全局甲'].sort());
+    }, [], twoGlobalSeed);
+});
+
 test('editor dropdown expands the globals block when its pill or its head is used', async () => {
     const threeGlobals = ['全局甲', '全局乙', '全局丙'];
     const seedWithGroup = createDefaultSeed({
@@ -1358,4 +1385,99 @@ test('editor dropdown expands the globals block when its pill or its head is use
         await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
         assert.equal(await globalsRowsVisible(), 3);
     }, [], seedWithGroup);
+});
+
+test('enhanced dropdown gets a globals block and a flat favorites list', async () => {
+    const threeGlobals = ['全局甲', '全局乙', '全局丙'];
+    const enhancedSeed = createDefaultSeed({
+        characters: [{ avatar: 'example.png', name: '测试角色', data: { extensions: { world: '角色测试书' } } }],
+        worldbooks: Object.fromEntries([...threeGlobals, '角色测试书', '收藏书', '普通甲'].map((name) => [name, { entries: {} }])),
+        selected_world_info: threeGlobals,
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }],
+            assignments: { 收藏书: 'g-style', 普通甲: 'g-style', 全局甲: 'g-style' },
+            pinnedBooks: ['收藏书'],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const openEnhanced = () => cdp.evalFn(() => {
+            document.getElementById('gr-global-dropdown-container')?.remove();
+            const select = document.getElementById('world_editor_select');
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            const container = document.createElement('div');
+            container.id = 'gr-global-dropdown-container';
+            container.className = 'gr-container-enhanced open';
+            container.dataset.wboSourceRole = 'editor';
+            container.style.cssText = 'position:fixed;top:140px;left:20px;width:420px;z-index:9000;background:white;color:#28394b';
+            const scroller = document.createElement('div');
+            scroller.className = 'gr-options';
+            scroller.style.cssText = 'display:block;max-height:420px;overflow:auto';
+            scroller.innerHTML = '<div class="gr-search-box" style="position:sticky;bottom:0;padding:4px 8px"><input type="search" spellcheck="false" style="width:100%"></div><div class="gr-options-container"></div>';
+            const options = scroller.querySelector('.gr-options-container');
+            for (const [index, option] of [...select.options].entries()) {
+                const row = document.createElement('div');
+                row.className = 'gr-option';
+                row.style.minHeight = '29px';
+                row.dataset.index = String(index);
+                row.dataset.value = option.value;
+                row.textContent = option.textContent;
+                row.classList.toggle('selected', option.value === '');
+                options.append(row);
+            }
+            container.append(scroller);
+            document.body.append(container);
+        });
+        await cdp.evalFn(() => {
+            const select = document.getElementById('world_editor_select');
+            const chosen = [...select.options].find((item) => item.textContent === '角色测试书');
+            window.jQuery(select).val(chosen.value).trigger('change');
+        });
+        await openEnhanced();
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] .wbo-dd-pill[data-wbo-pill="__globals__"]')));
+        const globalsSection = await cdp.evalFn((names) => {
+            const section = document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__globals__"]');
+            return {
+                head: section?.querySelector(':scope > .wbo-dd-group-head')?.textContent?.trim(),
+                rows: [...(section?.querySelectorAll('.gr-option') || [])]
+                    .map((row) => names.find((name) => (row.textContent || '').includes(name)) || null),
+                firstSection: document.querySelector('#gr-global-dropdown-container .wbo-pop-section')?.getAttribute('data-wbo-dd-group'),
+            };
+        }, threeGlobals);
+        assert.match(globalsSection.head, /全局世界书 \(3\)/);
+        assert.deepEqual([...globalsSection.rows].sort(), [...threeGlobals].sort());
+        assert.equal(globalsSection.firstSection, '__globals__');
+        // The favorites pill is one flat list with an origin badge instead of per-group sections.
+        await cdp.evalFn(() => {
+            document.querySelector('#gr-global-dropdown-container .wbo-dd-pill[data-wbo-pill="__pinned__"]').click();
+        });
+        await waitForCondition(cdp, () => {
+            const section = document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__pinned__"]');
+            return Boolean(section && !section.classList.contains('wbo-dd-group-hidden'));
+        });
+        const flat = await cdp.evalFn(() => {
+            const section = document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__pinned__"]');
+            const row = section?.querySelector('.gr-option');
+            return {
+                rows: [...(section?.querySelectorAll('.gr-option') || [])].map((item) => (item.textContent || '').includes('收藏书')),
+                origin: row?.querySelector('.is-origin')?.textContent?.trim(),
+                groupSectionsVisible: [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="g-style"]')]
+                    .filter((item) => item.getBoundingClientRect().height > 0).length,
+            };
+        });
+        assert.deepEqual(flat.rows, [true]);
+        assert.equal(flat.origin, '文风');
+        assert.equal(flat.groupSectionsVisible, 0);
+        // Above another group's pill the globals block folds, but its head still opens it.
+        await cdp.evalFn(() => {
+            document.querySelector('#gr-global-dropdown-container .wbo-dd-pill[data-wbo-pill="g-style"]').click();
+        });
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+        await cdp.evalFn(() => {
+            const head = document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__globals__"] .wbo-dd-group-head');
+            head.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+            head.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+    }, [], enhancedSeed);
 });

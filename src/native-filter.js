@@ -2281,6 +2281,7 @@ function openMobileEditorPickerSheet() {
                     ${b.__searchMatch ? '<span class="wbo-s2-badge is-search-match">搜索匹配到的世界书</span>' : ''}
                     ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">${escHtml(b.__origin)}</span>` : ''}
                     ${b.__currentChar ? '<span class="wbo-s2-badge is-current-char">当前角色</span>' : ''}
+                    ${getActiveGlobalWorldSet().has(b.realName) ? '<span class="wbo-s2-badge is-global" data-wbo-global-badge="1">已全局</span>' : ''}
                     ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                     <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消收藏' : '收藏世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
@@ -4639,7 +4640,7 @@ function enhanceOpenEditorDropdown() {
             if (mountedPinnedNames.length > 0) {
                 note = hasEditorGlobalBlock
                     ? `${mountedPinnedNames.length} 本已全局，位于全局分组`
-                    : `${mountedPinnedNames.length} 本已全局，显示在下方`;
+                    : `${mountedPinnedNames.length} 本已全局，显示在上方`;
             }
             rebuilt = buildEditorMirrorBlock(SPECIAL_GROUPS.PINNED, '已收藏', favoriteNames, {
                 // With a globals block the favorites head stays as a counter. Below the block
@@ -4750,6 +4751,24 @@ function enhanceOpenEditorDropdown() {
     };
 
     /**
+     * Below the globals-block threshold the mounted globals are untitled top rows; they must sit
+     * right under the current character row and above the favorites block (user request
+     * 2026-11-28: 两本全局裸显示在「已收藏」上方).
+     * @param {HTMLElement | null} currentRow
+     */
+    const hoistBareGlobalsAboveFavorites = (currentRow) => {
+        if (isSearching() || hasEditorGlobalBlock) return;
+        const pinnedBlock = resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`);
+        if (!pinnedBlock) return;
+        const rows = [...resultsList.querySelectorAll(':scope > li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')]
+            .filter((row) => row !== currentRow && editorGlobalNameSet.has(getDropdownOptionWorldName(row)));
+        for (const row of rows) {
+            if (row.nextElementSibling === pinnedBlock) continue;
+            resultsList.insertBefore(row, pinnedBlock);
+        }
+    };
+
+    /**
      * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
@@ -4842,6 +4861,7 @@ function enhanceOpenEditorDropdown() {
         }
         // Every mirror block owns its books: park the duplicated real rows (U1).
         syncEditorDupeRows(currentRow);
+        hoistBareGlobalsAboveFavorites(currentRow);
         syncGlobalBadges();
         layoutEditorSearchMatches();
         // Mirror rows never carry the 当前编辑 badge.
@@ -5949,7 +5969,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     }
 
-    // Inject right-aligned `[当前编辑] [☆ / ★]` controls into EVERY real `.gr-option` row!
+    // Inject right-aligned `[当前编辑] [已全局] [☆ / ★]` controls into EVERY real `.gr-option` row!
+    const mountedGlobalSet = isGlobalPopover ? new Set() : getActiveGlobalWorldSet();
     for (const optEl of realOptionNodes) {
         const text = getOptionText(optEl);
         const meta = _latestClassification.byName.get(text);
@@ -5986,6 +6007,14 @@ function enhanceCustomDropdownPopover(containerEl) {
             badge.setAttribute('data-wbo-editing-badge', '1');
             badge.textContent = '当前编辑';
             rightWrap.appendChild(badge);
+        }
+        if (!isGlobalPopover && mountedGlobalSet.has(worldName) && !rightWrap.querySelector('[data-wbo-global-badge]')) {
+            const globalBadge = document.createElement('span');
+            globalBadge.className = 'wbo-s2-badge is-global';
+            globalBadge.setAttribute('data-wbo-ui', '1');
+            globalBadge.setAttribute('data-wbo-global-badge', '1');
+            globalBadge.textContent = '已全局';
+            rightWrap.appendChild(globalBadge);
         }
         rightWrap.appendChild(pinBtn);
     }
@@ -6133,6 +6162,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
+    if (!isGlobalPopover && editorActiveGlobals.size >= 3) {
+        validGroupIds.add(EDITOR_GLOBALS_GROUP_ID);
+    }
     const previousGroup = isGlobalPopover
         ? (isGlobalOpening ? SPECIAL_GROUPS.PINNED : containerEl._wboPopState?.getActivePillId())
         : _dropdownMemory.activePillGroupId;
@@ -6240,6 +6272,122 @@ function enhanceCustomDropdownPopover(containerEl) {
         sectionEls.push(secEl);
     }
 
+    // Mounted globals get their own block here too (iOS / compatible-script dropdown), and the
+    // favorites pill becomes one flat list with an origin badge instead of per-group sections.
+    /** @type {HTMLElement | null} */
+    let globalsSectionEl = null;
+    /** @type {HTMLElement | null} */
+    let favoritesSectionEl = null;
+    /** Options that live in the flat favorites list while its pill is active. */
+    const favoriteOptionHomes = new WeakMap();
+    const favoriteOptions = [];
+    const mountedGlobalOptions = [];
+    if (!isGlobalPopover) {
+        for (const optEl of realOptionNodes) {
+            const name = getOptionText(optEl);
+            const meta = _latestClassification?.byName?.get(name);
+            const realName = meta?.realName || name;
+            if (editorActiveGlobals.has(realName)) mountedGlobalOptions.push(optEl);
+            // A book that is both favorited and mounted lives in the globals area only.
+            if (meta?.isPinned && !editorActiveGlobals.has(realName)) {
+                favoriteOptions.push(optEl);
+                favoriteOptionHomes.set(optEl, optEl.closest('.wbo-pop-section')?.querySelector('.wbo-pop-group-body') || optionsHost);
+            }
+        }
+        if (mountedGlobalOptions.length >= 3) {
+            globalsSectionEl = document.createElement('div');
+            globalsSectionEl.className = 'wbo-pop-section';
+            globalsSectionEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+            const headEl = document.createElement('div');
+            headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+            headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+            headEl.textContent = `全局世界书 (${mountedGlobalOptions.length})`;
+            headEl.title = '点击展开或折叠该分组';
+            const bodyEl = document.createElement('div');
+            bodyEl.className = 'wbo-pop-group-body';
+            for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
+            globalsSectionEl.append(headEl, bodyEl);
+            // Above every other section, and above the favorites one.
+            optionsHost.insertBefore(globalsSectionEl, optionsHost.firstChild);
+        }
+        if (favoriteOptions.length > 0) {
+            favoritesSectionEl = document.createElement('div');
+            favoritesSectionEl.className = 'wbo-pop-section';
+            favoritesSectionEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+            const headEl = document.createElement('div');
+            headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+            headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+            headEl.textContent = `★ 已收藏 (${favoriteOptions.length})`;
+            headEl.title = '点击展开或折叠该分组';
+            const bodyEl = document.createElement('div');
+            bodyEl.className = 'wbo-pop-group-body';
+            favoritesSectionEl.append(headEl, bodyEl);
+            optionsHost.insertBefore(favoritesSectionEl, globalsSectionEl ? globalsSectionEl.nextElementSibling : optionsHost.firstChild);
+            for (const optEl of favoriteOptions) {
+                const right = optEl.querySelector('.wbo-s2-right');
+                if (right && !right.querySelector('.is-origin')) {
+                    const origin = document.createElement('span');
+                    origin.className = 'wbo-s2-badge is-search-origin is-origin';
+                    origin.textContent = _latestClassification?.byName?.get(getOptionText(optEl))?.groupName || '未分组';
+                    right.prepend(origin);
+                }
+            }
+        }
+    }
+
+    /**
+     * Show/hide the two special sections of the enhanced editor popover.
+     * @param {{ searching: boolean, isPinFilter: boolean, isIsolated: boolean }} flags
+     */
+    const syncSpecialSections = ({ searching, isPinFilter, isIsolated }) => {
+        if (isGlobalPopover) return;
+        for (const sectionEl of [globalsSectionEl, favoritesSectionEl]) {
+            if (!sectionEl) continue;
+            const gid = sectionEl.getAttribute('data-wbo-dd-group') || '';
+            const bodyEl = sectionEl.querySelector('.wbo-pop-group-body');
+            const headEl = sectionEl.querySelector('.wbo-dd-group-head');
+            if (!(bodyEl instanceof HTMLElement) || !(headEl instanceof HTMLElement)) continue;
+            if (searching) {
+                // Search regroups rows; keep them visible and drop the block chrome.
+                sectionEl.classList.remove('wbo-dd-group-hidden', 'wbo-dd-collapsed');
+                headEl.classList.add('is-isolated');
+                headEl.style.display = 'none';
+                continue;
+            }
+            headEl.style.display = '';
+            headEl.classList.remove('is-isolated');
+            const entered = isIsolated && activePillGroupId === gid;
+            let collapsed = isDropdownGroupCollapsed(gid, isPinFilter || entered);
+            if (gid === EDITOR_GLOBALS_GROUP_ID && isIsolated && !entered) {
+                // Folded above another group, but the user can still open it by hand.
+                collapsed = !_isolatedFoldOverride.has(gid);
+            }
+            sectionEl.classList.remove('wbo-dd-group-hidden');
+            sectionEl.classList.toggle('wbo-dd-collapsed', collapsed);
+            headEl.setAttribute('aria-expanded', String(!collapsed));
+        }
+        // The favorites pill is one flat list (origin shown as a badge), so its per-group
+        // sections and the globals block stay hidden while it is active.
+        if (isPinFilter) {
+            for (const secEl of sectionEls) secEl.classList.add('wbo-dd-group-hidden');
+            globalsSectionEl?.classList.add('wbo-dd-group-hidden');
+            if (favoritesSectionEl) {
+                const bodyEl = favoritesSectionEl.querySelector('.wbo-pop-group-body');
+                for (const optEl of favoriteOptions) bodyEl?.appendChild(optEl);
+                favoritesSectionEl.classList.remove('wbo-dd-group-hidden');
+            }
+        } else if (favoritesSectionEl) {
+            for (const optEl of favoriteOptions) {
+                const home = favoriteOptionHomes.get(optEl);
+                if (home && optEl.parentElement !== home) home.appendChild(optEl);
+            }
+        }
+        // The origin badge only belongs to the flat favorites list.
+        for (const optEl of favoriteOptions) {
+            optEl.querySelector(':scope > .wbo-s2-right > .is-origin')?.classList.toggle('wbo-origin-hidden', !isPinFilter);
+        }
+    };
+
     let filterBar = null;
     let pillScrollEl = null;
     const syncPillButtons = () => {
@@ -6328,6 +6476,7 @@ function enhanceCustomDropdownPopover(containerEl) {
                 secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, enteredGroup));
             }
         }
+        syncSpecialSections({ searching, isPinFilter, isIsolated });
     };
 
     const popoverScrollHost = getScrollHost();
@@ -6387,7 +6536,19 @@ function enhanceCustomDropdownPopover(containerEl) {
             st.cancelRestore();
             const activePill = st.getActivePillId();
             const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL;
-            const collapsed = toggleDropdownGroupCollapsed(gid, entered);
+            // Inside another group's pill the globals block is folded by default but stays
+            // openable, so that click keeps its own override instead of the saved state.
+            const globalsInGroupView = gid === EDITOR_GLOBALS_GROUP_ID
+                && activePill !== SPECIAL_GROUPS.ALL
+                && activePill !== SPECIAL_GROUPS.PINNED
+                && activePill !== EDITOR_GLOBALS_GROUP_ID;
+            if (globalsInGroupView) {
+                if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+                else _isolatedFoldOverride.add(gid);
+            } else {
+                toggleDropdownGroupCollapsed(gid, entered);
+            }
+            const collapsed = !globalsInGroupView && Boolean(_latestSettings.dropdownCollapsed[gid]);
             const scroller = findScrollableListEl(optionsHost, containerEl);
             st.syncSections();
             if (collapsed) {
@@ -6422,7 +6583,10 @@ function enhanceCustomDropdownPopover(containerEl) {
         const built = createDropdownFilterBar(
             [
                 ...(initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
-                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `${isGlobalPopover ? '已收藏' : '★ 已收藏'} ${initialPopPinnedCount}` }]
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `${isGlobalPopover ? '已收藏' : '★ 已收藏'} ${isGlobalPopover ? initialPopPinnedCount : favoriteOptions.length}` }]
+                    : []),
+                ...(mountedGlobalOptions.length >= 3
+                    ? [{ id: EDITOR_GLOBALS_GROUP_ID, label: `全局世界书 ${mountedGlobalOptions.length}` }]
                     : []),
                 ...orderedSections.map((sec) => ({
                     id: sec.id,

@@ -3211,10 +3211,15 @@ test('R6.2 grouped enhanceCustomDropdownPopover works for global (★ 已置顶 
 
         assert.equal(editorEnhanced.dataset.wboPopoverRole, 'editor');
         assert.equal(editorEnhanced.dataset.wboPopoverReady, '1');
-        assert.equal(editorEnhanced.querySelector('[data-wbo-dd-group="__pinned__"]'), null, 'editor popover must not hoist separate pinned section');
+        // v2.35.40: the editor popover lists favorites in one flat 已收藏 section (origin shown as
+        // a badge) instead of repeating a group header per original group.
+        const editorPinnedSection = editorEnhanced.querySelector('.wbo-pop-section[data-wbo-dd-group="__pinned__"]');
+        assert.ok(editorPinnedSection, 'editor popover renders one flat favorites section');
+        assert.equal(editorPinnedSection.querySelectorAll('.gr-option').length, 0, 'flat favorites fill only while its pill is active');
         const editorSections = editorOptionsHost.querySelectorAll('.wbo-pop-section');
-        assert.equal(editorSections.length, 2, 'editor popover should render g1 and ungrouped sections');
-        assert.equal(editorSections[0].getAttribute('data-wbo-dd-group'), 'g1');
+        assert.equal(editorSections.length, 3, 'editor popover should render favorites, g1 and ungrouped sections');
+        assert.equal(editorSections[0].getAttribute('data-wbo-dd-group'), '__pinned__');
+        assert.equal(editorSections[1].getAttribute('data-wbo-dd-group'), 'g1');
 
         // 3) Challenge 2: placeholder-only .gr-container-enhanced preserved when except='editor', unrelated non-world popover closed
         const placeholderEditorEnhanced = dom.doc.createElement('div');
@@ -4950,7 +4955,8 @@ test('M2 F2.2, F2.4, F2.5 & v2.35.1: UNGROUPED last across 5 surfaces, zero 当�
         const popSecs2 = editorOptsHost.querySelectorAll(':scope > .wbo-pop-section');
         assert.deepEqual(
             popSecs2.map((s) => s.getAttribute('data-wbo-dd-group')),
-            ['g1', 'g2', SPECIAL_GROUPS.UNGROUPED],
+            // v2.35.40: the flat favorites section leads, then custom groups, UNGROUPED last.
+            [SPECIAL_GROUPS.PINNED, 'g1', 'g2', SPECIAL_GROUPS.UNGROUPED],
             'editor popover sections must put custom groups before UNGROUPED',
         );
 

@@ -3084,6 +3084,11 @@ li.wbo-dd-dupe-hidden {
     opacity: 0.72;
 }
 
+/* The former group name is only meaningful inside the flat favorites list. */
+.wbo-s2-badge.is-origin.wbo-origin-hidden {
+    display: none;
+}
+
 .wbo-s2-badge.is-search-match {
     background: rgba(224, 159, 62, 0.18);
     border: 1px solid rgba(224, 159, 62, 0.45);
