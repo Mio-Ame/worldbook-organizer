@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.84';
+export const PLUGIN_VERSION = '2.35.85';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -5225,6 +5225,8 @@ function enhanceOpenEditorDropdown() {
         .filter((name) => Boolean(name && [...selectEl.options].some((opt) => (opt.textContent || '').trim() === name)));
     /** Favorites that are mounted as globals as well; they live in the global area, not in 已收藏. */
     const mountedPinnedNames = pinnedEditorNames.filter((name) => editorGlobalNameSet.has(name));
+    // The Select2 path keeps its ≥3 rule on purpose: with fewer globals it never creates the pill,
+    // so there is nothing whose selection could be forgotten.
     const hasEditorGlobalBlock = editorGlobalNames.length >= 3;
     if (hasEditorGlobalBlock) {
         const entry = {
@@ -7374,6 +7376,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
         headEl.textContent = `已开启的全局世界书 (${mountedGlobalOptions.length})`;
         headEl.title = '点击展开或折叠该分组';
+        if (mountedAndPinned.length > 0) {
+            const noteEl = document.createElement('span');
+            noteEl.className = 'wbo-dd-group-note';
+            noteEl.textContent = `其中 ${mountedAndPinned.length} 本同时也是已收藏`;
+            headEl.append(noteEl);
+        }
         const bodyEl = document.createElement('div');
         bodyEl.className = 'wbo-pop-group-body';
         for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
@@ -7407,16 +7415,16 @@ function enhanceCustomDropdownPopover(containerEl) {
             headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
             headEl.textContent = `★ 已收藏 (${favoriteOptions.length + mountedAndPinned.length})`;
             headEl.title = '点击展开或折叠该分组';
+            // The note native ST shows, inline with the head on wide screens.
+            if (mountedAndPinned.length > 0) {
+                const noteEl = document.createElement('span');
+                noteEl.className = 'wbo-dd-group-note';
+                noteEl.textContent = `其中 ${mountedAndPinned.length} 本已全局，显示在上方`;
+                headEl.append(noteEl);
+            }
             const bodyEl = document.createElement('div');
             bodyEl.className = 'wbo-pop-group-body';
             favoritesSectionEl.append(headEl, bodyEl);
-            // The note native ST shows: how many favorites already live in the globals block.
-            if (mountedAndPinned.length > 0) {
-                const noteEl = document.createElement('div');
-                noteEl.className = 'wbo-dd-group-note';
-                noteEl.textContent = `其中 ${mountedAndPinned.length} 本已全局，显示在上方；在此可关闭`;
-                bodyEl.append(noteEl);
-            }
             optionsHost.insertBefore(favoritesSectionEl, globalsSectionEl ? globalsSectionEl.nextElementSibling : optionsHost.firstChild);
             for (const optEl of favoriteOptions) {
                 const right = optEl.querySelector('.wbo-s2-right');
@@ -7477,8 +7485,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         } else if (favoritesSectionEl) {
             for (const optEl of favoriteOptions) {
-                const home = favoriteOptionHomes.get(optEl);
-                if (home && optEl.parentElement !== home) home.appendChild(optEl);
+                // Home by group id: a captured node reference could point at the flat host list,
+                // which left the 已收藏 section empty after expanding it.
+                const gid = _latestClassification?.byName?.get(getOptionText(optEl))?.groupId;
+                const target = (gid && optionsHost.querySelector(`.wbo-pop-section[data-wbo-dd-group="${gid}"] .wbo-pop-group-body`))
+                    || favoriteOptionHomes.get(optEl);
+                if (target && optEl.parentElement !== target) target.appendChild(optEl);
             }
             const globalsBody = globalsSectionEl?.querySelector('.wbo-pop-group-body');
             for (const optEl of mountedAndPinned) {

@@ -3113,10 +3113,20 @@ li.wbo-dd-group-hidden,
 }
 
 .wbo-dd-group-note {
-    padding: 4px 8px 6px;
+    display: inline;
+    margin-inline-start: 6px;
     font-size: 0.82em;
+    font-weight: 400;
     opacity: 0.7;
-    white-space: normal;
+    white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+    .wbo-dd-group-note {
+        display: block;
+        margin-inline-start: 0;
+        white-space: normal;
+    }
 }
 
 .wbo-esp-check {
