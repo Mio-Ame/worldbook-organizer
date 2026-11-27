@@ -2371,7 +2371,7 @@ function openMobileEditorPickerSheet() {
         }
         if (!q && activePillId === EDITOR_GLOBALS_GROUP_ID) {
             const globals = getMobileGlobalBooks();
-            const collapsed = isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, false);
+            const collapsed = isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, true);
             listEl.innerHTML = globals.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">全局世界书</span><span class="wbo-group-count">${globals.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${globals.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无已开启的全局世界书</div>';
@@ -2380,10 +2380,32 @@ function openMobileEditorPickerSheet() {
         }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
+        // Mounted globals get their own foldable section (3+), above the favorites and groups.
+        const mobileGlobalBooks = getMobileGlobalBooks();
+        const mobileGlobalNames = new Set(mobileGlobalBooks.map((book) => book.realName));
+        const hasMobileGlobalSection = mobileGlobalBooks.length >= 3;
+        const renderGlobalsSectionHtml = () => {
+            if (!hasMobileGlobalSection) return '';
+            const collapsed = !q && (isIsolated && activePillId !== EDITOR_GLOBALS_GROUP_ID
+                ? !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID)
+                : isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, false));
+            return `
+                <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}" data-mp-globals-sec="1">
+                    <button type="button" class="wbo-mp-sec-head${q ? ' is-static' : ''}" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}">
+                        ${q ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                        <span class="wbo-group-name">全局世界书</span>
+                        <span class="wbo-group-count">${mobileGlobalBooks.length}</span>
+                    </button>
+                    ${collapsed ? '' : `<div class="wbo-mp-sec-body">${mobileGlobalBooks.map(renderMpRowHtml).join('')}</div>`}
+                </div>
+            `;
+        };
+        const globalsSecHtml = renderGlobalsSectionHtml();
+
         const matchingBare = !isIsolated
             ? (tokens.length > 0
                 ? bareBooks.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
-                : bareBooks)
+                : bareBooks).filter((b) => !hasMobileGlobalSection || !mobileGlobalNames.has(b.realName))
             : [];
         const bareHtml = matchingBare.length > 0
             ? `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${matchingBare.map(renderMpRowHtml).join('')}</div></div>`
@@ -2413,7 +2435,7 @@ function openMobileEditorPickerSheet() {
             `;
         }).filter(Boolean).join('');
 
-        const html = `${bareHtml}${secHtml}`;
+        const html = `${globalsSecHtml}${bareHtml}${secHtml}`;
         listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
         pinCurrentCharRows();
     };
@@ -2498,7 +2520,20 @@ function openMobileEditorPickerSheet() {
             if (searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
-            const willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid);
+            // Inside another group's pill the globals section is folded by default but must
+            // stay openable, so it keeps its own override instead of the saved state.
+            const globalsInGroupView = gid === EDITOR_GLOBALS_GROUP_ID
+                && activePillId !== SPECIAL_GROUPS.ALL
+                && activePillId !== SPECIAL_GROUPS.PINNED
+                && activePillId !== EDITOR_GLOBALS_GROUP_ID;
+            let willCollapse;
+            if (globalsInGroupView) {
+                if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+                else _isolatedFoldOverride.add(gid);
+                willCollapse = _isolatedFoldOverride.has(gid);
+            } else {
+                willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid);
+            }
             const prevTop = listEl.scrollTop;
             renderList();
             if (willCollapse) {

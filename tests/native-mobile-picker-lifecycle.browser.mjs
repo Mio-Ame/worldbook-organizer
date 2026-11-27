@@ -294,3 +294,73 @@ for (const target of ['overlay', 'trigger']) {
         assert.equal(await cdp.evalFn(() => !!document.getElementById('wbo-mobile-picker-overlay')), true);
     }));
 }
+
+test('mobile picker groups mounted globals above the favorites and the opened group', async () => {
+    const threeGlobals = ['全局甲', '全局乙', '全局丙'];
+    const server = createMockStServer();
+    let cdp;
+    try {
+        const url = await server.start();
+        cdp = await launchEdgeCdp();
+        await resetAndBoot(cdp, url, {
+            viewport: VIEWPORTS.mobile,
+            query: 'mobile=1',
+            seed: createDefaultSeed({
+                characters: [],
+                selected_world_info: threeGlobals,
+                worldbooks: Object.fromEntries([...threeGlobals, '收藏书', '普通甲'].map((name) => [name, { entries: {} }])),
+                pluginSettings: {
+                    autoScanNewCharacters: false,
+                    groups: [{ id: 'g-style', name: '文风' }],
+                    assignments: { 收藏书: 'g-style', 普通甲: 'g-style', 全局甲: 'g-style' },
+                    pinnedBooks: ['收藏书'],
+                },
+            }),
+        });
+        await cdp.clickSelector('#wbo-mobile-editor-trigger');
+        await cdp.evalFn(() => Boolean(document.getElementById('wbo-mp-search')));
+        const all = await cdp.evalFn((names) => {
+            const section = document.querySelector('#wbo-mp-list [data-mp-globals-sec]');
+            const rows = [...document.querySelectorAll('#wbo-mp-list [data-mp-globals-sec] [data-mp-world]')]
+                .map((row) => row.getAttribute('data-mp-world'));
+            const bare = [...document.querySelectorAll('#wbo-mp-list .wbo-mp-bare-sec [data-mp-world]')]
+                .map((row) => row.getAttribute('data-mp-world'));
+            return {
+                hasSection: Boolean(section),
+                firstSection: document.querySelector('#wbo-mp-list .wbo-mp-sec')?.hasAttribute('data-mp-globals-sec'),
+                rows: rows.filter((name) => names.includes(name)).sort(),
+                globalsInBare: bare.filter((name) => names.includes(name)),
+                pills: [...document.querySelectorAll('#wbo-mp-pills [data-mp-pill]')].map((pill) => pill.getAttribute('data-mp-pill')),
+            };
+        }, threeGlobals);
+        assert.equal(all.hasSection, true);
+        assert.equal(all.firstSection, true);
+        assert.deepEqual(all.rows, [...threeGlobals].sort());
+        assert.deepEqual(all.globalsInBare, []);
+        assert.ok(all.pills.includes('__globals__'));
+        // Inside a group pill the globals section stays above it, folded but openable.
+        await cdp.evalFn(() => {
+            [...document.querySelectorAll('#wbo-mp-pills [data-mp-pill]')]
+                .find((pill) => pill.getAttribute('data-mp-pill') === 'g-style')?.click();
+        });
+        const folded = await cdp.evalFn(() => {
+            const section = document.querySelector('#wbo-mp-list [data-mp-globals-sec]');
+            return {
+                present: Boolean(section),
+                collapsed: section?.classList.contains('is-collapsed'),
+                rows: document.querySelectorAll('#wbo-mp-list [data-mp-globals-sec] [data-mp-world]').length,
+            };
+        });
+        assert.deepEqual(folded, { present: true, collapsed: true, rows: 0 });
+        await cdp.evalFn(() => {
+            document.querySelector('#wbo-mp-list [data-mp-toggle="__globals__"]')
+                ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        });
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-mp-list [data-mp-globals-sec]')?.classList.contains('is-collapsed')), false);
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('#wbo-mp-list [data-mp-globals-sec] [data-mp-world]').length), 3);
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    } finally {
+        await cdp?.close();
+        await server.stop();
+    }
+});

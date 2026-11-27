@@ -60,6 +60,7 @@
 18. **U1 已修（v2.35.38）**：普通下拉里全局书不再显示 2～3 遍，且按用户追加确认的三条口径实现：①「已收藏」块里不再列既收藏又挂载的书，标题旁加「X 本已全局，位于全局分组」；②只有 1～2 本全局时（哪怕有一本是收藏的）不建分组，按「当前角色」那样用原名裸行显示，且不渲染空的「已收藏」标题；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但在原分组里置顶。实现要点：`syncEditorDupeRows()`（`wbo-dd-dupe-hidden`，每轮重算、搜索不隐藏）、`buildEditorMirrorBlock()` 的 `allowEmpty`/`countOverride`/`note`、`hoistPinnedRowsInsideGroups()`、「当前角色」判定跳过镜像行。测试：`native-picker-window` 新增 3 项。
 19. **普通下拉块顺序 / 已全局徽章 / 全局组展开（v2.35.39）**：「已收藏」块排到「全局世界书」块下方（`orderEditorBlocks()`）；1～2 本全局的裸行补上「已全局」徽章（`syncGlobalBadges()` 每轮按实时挂载集合补建，解决 Select2 只渲染一次导致的缺徽章）；点进「全局」pill 直接展开，在其它分组 pill 下默认折叠但点块标题可展开（`forceFold` 让位于 `_isolatedFoldOverride`）。测试：`native-picker-window` 新增 1 项 + 加 2 处断言，28/28。
 20. **增强浮层（兼容脚本 / iOS）全局块与扁平收藏（v2.35.40）**：`enhanceCustomDropdownPopover` 的编辑器路径现在也有「全局世界书」区块（≥3 本，置顶、可折叠、可点开）与 `__globals__` 胶囊；「已收藏」胶囊改为扁平列表（书移入收藏块、原分组区块隐藏、行右侧显示原分组徽章，离开胶囊即还原），已挂载且收藏的书不进收藏块；行内按实时挂载补「已全局」徽章（电脑端 Select2、增强浮层、手机选书面板三处都有）。电脑端 1～2 本全局的裸行改排到「已收藏」**上方**，文案改「显示在上方」。测试：单测 245/245（R6.2、M2 断言按新形态更新）、`native-picker-window` 30/30、`native-favorites-script`/`native-editor-titles`/`native-popover-sweep` 15/15。
+21. **手机选书面板的「全局世界书」区块（v2.35.41）**：用户未启用兼容下拉脚本，iOS 实际走 `openMobileEditorPickeSheet`；该路径此前只有「全局世界书」胶囊，全部视图里 3 本全局仍是裸行、具体分组里完全看不到。现在 ≥3 本时把它们收进可折叠的「全局世界书」区块（`data-mp-globals-sec`）并置顶；分组 pill 下该块仍在上方、默认折叠、点标题可展开。测试：`native-mobile-picker-lifecycle` 23/23（新增 1 项）。电脑端「1～2 本全局缺已全局徽章」按用户要求**暂不处理**。
 
 ### 未解决 / 部分解决（请接手修复）
 
