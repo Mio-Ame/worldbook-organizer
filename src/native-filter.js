@@ -1125,7 +1125,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.71';
+export const PLUGIN_VERSION = '2.35.72';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7609,10 +7609,14 @@ function enhanceCustomDropdownPopover(containerEl) {
             return;
         }
         const available = pickableNames();
+        const pillId = activePillGroupId;
         const matches = [];
         for (const meta of byName.values()) {
             if (!meta?.realName) continue;
             if (available.size > 0 && !available.has(meta.realName)) continue;
+            // The pill bar keeps working while searching: 全部 / ★已收藏 / 单个分组.
+            if (pillId === SPECIAL_GROUPS.PINNED && !meta.isPinned) continue;
+            if (pillId !== SPECIAL_GROUPS.ALL && pillId !== SPECIAL_GROUPS.PINNED && meta.groupId !== pillId) continue;
             const hay = String(meta.searchableText || meta.realName.toLowerCase());
             if (tokens.every((token) => hay.includes(token))) matches.push(meta);
         }
@@ -7620,6 +7624,16 @@ function enhanceCustomDropdownPopover(containerEl) {
             .localeCompare(String(b.primaryTitle || b.realName), 'zh-Hans-CN'));
         const shown = matches.slice(0, 120);
         const panel = ensureSearchPanel();
+        // Follow the host popover's own palette instead of the plugin's dark surface.
+        if (panel.classList.contains('is-in-flow')) {
+            const source = containerEl.querySelector('.gr-option') || containerEl;
+            const styles = getComputedStyle(source);
+            const bg = styles.backgroundColor;
+            if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') panel.style.background = bg;
+            else panel.style.removeProperty('background');
+            if (styles.color) panel.style.color = styles.color;
+            panel.style.fontSize = styles.fontSize || '';
+        }
         const keepScroll = panel.scrollTop;
         if (matches.length === 0) {
             panel.innerHTML = '<div class="wbo-esp-empty">没有匹配的世界书</div>';
@@ -7660,7 +7674,13 @@ function enhanceCustomDropdownPopover(containerEl) {
         pushDiagTrace('enh-search:searching=1,tokens=' + tokens.length);
         renderEnhancedSearchPanel(tokens);
     };
-    // Keyboard: while the panel is open, arrows/enter act on it instead of the hidden host list.
+    // Switching a pill while searching must refilter our own list too.
+    const refreshEnhancedSearchForPill = () => {
+        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        if (!term || !getSearchPanel()) return;
+        _lastEnhancedSearchTerm = '';
+        renderEnhancedSearchPanel(term.toLowerCase().split(/\s+/).filter(Boolean));
+    };    // Keyboard: while the panel is open, arrows/enter act on it instead of the hidden host list.
     if (searchInput instanceof HTMLInputElement) {
         listenPanel(searchInput, 'keydown', (ev) => {
             const panel = getSearchPanel();
@@ -7831,6 +7851,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
             syncPillButtons();
             syncSections();
+            refreshEnhancedSearchForPill();
             scrollHost.scrollTop = _dropdownMemory.scrollTopByGroup[activePillGroupId] ?? 0;
         });
 

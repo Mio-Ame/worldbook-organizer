@@ -1700,6 +1700,18 @@ test('enhanced dropdown renders its own search panel over the host list', async 
         assert.match(panel.head, /搜索匹配到的世界书 \(3\)/);
         assert.equal(panel.rows, 3);
         assert.ok(panel.origins.includes('文风'));
+        // The pill bar still filters while searching: 剧情 keeps only its two books.
+        await cdp.evalFn(() => {
+            document.querySelector('#gr-global-dropdown-container .wbo-dd-pill[data-wbo-pill="g-plot"]')?.click();
+        });
+        await waitForCondition(cdp, () => document.querySelectorAll('.wbo-esp-row').length === 2);
+        const filtered = await cdp.evalFn(() => [...document.querySelectorAll('.wbo-esp-origin')].map((chip) => chip.textContent.trim()));
+        assert.deepEqual(filtered, ['剧情', '剧情']);
+        await cdp.evalFn(() => {
+            [...document.querySelectorAll('#gr-global-dropdown-container .wbo-dd-pill')]
+                .find((pill) => pill.classList.contains('is-pinned-all'))?.click();
+        });
+        await waitForCondition(cdp, () => document.querySelectorAll('.wbo-esp-row').length === 3);
         // Choosing a hit selects that book through the native select.
         await cdp.evalFn(() => document.querySelector('.wbo-esp-row').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
         await waitForCondition(cdp, () => !document.querySelector('.wbo-enhanced-search-panel'));

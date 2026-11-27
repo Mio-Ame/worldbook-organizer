@@ -1,3 +1,11 @@
+### 面板跟随宿主配色 + 搜索中可切分组（2026-11-28 · v2.35.72）
+- 用户反馈（v2.35.71）：面板终于可见，但**黑底白字**、与未启用脚本时的搜索样式不一致，且搜索中无法切换分组（原分组标签正常）。
+- 改动（`src/native-filter.js`）：
+  - **配色**：面板处于 `is-in-flow` 时读取宿主 `.gr-option`（取不到则容器）的 `getComputedStyle`，把 `background-color` / `color` / `font-size` 内联到面板上，跟随美化脚本当前配色；未取到背景时清除内联背景回落到主题变量。
+  - **分组切换**：`renderEnhancedSearchPanel()` 现在按 `activePillGroupId` 过滤——`全部` 不过滤、`★已收藏` 只留收藏、单个分组只留该组；新增 `refreshEnhancedSearchForPill()`，在 pill 点击后（`syncSections()` 之后）重渲染面板，绕过「同词不重算」的缓存。
+- 与无脚本用户：这段仍只在增强浮层执行；Select2 与手机选书面板未改。
+- 验证：单测 245/245；`native-picker-window` 36/36（搜索用例新增：切到「剧情」后只剩 2 行且分组标签全为「剧情」，再切「全部」恢复 3 行）、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（71/71）。
+
 ### 搜索结果面板改为「就地替换宿主列表」（2026-11-28 · v2.35.71）
 - v2.35.70 诊断：`enh-panel:mount=body` —— 这个浮层挂在 body 上，不在抽屉子树里，所以 fixed + z-index 一直在赌层级；`box` 有尺寸却看不见就是被上层盖住。
 - 方案：**不再浮层**。搜索时把面板作为普通流元素插到宿主列表原来的位置（`.gr-options-container` 之前），并把该列表 `display:none`；清空搜索时移除面板并还原列表显示。这样不存在 z-index / overflow / top-layer 问题，面板必然可见。
