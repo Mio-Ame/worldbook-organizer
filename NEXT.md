@@ -1,3 +1,9 @@
+### 设置页「复制诊断」按钮（2026-11-28 · v2.35.48）
+- 用户是小白、不方便开控制台，所以把 `wboTitleReport()` 的诊断搬到插件设置页底部：新增「复制诊断」按钮，一次点击把标题模式、相关开关、`charBookOverrides`、`assignments` 样本、以及角色组内每本书的 `primaryTitle/subtitle/owners` 复制到剪贴板（复制失败则打印到控制台并提示）。
+- 实现：`src/panel-settings.js` 设置弹窗页脚加按钮 + 处理函数；数据取自 `_callbacks.getState().settings` 与 `window.wboTitleReport()`。
+- 验证：单测 245/245；`panel-settings.js` 可正常加载。
+- 用途：以后任何「书名/分组不对」的反馈，用户只要点这个按钮把剪贴板内容发来即可。
+
 ### 角色世界书标题兜底（2026-11-28 · v2.35.47，U6 真凶）
 - 用户反馈：电脑端普通下拉里「角色世界书」整组按原名显示（设置是「角色名-原名」），不是只有当前角色那一行。
 - 复现与根因：新增的 `wboTitleReport()`（控制台可调用）打印出 `{ primaryTitle: "角色书文件名", owners: [] }` —— 这本书在 `__char__` 组里但**没有任何角色归属**（`include_in_char` 强塞进角色组、或角色卡是 shallow 且绑定缓存为空），`formatCharacterDisplayTitle` 于是原样返回文件名，副标题自然也是空的。这一路和最近的 UI 改动无关，属于分类层的老漏洞，只是这次被看见了。

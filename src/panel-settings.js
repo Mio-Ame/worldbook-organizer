@@ -444,6 +444,9 @@ function openSettingsModal() {
                     <i class="fa-solid fa-upload"></i> 导入配置
                 </button>
                 <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
+                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="复制书名与分组诊断信息，用来反馈问题">
+                    <i class="fa-solid fa-clipboard-list"></i> 复制诊断
+                </button>
                 <span class="wbo-spacer"></span>
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
             </div>
@@ -639,6 +642,30 @@ function openSettingsModal() {
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
+    // Beginner-friendly counterpart of `wboTitleReport()`: no devtools needed.
+    modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', async () => {
+        const settings = _callbacks?.getState?.().settings || {};
+        let titleReport = null;
+        try { titleReport = globalThis.window?.wboTitleReport?.() || null; } catch { /* ignore */ }
+        const payload = {
+            charBookTitleMode: settings.charBookTitleMode,
+            aliasTitleMode: settings.aliasTitleMode,
+            showCharBooks: settings.showCharBooks,
+            hideCharBooksByDefault: settings.hideCharBooksByDefault,
+            adaptCharBindPopup: settings.adaptCharBindPopup,
+            charBookOverrides: settings.charBookOverrides || {},
+            assignmentsSample: Object.fromEntries(Object.entries(settings.assignments || {}).slice(0, 30)),
+            titleReport,
+        };
+        const text = JSON.stringify(payload, null, 2);
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('success', '诊断信息已复制，直接粘贴发给作者即可');
+        } catch {
+            console.log('[worldbook-organizer] 诊断信息', payload);
+            showToast('warning', '自动复制失败，已打印到控制台');
+        }
+    });
     const importInput = modal.querySelector('#wbo-modal-import-file');
     modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
         if (importInput instanceof HTMLInputElement) {
