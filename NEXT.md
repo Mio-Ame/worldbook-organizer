@@ -1,3 +1,12 @@
+### 搜索命中却看不见：现场快照 + 祖先解隐 / 书名审计（2026-11-28 · v2.35.61）
+- 用户 v2.35.60 的诊断 trace：`enh-search:matched=1,meta=139`、`enh-search:matched=2,meta=139` —— **匹配是成功的**，问题在命中行没显示出来；而报告在下拉关闭后才生成，`dom` 全为 0，看不到当时状态。
+- 改动（`src/native-filter.js`）：
+  - 搜索路径内新增现场快照 `enh-live:optionsVisible=…,hostConnected=…,hostH=…,secHidden=…,collapsed=…` 与 `enh-show:hits=…,ancestorUnhide=…,hostH=…,hitH=…`：报告关闭后生成也能看到搜索当时究竟可见几行、容器高度是否为 0。
+  - 命中行兜底：自下而上清除祖先节点上的 `display:none`/`hidden`/`wbo-pop-group-hidden`/`wbo-dd-collapsed`；若列表容器高度为 0，清掉其 `display`/`max-height` 约束。
+  - 书名审计：每轮统计 `enh-titles:titled=…,fileOnly=…,charFileOnly=…`——「只剩文件名」的行数、其中属于角色绑定行的数量，直接对应用户的「当前角色世界书显示原名」。
+  - `syncEnhancedWorldOptionTitle()` 的标题兜底条件从「在角色组」放宽为「在角色组**或**被角色绑定」，覆盖书被移出角色组的情况。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 增强搜索匹配放宽 + 匹配明细（2026-11-28 · v2.35.60）
 - 用户 v2.35.59 的诊断 trace 显示：`enh-search:searching=1,tokens=1,options=142` —— 搜索函数跑了、读到搜索词，但没有任何命中（142 行全被判为不匹配），所以没有搜索头、列表被宿主清空后就是空白。
 - 改动（`src/native-filter.js` 的 `syncEnhancedSearchBlock`）：

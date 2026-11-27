@@ -802,7 +802,8 @@ function syncEnhancedWorldOptionTitle(row, meta) {
     let displayTitle = meta.primaryTitle || meta.realName;
     let displaySubtitle = meta.subtitle;
     const titleMode = _latestSettings?.charBookTitleMode;
-    if (displayTitle === meta.realName && titleMode !== 'original' && meta.groupId === SPECIAL_GROUPS.CHARACTER) {
+    if (displayTitle === meta.realName && titleMode !== 'original'
+        && (meta.groupId === SPECIAL_GROUPS.CHARACTER || meta.isCharBound)) {
         const ownerName = liveCharNameForBook(meta.realName) || currentChatCharName();
         if (ownerName) {
             displayTitle = ownerName;
@@ -1100,7 +1101,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.60';
+export const PLUGIN_VERSION = '2.35.61';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7281,11 +7282,27 @@ function enhanceCustomDropdownPopover(containerEl) {
         // Rows the host script (re)created after our pass have no title markup yet: fill them in,
         // otherwise that book keeps showing its plain file name.
         if (!isGlobalPopover) {
+            let titled = 0;
+            let fileNameLeft = 0;
+            let charFileLeft = 0;
             for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
                 if (!(row instanceof HTMLElement) || row.querySelector('.wbo-gr-world-title')) continue;
                 const meta = resolveEnhancedRowMeta(row);
                 if (meta) syncEnhancedWorldOptionTitle(row, meta);
             }
+            // Audit: how many rows still render a plain file name, and how many of those are bound
+            // to a character (that is the 「当前角色世界书显示原名」 case).
+            for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+                if (!(row instanceof HTMLElement)) continue;
+                const label = row.querySelector('.wbo-gr-world-title');
+                const meta = resolveEnhancedRowMeta(row);
+                if (label) titled += 1;
+                else {
+                    fileNameLeft += 1;
+                    if (meta && (meta.groupId === SPECIAL_GROUPS.CHARACTER || meta.isCharBound)) charFileLeft += 1;
+                }
+            }
+            pushDiagTrace(`enh-titles:titled=${titled},fileOnly=${fileNameLeft},charFileOnly=${charFileLeft}`);
         }
         syncEnhancedSearchBlock(searching);
     };
@@ -7346,6 +7363,13 @@ function enhanceCustomDropdownPopover(containerEl) {
                 return tokens.every((token) => haystacks.some((hay) => hay.includes(token)));
             });
         pushDiagTrace(`enh-search:matched=${rows.length},meta=${metaResolved}`);
+        // Snapshot the live list right now: the report is usually taken after closing, when every
+        // count reads zero, so this is the only place the failure is still observable.
+        pushDiagTrace(`enh-live:optionsVisible=${[...optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)].filter((el) => el.getClientRects().length > 0).length}`
+            + `,hostConnected=${optionsHost.isConnected ? 1 : 0}`
+            + `,hostH=${Math.round(optionsHost.getBoundingClientRect().height)}`
+            + `,secHidden=${optionsHost.querySelectorAll('.wbo-pop-section.wbo-dd-group-hidden').length}`
+            + `,collapsed=${optionsHost.querySelectorAll('.wbo-dd-collapsed').length}`);
         if (rows.length === 0) {
             // Nothing matched: leave the popover to the host script (its own empty state) instead
             // of leaving our class/head behind and a blank fixed-height area.
@@ -7364,6 +7388,30 @@ function enhanceCustomDropdownPopover(containerEl) {
                 row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
             }
         }
+        // The hits can still be invisible because an ancestor (the script's list wrapper or a
+        // section) is hidden; walk up and clear that too.
+        let unhidAncestors = 0;
+        for (const row of rows) {
+            let node = row.parentElement;
+            while (node && node !== containerEl && node instanceof HTMLElement) {
+                if (node.style.display === 'none') {
+                    node.style.removeProperty('display');
+                    unhidAncestors += 1;
+                }
+                if (node.hidden) {
+                    node.hidden = false;
+                    unhidAncestors += 1;
+                }
+                node.classList.remove('wbo-pop-search-hidden', 'wbo-dd-group-hidden', 'wbo-dd-collapsed');
+                node = node.parentElement;
+            }
+        }
+        // Give the list a usable height when the host left it collapsed to zero.
+        if (optionsHost.getBoundingClientRect().height <= 0) {
+            optionsHost.style.removeProperty('display');
+            optionsHost.style.removeProperty('max-height');
+        }
+        pushDiagTrace(`enh-show:hits=${rows.length},ancestorUnhide=${unhidAncestors},hostH=${Math.round(optionsHost.getBoundingClientRect().height)},hitH=${Math.round(rows[0].getBoundingClientRect().height)}`);
         const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
         const headRow = optionsHost.querySelector('[data-wbo-search-head]');
         const domIntact = rows.length <= 1
