@@ -1,3 +1,10 @@
+### 全局下拉也登记全局胶囊 + 当前书置顶提到最前（2026-11-28 · v2.35.86）
+- 用户 v2.35.84 诊断关键行：`enh-pill:open=__pinned__,hasMemory=1,remembered=__globals__,role=global` —— 记忆里存的是 `__globals__`，但 `validGroupIds` 在**全局下拉**里没有这个 id，校验失败后回退到容器旧状态（已收藏）。
+- 修复（`src/native-filter.js`）：
+  - `activeGlobalCount` 对全局下拉改用 `getActiveGlobalWorldSet().size`，两端都登记 `EDITOR_GLOBALS_GROUP_ID`（仍不登记 `★已收藏`，避免改变全局下拉初始分组）。
+  - 「当前书置顶」重做：改为在**占位行归位之后**插入到 `children[placeholders.length]` 位置，因此一定紧跟「选择以编辑」下方、在已收藏说明与全局块之上；无选中值时回退到当前聊天角色绑定的书（`currentChatCharName()` + `meta.charOwners`）。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 并发下偶发超时，单独通过）。
+
 ### 已收藏说明行内联、行归位、全局下拉也带提示（2026-11-28 · v2.35.85）
 - 用户反馈（SillyTavern 1.19 / Edge）：①「已收藏」展开后是空的，只剩一行说明；② 说明应在标题**同一行**、文案不要「在此可关闭」；③ 全局下拉里「既是已收藏又是全局」的书缺少小字提示；④ 询问无脚本（Select2）路径是否也有分组记忆问题。
 - 修复（`src/native-filter.js` + `style.css`）：

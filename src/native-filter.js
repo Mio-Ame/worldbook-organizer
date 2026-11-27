@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.85';
+export const PLUGIN_VERSION = '2.35.86';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7188,9 +7188,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
-    // Register the 「已开启的全局世界书」 pill whenever there is at least one mounted book: without
-    // this a remembered choice on that pill was judged invalid on reopen and fell back to 已收藏.
-    const activeGlobalCount = isGlobalPopover ? 0 : editorActiveGlobals.size;
+    // Register the globals pill for BOTH dropdowns whenever mounted books exist: the global list
+    // renders that block (and its pill) too, so a remembered choice on it must stay valid.
+    const activeGlobalCount = isGlobalPopover ? getActiveGlobalWorldSet().size : editorActiveGlobals.size;
     if (activeGlobalCount >= 1) {
         validGroupIds.add(EDITOR_GLOBALS_GROUP_ID);
     }
@@ -7388,19 +7388,6 @@ function enhanceCustomDropdownPopover(containerEl) {
         globalsSectionEl.append(headEl, bodyEl);
         // After the 「选择以编辑」 line, above every other section (native keeps that line first).
         optionsHost.insertBefore(globalsSectionEl, topAnchor && topAnchor.parentElement === optionsHost ? topAnchor : optionsHost.firstChild);
-        // The book currently being edited is hoisted right under that line, like native does.
-        if (!isGlobalPopover) {
-            const select = document.getElementById('world_editor_select');
-            const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
-            const currentName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
-            const currentRow = currentName
-                ? realOptionNodes.find((row) => (getOptionText(row) || '') === currentName)
-                : null;
-            if (currentRow) {
-                optionsHost.insertBefore(currentRow, globalsSectionEl);
-                pushDiagTrace('enh-globals:current-hoisted=1');
-            }
-        }
         pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`
             + `,pinnedMounted=${mountedAndPinned.length}`);
     } else {
@@ -7439,6 +7426,32 @@ function enhanceCustomDropdownPopover(containerEl) {
     // The 「选择以编辑」 row has to lead the whole list, above every block we insert.
     for (const ph of [...placeholders].reverse()) {
         optionsHost.insertBefore(ph, optionsHost.firstChild);
+    }
+    // The book being edited (or the current character's book) sits right below that row, so it is
+    // never buried under the 已收藏 note or the globals block.
+    if (!isGlobalPopover) {
+        const select = document.getElementById('world_editor_select');
+        const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
+        let currentName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
+        if (!currentName) {
+            const chatName = currentChatCharName?.();
+            if (chatName) {
+                for (const meta of _latestClassification?.byName?.values?.() || []) {
+                    if ((meta.charOwners || []).includes(chatName)) {
+                        currentName = meta.realName;
+                        break;
+                    }
+                }
+            }
+        }
+        const currentRow = currentName
+            ? realOptionNodes.find((row) => (getOptionText(row) || '') === currentName)
+            : null;
+        if (currentRow) {
+            const anchor = optionsHost.children[placeholders.length] || null;
+            optionsHost.insertBefore(currentRow, anchor);
+            pushDiagTrace('enh-globals:current-hoisted=1');
+        }
     }
 
     /**
