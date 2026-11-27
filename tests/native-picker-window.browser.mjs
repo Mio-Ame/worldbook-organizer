@@ -109,9 +109,10 @@ test('desktop native global picker keeps its search, filters by group and opens 
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         await cdp.typeInto('.select2-dropdown .select2-search__field', '普通');
         assert.deepEqual(await visible(), [other]);
-        assert.deepEqual(await groupBadges(), []);
+        // v2.35.42: search hits are labelled like the ordinary editor dropdown (U5).
+        assert.deepEqual(await groupBadges(), ['搜索匹配到的世界书', '测试分组乙']);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
-        assert.deepEqual(await groupBadges(), ['测试分组乙']);
+        assert.deepEqual(await groupBadges(), ['搜索匹配到的世界书', '测试分组乙']);
         await cdp.evalFn(() => { window.jQuery('#world_info').select2('close').select2('open'); });
         // The last pill chosen in this session is restored instead of resetting to favorites.
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .is-active')?.getAttribute('data-wbo-pill') === '__all__');
@@ -1173,6 +1174,55 @@ test('global dropdown keeps a pinned+mounted book only in the mounted block and 
         await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
         assert.equal(await activePill(), '__all__');
     }, [], seed);
+});
+
+test('global dropdown collects search hits into one 搜索匹配到的世界书 block', async () => {
+    const searchSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['许文风', '许剧情甲', '许剧情乙', '别的书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }, { id: 'g-plot', name: '剧情' }],
+            assignments: { 许文风: 'g-style', 许剧情甲: 'g-plot', 许剧情乙: 'g-plot', 别的书: 'g-plot' },
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.clickSelector('#WIMultiSelector .select2-container');
+        await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
+        await cdp.typeInto('.select2-dropdown .select2-search__field', '许文');
+        await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar') && Boolean(document.querySelector('.select2-dropdown [data-wbo-search-badge], .select2-dropdown li[data-wbo-dd-group="__search_matches__"]')));
+        const single = await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .select2-results__options > li')]
+            .filter((row) => row.getBoundingClientRect().height > 0)
+            .map((row) => row.textContent.replace(/\s+/g, ' ').trim()));
+        assert.equal(single.length, 1);
+        assert.match(single[0], /许文风/);
+        assert.match(single[0], /搜索匹配到的世界书/);
+        await cdp.evalFn(() => {
+            const field = document.querySelector('.select2-dropdown .select2-search__field');
+            field.value = '许';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]')));
+        const block = await cdp.evalFn(() => {
+            const head = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]');
+            return {
+                head: head?.textContent?.trim(),
+                origins: [...document.querySelectorAll('.select2-dropdown .select2-results__options > li .wbo-s2-badge')]
+                    .map((badge) => badge.textContent.trim())
+                    .filter((text) => text && text !== '搜索匹配到的世界书'),
+            };
+        });
+        assert.match(block.head, /搜索匹配到的世界书 \(3\)/);
+        assert.deepEqual([...block.origins].sort(), ['剧情', '剧情', '文风']);
+        await cdp.evalFn(() => {
+            const field = document.querySelector('.select2-dropdown .select2-search__field');
+            field.value = '';
+            field.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]'));
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('.select2-dropdown .is-search-origin').length), 0);
+    }, [], searchSeed);
 });
 
 test('editor search inside a group shows only the matches', async () => {

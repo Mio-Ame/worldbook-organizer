@@ -70,7 +70,7 @@
 | U2 | 绑定弹窗没有分组切换胶囊（pills） | 只有 optgroup。需复用 `createDropdownFilterBar` 给主 select 的 dropdown 挂 filter bar |
 | U3 | iOS 增强浮层（`syncSections`）路径：无「全局世界书」块、无搜索归组、置顶缺失 | 该路径与 mobile picker 是两套渲染；需在 `syncSections` 内实现同样逻辑 |
 | U4 | iOS 全局搜索出现原生 `NO RESULTS FOUND`、必须切到对应分组 | 增强浮层/原生 Select2 matcher 仍按 pill 过滤；需在该路径放开搜索过滤 |
-| U5 | 电脑端全局下拉搜索没有「搜索匹配到的世界书」分组 | 已放宽「搜索不按 pill 过滤」（v2.35.36），但尚未把命中行收进临时分组；需仿 `layoutEditorSearchMatches` 写 `layoutGlobalSearchMatches` |
+| U5 | ~~电脑端全局下拉搜索没有「搜索匹配到的世界书」分组~~ | **已解决（v2.35.42）**：`layoutGlobalSearchMatches()` 把命中行收进 `__search_matches__` 标题块（≥2 本）、单本给徽章、每行补原分组徽章，清空搜索即撤。残留：增强浮层（兼容脚本）路径的搜索归组未与这条合并。 |
 | U6 | 当前角色显示名在普通下拉又变原名 | 线索指向 `classifyWorldbooks` 的 `charBookTitleMode` 判定：书被移到非角色组后 `isInCharGroup=false`，标题模式可能回落。需回到 core 层修，不建议 UI 补丁 |
 | U7 | 组合页默认进入「已收藏」 | 直接改默认 pill 会破坏 `organize-combos` 两个用例的预期，需连同引导/滚动一起改 |
 | U8 | 普通下拉全局块阈值（≥3 本）与命名「全局世界书」是否符合预期 | 用户曾要求 >3 本，后又反馈"没有分组"；需确认真实挂载数量 |

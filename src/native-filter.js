@@ -5350,11 +5350,66 @@ function enhanceOpenGlobalDropdown() {
      * ones first) and are never repeated outside it.
      * @param {HTMLElement[]} rows
      */
+    /**
+     * While searching, every rendered row is a hit: collect them into one
+     * 「搜索匹配到的世界书」 block (or a single badged row) instead of leaving them flat.
+     * Mirrors the ordinary editor dropdown (U5).
+     */
+    let _lastGlobalSearchSig = '';
+    const clearGlobalSearchMatches = () => {
+        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin').forEach((el) => el.remove());
+        resultsList.querySelectorAll(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`).forEach((el) => el.remove());
+        _lastGlobalSearchSig = '';
+    };
+    const layoutGlobalSearchMatches = (rows) => {
+        const sig = `${_activeGlobalPillId}|${rows.length}|${rows.map(rowWorldName).join('|')}`;
+        if (sig === _lastGlobalSearchSig) return false;
+        clearGlobalSearchMatches();
+        _lastGlobalSearchSig = sig;
+        if (rows.length === 0) return false;
+        for (const row of rows) {
+            const right = row.querySelector('.wbo-s2-right');
+            if (!(right instanceof HTMLElement)) continue;
+            const groupName = _latestClassification?.byName?.get(rowWorldName(row))?.groupName || '未分组';
+            // The template already prints the group name in some views; never double it.
+            const shown = [...right.querySelectorAll('.wbo-s2-badge')].map((badge) => badge.textContent.trim());
+            if (!shown.includes(groupName) && !right.querySelector('.is-search-origin')) {
+                const origin = document.createElement('span');
+                origin.className = 'wbo-s2-badge is-search-origin';
+                origin.textContent = groupName;
+                right.prepend(origin);
+            }
+        }
+        if (rows.length === 1) {
+            const right = rows[0].querySelector('.wbo-s2-right');
+            if (right && !right.querySelector('.is-search-match')) {
+                const badge = document.createElement('span');
+                badge.className = 'wbo-s2-badge is-search-match';
+                badge.setAttribute('data-wbo-search-badge', '1');
+                badge.textContent = '搜索匹配到的世界书';
+                right.prepend(badge);
+            }
+            return true;
+        }
+        const head = document.createElement('li');
+        head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head wbo-search-matches-head';
+        head.setAttribute('role', 'presentation');
+        head.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        head.textContent = `搜索匹配到的世界书 (${rows.length})`;
+        rows[0].parentNode.insertBefore(head, rows[0]);
+        return true;
+    };
+
     const layoutGlobalGroupRows = (rows) => {
         resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
         for (const row of rows) row.classList.remove('wbo-global-group-collapsed');
         const searching = Boolean(searchField?.value?.trim());
-        if (searching || _activeGlobalPillId !== SPECIAL_GROUPS.ALL) return;
+        if (searching) {
+            layoutGlobalSearchMatches(rows);
+            return;
+        }
+        if (_lastGlobalSearchSig !== '') clearGlobalSearchMatches();
+        if (_activeGlobalPillId !== SPECIAL_GROUPS.ALL) return;
 
         const sections = _latestClassification.orderedSections || [];
         const mountedNames = getActiveGlobalWorldSet();
