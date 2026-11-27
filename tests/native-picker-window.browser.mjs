@@ -1640,7 +1640,7 @@ test('reference dropdown script and the plugin coexist on the editor dropdown', 
     });
 });
 
-test('enhanced dropdown groups search hits under one 搜索匹配到的世界书 head', async (t) => {
+test('enhanced dropdown renders its own search panel over the host list', async (t) => {
     const bookSeed = createDefaultSeed({
         characters: [],
         worldbooks: Object.fromEntries(['许文风', '许剧情甲', '许剧情乙', '别的书'].map((name) => [name, { entries: {} }])),
@@ -1679,77 +1679,37 @@ test('enhanced dropdown groups search hits under one 搜索匹配到的世界书
             document.body.append(container);
         });
         await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] .wbo-pop-filter-bar')));
-        const search = await cdp.evalFn(() => {
+        const typeSearch = (value) => cdp.evalFn((text) => {
             const pop = document.querySelector('#gr-global-dropdown-container');
-            const rows = [...pop.querySelectorAll('.gr-option')];
-            const keep = (row) => (row.textContent || '').includes('许');
-            rows.forEach((row) => { row.style.display = keep(row) ? '' : 'none'; });
             const input = pop.querySelector('input[type="search"]');
-            input.value = '许';
+            input.value = text;
             input.dispatchEvent(new Event('input', { bubbles: true }));
-            return { total: rows.length, kept: rows.filter(keep).length };
-        });
-        assert.equal(search.kept, 3);
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-head]')));
-        const grouped = await cdp.evalFn(() => {
-            const pop = document.querySelector('#gr-global-dropdown-container');
-            const headRow = pop.querySelector('[data-wbo-search-head]');
+        }, value);
+        await typeSearch('许');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-enhanced-search-panel')));
+        const panel = await cdp.evalFn(() => {
+            const el = document.querySelector('.wbo-enhanced-search-panel');
             return {
-                head: headRow?.getAttribute('data-wbo-search-head'),
-                sameRowHasHits: headRow ? headRow.getBoundingClientRect().height > 0 : false,
-                extraNodes: pop.querySelectorAll('.wbo-enhanced-search-head').length,
-                visibleRows: [...pop.querySelectorAll('.gr-option')]
-                    .filter((row) => row.getBoundingClientRect().height > 0)
-                    .map((row) => (row.textContent || '').trim()),
-                groupHeadsHidden: [...pop.querySelectorAll('.wbo-pop-section > .wbo-dd-group-head')]
-                    .every((head) => getComputedStyle(head).display === 'none'),
+                head: el?.querySelector('.wbo-esp-head')?.textContent?.trim(),
+                rows: el?.querySelectorAll('.wbo-esp-row').length,
+                first: el?.querySelector('.wbo-esp-row')?.getAttribute('data-wbo-esp'),
+                origins: [...(el?.querySelectorAll('.wbo-esp-origin') || [])].map((chip) => chip.textContent.trim()),
             };
         });
-        t.diagnostic(JSON.stringify(grouped));
-        assert.match(grouped.head, /搜索匹配到的世界书 \(3\)/);
-        assert.equal(grouped.sameRowHasHits, true);
-        assert.equal(grouped.extraNodes, 0);
-        assert.equal(grouped.groupHeadsHidden, true);
-        // A single hit switches to a row badge instead of the head.
-        await cdp.evalFn(() => {
-            const pop = document.querySelector('#gr-global-dropdown-container');
-            [...pop.querySelectorAll('.gr-option')].forEach((row) => {
-                row.style.display = (row.textContent || '').includes('许文风') ? '' : 'none';
-            });
-            const input = pop.querySelector('input[type="search"]');
-            input.value = '许文';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]')));
-        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#gr-global-dropdown-container [data-wbo-search-head]'))), false);
-        // Clearing the search restores the group heads.
-        await cdp.evalFn(() => {
-            const pop = document.querySelector('#gr-global-dropdown-container');
-            [...pop.querySelectorAll('.gr-option')].forEach((row) => { row.style.display = ''; });
-            const input = pop.querySelector('input[type="search"]');
-            input.value = '';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container [data-wbo-search-badge]'));
-        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section > .wbo-dd-group-head')]
-            .every((head) => getComputedStyle(head).display !== 'none')), true);
-        // A term that matches nothing shows an explicit hint instead of a blank strip.
-        await cdp.evalFn(() => {
-            const pop = document.querySelector('#gr-global-dropdown-container');
-            const input = pop.querySelector('input[type="search"]');
-            input.value = 'zzz-无此世界书';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-        await waitForCondition(cdp, () => Boolean(document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-empty')));
-        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-pop-section')]
-            .every((section) => section.classList.contains('wbo-enhanced-section-hidden'))), true);
-        await cdp.evalFn(() => {
-            const pop = document.querySelector('#gr-global-dropdown-container');
-            const input = pop.querySelector('input[type="search"]');
-            input.value = '';
-            input.dispatchEvent(new Event('input', { bubbles: true }));
-        });
-        await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container .wbo-enhanced-search-empty'));
+        t.diagnostic(JSON.stringify(panel));
+        assert.match(panel.head, /搜索匹配到的世界书 \(3\)/);
+        assert.equal(panel.rows, 3);
+        assert.ok(panel.origins.includes('文风'));
+        // Choosing a hit selects that book through the native select.
+        await cdp.evalFn(() => document.querySelector('.wbo-esp-row').dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true })));
+        await waitForCondition(cdp, () => !document.querySelector('.wbo-enhanced-search-panel'));
+        assert.equal(await cdp.evalFn(() => document.getElementById('world_editor_select').selectedIndex > 0), true);
+        // A term without hits shows the explicit empty state.
+        await typeSearch('zzz-无此世界书');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-esp-empty')));
+        // Clearing the term removes the panel again.
+        await typeSearch('');
+        await waitForCondition(cdp, () => !document.querySelector('.wbo-enhanced-search-panel'));
     }, [], bookSeed);
 });
 

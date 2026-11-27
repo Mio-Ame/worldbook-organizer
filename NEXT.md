@@ -1,3 +1,13 @@
+### 增强浮层搜索改为插件自绘面板（2026-11-28 · v2.35.66）
+- 背景：连续多版都在和美化脚本的列表博弈（行被重建、高度固定、命中被藏），用户已多次遇到「搜索空白、滚到底才看到一本」。
+- 方案切换（`src/native-filter.js`）：搜索时**不再改动宿主列表**，改为在浮层内自绘一个结果面板 `.wbo-enhanced-search-panel`（`position: fixed` 按浮层 rect 定位，`max-height` 取浮层高度与 70vh 的较小值）。
+  - 数据源直接用分类结果（`searchableText`，含别名/备注/角色名），按 `primaryTitle` 排序，最多渲染 120 条；标题为 `搜索匹配到的世界书 (N)`，每行显示「角色名/别名 + 原名 + 原分组徽章」；无命中显示 `没有匹配的世界书`。
+  - 点击某行：把 `#world_editor_select` 的值切到该书并触发 `change`，清空搜索框、收起面板，并记录 `enh-panel:pick`。
+  - 清空搜索 / 关闭浮层即移除面板（`syncEnhancedSearchBlock` 的 0 token 分支），宿主 DOM 完全不受影响。
+  - 删除了上一版的行隐藏/祖先解隐/高度释放/定时重套逻辑（全部失效路径），trace 精简为 `enh-search:searching,tokens` 与 `enh-panel:matches,shown`。
+- 样式（`style.css`）：面板跟随 `--wbo-surface/--wbo-fg`，行悬停高亮，标题与原名同一行（手机端可折行），分组徽章右对齐。
+- 验证：单测 245/245；`native-picker-window` 36/36（搜索用例改为断言自绘面板：标题计数、行数、分组徽章、点击选中、无命中空态、清空后移除）、`native-editor-titles` 12/12。
+
 ### 抽屉守卫补时机（2026-11-28 · v2.35.65）
 - 用户 v2.35.64 的 `ui` 日志还原了现场：`down:div.gr-select2-display inDrawer` → `down:#gr-global-dropdown-container role=global` → 随后 `down:#WIDrawerIcon`，即**下拉刚打开的那一下**抽屉就被宿主的「外部点击关闭未固定抽屉」逻辑收掉。
 - 原因：上一版的恢复守卫依赖观察 `#WorldInfo` 的 class 变化，但宿主这次收起发生在守卫安装之前的几十毫秒内，观察器接不到。

@@ -1117,7 +1117,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.65';
+export const PLUGIN_VERSION = '2.35.66';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7421,199 +7421,93 @@ function enhanceCustomDropdownPopover(containerEl) {
     };
 
     /**
-     * Searching in the enhanced editor popover used to leave the rows scattered under their group
-     * heads. Collect the hits under one 「搜索匹配到的世界书」 head (≥2) or badge a single hit,
-     * matching the ordinary picker (U3). Rows stay where the host script put them; only the head
-     * is ours, so the script keeps full control of its own DOM.
-     * @param {boolean} searching
+     * Searching in the enhanced popover: draw our OWN result panel over the host list.
+     * The host script re-renders rows, pins heights and hides things at will, which defeated every
+     * DOM-level attempt — owning the panel removes all of that from the equation.
+     * @type {HTMLElement | null}
      */
-    let _lastEnhancedSearchSig = '';
-    /** @type {ReturnType<typeof setTimeout> | null} */
-    let _enhSearchReapply = null;
-    const scheduleEnhancedSearchReapply = () => {
-        if (_enhSearchReapply) clearTimeout(_enhSearchReapply);
-        _enhSearchReapply = setTimeout(() => {
-            _enhSearchReapply = null;
-            if (!containerEl.isConnected) return;
-            const value = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
-            if (value) syncEnhancedSearchBlock(true);
-        }, 150);
+    let enhancedSearchPanel = null;
+    const removeEnhancedSearchPanel = () => {
+        enhancedSearchPanel?.remove();
+        enhancedSearchPanel = null;
     };
-    const clearEnhancedSearchBlock = () => {
-        optionsHost.querySelectorAll('.wbo-enhanced-search-head').forEach((el) => el.remove());
-        optionsHost.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin.is-enhanced-search').forEach((el) => el.remove());
-        optionsHost.querySelectorAll('[data-wbo-enhanced-search-origin]').forEach((el) => {
-            el.removeAttribute('data-wbo-enhanced-search-origin');
-        });
-        // The head is drawn by CSS on the first hit (`::before`), so there is no node to remove —
-        // only the marker attribute.
-        optionsHost.querySelectorAll('[data-wbo-search-head]').forEach((el) => {
-            el.removeAttribute('data-wbo-search-head');
-        });
-        optionsHost.querySelectorAll('.wbo-enhanced-search-hidden').forEach((el) => {
-            el.classList.remove('wbo-enhanced-search-hidden');
-        });
-        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
-        optionsHost.querySelectorAll('.wbo-enhanced-section-hidden').forEach((el) => {
-            el.classList.remove('wbo-enhanced-section-hidden');
-        });
-        containerEl.classList.remove('wbo-enhanced-searching');
-        if (_enhSearchReapply) {
-            clearTimeout(_enhSearchReapply);
-            _enhSearchReapply = null;
+    const positionEnhancedSearchPanel = () => {
+        if (!(enhancedSearchPanel instanceof HTMLElement)) return;
+        const rect = containerEl.getBoundingClientRect();
+        const viewportH = globalThis.innerHeight || 768;
+        enhancedSearchPanel.style.position = 'fixed';
+        enhancedSearchPanel.style.left = `${Math.max(4, rect.left + 4)}px`;
+        enhancedSearchPanel.style.width = `${Math.max(240, rect.width - 8)}px`;
+        enhancedSearchPanel.style.top = `${Math.max(4, rect.top + 44)}px`;
+        enhancedSearchPanel.style.maxHeight = `${Math.max(180, Math.min(rect.height - 52, viewportH * 0.7))}px`;
+    };
+    const renderEnhancedSearchPanel = (tokens) => {
+        const byName = _latestClassification?.byName;
+        if (!byName) return;
+        const matches = [];
+        for (const meta of byName.values()) {
+            if (!meta?.realName) continue;
+            const hay = String(meta.searchableText || meta.realName.toLowerCase());
+            if (tokens.every((token) => hay.includes(token))) matches.push(meta);
         }
-        _lastEnhancedSearchSig = '';
+        matches.sort((a, b) => String(a.primaryTitle || a.realName)
+            .localeCompare(String(b.primaryTitle || b.realName), 'zh-Hans-CN'));
+        const shown = matches.slice(0, 120);
+        if (!(enhancedSearchPanel instanceof HTMLElement) || !enhancedSearchPanel.isConnected) {
+            enhancedSearchPanel = document.createElement('div');
+            enhancedSearchPanel.className = 'wbo-enhanced-search-panel';
+            enhancedSearchPanel.setAttribute('data-wbo-ui', '1');
+            containerEl.appendChild(enhancedSearchPanel);
+            enhancedSearchPanel.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+            enhancedSearchPanel.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                const btn = ev.target instanceof Element ? ev.target.closest('[data-wbo-esp]') : null;
+                if (!btn) return;
+                const realName = btn.getAttribute('data-wbo-esp');
+                const select = document.getElementById('world_editor_select');
+                const option = select
+                    ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName)
+                    : null;
+                if (select && option) {
+                    const $jq = globalThis.jQuery;
+                    if ($jq) $jq(select).val(option.value).trigger('change');
+                    else {
+                        select.value = option.value;
+                        select.dispatchEvent(new Event('change', { bubbles: true }));
+                    }
+                }
+                removeEnhancedSearchPanel();
+                if (searchInput instanceof HTMLInputElement) searchInput.value = '';
+                pushDiagTrace('enh-panel:pick');
+            });
+        }
+        positionEnhancedSearchPanel();
+        if (matches.length === 0) {
+            enhancedSearchPanel.innerHTML = '<div class="wbo-esp-empty">没有匹配的世界书</div>';
+        } else {
+            enhancedSearchPanel.innerHTML = [
+                `<div class="wbo-esp-head">搜索匹配到的世界书 (${matches.length})</div>`,
+                ...shown.map((meta) => `<button type="button" class="wbo-esp-row" data-wbo-esp="${escHtml(meta.realName)}">
+                    <span class="wbo-esp-main">
+                        <span class="wbo-esp-title">${escHtml(meta.primaryTitle || meta.realName)}</span>
+                        ${meta.subtitle ? `<span class="wbo-esp-sub">${escHtml(meta.subtitle)}</span>` : ''}
+                    </span>
+                    <span class="wbo-esp-origin">${escHtml(meta.groupName || '未分组')}</span>
+                </button>`),
+            ].join('');
+        }
+        pushDiagTrace(`enh-panel:matches=${matches.length},shown=${shown.length}`);
     };
     const syncEnhancedSearchBlock = (searching) => {
         if (isGlobalPopover) return;
         const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim().toLowerCase() : '';
         const tokens = term ? term.split(/\s+/).filter(Boolean) : [];
-        pushDiagTrace(`enh-search:searching=${searching ? 1 : 0},tokens=${tokens.length},options=${optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector).length}`);
+        pushDiagTrace(`enh-search:searching=${searching ? 1 : 0},tokens=${tokens.length}`);
         if (!searching || tokens.length === 0) {
-            if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
+            removeEnhancedSearchPanel();
             return;
         }
-        const rowWorld = (row) => row.dataset.wboEnhancedWorld
-            || row.querySelector('.wbo-gr-world-title')?.textContent?.trim()
-            || (row.textContent || '').trim();
-        // Match by the search term ourselves: the host script may rebuild rows (dropping any
-        // inline hiding), so reading their display state is not reliable. The raw row text is a
-        // third haystack, so a row whose metadata we cannot resolve still matches by substring.
-        let metaResolved = 0;
-        const rows = [...optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)]
-            .filter((row) => {
-                if (!(row instanceof HTMLElement)) return false;
-                const name = rowWorld(row);
-                if (!name) return false;
-                const meta = resolveEnhancedRowMeta(row) || _latestClassification?.byName?.get(name);
-                if (meta) metaResolved += 1;
-                const haystacks = [
-                    meta?.searchableText,
-                    name.toLowerCase(),
-                    (row.textContent || '').toLowerCase(),
-                ].filter(Boolean);
-                return tokens.every((token) => haystacks.some((hay) => hay.includes(token)));
-            });
-        pushDiagTrace(`enh-search:matched=${rows.length},meta=${metaResolved}`);
-        // Snapshot the live list right now: the report is usually taken after closing, when every
-        // count reads zero, so this is the only place the failure is still observable.
-        pushDiagTrace(`enh-live:optionsVisible=${[...optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)].filter((el) => el.getClientRects().length > 0).length}`
-            + `,hostConnected=${optionsHost.isConnected ? 1 : 0}`
-            + `,hostH=${Math.round(optionsHost.getBoundingClientRect().height)}`
-            + `,secHidden=${optionsHost.querySelectorAll('.wbo-pop-section.wbo-dd-group-hidden').length}`
-            + `,collapsed=${optionsHost.querySelectorAll('.wbo-dd-collapsed').length}`);
-        if (rows.length === 0) {
-            // Nothing matched: give an explicit hint instead of a full-width blank strip.
-            clearEnhancedSearchBlock();
-            _lastEnhancedSearchSig = 'empty';
-            containerEl.classList.add('wbo-enhanced-searching');
-            for (const sectionEl of optionsHost.querySelectorAll('.wbo-pop-section')) {
-                sectionEl.classList.add('wbo-enhanced-section-hidden');
-            }
-            const hint = document.createElement('div');
-            hint.className = 'wbo-enhanced-search-empty';
-            hint.textContent = '没有匹配的世界书';
-            optionsHost.insertBefore(hint, optionsHost.firstChild);
-            pushDiagTrace('enh-search:empty');
-            return;
-        }
-        // Own the visibility ourselves: the host script may hide every row (it loses track after
-        // we swap in the display title), which left the list blank even though hits existed.
-        for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
-            if (!(row instanceof HTMLElement)) continue;
-            const hit = rows.includes(row);
-            row.classList.toggle('wbo-enhanced-search-hidden', !hit);
-            if (hit) {
-                if (row.style.display === 'none') row.style.removeProperty('display');
-                if (row.hidden) row.hidden = false;
-                row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
-            }
-        }
-        // Hide whole groups that hold no hit; otherwise their empty bodies leave tall gaps.
-        for (const sectionEl of optionsHost.querySelectorAll('.wbo-pop-section')) {
-            const hasHit = [...sectionEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)]
-                .some((row) => rows.includes(row));
-            sectionEl.classList.toggle('wbo-enhanced-section-hidden', !hasHit);
-        }
-        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
-        // The hits can still be invisible because an ancestor (the script's list wrapper or a
-        // section) is hidden; walk up and clear that too.
-        let unhidAncestors = 0;
-        for (const row of rows) {
-            let node = row.parentElement;
-            while (node && node !== containerEl && node instanceof HTMLElement) {
-                if (node.style.display === 'none') {
-                    node.style.removeProperty('display');
-                    unhidAncestors += 1;
-                }
-                if (node.hidden) {
-                    node.hidden = false;
-                    unhidAncestors += 1;
-                }
-                node.classList.remove('wbo-pop-search-hidden', 'wbo-dd-group-hidden', 'wbo-dd-collapsed');
-                node = node.parentElement;
-            }
-        }
-        // Give the list a usable height when the host left it collapsed to zero.
-        if (optionsHost.getBoundingClientRect().height <= 0) {
-            optionsHost.style.removeProperty('display');
-            optionsHost.style.removeProperty('max-height');
-        }
-        pushDiagTrace(`enh-show:hits=${rows.length},ancestorUnhide=${unhidAncestors},hostH=${Math.round(optionsHost.getBoundingClientRect().height)},hitH=${Math.round(rows[0].getBoundingClientRect().height)}`);
-        const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
-        const headRow = optionsHost.querySelector('[data-wbo-search-head]');
-        const domIntact = rows.length <= 1
-            ? Boolean(optionsHost.querySelector('.wbo-s2-badge.is-search-match'))
-            : Boolean(headRow && rows.includes(headRow));
-        if (sig === _lastEnhancedSearchSig && domIntact) return;
-        clearEnhancedSearchBlock();
-        _lastEnhancedSearchSig = sig;
-        // The list keeps the pre-search scroll position, so a couple of hits at the top look like
-        // an empty panel. Bring the first hit back into view.
-        const scrollHost = getScrollHost();
-        if (scrollHost && scrollHost.scrollTop > 0) {
-            scrollHost.scrollTop = 0;
-        }
-        requestAnimationFrame(() => {
-            rows[0]?.scrollIntoView?.({ block: 'nearest' });
-        });
-        // Show the hits even if the host script decided to hide them itself (it can lose track of
-        // rows once we swap in the display title).
-        for (const row of rows) {
-            if (row.style.display === 'none') row.style.removeProperty('display');
-            if (row.hidden) row.hidden = false;
-            row.classList.remove('wbo-pop-search-hidden', 'wbo-dd-pin-hidden', 'hidden', 'gr-option-hidden');
-        }
-        containerEl.classList.toggle('wbo-enhanced-searching', true);        const originOf = (row) => _latestClassification?.byName?.get(getOptionText(row))?.groupName || '未分组';
-        if (rows.length === 1) {
-            const right = rows[0].querySelector('.wbo-s2-right');
-            if (right instanceof HTMLElement) {
-                const badge = document.createElement('span');
-                badge.className = 'wbo-s2-badge is-search-match';
-                badge.setAttribute('data-wbo-search-badge', '1');
-                badge.textContent = '搜索匹配到的世界书';
-                right.prepend(badge);
-                const origin = document.createElement('span');
-                origin.className = 'wbo-s2-badge is-search-origin is-enhanced-search';
-                origin.textContent = originOf(rows[0]);
-                right.prepend(origin);
-            }
-            return;
-        }
-        for (const row of rows) {
-            row.querySelectorAll(':scope > .wbo-s2-right > .is-search-match').forEach((el) => el.remove());
-            const right = row.querySelector('.wbo-s2-right');
-            if (!(right instanceof HTMLElement) || right.querySelector('.is-enhanced-search')) continue;
-            const origin = document.createElement('span');
-            origin.className = 'wbo-s2-badge is-search-origin is-enhanced-search';
-            origin.textContent = originOf(row);
-            right.prepend(origin);
-        }
-        // No extra node: the block title is a CSS ::before on the first hit, so the host script's
-        // layout and height calculations stay untouched.
-        rows[0].setAttribute('data-wbo-search-head', `搜索匹配到的世界书 (${rows.length})`);
-        // The host re-renders its list right after typing; apply our visibility once more.
-        scheduleEnhancedSearchReapply();
+        renderEnhancedSearchPanel(tokens);
     };
 
     const popoverScrollHost = getScrollHost();

@@ -3047,6 +3047,96 @@ li.wbo-dd-group-hidden,
     display: none !important;
 }
 
+/* Plugin-owned search result panel in the enhanced popover: the host script keeps rebuilding its
+   list, so searching renders our own overlay instead of fighting it. */
+.wbo-enhanced-search-panel {
+    z-index: 100090;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid var(--wbo-border-strong, rgba(128, 128, 128, 0.45));
+    background: var(--wbo-surface, #232429);
+    color: var(--wbo-fg, #e7e7e4);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+}
+
+.wbo-esp-head {
+    padding: 4px 8px;
+    font-weight: 600;
+    font-size: 0.92em;
+    opacity: 0.8;
+}
+
+.wbo-esp-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.wbo-esp-row:hover,
+.wbo-esp-row:focus-visible {
+    background: rgba(128, 128, 128, 0.18);
+}
+
+.wbo-esp-main {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: nowrap;
+}
+
+.wbo-esp-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-esp-sub {
+    flex: 0 0 auto;
+    font-size: 0.82em;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+.wbo-esp-origin {
+    flex: 0 0 auto;
+    font-size: 0.78em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(128, 128, 128, 0.16);
+    opacity: 0.8;
+}
+
+.wbo-esp-empty {
+    padding: 10px 8px;
+    opacity: 0.75;
+}
+
+@media (max-width: 680px) {
+    .wbo-esp-main {
+        flex-wrap: wrap;
+    }
+
+    .wbo-esp-title,
+    .wbo-esp-sub {
+        white-space: normal;
+    }
+}
+
 /* While searching, the enhanced popover shows one 「搜索匹配到的世界书」 head, so the
    per-group heads are noise (kept as a class so host re-renders keep the state). */
 .wbo-enhanced-searching .wbo-pop-section > .wbo-dd-group-head {
