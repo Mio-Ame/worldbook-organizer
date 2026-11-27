@@ -912,6 +912,24 @@ function matchesGlobalDropdownGroup(meta, groupId) {
     return meta?.groupId === groupId;
 }
 
+/**
+ * Host-rendered rows can carry a star or badges next to the book name; pick the longest known
+ * world name that the row text starts with, so decorations never defeat the lookup.
+ * @param {string} raw
+ * @returns {string}
+ */
+function matchKnownWorldName(raw) {
+    const byName = _latestClassification?.byName;
+    const text = String(raw || '').trim();
+    if (!byName || !text) return '';
+    if (byName.has(text)) return text;
+    let best = '';
+    for (const key of byName.keys()) {
+        if (key.length > best.length && text.startsWith(key)) best = key;
+    }
+    return best;
+}
+
 function globalSelect2Matcher(params, data) {
     // Searching must look across every group, not only inside the active pill: the hits are
     // regrouped afterwards into 「搜索匹配到的世界书」.
@@ -4624,7 +4642,16 @@ function enhanceOpenEditorDropdown() {
         const s2Item = li.querySelector('.wbo-s2-item');
         const fromAttr = s2Item?.getAttribute('data-wbo-world') || li.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world');
         if (fromAttr) return fromAttr;
-        return (li.textContent || '').trim();
+        // Host-rendered rows: Select2 keeps the source option/data on the row itself.
+        const $jq = globalThis.jQuery;
+        const data = $jq ? $jq(li).data?.('data') : null;
+        const option = data?.element instanceof HTMLOptionElement ? data.element : null;
+        const fromOption = (option?.dataset?.wboRealName || option?.textContent || '').trim();
+        if (fromOption) return fromOption;
+        const fromData = String(data?.text ?? '').trim();
+        if (fromData) return fromData;
+        const raw = (li.textContent || '').trim();
+        return matchKnownWorldName(raw) || raw;
     };
 
     const getPinnedCountInSelect = () => {
@@ -4989,6 +5016,27 @@ function enhanceOpenEditorDropdown() {
     };
 
     /**
+     * Resolve a result row's world name even when the host rendered the row itself: Select2
+     * keeps the source data on the row, so prefer that over scraping `textContent` (which may
+     * carry a star, badges or other decorations and then never matches a book).
+     * @param {HTMLElement} row
+     * @returns {string}
+     */
+    const resolveRowWorldName = (row) => {
+        const $jq = globalThis.jQuery;
+        const data = $jq ? $jq(row).data('data') : null;
+        const option = data?.element instanceof HTMLOptionElement ? data.element : null;
+        if (option) {
+            const fromOption = (option.dataset?.wboRealName || option.textContent || '').trim();
+            if (fromOption) return fromOption;
+        }
+        const fromData = String(data?.text ?? '').trim();
+        if (fromData) return fromData;
+        const raw = (row.textContent || '').trim();
+        return matchKnownWorldName(raw) || raw;
+    };
+
+    /**
      * The host (or a compatible style script) can render result rows with its own markup, in
      * which case the raw file name is shown and no title/badge fix has anywhere to land.
      * Upgrade such rows to our own structure so titles, badges and pin stars work (U6).
@@ -4998,8 +5046,7 @@ function enhanceOpenEditorDropdown() {
             .forEach((row) => {
                 if (!(row instanceof HTMLElement)) return;
                 if (row.querySelector('.wbo-s2-item')) return;
-                const name = (row.textContent || '').trim();
-                const meta = _latestClassification?.byName?.get(name);
+                const meta = _latestClassification?.byName?.get(resolveRowWorldName(row));
                 if (!meta) return;
                 row.textContent = '';
                 const item = document.createElement('span');

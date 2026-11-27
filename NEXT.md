@@ -1,3 +1,13 @@
+### 诊断定位：分类没问题，问题在宿主自渲染的行（2026-11-28 · v2.35.50）
+- 用户提供的结构诊断（不含任何书名）：`titleMode=char_with_sub`、`charGroupBooks=69`、`charBookWithoutOwner=0`、`charBookTitleIsFileName=0`、`charBookWithSubtitle=69`。**分类层 100% 正确**，69 本角色书都解析出了角色名和文件名副标题。
+- 结论：显示成文件名的是**渲染层**——那些 `<li>` 不是插件模板画的（宿主自己渲染），插件既改不到标题，`ensureEditorRowMarkup` 的上一次版本又用 `textContent` 找书，行上带 ★／徽章等杂字时匹配失败，于是原地不动。
+- 改动（`src/native-filter.js`）：
+  - 新增 `resolveRowWorldName()`：优先读 Select2 挂在行上的 `data.data.element`（源 `<option>`）→ `data.data.text` → 行文本；再经 `matchKnownWorldName()` 用「最长已知书名前缀」兜底，星星/徽章不再影响认书。
+  - `getDropdownOptionWorldName()` 同样接入上述兜底，超时/延迟渲染的行也能正确归类、去重、加徽章。
+  - `ensureEditorRowMarkup()` 改用 `resolveRowWorldName()`，宿主渲染的行会被升级成插件结构（`data-wbo-world` + 标题/副标题 + 动作区），标题随即变成「角色名 + 文件名」。
+- 验证：单测 245/245；`native-editor-titles` 11/11（把「宿主行」用例改成带 `☆` 后缀，验证杂字不影响认书）；`native-picker-window` 33/33。
+- 边界：只升级 `li.select2-results__option` 结构；若某个宿主把行换成 `div` 等其它结构，这条兜底不会命中。
+
 ### 诊断信息改为纯结构统计（2026-11-28 · v2.35.49）
 - 用户反馈：复制出来的诊断里带书名/角色名，粘贴时被内容审核拦下，不愿意外发。
 - 改动：`window.wboTitleReport()` 与设置页「复制诊断」按钮改为**只输出结构**——标题模式、相关开关、角色数（总数/shallow/带主书）、`charLore` 条目与附加书数、`include_in_char`/`exclude_from_char` 计数、分类统计（总书数、角色组书数、无归属数、标题仍是文件名数、有副标题数、未分组数），以及每本角色组书的 `{id: 6位哈希, owners, orphanOnly, sources, titleIsFileName, hasSubtitle}`。不再输出任何书名、角色名、分组名、文件名、`assignments` 键名。

@@ -133,11 +133,11 @@ test('host-rendered rows are upgraded so the role name still shows', async t => 
     await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub' }), async cdp => {
         await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
         await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-current-char')));
-        // Simulate a host that owns the row markup: plain text, no wbo-s2-item.
+        // Simulate a host that owns the row markup: plain text plus a decoration (the star),
+        // which used to defeat the name lookup and left the file name in place.
         await cdp.evalFn(name => {
             const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`)?.closest('li');
-            row.textContent = name;
-            // Any decorate pass (here: a pill click) must restore our structure and title.
+            row.textContent = `${name} ☆`;
             document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="__all__"]')
                 ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
         }, realName);
