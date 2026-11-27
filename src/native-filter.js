@@ -1100,7 +1100,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.59';
+export const PLUGIN_VERSION = '2.35.60';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7328,16 +7328,24 @@ function enhanceCustomDropdownPopover(containerEl) {
             || row.querySelector('.wbo-gr-world-title')?.textContent?.trim()
             || (row.textContent || '').trim();
         // Match by the search term ourselves: the host script may rebuild rows (dropping any
-        // inline hiding), so reading their display state is not reliable.
+        // inline hiding), so reading their display state is not reliable. The raw row text is a
+        // third haystack, so a row whose metadata we cannot resolve still matches by substring.
+        let metaResolved = 0;
         const rows = [...optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)]
             .filter((row) => {
                 if (!(row instanceof HTMLElement)) return false;
                 const name = rowWorld(row);
                 if (!name) return false;
                 const meta = resolveEnhancedRowMeta(row) || _latestClassification?.byName?.get(name);
-                const haystack = String(meta?.searchableText || name.toLowerCase());
-                return tokens.every((token) => haystack.includes(token));
+                if (meta) metaResolved += 1;
+                const haystacks = [
+                    meta?.searchableText,
+                    name.toLowerCase(),
+                    (row.textContent || '').toLowerCase(),
+                ].filter(Boolean);
+                return tokens.every((token) => haystacks.some((hay) => hay.includes(token)));
             });
+        pushDiagTrace(`enh-search:matched=${rows.length},meta=${metaResolved}`);
         if (rows.length === 0) {
             // Nothing matched: leave the popover to the host script (its own empty state) instead
             // of leaving our class/head behind and a blank fixed-height area.

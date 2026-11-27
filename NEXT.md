@@ -1,3 +1,10 @@
+### 增强搜索匹配放宽 + 匹配明细（2026-11-28 · v2.35.60）
+- 用户 v2.35.59 的诊断 trace 显示：`enh-search:searching=1,tokens=1,options=142` —— 搜索函数跑了、读到搜索词，但没有任何命中（142 行全被判为不匹配），所以没有搜索头、列表被宿主清空后就是空白。
+- 改动（`src/native-filter.js` 的 `syncEnhancedSearchBlock`）：
+  - 匹配改为三重 haystack：`meta.searchableText`、行名、**行原始文本**（`row.textContent`，含被隐藏的 `.wbo-orig-text`）。这样即使 meta 解析不到（option 文本被改写、行结构被宿主重建），也能按子串命中。
+  - 新增面包屑 `enh-search:matched=N,meta=M`：下一次诊断可直接看出「命中几行、其中几行拿到了 meta」，据此判断是匹配问题还是渲染问题。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 更详细的诊断 + 按显示名反查书（2026-11-28 · v2.35.59）
 - 用户要求：详细诊断再细一点，方便定位「搜索空白 / 当前角色书名不对」。
 - 诊断增强（`src/native-filter.js`）：
