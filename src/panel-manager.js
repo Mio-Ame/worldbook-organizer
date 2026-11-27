@@ -31,6 +31,7 @@ import {
     getActiveGlobalWorldSet,
     getCharLoreEntries,
     getCharactersInMemory,
+    getCurrentCharacterAvatar,
     getCurrentEditorWorldName,
     getHostContext,
     getPowerUserSettings,
@@ -90,6 +91,8 @@ import { ENTRY_GROUPING_STATE_CHANGED } from './entry-groups/feature-gate.js';
 
 const SETTINGS_ROOT_ID = 'wbo-extension-settings';
 const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
+/** Section id for the current chat character's own worldbooks, always shown on top. */
+const CURRENT_CHAR_BOOK_SECTION_ID = '__current_char_book__';
 
 let _searchQuery = '';
 
@@ -569,7 +572,7 @@ function renderGroupSectionHtml({
             : hiddenInEditor
                 ? '已在编辑下拉框默认隐藏，点击修改'
                 : '设置该分组在全局框 / 编辑框中的默认显隐';
-    const visActionBtn = id === SPECIAL_GROUPS.PINNED || id === ACTIVE_GLOBAL_SECTION_ID
+    const visActionBtn = id === SPECIAL_GROUPS.PINNED || id === ACTIVE_GLOBAL_SECTION_ID || id === CURRENT_CHAR_BOOK_SECTION_ID
         ? ''
         : visHiddenAny
             ? `
@@ -2114,6 +2117,9 @@ function openManagerModal() {
                 } else if (gid === SPECIAL_GROUPS.PINNED) {
                     settings.pinnedGroupCollapsed = !settings.pinnedGroupCollapsed;
                     willCollapse = settings.pinnedGroupCollapsed;
+                } else if (gid === CURRENT_CHAR_BOOK_SECTION_ID) {
+                    settings.currentCharGroupCollapsed = !settings.currentCharGroupCollapsed;
+                    willCollapse = settings.currentCharGroupCollapsed;
                 } else {
                     const grp = settings.groups.find((g) => g.id === gid);
                     if (grp) {
@@ -2687,18 +2693,22 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
     const activeGlobals = getActiveGlobalWorldSet();
     const filterId = settings.activeFilterGroupId;
     const isAllView = filterId === SPECIAL_GROUPS.ALL || (filterId === SPECIAL_GROUPS.DEFAULT && settings.showCharBooks);
-    const activeGlobalKey = isAllView ? JSON.stringify([...activeGlobals]) : '';
+    // Overview views (all / default) always surface the pinned blocks, even when character books are hidden.
+    const isOverviewView = filterId === SPECIAL_GROUPS.ALL || filterId === SPECIAL_GROUPS.DEFAULT;
+    const activeGlobalKey = isOverviewView ? JSON.stringify([...activeGlobals]) : '';
     // Read LIVE collapse & hidden-group state from `settings` (never stale cached `classification`!)
     const structSig = JSON.stringify([
         q,
         _batchMode,
         currentEditor || '',
         activeGlobalKey,
+        getCurrentCharacterAvatar() || '',
         settings.activeFilterGroupId,
         settings.charBookTitleMode,
         settings.aliasTitleMode,
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
+        Boolean(settings.currentCharGroupCollapsed),
         Boolean(settings.ungroupedCollapsed),
         Boolean(settings.pinnedGroupCollapsed),
         searchOpts.searchBookName,
@@ -2730,9 +2740,17 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
     _renderedGroupBooksMap.clear();
     const hasCustomGroups = classification.customGroups.length > 0;
     const includeCharExplicitly = filterId === SPECIAL_GROUPS.CHARACTER || isAllView;
-    const activeGlobalBooks = isAllView
+    const currentChatAvatar = getCurrentCharacterAvatar();
+    const currentCharBooks = isOverviewView && currentChatAvatar
+        ? [...(classification.characterBooks || [])].filter((book) =>
+            book?.charOwners?.some((owner) => owner.avatar === currentChatAvatar)
+            && (!q || matchesSearch(book, q, searchOpts)))
+        : [];
+    const currentCharBookNames = new Set(currentCharBooks.map((book) => book.realName));
+    const activeGlobalBooks = isOverviewView
         ? [...activeGlobals].map((name) => classification.byName.get(name)).filter((book) =>
-            book && !book.isInCharGroup && (!q || matchesSearch(book, q, searchOpts)))
+            book && !book.isInCharGroup && !currentCharBookNames.has(book.realName)
+            && (!q || matchesSearch(book, q, searchOpts)))
         : [];
     const activeGlobalNames = new Set(activeGlobalBooks.map((book) => book.realName));
 
@@ -2778,7 +2796,11 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             return;
         }
         if (sec.kind === 'character' && classification.charCount > 0) {
-            const matchedCharBooks = q ? sec.books.filter((b) => matchesSearch(b, q, searchOpts)) : sec.books;
+            // The chat character's own books lead the character group; the pinned block above
+            // repeats them on purpose.
+            const baseCharBooks = [...sec.books].sort((a, b) =>
+                Number(currentCharBookNames.has(b.realName)) - Number(currentCharBookNames.has(a.realName)));
+            const matchedCharBooks = q ? baseCharBooks.filter((b) => matchesSearch(b, q, searchOpts)) : baseCharBooks;
             if (q && matchedCharBooks.length === 0) return;
             renderSpecs.push({
                 type: 'section',
@@ -2793,6 +2815,37 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
                 hiddenInGlobal: globalHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
                 hiddenInEditor: editorHiddenSet.has(SPECIAL_GROUPS.CHARACTER),
                 books: matchedCharBooks,
+            });
+        }
+    };
+
+    /** Pinned overview blocks: current chat character's books, then the mounted globals. */
+    const pushOverviewPinnedSections = () => {
+        if (currentCharBooks.length > 0) {
+            renderSpecs.push({
+                type: 'section',
+                id: CURRENT_CHAR_BOOK_SECTION_ID,
+                name: '当前角色世界书',
+                color: '#b98cd6',
+                // Foldable like every other group, expanded by default.
+                collapsed: Boolean(settings.currentCharGroupCollapsed),
+                isCustom: false,
+                isSingleView: false,
+                isMovable: false,
+                books: currentCharBooks,
+            });
+        }
+        if (activeGlobalBooks.length > 0) {
+            renderSpecs.push({
+                type: 'section',
+                id: ACTIVE_GLOBAL_SECTION_ID,
+                name: '已开启的全局世界书',
+                color: '#6b8d85',
+                collapsed: false,
+                isCustom: false,
+                isSingleView: true,
+                isMovable: false,
+                books: activeGlobalBooks,
             });
         }
     };
@@ -2821,20 +2874,9 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             });
         }
     } else if (isAllView) {
+        pushOverviewPinnedSections();
         const charSec = orderedSections.find((section) => section.kind === 'character');
         if (charSec) pushSectionSpec(charSec, { isMovable: false });
-        if (activeGlobalBooks.length > 0) {
-            renderSpecs.push({
-                type: 'section',
-                id: ACTIVE_GLOBAL_SECTION_ID,
-                name: '已开启的全局世界书',
-                color: '#6b8d85',
-                collapsed: false,
-                isSingleView: true,
-                isMovable: false,
-                books: activeGlobalBooks,
-            });
-        }
         const pinnedList = (classification.pinnedBooks || []).filter((book) =>
             !activeGlobalNames.has(book.realName) && (!q || matchesSearch(book, q, searchOpts)));
         if (pinnedList.length > 0) {
@@ -2854,6 +2896,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
             if (section.kind !== 'character') pushSectionSpec(section);
         });
     } else {
+        if (isOverviewView) pushOverviewPinnedSections();
         if (filterId === SPECIAL_GROUPS.DEFAULT && !settings.showCharBooks && currentEditor) {
             const editingMeta = classification.byName.get(currentEditor);
             if (editingMeta?.isInCharGroup && (!q || matchesSearch(editingMeta, q, searchOpts))) {

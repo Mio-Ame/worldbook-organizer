@@ -931,6 +931,10 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
     const editingBadge = isEditing
         ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>'
         : '';
+    // The ordinary editor dropdown marks books that are already mounted as globals.
+    const globalBadge = showEditingBadge && getActiveGlobalWorldSet().has(realName)
+        ? '<span class="wbo-s2-badge is-global" data-wbo-ui="1" data-wbo-global-badge="1">已全局</span>'
+        : '';
     const groupBadge = showGroupPill && (hasCustomGroups || meta.isInCharGroup)
         ? `<span class="wbo-s2-badge${meta.isInCharGroup ? ' is-char' : ''}">${escHtml(meta.groupName)}</span>`
         : '';
@@ -948,6 +952,7 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
             </span>
             <span class="wbo-s2-right">
                 ${editingBadge}
+                ${globalBadge}
                 ${groupBadge}
                 ${pinBtnHtml}
             </span>

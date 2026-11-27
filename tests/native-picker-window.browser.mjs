@@ -777,11 +777,19 @@ test('mobile global dropdown handles direct option rows without native search', 
     });
 });
 
-test('active global books appear after character books in the manager and return to their group when disabled', async () => {
+test('manager pins the current character block above the active globals and still lists globals elsewhere', async () => {
     await withHost(VIEWPORTS.desktop, async (cdp) => {
         await openManager(cdp);
         const groups = await cdp.evalFn(() => [...document.querySelectorAll('#wbo-mgr-groups-list > .wbo-group')].map((group) => group.dataset.groupId));
-        assert.deepEqual(groups.slice(0, 3), ['__char__', '__active_globals__', '__pinned__']);
+        assert.deepEqual(groups.slice(0, 4), ['__current_char_book__', '__active_globals__', '__char__', '__pinned__']);
+        // The pinned block stays out of the group pills.
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('#wbo-mgr-pills [data-group-id]')]
+            .some((pill) => pill.getAttribute('data-group-id') === '__current_char_book__')), false);
+        // The current character's book leads the character group instead of disappearing from it.
+        assert.equal(await cdp.evalFn((name) => {
+            const group = document.querySelector('.wbo-group[data-group-id="__char__"]');
+            return group?.querySelector('.wbo-book-item')?.getAttribute('data-book') === name;
+        }, characterBook), true);
         const row = `.wbo-book-item[data-book="${globalBook}"]`;
         assert.equal(await cdp.evalFn((selector) => document.querySelectorAll(selector).length, row), 1);
         await cdp.clickSelector(`[data-group-id="__active_globals__"] ${row} [data-action="toggle-global"]`);
@@ -1015,5 +1023,45 @@ test('editor dropdown pins the current chat character book above every group', a
         assert.equal(pinned.pinnedClass, true);
         assert.match(pinned.text, /角色测试书/);
         assert.equal(pinned.hidden, false);
+    });
+});
+test('editor dropdown marks mounted globals with an 已全局 badge', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown [data-wbo-global-badge]')));
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown [data-wbo-global-badge]')]
+            .map((badge) => badge.closest('[data-wbo-world]')?.dataset.wboWorld)), [globalBook]);
+    });
+});
+
+test('manager current character block folds and remembers the choice', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        const group = '#wbo-mgr-groups-list .wbo-group[data-group-id="__current_char_book__"]';
+        const isCollapsed = () => cdp.evalFn((sel) => Boolean(document.querySelector(sel)?.classList.contains('is-collapsed')), group);
+        assert.equal(await isCollapsed(), false);
+        await cdp.clickSelector(`${group} [data-action="toggle-group-collapse"]`);
+        await waitForCondition(cdp, () => document.querySelector('#wbo-mgr-groups-list .wbo-group[data-group-id="__current_char_book__"]')?.classList.contains('is-collapsed'));
+        await cdp.clickSelector(`${group} [data-action="toggle-group-collapse"]`);
+        await waitForCondition(cdp, () => !document.querySelector('#wbo-mgr-groups-list .wbo-group[data-group-id="__current_char_book__"]')?.classList.contains('is-collapsed'));
+    });
+});
+
+test('group visibility popover closes on outside press and on a second eye tap', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        const eye = '#wbo-mgr-groups-list .wbo-group[data-group-id="g-a"] [data-action="open-group-visibility"]';
+        await cdp.clickSelector(eye);
+        await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-vis-popover-backdrop')));
+        await cdp.evalFn(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
+        await waitForCondition(cdp, () => !document.getElementById('wbo-vis-popover-backdrop'));
+        assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-vis-popover-backdrop'))), false);
+        await cdp.clickSelector(eye);
+        await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-vis-popover-backdrop')));
+        await cdp.evalFn((selector) => document.querySelector(selector).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })), eye);
+        await waitForCondition(cdp, () => !document.getElementById('wbo-vis-popover-backdrop'));
+        await cdp.evalFn((selector) => document.querySelector(selector).click(), eye);
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-vis-popover-backdrop'))), false);
     });
 });

@@ -202,6 +202,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     syncEntryOrderOnDrag: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
+    currentCharGroupCollapsed: false,
     ungroupedCollapsed: false,
     dropdownCollapsed: {},
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,

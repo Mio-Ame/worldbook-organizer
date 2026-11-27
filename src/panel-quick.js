@@ -1549,7 +1549,16 @@ function openQuickExcludePopover(anchorEl) {
  * @param {string} groupId
  * @param {string} groupName
  */
+let _visPopoverJustClosedGid = '';
+let _visPopoverClosedAt = 0;
+
 function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
+    // A tap on the already-open eye closes the popover in the capture listener below; never reopen it.
+    if (groupId === _visPopoverJustClosedGid && Date.now() - _visPopoverClosedAt < 300) {
+        _visPopoverJustClosedGid = '';
+        return;
+    }
+    _visPopoverJustClosedGid = '';
     closeGroupVisibilityPopover();
     if (!_callbacks) return;
     const { settings } = _callbacks.getState();
@@ -1580,6 +1589,26 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
     document.body.appendChild(backdrop);
     bindDrawerSafeBubbleGuard(backdrop);
     bindDrawerSafeBubbleGuard(pop);
+
+    // Close on any outside press (the shared bubble guard stops normal bubbling, so listen in capture).
+    const onOutsidePress = (ev) => {
+        if (!backdrop.isConnected) {
+            document.removeEventListener('pointerdown', onOutsidePress, true);
+            return;
+        }
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (target && (pop.contains(target) || anchorBtn.contains(target))) {
+            if (target.closest('[data-action="open-group-visibility"]')) {
+                _visPopoverJustClosedGid = groupId;
+                _visPopoverClosedAt = Date.now();
+                closeGroupVisibilityPopover();
+            }
+            return;
+        }
+        _visPopoverJustClosedGid = '';
+        closeGroupVisibilityPopover();
+    };
+    document.addEventListener('pointerdown', onOutsidePress, true);
 
     const rect = anchorBtn.getBoundingClientRect();
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
