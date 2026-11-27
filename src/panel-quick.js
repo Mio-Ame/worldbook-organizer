@@ -711,12 +711,20 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             if (show) visibleCount += 1;
         });
 
+        const foldable = activeEditPill === '__all__' || activeEditPill === '__nonchar__';
         pickListEl.querySelectorAll('.wbo-gp-sec').forEach((sec) => {
             if (!(sec instanceof HTMLElement)) return;
             const hasVis = Array.from(sec.querySelectorAll('.wbo-cmb-pick-row')).some(
                 (r) => r instanceof HTMLElement && !r.hidden,
             );
             sec.hidden = !hasVis;
+            const gid = sec.getAttribute('data-cmb-sec') || '';
+            const folded = foldable && Boolean(settings.comboGroupCollapsed?.[gid]);
+            sec.classList.toggle('is-folded', folded);
+            // Only the all / non-character views are foldable; others keep a static heading.
+            sec.classList.toggle('is-static', !foldable);
+            const head = sec.querySelector('[data-cmb-fold]');
+            if (head instanceof HTMLElement) head.setAttribute('aria-expanded', String(!folded));
         });
 
         const emptyEl = pickListEl.querySelector('#wbo-cmb-pick-empty');
@@ -810,11 +818,13 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                             </label>
                         `;
                     }).join('');
+                    const folded = Boolean(settings.comboGroupCollapsed?.[sec.id]);
                     return `
-                        <div class="wbo-gp-sec" data-cmb-sec="${esc(sec.id)}">
-                            <div class="wbo-gp-sec-head">
+                        <div class="wbo-gp-sec${folded ? ' is-folded' : ''}" data-cmb-sec="${esc(sec.id)}">
+                            <button type="button" class="wbo-gp-sec-toggle wbo-cmb-sec-toggle" data-cmb-fold="${esc(sec.id)}" aria-expanded="${folded ? 'false' : 'true'}">
+                                <i class="fa-solid fa-chevron-down wbo-gp-chev" aria-hidden="true"></i>
                                 <span>${esc(sec.name)} <small>(${sec.books.length})</small></span>
-                            </div>
+                            </button>
                             <div class="wbo-gp-sec-body">${rows}</div>
                         </div>
                     `;
@@ -998,6 +1008,19 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         });
         applyEditFilters();
         restorePillScroll(activeEditPill);
+    });
+    pickListEl?.addEventListener('click', async (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('[data-cmb-fold]') : null;
+        if (!head) return;
+        ev.preventDefault();
+        if (activeEditPill !== '__all__' && activeEditPill !== '__nonchar__') return;
+        const gid = head.getAttribute('data-cmb-fold');
+        if (!gid) return;
+        const next = { ...(settings.comboGroupCollapsed || {}) };
+        next[gid] = !next[gid];
+        settings.comboGroupCollapsed = next;
+        await _callbacks.onMutation({ save: true, uiOnly: true });
+        applyEditFilters();
     });
     pickListEl?.addEventListener('change', (ev) => {
         const cb = ev.target;

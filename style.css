@@ -7100,6 +7100,42 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     min-width: 0;
 }
 
+/* Foldable group headings inside the combo picker (all / non-character views). */
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    width: 100%;
+    background: var(--wbo-bg-elevated, #212226);
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 6px;
+    text-align: start;
+    color: inherit;
+    cursor: pointer;
+}
+
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle:hover {
+    background: var(--wbo-surface-hover, #2c2e34);
+}
+
+.wbo-gp-sec.is-folded .wbo-gp-sec-body {
+    display: none !important;
+}
+
+.wbo-gp-sec.is-folded .wbo-cmb-sec-toggle .wbo-gp-chev {
+    transform: rotate(-90deg);
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle {
+    cursor: default;
+    pointer-events: none;
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle .wbo-gp-chev {
+    visibility: hidden;
+}
+
 .wbo-cmb-pill-rows .wbo-pill.is-emphasis {
     border-color: #16181d !important;
     background: #16181d !important;

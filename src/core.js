@@ -204,6 +204,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     charGroupCollapsed: true,
     currentCharGroupCollapsed: false,
     ungroupedCollapsed: false,
+    comboGroupCollapsed: {},
     dropdownCollapsed: {},
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
     sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],

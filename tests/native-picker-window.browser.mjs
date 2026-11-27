@@ -1065,3 +1065,48 @@ test('group visibility popover closes on outside press and on a second eye tap',
         assert.equal(await cdp.evalFn(() => Boolean(document.getElementById('wbo-vis-popover-backdrop'))), false);
     });
 });
+test('editor dropdown groups 3+ mounted globals into a foldable block above the opened group', async () => {
+    const threeGlobals = ['全局甲', '全局乙', '全局丙'];
+    const globalsSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries([...threeGlobals, '普通甲', '普通乙'].map((name) => [name, { entries: {} }])),
+        selected_world_info: threeGlobals,
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-style', name: '文风' }],
+            assignments: { 普通甲: 'g-style', 全局甲: 'g-style' },
+            pinnedBooks: [],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')));
+        const info = await cdp.evalFn(() => {
+            const group = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]');
+            return {
+                head: group?.querySelector('.select2-results__group')?.textContent || '',
+                mirrors: [...group.querySelectorAll('.wbo-dd-global-mirror')].map((row) => row.getAttribute('data-wbo-mirror-of')).sort(),
+                pills: [...document.querySelectorAll('.select2-dropdown .wbo-dd-pill')].map((pill) => pill.getAttribute('data-wbo-pill')),
+                firstGroup: document.querySelector('.select2-dropdown .select2-results__options > li')?.getAttribute('data-wbo-dd-group'),
+            };
+        });
+        assert.match(info.head, /全局世界书 \(3\)/);
+        assert.deepEqual(info.mirrors, [...threeGlobals].sort());
+        assert.equal(info.pills[1], '__globals__');
+        assert.equal(info.firstGroup, '__globals__');
+        // Folding works like any other group.
+        await cdp.evalFn(() => {
+            const head = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"] .wbo-dd-group-head');
+            head.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+        });
+        await waitForCondition(cdp, () => document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]')?.classList.contains('wbo-dd-collapsed'));
+        await cdp.clickSelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="g-style"]');
+        await waitForCondition(cdp, () => document.querySelector('.select2-dropdown li[data-wbo-dd-group="g-style"]')?.classList.contains('wbo-dd-collapsed') === false);
+        assert.equal(await cdp.evalFn(() => {
+            const group = document.querySelector('.select2-dropdown li[data-wbo-dd-group="__globals__"]');
+            const styleGroup = document.querySelector('.select2-dropdown li[data-wbo-dd-group="g-style"]');
+            const box = group?.getBoundingClientRect();
+            return Boolean(box && box.height > 0) && group.getBoundingClientRect().top < styleGroup.getBoundingClientRect().top;
+        }), true);
+    }, [], globalsSeed);
+});

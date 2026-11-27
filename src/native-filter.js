@@ -39,6 +39,8 @@ import { closeGroupVisibilityPopover } from './panel-window.js';
 
 /** Group id for the "mounted global worldbooks" block; matches the manager's section id. */
 const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
+/** Group id for the editor dropdown's mounted-globals block (shown once 3+ globals are mounted). */
+const EDITOR_GLOBALS_GROUP_ID = '__globals__';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -282,6 +284,7 @@ function ensureSelect2RowsHavePinBtn(resultsList) {
     resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((li) => {
         if (!(li instanceof HTMLElement)) return;
         if (li.classList.contains('select2-results__message')) return;
+        if (li.classList.contains('wbo-dd-global-mirror')) return;
         if (li.querySelector('.wbo-s2-pin-btn')) return;
         const rawText = (li.textContent || '').trim();
         if (!rawText || rawText.startsWith('---')) return;
@@ -4285,6 +4288,20 @@ function enhanceOpenEditorDropdown() {
         return { id, fullLabel, shortName, count: og.querySelectorAll('option').length };
     });
 
+    // Three or more mounted globals get their own foldable block, right below the pinned row.
+    const editorGlobalNames = [...getActiveGlobalWorldSet()].filter((name) => _latestClassification?.byName?.has(name));
+    const hasEditorGlobalBlock = editorGlobalNames.length >= 3;
+    if (hasEditorGlobalBlock) {
+        const entry = {
+            id: EDITOR_GLOBALS_GROUP_ID,
+            fullLabel: '全局世界书',
+            shortName: '全局',
+            count: editorGlobalNames.length,
+        };
+        const charIdx = groups.findIndex((group) => group.id === SPECIAL_GROUPS.CHARACTER);
+        groups.splice(charIdx >= 0 ? charIdx : 0, 0, entry);
+    }
+
     const groupByLabel = new Map(groups.map((g) => [g.fullLabel, g]));
     const validGroupIds = new Set(groups.map((g) => g.id));
     if (getPinnedCountInSelect() > 0 || _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED) {
@@ -4308,10 +4325,61 @@ function enhanceOpenEditorDropdown() {
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
     /**
+     * Build the "全局世界书" block: a mirror of every mounted global so the originals can stay
+     * in their own groups. Mirrors select the real option when pressed.
+     */
+    const layoutEditorGlobalBlock = () => {
+        const existing = resultsList.querySelector(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`);
+        if (!hasEditorGlobalBlock) {
+            if (existing) {
+                existing.remove();
+                return true;
+            }
+            return false;
+        }
+        const sig = editorGlobalNames.join('|');
+        if (existing
+            && existing.getAttribute('data-wbo-mirror-sig') === sig
+            && existing.querySelectorAll('li.wbo-dd-global-mirror').length === editorGlobalNames.length) {
+            return false;
+        }
+        existing?.remove();
+        const allRows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+            .filter((row) => !row.closest(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`));
+        const mirrors = [];
+        for (const name of editorGlobalNames) {
+            const source = allRows.find((row) => getDropdownOptionWorldName(row) === name);
+            if (!source) continue;
+            const clone = source.cloneNode(true);
+            clone.classList.add('wbo-dd-global-mirror');
+            clone.setAttribute('data-wbo-mirror-of', name);
+            clone.classList.remove('wbo-dd-current-char', 'wbo-dd-pin-hidden');
+            clone.querySelectorAll('.wbo-s2-pin-btn').forEach((btn) => btn.remove());
+            mirrors.push(clone);
+        }
+        if (mirrors.length === 0) return false;
+        const groupLi = document.createElement('li');
+        groupLi.className = 'select2-results__option select2-results__option--group';
+        groupLi.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        groupLi.setAttribute('data-wbo-mirror-sig', sig);
+        groupLi.setAttribute('aria-label', '全局世界书');
+        const head = document.createElement('span');
+        head.className = 'select2-results__group';
+        head.textContent = `全局世界书 (${mirrors.length})`;
+        const nested = document.createElement('ul');
+        nested.className = 'select2-results__options select2-results__options--nested';
+        for (const mirror of mirrors) nested.appendChild(mirror);
+        groupLi.append(head, nested);
+        resultsList.prepend(groupLi);
+        return true;
+    };
+
+    /**
      * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
     const decorateGroupItems = () => {
+        const globalsRebuilt = layoutEditorGlobalBlock();
         const searching = isSearching();
         const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
         const isGroupIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
@@ -4333,7 +4401,7 @@ function enhanceOpenEditorDropdown() {
             if (!(li instanceof HTMLElement)) return;
             const label = li.getAttribute('aria-label') || li.querySelector(':scope > .select2-results__group')?.textContent?.trim() || '';
             const desc = groupByLabel.get(label);
-            const gid = desc?.id || label;
+            const gid = li.getAttribute('data-wbo-dd-group') || desc?.id || label;
             li.setAttribute('data-wbo-dd-group', gid);
 
             const head = li.querySelector(':scope > .select2-results__group');
@@ -4350,7 +4418,8 @@ function enhanceOpenEditorDropdown() {
                 li.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
                 li.classList.toggle('wbo-dd-collapsed', !searching && Boolean(_latestSettings.dropdownCollapsed[gid]));
             } else {
-                const hiddenByPill = isGroupIsolated && gid !== activePillGroupId;
+                // The globals block stays visible above whatever group the user opened.
+                const hiddenByPill = isGroupIsolated && gid !== activePillGroupId && gid !== EDITOR_GLOBALS_GROUP_ID;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
                 const isCollapsed = !searching && isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId);
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
@@ -4378,6 +4447,7 @@ function enhanceOpenEditorDropdown() {
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
         }
+        if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
     };
 
     // Keep folding in the current group filter and leave search results visible.
@@ -4402,6 +4472,26 @@ function enhanceOpenEditorDropdown() {
 
     resultsList.addEventListener('mousedown', onResultsMouseDown, true);
     resultsList.addEventListener('click', onResultsClick, true);
+
+    // Mirrored rows in the globals block select the real option.
+    resultsList.addEventListener('mousedown', (ev) => {
+        const row = ev.target instanceof Element ? ev.target.closest('li.wbo-dd-global-mirror') : null;
+        if (!row) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const name = row.getAttribute('data-wbo-mirror-of');
+        if (!name) return;
+        const option = [...selectEl.querySelectorAll('option')].find((opt) => (opt.textContent || '').trim() === name);
+        if (!option) return;
+        const $jq = globalThis.jQuery;
+        if ($jq) {
+            $jq(selectEl).val(option.value).trigger('change');
+            $jq(selectEl).select2('close');
+        } else {
+            selectEl.value = option.value;
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }, true);
 
     // Optional compact 1-line group filter bar inside the dropdown when 2+ groups exist
     let filterBar = null;

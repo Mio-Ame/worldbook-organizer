@@ -394,5 +394,16 @@ test('global combo editor splits group pills from scope pills, emphasizes picked
         await cdp.clickSelector('[data-cmb-pill="__all__"]');
         const restored = await scrollState();
         assert.ok(restored.top > 120, `the bottom-most position is kept as-is, got ${JSON.stringify(restored)}`);
+
+        // Groups fold in the all / non-character views and keep that choice; concrete groups stay static.
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        await cdp.clickSelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"] [data-cmb-fold]');
+        await waitForCondition(cdp, () => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]')?.classList.contains('is-folded'));
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"] .wbo-gp-sec-body')?.getBoundingClientRect().height), 0);
+        await cdp.clickSelector('[data-cmb-pill="fixture-scroll-group"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-folded')), false);
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-static')), true);
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-folded')), true);
     });
 });
