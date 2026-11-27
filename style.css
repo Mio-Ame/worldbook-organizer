@@ -7141,10 +7141,21 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     overflow-wrap: anywhere;
 }
 
+/* 角色名 + 原名 放在同一行，只有窄屏（手机）才允许折行 */
 .wbo-gr-world-title > small {
-    display: block;
+    display: inline;
+    margin-inline-start: 6px;
     font-size: 0.78em;
     opacity: 0.72;
+    white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+    .wbo-gr-world-title > small {
+        display: block;
+        margin-inline-start: 0;
+        white-space: normal;
+    }
 }
 
 .wbo-exclude-title-wrap {

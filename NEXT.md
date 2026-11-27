@@ -1,3 +1,16 @@
+### 增强浮层搜索空白、脚本残留与标题行内（2026-11-28 · v2.35.56）
+- 用户反馈（脚本开启/页面残留其样式时）：搜到结果必须点进分组才看得到；普通下拉搜索后胶囊下方整片空白、只剩分组标题且高度沿用搜索前。
+- 修复（`src/native-filter.js`）：
+  - 编辑器增强浮层搜索时**不再自行隐藏整段分组**（原来按「有没有可见子行」判断，宿主脚本隐藏行的方式不同就会误判，导致整片空白、只能点 pills 才见到行）；改为把可见性完全交给宿主脚本，我们只负责隐藏分组标题并插搜索头。
+  - 搜索头改为插在 `optionsHost` 首个子元素（section 级），不再塞进分组 body，宿主的高度计算与行布局不受影响。
+  - 命中 0 本时主动清掉自己的类与头，交回宿主脚本的空态，避免留下空白固定高度区域。
+  - `resolveEnhancedRowMeta()`：宿主重建行后按 `data-wbo-enhanced-world` → 标题的 `title` 属性 → 文本 → 最长书名前缀依次解析，标题不会再因为行里混入 ★/徽章而丢失。
+  - 角色组行在增强浮层里也做标题兜底（`liveCharNameForBook()` / `currentChatCharName()`），与普通下拉一致。
+- 脚本残留（`cleanupStaleEnhancedArtifacts()`）：检测到 TavernHelper 里该脚本被禁用时，移除其残留的 `style[data-gr-dropdown-style]`、`#gr-global-dropdown-container`、`.gr-container-enhanced`、`.gr-select2-display`，避免它继续覆盖我们的样式；插件启动与每次打开下拉时都会重新检查。`detectEnhancedScriptSignals()` 的脚本树信号改为忽略 `enabled === false` 的条目。
+- 标题排版（`style.css`）：`.wbo-gr-world-title > small` 宽屏改为同行显示（`display: inline` + 6px 间距），`≤680px` 才折行——「角色名 + 原名」在够宽时不再分两行。
+- 诊断：`renderPath` 现在记住最近一次打开的下拉类型（`select2-editor` / `select2-global` / `enhanced-script` / `mobile-picker`），下拉关掉后也能看出走的哪条路径。
+- 验证：单测 245/245；`native-picker-window` + `native-editor-titles` + `native-favorites-script` 54/54（含真脚本共存、搜索归组、禁用脚本清理、副标题行内四项）。
+
 ### 增强浮层搜索归组 + 美化脚本共存验证（2026-11-28 · v2.35.55，U3 + U9）
 - U3：增强浮层（兼容脚本那套 `.gr-container-enhanced`）在编辑器下拉里搜索时，命中行原先散落在各自分组标题下。新增 `syncEnhancedSearchBlock()`：按搜索词自己匹配命中行（不依赖宿主是否隐藏了行，因为脚本会重建行、抹掉内联样式），≥2 本插一个「搜索匹配到的世界书 (N)」头、1 本给行内徽章 + 原分组徽章；搜索期间用容器类 `.wbo-enhanced-searching`（CSS）隐藏各分组标题，清空搜索即还原。行本身不动，宿主脚本仍完全掌控自己的 DOM。
 - U9：新增真脚本共存用例——把 `参考仓库/下拉框美化.json` 的内容在页面里 `eval` 起来，再打开编辑器下拉，断言：插件滤镜条/分组区块/收藏★都在、没有重复行、无运行时错误。实测该脚本在模拟宿主里**确实会**打开编辑器下拉，因此这条是真实验证而非跳过。

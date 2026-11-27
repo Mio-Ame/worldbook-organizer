@@ -690,7 +690,7 @@ test('preset group switching is offered only when the compatible script is detec
         await closeSettings();
 
         await cdp.evalFn(() => {
-            window.TavernHelper = { getScriptTrees: () => [{ type: 'folder', scripts: [{ type: 'script', enabled: false,
+            window.TavernHelper = { getScriptTrees: () => [{ type: 'folder', scripts: [{ type: 'script', enabled: true,
                 content: 'gr-global-dropdown-container gr-select2-display data-gr-dropdown-style' }] }] };
         });
         await openSettings();
@@ -1558,6 +1558,33 @@ test('editor dropdown expands the globals block when its pill or its head is use
     }, [], seedWithGroup);
 });
 
+test('a disabled dropdown script leaves no stale styles or shells behind', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        const result = await cdp.evalFn(async () => {
+            const marker = document.createElement('style');
+            marker.dataset.grDropdownStyle = '1';
+            marker.textContent = '.wbo-gr-world-title > small { display: block !important; }';
+            document.head.append(marker);
+            const shell = document.createElement('div');
+            shell.className = 'gr-container-enhanced';
+            document.body.append(shell);
+            window.TavernHelper = {
+                getScriptTrees: () => [{ type: 'script', enabled: false,
+                    content: 'gr-global-dropdown-container gr-select2-display data-gr-dropdown-style' }],
+            };
+            const mod = await import('/scripts/extensions/third-party/worldbook-organizer/src/native-filter.js');
+            const cleaned = mod.cleanupStaleEnhancedArtifacts();
+            return {
+                cleaned,
+                styleLeft: Boolean(document.querySelector('style[data-gr-dropdown-style]')),
+                shellLeft: Boolean(document.querySelector('.gr-container-enhanced')),
+                scriptActive: mod.isEnhancedScriptActive(),
+            };
+        });
+        assert.deepEqual(result, { cleaned: true, styleLeft: false, shellLeft: false, scriptActive: false });
+    });
+});
+
 test('reference dropdown script and the plugin coexist on the editor dropdown', async (t) => {
     const script = JSON.parse(readFileSync(resolve('..', '参考仓库', '下拉框美化.json'), 'utf8')).content;
     const storageKey = script.match(/const STORAGE_KEY = '([^']+)'/)?.[1];
@@ -1583,6 +1610,10 @@ test('reference dropdown script and the plugin coexist on the editor dropdown', 
         assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('[data-wbo-popover-role="editor"] .wbo-pop-filter-bar'))), true);
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-pop-section').length > 0), true);
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-gr-pin-btn').length > 0), true);
+        // Character books render 角色名 + 原名, and the file name stays inline on a wide viewport.
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-gr-world-title small').length > 0), true);
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('[data-wbo-popover-role="editor"] .wbo-gr-world-title small')]
+            .every((small) => getComputedStyle(small).display === 'inline')), true);
         // No row is duplicated by our grouping.
         const duplicated = await cdp.evalFn(() => {
             const names = [...document.querySelectorAll('[data-wbo-popover-role="editor"] .gr-option')]

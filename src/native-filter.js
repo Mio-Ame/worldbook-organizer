@@ -362,7 +362,8 @@ export function detectEnhancedScriptSignals() {
         if (Array.isArray(scripts)) {
             scriptTree = scripts.flatMap((item) => item?.type === 'folder' ? (item.scripts || []) : [item]).some((item) => {
                 const code = item?.content;
-                return typeof code === 'string'
+                // A disabled script must not count as "in use"; its leftovers get cleaned up.
+                return item?.enabled !== false && typeof code === 'string'
                     && code.includes('gr-global-dropdown-container')
                     && code.includes('gr-select2-display');
             });
@@ -386,6 +387,96 @@ export function isEnhancedScriptActive() {
     if (mode === 'off') return false;
     const signals = detectEnhancedScriptSignals();
     return Boolean(signals.scriptTree || signals.styleMarker || signals.runtimeDom);
+}
+
+/**
+ * Did the user disable the script in TavernHelper while its injected markup/styles still sit in
+ * the page? Disabling does not unload an already-injected script until the page is reloaded.
+ * @returns {'enabled' | 'disabled' | 'unknown'}
+ */
+function compatScriptEnabledState() {
+    try {
+        const scripts = globalThis.TavernHelper?.getScriptTrees?.({ type: 'global' });
+        if (!Array.isArray(scripts)) return 'unknown';
+        const flat = scripts.flatMap((item) => (item?.type === 'folder' ? (item.scripts || []) : [item]));
+        const matching = flat.filter((item) => typeof item?.content === 'string'
+            && item.content.includes('gr-global-dropdown-container')
+            && item.content.includes('gr-select2-display'));
+        if (matching.length === 0) return 'unknown';
+        return matching.some((item) => item.enabled !== false) ? 'enabled' : 'disabled';
+    } catch {
+        return 'unknown';
+    }
+}
+
+/**
+ * Remove the beautify script's leftovers (style tag, dropdown shells, triggers) once it has been
+ * disabled, otherwise its rules keep overriding ours until the page is reloaded.
+ * @returns {boolean} true when something was cleaned
+ */
+export function cleanupStaleEnhancedArtifacts() {
+    if (typeof document === 'undefined') return false;
+    if (compatScriptEnabledState() !== 'disabled') return false;
+    let cleaned = false;
+    for (const selector of ['style[data-gr-dropdown-style]', '#gr-global-dropdown-container', '.gr-container-enhanced', '.gr-select2-display']) {
+        document.querySelectorAll(selector).forEach((el) => {
+            el.remove();
+            cleaned = true;
+        });
+    }
+    return cleaned;
+}
+
+/**
+ * Resolve the classification entry of an enhanced-popover row even when the host script rebuilt
+ * it (its text then carries badges, or only the display title).
+ * @param {HTMLElement} row
+ * @returns {any}
+ */
+function resolveEnhancedRowMeta(row) {
+    const byName = _latestClassification?.byName;
+    if (!byName || !(row instanceof HTMLElement)) return null;
+    const candidates = [];
+    const stored = row.dataset?.wboEnhancedWorld;
+    if (stored) candidates.push(stored);
+    const titleEl = row.querySelector('.wbo-gr-world-title');
+    if (titleEl instanceof HTMLElement && titleEl.title) candidates.push(titleEl.title);
+    const raw = (row.textContent || '').trim();
+    if (raw) candidates.push(raw);
+    for (const candidate of candidates) {
+        const meta = byName.get(candidate);
+        if (meta) return meta;
+        const prefixed = matchKnownWorldName(candidate);
+        if (prefixed) return byName.get(prefixed);
+    }
+    return null;
+}
+
+/** Live character name for a book, from the loaded cards and `charLore` extras. */
+function liveCharNameForBook(bookName) {
+    const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+    for (const ch of characters) {
+        const name = String(ch?.name || ch?.data?.name || '').trim();
+        const world = typeof ch?.data?.extensions?.world === 'string' ? ch.data.extensions.world.trim() : '';
+        if (world && world === bookName && name) return name;
+    }
+    for (const entry of (getCharLoreEntries?.() || [])) {
+        if (!Array.isArray(entry?.extraBooks) || !entry.extraBooks.includes(bookName)) continue;
+        const key = String(entry.name || '').trim();
+        const stem = key.replace(/\.[a-z0-9]+$/i, '');
+        const owner = characters.find((ch) => String(ch?.avatar || '') === key || String(ch?.name || '') === key || String(ch?.name || '') === stem);
+        const charName = String(owner?.name || stem).trim();
+        if (charName) return charName;
+    }
+    return '';
+}
+
+/** Name of the character the chat is currently running as, if any. */
+function currentChatCharName() {
+    const ctx = getHostContext?.() || null;
+    const avatar = getCurrentCharacterAvatar?.();
+    const current = (ctx?.characters || []).find((ch) => String(ch?.avatar || '') === avatar);
+    return String(current?.name || ctx?.name2 || '').trim();
 }
 
 function syncEnhancedHostTheme(element, eligible = true) {
@@ -687,6 +778,18 @@ function syncEnhancedWorldOptionTitle(row, meta) {
         return;
     }
     row.dataset.wboEnhancedWorld = meta.realName;
+    // A character-group book must never fall back to its file name, even when the map lacks an
+    // owner (include_in_char, shallow cards). Same fallback as the ordinary dropdown.
+    let displayTitle = meta.primaryTitle || meta.realName;
+    let displaySubtitle = meta.subtitle;
+    const titleMode = _latestSettings?.charBookTitleMode;
+    if (displayTitle === meta.realName && titleMode !== 'original' && meta.groupId === SPECIAL_GROUPS.CHARACTER) {
+        const ownerName = liveCharNameForBook(meta.realName) || currentChatCharName();
+        if (ownerName) {
+            displayTitle = ownerName;
+            if (titleMode === 'char_with_sub') displaySubtitle = meta.realName;
+        }
+    }
     let label = row.querySelector(':scope > .wbo-gr-world-title');
     if (!label) {
         const originalText = [...row.childNodes].filter((node) => node.nodeType === 3);
@@ -696,11 +799,11 @@ function syncEnhancedWorldOptionTitle(row, meta) {
         label.className = 'wbo-gr-world-title';
         row.prepend(label);
     }
-    label.textContent = meta.primaryTitle || meta.realName;
+    label.textContent = displayTitle;
     label.title = meta.realName;
-    if (meta.subtitle) {
+    if (displaySubtitle) {
         const subtitle = document.createElement('small');
-        subtitle.textContent = meta.subtitle;
+        subtitle.textContent = displaySubtitle;
         label.appendChild(subtitle);
     }
 }
@@ -970,7 +1073,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.55';
+export const PLUGIN_VERSION = '2.35.56';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1041,7 +1144,7 @@ function detectDiagnosticEnv() {
         if (document.getElementById('wbo-mobile-picker-overlay')) return 'mobile-picker';
         if (document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container')) return 'enhanced-script';
         if (document.querySelector('.select2-dropdown')) return 'select2';
-        return 'none-open';
+        return _diag.lastRenderPath || 'none-open';
     })();
     return {
         pluginVersion: PLUGIN_VERSION,
@@ -2124,6 +2227,7 @@ function detectMobilePickerThemeClass() {
  * Tapping outside dismisses it smoothly.
  */
 function openMobileEditorPickerSheet() {
+    _diag.lastRenderPath = 'mobile-picker';
     const selectEl = document.getElementById('world_editor_select');
     const triggerEl = document.getElementById(MOBILE_TRIGGER_ID);
     if (!(selectEl instanceof HTMLSelectElement) || !(triggerEl instanceof HTMLElement)) return;
@@ -4825,6 +4929,9 @@ function cleanupOpenEditorDropdown() {
  */
 function enhanceOpenEditorDropdown() {
     pushDiagAction('open-editor-dropdown');
+    _diag.lastRenderPath = 'select2-editor';
+    // Re-check on every open: a script disabled mid-session must not keep overriding our styles.
+    cleanupStaleEnhancedArtifacts();
     cleanupOpenEditorDropdown();
     _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
@@ -5772,6 +5879,7 @@ function cleanupOpenGlobalDropdown() {
  * Decorate the open global Select2 dropdown without changing its options or search field.
  */
 function enhanceOpenGlobalDropdown() {
+    _diag.lastRenderPath = 'select2-global';
     cleanupOpenGlobalDropdown();
     _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
@@ -6360,6 +6468,7 @@ function ensureEnhancedContainerObserver(containerEl) {
  * @param {HTMLElement} containerEl
  */
 function enhanceCustomDropdownPopover(containerEl) {
+    _diag.lastRenderPath = 'enhanced-script';
     if (!containerEl || !containerEl.isConnected) return;
     if (containerEl.dataset.wboEnhancing === '1') return;
 
@@ -6577,7 +6686,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     const mountedGlobalSet = isGlobalPopover ? new Set() : getActiveGlobalWorldSet();
     for (const optEl of realOptionNodes) {
         const text = getOptionText(optEl);
-        const meta = _latestClassification.byName.get(text);
+        // Rows the host script rebuilt may carry badges/only the display title; resolve by data.
+        const meta = resolveEnhancedRowMeta(optEl) || _latestClassification.byName.get(text);
         const worldName = meta?.realName || text;
         const isPinned = Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName));
         const isEditingRow = Boolean(!isGlobalPopover && activeEditName && worldName === activeEditName);
@@ -7063,7 +7173,13 @@ function enhanceCustomDropdownPopover(containerEl) {
                         !o.classList.contains('wbo-pop-search-hidden') && !o.classList.contains('wbo-dd-pin-hidden'),
                 );
                 const hiddenByPill = isIsolated && gid !== activePillGroupId && gid !== SPECIAL_GROUPS.PINNED;
-                secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild || hiddenByPill);
+                if (isGlobalPopover) {
+                    secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild || hiddenByPill);
+                } else {
+                    // The host script filters its own rows while searching; hiding whole sections
+                    // here left an empty list that only reopened by clicking a pill.
+                    secEl.classList.remove('wbo-dd-group-hidden');
+                }
                 secEl.classList.remove('wbo-dd-collapsed');
             } else if (isPinFilter) {
                 const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
@@ -7119,10 +7235,16 @@ function enhanceCustomDropdownPopover(containerEl) {
                 if (!(row instanceof HTMLElement)) return false;
                 const name = rowWorld(row);
                 if (!name) return false;
-                const meta = _latestClassification?.byName?.get(name);
+                const meta = resolveEnhancedRowMeta(row) || _latestClassification?.byName?.get(name);
                 const haystack = String(meta?.searchableText || name.toLowerCase());
                 return tokens.every((token) => haystack.includes(token));
             });
+        if (rows.length === 0) {
+            // Nothing matched: leave the popover to the host script (its own empty state) instead
+            // of leaving our class/head behind and a blank fixed-height area.
+            if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
+            return;
+        }
         const sig = `${rows.length}|${rows.map((row) => getOptionText(row)).join('|')}`;
         const head = optionsHost.querySelector('.wbo-enhanced-search-head');
         const domIntact = rows.length <= 1
@@ -7164,7 +7286,9 @@ function enhanceCustomDropdownPopover(containerEl) {
         headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head wbo-enhanced-search-head is-isolated`;
         headEl.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
         headEl.textContent = `搜索匹配到的世界书 (${rows.length})`;
-        rows[0].parentElement.insertBefore(headEl, rows[0]);
+        // Section level, above the (head-less) sections: keeps the host script's row layout and
+        // its height calculation intact.
+        optionsHost.insertBefore(headEl, optionsHost.firstChild);
     };
 
     const popoverScrollHost = getScrollHost();
@@ -7447,6 +7571,9 @@ function enhanceCustomDropdownPopover(containerEl) {
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
+    // A script disabled without a reload leaves its <style>/dropdown shells behind, and those
+    // rules keep overriding ours: drop them as soon as we boot.
+    cleanupStaleEnhancedArtifacts();
     // Console helpers: structure-only diagnostics for bug reports, plus a zero-console path
     // through the settings panel (both never emit a book, character or group name).
     if (typeof globalThis.window !== 'undefined') {
