@@ -36,6 +36,36 @@ async function withHost(viewport, fixture, verify) {
     } finally { await cdp?.close(); await server.stop(); }
 }
 
+test('diagnostic report is short, name-free and parseable in dev mode', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub' }), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-s2-title')));
+        const result = await cdp.evalFn(name => {
+            const short = window.wboBuildDiagnostic('short');
+            const dev = JSON.parse(window.wboBuildDiagnostic('dev'));
+            return {
+                lines: short.split('\n').length,
+                hasHeader: short.includes('世界书分组 WBO v'),
+                hasRenderPath: short.includes('渲染 '),
+                hasTitleStats: short.includes('标题 char_with_sub'),
+                leaksBook: short.includes(name) || JSON.stringify(dev).includes(name),
+                leaksChar: short.includes('中性角色甲') || JSON.stringify(dev).includes('中性角色甲'),
+                devVersion: dev.env?.pluginVersion,
+                devHasUa: typeof dev.ua === 'string' && dev.ua.length > 0,
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.ok(result.lines >= 6 && result.lines <= 12, `got ${result.lines} lines`);
+        assert.equal(result.hasHeader, true);
+        assert.equal(result.hasRenderPath, true);
+        assert.equal(result.hasTitleStats, true);
+        assert.equal(result.leaksBook, false);
+        assert.equal(result.leaksChar, false);
+        assert.match(String(result.devVersion), /^\d+\.\d+\.\d+$/);
+        assert.equal(result.devHasUa, true);
+    });
+});
+
 test('title report contains structure only, never a book or character name', async t => {
     await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub' }), async cdp => {
         await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));

@@ -1,3 +1,19 @@
+### 诊断收成一个按钮（2026-11-28 · v2.35.52）
+- 用户反馈：设置页放两个诊断按钮太拥挤。
+- 改动（`src/panel-settings.js`）：页脚只保留「复制诊断」一个按钮——点一下把 10 行短诊断复制到剪贴板；**2 秒内连点 3 下**改为下载 `wbo-diagnostic-<时间>.txt` 详细诊断。按钮提示里写明了这个手势，界面不再多占位置。
+- 验证：单测 245/245；`native-editor-titles` 12/12、`native-picker-window` 33/33（`wboBuildDiagnostic` 两种模式的断言不变）。
+
+### 两档诊断：短文本复制 + 详细文件（2026-11-28 · v2.35.51）
+- 用户需求：设置页诊断要包含运行环境、宿主、分辨率、开着的第三方脚本、主题、最近操作、版本；短到能贴 Discord、不泄露隐私；另外要一个开发者用的更详细信息。
+- 实现（`src/native-filter.js` + `src/panel-settings.js`）：
+  - 新增 `detectDiagnosticEnv()` / `buildDiagnosticReport(mode)` / `PLUGIN_VERSION`，通过 `window.wboBuildDiagnostic(mode)` 暴露；`pushDiagAction()` 记录最近操作标签（最多 12 条），`window` 的 `error` 事件写入脱敏后的报错摘要（最多 6 条）。
+  - 短诊断（10 行内）：版本、宿主（TauriTavern/SillyTavern + ST 版本）、浏览器/系统/视口@DPR/mobile、当前渲染路径（select2 / enhanced-script / mobile-picker / none-open）、宿主自渲染行被升级的次数、美化脚本有无、原生分组开关、数据规模（书/组/收藏/挂载/角色书/未分组）、标题统计（模式/缺归属/原名/副标题）、折叠记忆与隐藏重复行数、最近操作、错误数。
+  - 详细诊断：以上全部 + `flags`、`actions`、`errors`、完整 UA，序列化为 JSON 并以 `wbo-diagnostic-<时间>.txt` 下载，规避字数限制。
+  - 脱敏：任何已知书名/角色名/分组名在输出前被替换为 `<book>` / `<char>` / `<group>`，并截断到 240 字；不输出 assignments 键名。
+  - 设置页底部两个按钮：「复制诊断」（短文本进剪贴板）与「详细诊断」（下载 .txt）。
+- 验证：单测 245/245；`native-editor-titles` 12/12（新增 1 项：短诊断 6～12 行、含版本/渲染/标题统计，短与详细两份都不含测试用的书名与角色名，详细模式可 JSON.parse 且带 UA）。
+- 边界：`PLUGIN_VERSION` 为源码常量，发版时需与 `manifest.json` 同步（发版脚本已一并改）。
+
 ### 诊断定位：分类没问题，问题在宿主自渲染的行（2026-11-28 · v2.35.50）
 - 用户提供的结构诊断（不含任何书名）：`titleMode=char_with_sub`、`charGroupBooks=69`、`charBookWithoutOwner=0`、`charBookTitleIsFileName=0`、`charBookWithSubtitle=69`。**分类层 100% 正确**，69 本角色书都解析出了角色名和文件名副标题。
 - 结论：显示成文件名的是**渲染层**——那些 `<li>` 不是插件模板画的（宿主自己渲染），插件既改不到标题，`ensureEditorRowMarkup` 的上一次版本又用 `textContent` 找书，行上带 ★／徽章等杂字时匹配失败，于是原地不动。

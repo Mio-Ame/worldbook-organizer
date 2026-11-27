@@ -444,7 +444,7 @@ function openSettingsModal() {
                     <i class="fa-solid fa-upload"></i> 导入配置
                 </button>
                 <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
-                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="复制书名与分组诊断信息，用来反馈问题">
+                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="点一下复制诊断文本（约 10 行，可直接贴 Discord）；连点 3 下改为下载详细诊断文件。均不含任何书名。">
                     <i class="fa-solid fa-clipboard-list"></i> 复制诊断
                 </button>
                 <span class="wbo-spacer"></span>
@@ -642,32 +642,53 @@ function openSettingsModal() {
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
-    // Beginner-friendly counterpart of `wboTitleReport()`: no devtools needed. The payload is
-    // structure-only (no book, character, group or file names) so it is safe to paste anywhere.
+    // Diagnostics in a single button (the footer stays uncluttered): one click copies the short
+    // Discord-friendly text, three quick clicks download the detailed file instead.
+    // Both are structure-only — no book, character or group name ever leaves the user's machine.
+    let diagClicks = 0;
+    let diagClickTimer = null;
     modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', async () => {
-        const settings = _callbacks?.getState?.().settings || {};
-        let titleReport = null;
-        try { titleReport = globalThis.window?.wboTitleReport?.() || null; } catch { /* ignore */ }
-        const payload = {
-            settings: {
-                charBookTitleMode: settings.charBookTitleMode,
-                aliasTitleMode: settings.aliasTitleMode,
-                showCharBooks: settings.showCharBooks,
-                hideCharBooksByDefault: settings.hideCharBooksByDefault,
-                adaptCharBindPopup: settings.adaptCharBindPopup !== false,
-                showNativeOptgroups: settings.showNativeOptgroups,
-                customGroups: (settings.groups || []).length,
-                assignedBooks: Object.keys(settings.assignments || {}).length,
-                pinnedBooks: (settings.pinnedBooks || []).length,
-            },
-            titleReport,
-        };
-        const text = JSON.stringify(payload, null, 2);
+        diagClicks += 1;
+        if (diagClickTimer) clearTimeout(diagClickTimer);
+        diagClickTimer = setTimeout(() => { diagClicks = 0; diagClickTimer = null; }, 2000);
+        const wantDetailed = diagClicks >= 3;
+        if (wantDetailed) {
+            diagClicks = 0;
+            clearTimeout(diagClickTimer);
+            diagClickTimer = null;
+        }
+        if (wantDetailed) {
+            const text = (() => {
+                try { return globalThis.window?.wboBuildDiagnostic?.('dev') || ''; } catch { return ''; }
+            })();
+            if (!text) {
+                showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+                return;
+            }
+            const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const blob = new Blob([text], { type: 'text/plain' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `wbo-diagnostic-${stamp}.txt`;
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+            showToast('success', '已生成详细诊断文件');
+            return;
+        }
+        const text = (() => {
+            try { return globalThis.window?.wboBuildDiagnostic?.('short') || ''; } catch { return ''; }
+        })();
+        if (!text) {
+            showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+            return;
+        }
         try {
             await navigator.clipboard.writeText(text);
-            showToast('success', '诊断信息已复制（只含统计，不含任何书名）');
+            showToast('success', '诊断已复制（约 10 行，不含任何书名），可直接粘贴');
         } catch {
-            console.log('[worldbook-organizer] 诊断信息', payload);
+            console.log('[worldbook-organizer] 诊断\n' + text);
             showToast('warning', '自动复制失败，已打印到控制台');
         }
     });

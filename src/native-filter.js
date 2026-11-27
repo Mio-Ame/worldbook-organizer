@@ -32,7 +32,7 @@ import {
     orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getActiveGlobalWorldSet, getCharLoreEntries, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { getActiveGlobalWorldSet, getCharLoreEntries, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, isTauriTavern, saveSettings } from './host.js';
 import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
 import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
@@ -928,6 +928,164 @@ function matchKnownWorldName(raw) {
         if (key.length > best.length && text.startsWith(key)) best = key;
     }
     return best;
+}
+
+/** Bumped together with manifest.json by the release script. */
+export const PLUGIN_VERSION = '2.35.52';
+
+/**
+ * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
+ * sanitized short messages — never a book, character or group name.
+ */
+const _diag = {
+    /** @type {Array<{ at: number, label: string }>} */
+    actions: [],
+    /** @type {string[]} */
+    errors: [],
+    foreignRowsUpgraded: 0,
+    lastRenderPath: '',
+};
+
+/**
+ * Record one user-visible action for the diagnostic report (label only).
+ * @param {string} label
+ */
+function pushDiagAction(label) {
+    _diag.actions.push({ at: Date.now(), label });
+    if (_diag.actions.length > 12) _diag.actions.shift();
+}
+
+/**
+ * Replace every known book / character / group name inside a free-form string.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeDiagText(text) {
+    let out = String(text ?? '');
+    const byName = _latestClassification?.byName;
+    for (const [name, meta] of (byName || [])) {
+        if (name) out = out.split(name).join('<book>');
+        for (const owner of meta?.charOwners || []) {
+            if (owner?.charName) out = out.split(owner.charName).join('<char>');
+        }
+    }
+    for (const section of (_latestClassification?.orderedSections || [])) {
+        if (section?.name) out = out.split(section.name).join('<group>');
+    }
+    return out.length > 240 ? `${out.slice(0, 240)}…` : out;
+}
+
+/**
+ * Report the runtime facts that decide which rendering path the plugin takes. Deliberately
+ * name-free so a user can paste it anywhere.
+ * @returns {Record<string, any>}
+ */
+function detectDiagnosticEnv() {
+    const ua = String(globalThis.navigator?.userAgent || '');
+    const browser = /Edg\//.test(ua) ? 'Edge'
+        : /Quark\//i.test(ua) ? 'Quark'
+            : /Firefox\//.test(ua) ? 'Firefox'
+                : /Chrome\//.test(ua) ? 'Chrome'
+                    : /Safari\//.test(ua) ? 'Safari'
+                        : 'unknown';
+    const os = /Windows NT/.test(ua) ? 'Windows'
+        : /Android/.test(ua) ? 'Android'
+            : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+                : /Mac OS X/.test(ua) ? 'macOS'
+                    : /Linux/.test(ua) ? 'Linux'
+                        : 'unknown';
+    const width = Math.round(globalThis.innerWidth || 0);
+    const height = Math.round(globalThis.innerHeight || 0);
+    const ctx = getHostContext?.() || null;
+    const renderPath = (() => {
+        if (typeof document === 'undefined') return 'none';
+        if (document.getElementById('wbo-mobile-picker-overlay')) return 'mobile-picker';
+        if (document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container')) return 'enhanced-script';
+        if (document.querySelector('.select2-dropdown')) return 'select2';
+        return 'none-open';
+    })();
+    return {
+        pluginVersion: PLUGIN_VERSION,
+        host: isTauriTavern?.() ? 'TauriTavern' : 'SillyTavern',
+        stVersion: String(ctx?.version || ctx?.versionName || 'unknown'),
+        browser,
+        os,
+        viewport: `${width}×${height}@${globalThis.devicePixelRatio || 1}x`,
+        mobileViewport: Boolean(width <= 680),
+        renderPath,
+        compatDropdownScript: Boolean(hasCompatibleDropdownScript?.()),
+        theme: String(getPowerUserSettings?.()?.theme || ''),
+        extensionSettingsKeys: Object.keys(ctx?.extensionSettings || {}).length,
+    };
+}
+
+/**
+ * Build the diagnostic payload.
+ * @param {'short' | 'dev'} mode
+ * @returns {string} short mode returns ready-to-paste text, dev mode returns JSON
+ */
+function buildDiagnosticReport(mode = 'short') {
+    const env = detectDiagnosticEnv();
+    const settings = _latestSettings || {};
+    const cls = _latestClassification;
+    const mounted = getActiveGlobalWorldSet?.() || new Set();
+    let charBooks = 0;
+    let charWithoutOwner = 0;
+    let charTitleIsFileName = 0;
+    let charWithSubtitle = 0;
+    let ungrouped = 0;
+    for (const meta of (cls?.byName?.values?.() || [])) {
+        if (meta?.groupId === SPECIAL_GROUPS.UNGROUPED) ungrouped += 1;
+        if (meta?.groupId !== SPECIAL_GROUPS.CHARACTER) continue;
+        charBooks += 1;
+        if ((meta.charOwners || []).length === 0) charWithoutOwner += 1;
+        if (meta.primaryTitle === meta.realName) charTitleIsFileName += 1;
+        if (meta.subtitle) charWithSubtitle += 1;
+    }
+    const counts = {
+        books: cls?.byName?.size || 0,
+        groups: (settings.groups || []).length,
+        pinned: (settings.pinnedBooks || []).length,
+        mounted: mounted.size,
+        charBooks,
+        ungrouped,
+        collapsedMemory: Object.keys(settings.dropdownCollapsed || {}).length,
+        hiddenDupeRows: typeof document !== 'undefined' ? document.querySelectorAll('li.wbo-dd-dupe-hidden').length : 0,
+        searchBlocks: typeof document !== 'undefined' ? document.querySelectorAll('li[data-wbo-dd-group="__search_matches__"], .wbo-bind-dd-bar').length : 0,
+        foreignRowsUpgraded: _diag.foreignRowsUpgraded,
+    };
+    const titleStats = { mode: settings.charBookTitleMode, charWithoutOwner, charTitleIsFileName, charWithSubtitle };
+    const actions = _diag.actions.map((a) => a.label);
+    const errors = _diag.errors.map((t) => sanitizeDiagText(t));
+    if (mode === 'dev') {
+        return JSON.stringify({
+            env,
+            counts,
+            titleStats,
+            flags: {
+                showCharBooks: Boolean(settings.showCharBooks),
+                hideCharBooksByDefault: Boolean(settings.hideCharBooksByDefault),
+                showNativeOptgroups: Boolean(settings.showNativeOptgroups),
+                adaptCharBindPopup: settings.adaptCharBindPopup !== false,
+                aliasTitleMode: settings.aliasTitleMode,
+            },
+            actions,
+            errors,
+            ua: String(globalThis.navigator?.userAgent || ''),
+        }, null, 2);
+    }
+    return [
+        `世界书分组 WBO v${env.pluginVersion}`,
+        `宿主 ${env.host} | ST ${env.stVersion}`,
+        `环境 ${env.browser} / ${env.os} / ${env.viewport} / ${env.mobileViewport ? 'mobile' : 'desktop'}`,
+        `渲染 ${env.renderPath} | 外来行升级 ${counts.foreignRowsUpgraded}`,
+        `美化脚本 ${env.compatDropdownScript ? '有' : '无'} | 原生分组 ${settings.showNativeOptgroups ? 'true' : 'false'}`,
+        `数据 书${counts.books} 组${counts.groups} 收藏${counts.pinned} 挂载${counts.mounted} 角色书${counts.charBooks} 未分组${counts.ungrouped}`,
+        `标题 ${titleStats.mode} | 缺归属${charWithoutOwner} 原名${charTitleIsFileName} 副标题${charWithSubtitle}`,
+        `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
+        `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
+        `错误 ${errors.length}`,
+    ].join('\n');
 }
 
 function globalSelect2Matcher(params, data) {
@@ -4624,6 +4782,7 @@ function cleanupOpenEditorDropdown() {
  *    ever leaving it!
  */
 function enhanceOpenEditorDropdown() {
+    pushDiagAction('open-editor-dropdown');
     cleanupOpenEditorDropdown();
     _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
@@ -5048,6 +5207,7 @@ function enhanceOpenEditorDropdown() {
                 if (row.querySelector('.wbo-s2-item')) return;
                 const meta = _latestClassification?.byName?.get(resolveRowWorldName(row));
                 if (!meta) return;
+                _diag.foreignRowsUpgraded += 1;
                 row.textContent = '';
                 const item = document.createElement('span');
                 item.className = 'wbo-s2-item';
@@ -5489,6 +5649,7 @@ function enhanceOpenEditorDropdown() {
         });
     };
     if (searchInput instanceof HTMLInputElement) {
+        searchInput.addEventListener('input', () => pushDiagAction('search-editor'));
         searchInput.addEventListener('input', onSearchInput);
     }
 
@@ -7160,10 +7321,15 @@ function enhanceCustomDropdownPopover(containerEl) {
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
-    // Console helper: `wboTitleReport()` explains why a character book renders with which title.
-    // It reports ONLY structure — counts, booleans and short hashes — so no book, character or
-    // group name ever leaves the user's machine (users paste this into bug reports).
+    // Console helpers: structure-only diagnostics for bug reports, plus a zero-console path
+    // through the settings panel (both never emit a book, character or group name).
     if (typeof globalThis.window !== 'undefined') {
+        globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
+        globalThis.window.addEventListener?.('error', (event) => {
+            const message = String(event?.message || event?.error?.message || 'error');
+            _diag.errors.push(sanitizeDiagText(message));
+            if (_diag.errors.length > 6) _diag.errors.shift();
+        });
         globalThis.window.wboTitleReport = () => {
             const cls = _latestClassification;
             if (!cls) return { error: 'no classification yet' };
