@@ -697,7 +697,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             } else if (activeEditPill === '__global__') {
                 matchPill = isGlobalBook;
             } else if (activeEditPill === '__pinned__') {
-                matchPill = isPinned && !isGlobalBook;
+                matchPill = isPinned;
             } else {
                 // Inside one concrete group, the already-mounted globals stay out of the way;
                 // character books are never filtered by that rule.

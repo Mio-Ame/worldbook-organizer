@@ -4182,7 +4182,7 @@ function enhanceCharBindPopup(charWorldEl) {
                     enhanceDesktopSingleWorldSelect2(primarySelect, currentAvatar, charWorldEl);
                     return;
                 }
-                if (primaryAttempts < 6) {
+                if (primaryAttempts < 0) {
                     primaryAttempts += 1;
                     setTimeout(waitPrimarySelect2, 60);
                     return;
