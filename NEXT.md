@@ -1,3 +1,7 @@
+### Mobile search chips layout (2026-11-28 v2.35.34)
+- Origin chip no longer truncates group names; row actions stay right-aligned.
+- Tests: native-picker-window 24/24, native-mobile-picker-lifecycle 22/22.
+
 ### Bind popup grouping and titles (2026-11-28 v2.35.33)
 - Build optgroups whenever any group or bare book exists (drop the two-group early return).
 - Read the real name from state.element.dataset.wboRealName before the meta lookup so primaryTitle applies.
