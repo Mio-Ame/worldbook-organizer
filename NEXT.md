@@ -2,6 +2,15 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 搜索归组扩到收藏/全局与移动端（2026-11-28 · v2.35.26）
+- 用户反馈：桌面下拉在「已收藏」「全局」pill 下搜索时仍按原分组显示，没有归到「搜索匹配到的世界书」；iOS TauriTavern 同样按原分组显示；匹配行旁要标注原分组。
+- 改动：
+  - `src/native-filter.js`：`layoutEditorSearchMatches` 的跳过条件只保留「全部」与非搜索状态，`__pinned__` / `__globals__` 下也把匹配行收进临时块；搜索期间不再构建全局/收藏镜像块（避免重复）；单行与多行都给每个匹配行插入 `原属：X` 徽章（`.is-search-origin`）。
+  - 移动选书面板（`openMobileEditorPickerSheet` 的 `renderList`）：搜索词非空时按当前 pill 收集匹配（全部/已收藏/具体组），1 本走单行 + 「搜索匹配到的世界书」徽章，≥2 本渲染同名 section，行上带 `原属：X`；清空搜索恢复原分组。
+  - `style.css`：`.wbo-s2-badge.is-search-origin`（灰底淡色）。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-mobile-picker-lifecycle` 22/22、`organize-combos` 8/8；全量见下。
+- 未完成：增强浮层（`syncSections` 路径）的搜索归组、iOS 的「全局世界书」块、美化脚本共存、抽屉点击。
+
 ### 已收藏计数与已全局提示（2026-11-28 · v2.35.25）
 - 用户要求：既收藏又全局的书在「已收藏」旁的数字仍按收藏总数标注，不扣除已全局的部分，并标注「X 本已全局，位于全局分组」。
 - 改动：全局下拉 `layoutGlobalGroupRows` 统计 `mountedPinnedCount`，收藏组标题用 `pinnedTotal = 收藏未挂载 + 已挂载收藏`，并在标题内追加 `.wbo-dd-group-note`（文案 `X 本已全局，位于全局分组`）；收藏全被挂载时仍保留标题（`allowEmpty`）。普通下拉的「已收藏」镜像块同样按全部收藏计数并追加同一提示（克隆行去掉星标与所有动态徽章，避免「当前编辑」重复）。`style.css` 增加 `.wbo-dd-group-note`。

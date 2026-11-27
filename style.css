@@ -3087,6 +3087,13 @@ li.wbo-dd-group-hidden,
     opacity: 1;
 }
 
+.wbo-s2-badge.is-search-origin {
+    background: rgba(128, 128, 128, 0.16);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    color: inherit;
+    opacity: 0.8;
+}
+
 /* Character / Persona / Chat / Move-entry popup single-row filter bar */
 .wbo-charpopup-bar {
     display: flex;

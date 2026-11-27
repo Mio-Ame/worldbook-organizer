@@ -2264,6 +2264,8 @@ function openMobileEditorPickerSheet() {
                     </span>
                 </button>
                 <div class="wbo-mp-row-actions">
+                    ${b.__searchMatch ? '<span class="wbo-s2-badge is-search-match">搜索匹配到的世界书</span>' : ''}
+                    ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">原属：${escHtml(b.__origin)}</span>` : ''}
                     ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                     <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消收藏' : '收藏世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
@@ -2276,6 +2278,44 @@ function openMobileEditorPickerSheet() {
         if (!listEl) return;
         const q = searchQuery.trim().toLowerCase();
         const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+        // Searching stays inside the active pill but regroups the hits, so other groups never leak in.
+        if (q) {
+            const matchesTokens = (book) => tokens.every((tok) => (book.searchableText || book.realName.toLowerCase()).includes(tok));
+            const originOf = (book) => _latestClassification?.byName?.get(book.realName)?.groupName || '未分组';
+            const matched = [];
+            const push = (book, origin) => {
+                if (matchesTokens(book)) matched.push({ ...book, __origin: origin });
+            };
+            if (activePillId === SPECIAL_GROUPS.ALL) {
+                bareBooks.forEach((book) => push(book, originOf(book)));
+                sections.forEach((sec) => sec.books.forEach((book) => push(book, sec.name)));
+            } else if (activePillId === SPECIAL_GROUPS.PINNED) {
+                [...bareBooks, ...sections.flatMap((sec) => sec.books)]
+                    .filter((book) => book.isPinned)
+                    .forEach((book) => push(book, originOf(book)));
+            } else {
+                const sec = sections.find((item) => item.id === activePillId);
+                (sec?.books || []).forEach((book) => push(book, sec.name));
+            }
+            if (matched.length === 0) {
+                listEl.innerHTML = '<div class="wbo-empty-hint">无匹配世界书</div>';
+                return;
+            }
+            if (matched.length === 1) {
+                listEl.innerHTML = `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${renderMpRowHtml({ ...matched[0], __searchMatch: true })}</div></div>`;
+                return;
+            }
+            listEl.innerHTML = `
+                <div class="wbo-mp-sec">
+                    <button type="button" class="wbo-mp-sec-head is-static" aria-expanded="true">
+                        <span class="wbo-group-name">搜索匹配到的世界书</span>
+                        <span class="wbo-group-count">${matched.length}</span>
+                    </button>
+                    <div class="wbo-mp-sec-body">${matched.map(renderMpRowHtml).join('')}</div>
+                </div>
+            `;
+            return;
+        }
         if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
             const pinned = getPinnedBooks();
             const collapsed = isDropdownGroupCollapsed(SPECIAL_GROUPS.PINNED, true);
@@ -4463,6 +4503,11 @@ function enhanceOpenEditorDropdown() {
     };
 
     const layoutEditorGlobalBlock = () => {
+        // While searching, hits are regrouped; mirror blocks would only duplicate them.
+        if (searchInput instanceof HTMLInputElement && searchInput.value.trim()) {
+            resultsList.querySelectorAll(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"], li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`).forEach((el) => el.remove());
+            return false;
+        }
         let rebuilt = buildEditorMirrorBlock(EDITOR_GLOBALS_GROUP_ID, '全局世界书', hasEditorGlobalBlock ? editorGlobalNames : []);
         // Favorites only get their own block in the "all" view; the pill itself already filters.
         if (activePillGroupId === SPECIAL_GROUPS.ALL && pinnedEditorNames.length > 0) {
@@ -4560,6 +4605,8 @@ function enhanceOpenEditorDropdown() {
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
         }
+        // Mirror rows are pickers only; never let a 当前编辑 badge survive a Select2 re-render.
+        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         layoutEditorSearchMatches();
         if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
     };
@@ -4639,10 +4686,7 @@ function enhanceOpenEditorDropdown() {
     };
 
     const layoutEditorSearchMatches = () => {
-        const skip = !isSearching()
-            || activePillGroupId === SPECIAL_GROUPS.ALL
-            || activePillGroupId === SPECIAL_GROUPS.PINNED
-            || activePillGroupId === EDITOR_GLOBALS_GROUP_ID;
+        const skip = !isSearching() || activePillGroupId === SPECIAL_GROUPS.ALL;
         if (skip) {
             if (_lastSearchMatchSig !== '') {
                 clearEditorSearchMatches();
@@ -4674,6 +4718,10 @@ function enhanceOpenEditorDropdown() {
                 badge.setAttribute('data-wbo-search-badge', '1');
                 badge.textContent = '搜索匹配到的世界书';
                 right.prepend(badge);
+                const originBadge = document.createElement('span');
+                originBadge.className = 'wbo-s2-badge is-search-origin';
+                originBadge.textContent = `原属：${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                right.prepend(originBadge);
             }
             resultsList.prepend(row);
             return;
@@ -4687,7 +4735,16 @@ function enhanceOpenEditorDropdown() {
         head.textContent = `搜索匹配到的世界书 (${rows.length})`;
         const nested = document.createElement('ul');
         nested.className = 'select2-results__options select2-results__options--nested';
-        for (const row of rows) nested.appendChild(row);
+        for (const row of rows) {
+            const right = row.querySelector('.wbo-s2-right');
+            if (right && !right.querySelector('.is-search-origin')) {
+                const originBadge = document.createElement('span');
+                originBadge.className = 'wbo-s2-badge is-search-origin';
+                originBadge.textContent = `原属：${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                right.prepend(originBadge);
+            }
+            nested.appendChild(row);
+        }
         groupLi.append(head, nested);
         resultsList.prepend(groupLi);
     };
