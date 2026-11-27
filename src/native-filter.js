@@ -4902,8 +4902,83 @@ function enhanceOpenEditorDropdown() {
      * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
+    /**
+     * Select2 only asks `templateResult` once per row, so a row rendered before the character
+     * bindings were classified (or before the title mode changed) keeps the raw file name.
+     * Re-read the live metadata and correct the title of every row on each decorate pass.
+     */
+    const syncRowTitles = () => {
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
+                if (!meta) return;
+                const titleEl = row.querySelector('.wbo-s2-title');
+                if (titleEl instanceof HTMLElement && meta.primaryTitle && titleEl.textContent !== meta.primaryTitle) {
+                    titleEl.textContent = meta.primaryTitle;
+                }
+                const main = row.querySelector('.wbo-s2-main');
+                const subEl = row.querySelector('.wbo-s2-sub');
+                if (meta.subtitle) {
+                    if (subEl instanceof HTMLElement) {
+                        if (subEl.textContent !== meta.subtitle) subEl.textContent = meta.subtitle;
+                    } else if (main instanceof HTMLElement) {
+                        const el = document.createElement('span');
+                        el.className = 'wbo-s2-sub';
+                        el.title = meta.realName;
+                        el.textContent = meta.subtitle;
+                        main.appendChild(el);
+                    }
+                } else if (subEl) {
+                    subEl.remove();
+                }
+            });
+    };
+
+    /**
+     * The host (or a compatible style script) can render result rows with its own markup, in
+     * which case the raw file name is shown and no title/badge fix has anywhere to land.
+     * Upgrade such rows to our own structure so titles, badges and pin stars work (U6).
+     */
+    const ensureEditorRowMarkup = () => {
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                if (row.querySelector('.wbo-s2-item')) return;
+                const name = (row.textContent || '').trim();
+                const meta = _latestClassification?.byName?.get(name);
+                if (!meta) return;
+                row.textContent = '';
+                const item = document.createElement('span');
+                item.className = 'wbo-s2-item';
+                item.setAttribute('data-wbo-world', meta.realName);
+                item.title = meta.realName;
+                const main = document.createElement('span');
+                main.className = 'wbo-s2-main';
+                const title = document.createElement('span');
+                title.className = 'wbo-s2-title';
+                title.textContent = meta.primaryTitle || meta.realName;
+                main.appendChild(title);
+                if (meta.subtitle) {
+                    const sub = document.createElement('span');
+                    sub.className = 'wbo-s2-sub';
+                    sub.title = meta.realName;
+                    sub.textContent = meta.subtitle;
+                    main.appendChild(sub);
+                }
+                const right = document.createElement('span');
+                right.className = 'wbo-s2-right';
+                right.setAttribute('data-wbo-ui', '1');
+                item.append(main, right);
+                row.appendChild(item);
+            });
+    };
+
     const decorateGroupItems = () => {
+        ensureEditorRowMarkup();
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
+        // Titles first: mirror rows are cloned afterwards and must carry the corrected name.
+        syncRowTitles();
         const globalsRebuilt = layoutEditorGlobalBlock();
         const searching = isSearching();
         const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;

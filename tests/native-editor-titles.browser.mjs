@@ -48,6 +48,51 @@ test('desktop ordinary Select2: character group uses the requested name', async 
     });
 });
 
+test('host-rendered rows are upgraded so the role name still shows', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub' }), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-current-char')));
+        // Simulate a host that owns the row markup: plain text, no wbo-s2-item.
+        await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`)?.closest('li');
+            row.textContent = name;
+            // Any decorate pass (here: a pill click) must restore our structure and title.
+            document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="__all__"]')
+                ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }, realName);
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-s2-title')));
+        const result = await cdp.evalFn(name => {
+            const item = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return {
+                title: item?.querySelector('.wbo-s2-title')?.textContent,
+                subtitle: item?.querySelector('.wbo-s2-sub')?.textContent,
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.title, charName);
+        assert.equal(result.subtitle, realName);
+    });
+});
+
+test('desktop ordinary Select2: default char_with_sub keeps the role name for a moved book', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub', groups: [{ id: 'custom-a', name: '自定义组甲' }], assignments: { [realName]: 'custom-a' } }), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill')));
+        const result = await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return {
+                title: row?.querySelector('.wbo-s2-title')?.textContent,
+                subtitle: row?.querySelector('.wbo-s2-sub')?.textContent,
+                currentChar: row?.closest('li')?.classList.contains('wbo-dd-current-char'),
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.title, charName);
+        assert.equal(result.subtitle, realName);
+        assert.equal(result.currentChar, true);
+    });
+});
+
 test('desktop ordinary Select2: bound book moved to a custom group keeps the role name', async t => {
     await withHost(VIEWPORTS.desktop, seed({ groups: [{ id: 'custom-a', name: '自定义组甲' }], assignments: { [realName]: 'custom-a' } }), async cdp => {
         await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));

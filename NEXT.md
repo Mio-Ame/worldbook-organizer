@@ -1,3 +1,9 @@
+### 宿主自渲染的行也升级成插件行结构（2026-11-28 · v2.35.46，U6 兜底）
+- 用户反馈：电脑端普通下拉里「当前角色」置顶行仍显示文件名，且没有副标题；手机端正常。模拟器里 `char_only` 与默认 `char_with_sub` 两种情况都通过，说明问题不在标题分级逻辑，而是行不是插件模板渲染的（宿主或兼容脚本自己渲染了 `<li>`，标题只好显示 option 原文，也没有 `.wbo-s2-title` 可供修正）。
+- 改动（`src/native-filter.js` 的 `enhanceOpenEditorDropdown`）：新增 `ensureEditorRowMarkup()`，每轮 `decorateGroupItems` 开头把没有 `.wbo-s2-item` 的结果行按分类结果重建为插件结构（`data-wbo-world` + 标题/副标题 + `.wbo-s2-right` 动作区），随后原有的标题同步、徽章、★ 都能正常落位。已有结构的行不受影响。
+- 验证：单测 245/245；`native-editor-titles` 8/8（新增 1 项：把行改回纯文本模拟宿主渲染，一次分组操作后标题恢复成角色名 + 副标题文件名）；`native-picker-window` 33/33。
+- 边界：只重建结果行的内容，不动 Select2 绑定的数据与事件；若宿主把行渲染成非 `li.select2-results__option` 结构，这条兜底也不会命中。
+
 ### 绑定主世界书的分组胶囊与 U6 复核（2026-11-28 · v2.35.45）
 - U2：`enhanceDesktopSingleWorldSelect2` 现在给绑定弹窗的主世界书下拉挂分组胶囊——`attachBindWorldGroupPills()` 在 `select2:open` 时按 `optgroup[data-wbo-group]` 生成「全部 + 各分组」胶囊，点胶囊只显示对应 optgroup（裸行只在「全部」显示），下拉结果被 Select2 重渲染后自动重套过滤（MutationObserver），关闭下拉即拆除。
 - U6 复核：新增用例「绑定的角色书被手动移到自定义分组后，普通下拉仍显示角色名」——通过（书被置顶为「当前角色」裸行，标题取 `primaryTitle`）。结论：U6 早在 v2.35.33 的 `data-wboRealName` 取值修复里一并解决，交接文档该条可关闭。
