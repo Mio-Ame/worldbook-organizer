@@ -4724,6 +4724,29 @@ function enhanceOpenEditorDropdown() {
         layoutEditorSearchMatches();
         // Mirror rows never carry the 当前编辑 badge.
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
+        // Guarantee the search badges survive Select2 re-renders.
+        const liveSearch = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        if (liveSearch) {
+            const matchRows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+                .filter((row) => !row.classList.contains('wbo-dd-global-mirror'));
+            for (const row of matchRows) {
+                const right = row.querySelector('.wbo-s2-right');
+                if (!right) continue;
+                if (!right.querySelector('.is-search-origin')) {
+                    const originBadge = document.createElement("span");
+                    originBadge.className = "wbo-s2-badge is-search-origin";
+                    originBadge.textContent = _latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组';
+                    right.prepend(originBadge);
+                }
+                if (matchRows.length === 1 && !right.querySelector('.is-search-match')) {
+                    const badge = document.createElement("span");
+                    badge.className = "wbo-s2-badge is-search-match";
+                    badge.setAttribute("data-wbo-search-badge", "1");
+                    badge.textContent = "搜索匹配到的世界书";
+                    right.prepend(badge);
+                }
+            }
+        }
         if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
     };;
     // Keep folding in the current group filter and leave search results visible.
