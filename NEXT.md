@@ -1,3 +1,12 @@
+### 面板回归原位、配色交还宿主、搜索不认 pill（2026-11-28 · v2.35.73）
+- 用户 v2.35.72 反馈：黑底蓝字；面板浮起来盖住 pill 条；切分组后结果消失（别的分组的书看不到）。
+- 诊断证据：`enh-panel:mount=in-flow` + `enh-panel:box=590,225,520` —— 明明是就地挂载，却仍被写上了 fixed 的内联定位；`matches=0` 是我按 pill 过滤造成的。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - `positionEnhancedSearchPanel()`：`is-in-flow` 面板直接清空 `position/left/top/width/maxHeight/z-index/visibility/opacity/display` 内联样式并返回，只记 `enh-panel:box=in-flow,<高度>` —— 不再遮挡 pill 条。
+  - 配色不再从 `.gr-option` 反抄（那会抄到深底或链接蓝）：就地模式清空 `background/color/fontSize/border/boxShadow`，由 `.is-in-flow` 规则 `background: transparent; color: inherit` 继承浮层配色；标题/副标题/分组标签用 opacity 降级。
+  - 搜索恢复为**全局**：移除按 `activePillGroupId` 过滤结果的逻辑（pill 只影响非搜索态列表），符合「搜索应覆盖全部分组」。
+- 验证：单测 245/245；`native-picker-window` 36/36（用例改为：切到剧情 pill 后结果仍为 3 行、分组标签仍含「文风」）、`native-editor-titles` 12/12。
+
 ### 面板跟随宿主配色 + 搜索中可切分组（2026-11-28 · v2.35.72）
 - 用户反馈（v2.35.71）：面板终于可见，但**黑底白字**、与未启用脚本时的搜索样式不一致，且搜索中无法切换分组（原分组标签正常）。
 - 改动（`src/native-filter.js`）：

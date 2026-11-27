@@ -3063,7 +3063,8 @@ li.wbo-dd-group-hidden,
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
 }
 
-/* In-flow variant: lives where the host list used to be, so no stacking-context gamble. */
+/* In-flow variant: lives where the host list used to be, so no stacking-context gamble.
+   Colours are inherited from the popover — never copied from a row. */
 .wbo-enhanced-search-panel.is-in-flow {
     position: static;
     inset: auto;
@@ -3071,7 +3072,21 @@ li.wbo-dd-group-hidden,
     max-height: none;
     margin: 6px 4px 8px;
     z-index: auto;
+    background: transparent;
+    color: inherit;
+    border: 0;
     box-shadow: none;
+    padding: 0;
+}
+
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-row {
+    color: inherit;
+}
+
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-head,
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-origin,
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-sub {
+    opacity: 0.75;
 }
 
 .wbo-esp-head {

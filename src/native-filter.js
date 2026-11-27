@@ -1125,7 +1125,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.72';
+export const PLUGIN_VERSION = '2.35.73';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7479,6 +7479,15 @@ function enhanceCustomDropdownPopover(containerEl) {
     const positionEnhancedSearchPanel = () => {
         const panel = getSearchPanel();
         if (!panel) return;
+        // In-flow mode: the panel sits where the list was, so geometry must stay untouched.
+        // (Applying the fixed overlay styles here used to lift it over the pill bar.)
+        if (panel.classList.contains('is-in-flow')) {
+            for (const prop of ['position', 'left', 'top', 'width', 'maxHeight', 'zIndex', 'visibility', 'opacity', 'display']) {
+                panel.style.removeProperty(prop);
+            }
+            pushDiagTrace('enh-panel:box=in-flow,' + Math.round(panel.getBoundingClientRect().height));
+            return;
+        }
         const rect = containerEl.getBoundingClientRect();
         const viewportH = globalThis.visualViewport?.height || globalThis.innerHeight || 768;
         const viewportW = globalThis.visualViewport?.width || globalThis.innerWidth || 1024;
@@ -7609,14 +7618,11 @@ function enhanceCustomDropdownPopover(containerEl) {
             return;
         }
         const available = pickableNames();
-        const pillId = activePillGroupId;
         const matches = [];
         for (const meta of byName.values()) {
             if (!meta?.realName) continue;
             if (available.size > 0 && !available.has(meta.realName)) continue;
-            // The pill bar keeps working while searching: 全部 / ★已收藏 / 单个分组.
-            if (pillId === SPECIAL_GROUPS.PINNED && !meta.isPinned) continue;
-            if (pillId !== SPECIAL_GROUPS.ALL && pillId !== SPECIAL_GROUPS.PINNED && meta.groupId !== pillId) continue;
+            // Searching is global: the pill only filters the normal list, never the results.
             const hay = String(meta.searchableText || meta.realName.toLowerCase());
             if (tokens.every((token) => hay.includes(token))) matches.push(meta);
         }
@@ -7624,15 +7630,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             .localeCompare(String(b.primaryTitle || b.realName), 'zh-Hans-CN'));
         const shown = matches.slice(0, 120);
         const panel = ensureSearchPanel();
-        // Follow the host popover's own palette instead of the plugin's dark surface.
+        // In-flow mode simply inherits the popover's own colours (CSS) — copying the row colours
+        // turned it into dark-on-dark / black-on-blue in themed setups.
         if (panel.classList.contains('is-in-flow')) {
-            const source = containerEl.querySelector('.gr-option') || containerEl;
-            const styles = getComputedStyle(source);
-            const bg = styles.backgroundColor;
-            if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') panel.style.background = bg;
-            else panel.style.removeProperty('background');
-            if (styles.color) panel.style.color = styles.color;
-            panel.style.fontSize = styles.fontSize || '';
+            for (const prop of ['background', 'color', 'fontSize', 'border', 'boxShadow']) {
+                panel.style.removeProperty(prop);
+            }
         }
         const keepScroll = panel.scrollTop;
         if (matches.length === 0) {
