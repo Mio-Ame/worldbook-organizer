@@ -1,3 +1,12 @@
+### 搜索结果面板改为「就地替换宿主列表」（2026-11-28 · v2.35.71）
+- v2.35.70 诊断：`enh-panel:mount=body` —— 这个浮层挂在 body 上，不在抽屉子树里，所以 fixed + z-index 一直在赌层级；`box` 有尺寸却看不见就是被上层盖住。
+- 方案：**不再浮层**。搜索时把面板作为普通流元素插到宿主列表原来的位置（`.gr-options-container` 之前），并把该列表 `display:none`；清空搜索时移除面板并还原列表显示。这样不存在 z-index / overflow / top-layer 问题，面板必然可见。
+  - `ensureSearchPanel()`：优先 `containerEl.querySelector(".gr-options-container")` 的父节点挂载（`enh-panel:mount=in-flow`）；找不到才退回抽屉子树/body。
+  - `removeEnhancedSearchPanel()`：还原被隐藏列表的 `display`，并移除 `wbo-enhanced-searching`（分组标题恢复）。
+  - 样式新增 `.wbo-enhanced-search-panel.is-in-flow`（静态定位、自适应宽度、无阴影），浮层原样式保留给兜底路径。
+- 与无脚本用户的关系：这条路径只在「检测到美化脚本浮层 `.gr-container-enhanced`」时才会执行；Select2 普通下拉、手机选书面板完全不受影响（`native-picker-window`、`native-editor-titles`、`native-mobile-picker-lifecycle` 全绿）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（合计 71/71）。
+
 ### 面板挂进抽屉层、搜索时隐藏分组标题（2026-11-28 · v2.35.69→v2.35.70）
 - v2.35.69 诊断：`enh-panel:box=590,225,520,98,rectOk=0` —— 面板在视口内、有高度，却看不见；`rectOk=0` 说明浮层几何退化（改走居中兜底）。结论：面板被**更高层**遮住，`<body>` 上的 `position: fixed` 会落在 `<dialog>`/顶层容器之下，z-index 无效。
 - 修复（`src/native-filter.js` `ensureSearchPanel`）：挂载点改为 `containerEl.closest("#WorldInfo, dialog, .drawer, [role=dialog]")`，与浮层同层渲染，并 trace `enh-panel:mount=…,toplayer|body`。

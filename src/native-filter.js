@@ -1125,7 +1125,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.70';
+export const PLUGIN_VERSION = '2.35.71';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7464,6 +7464,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             unbindDrawerSafeBubbleGuard?.(panel);
             panel.remove();
         }
+        const listHost = containerEl._wboSearchPanelListHost;
+        if (listHost instanceof HTMLElement) listHost.style.removeProperty('display');
+        containerEl._wboSearchPanelListHost = null;
         containerEl._wboSearchPanel = null;
         containerEl._wboSearchPanelMount = null;
         containerEl.classList.remove('wbo-enhanced-searching');
@@ -7546,15 +7549,23 @@ function enhanceCustomDropdownPopover(containerEl) {
         const existing = getSearchPanel();
         if (existing) return existing;
         const panel = document.createElement('div');
-        panel.className = 'wbo-enhanced-search-panel';
+        panel.className = 'wbo-enhanced-search-panel is-in-flow';
         panel.setAttribute('data-wbo-ui', '1');
         panel.setAttribute('data-wbo-panel-owner', String(containerEl.dataset.wboSourceRole || 'editor'));
-        // Mount inside the same top-layer/dialog subtree as the popover: a `position: fixed`
-        // element on <body> is painted *below* a <dialog>/top-layer drawer no matter its z-index.
-        const mount = containerEl.closest('#WorldInfo, dialog, .drawer, [role="dialog"]') || document.body;
-        mount.appendChild(panel);
-        containerEl._wboSearchPanelMount = mount;
-        pushDiagTrace('enh-panel:mount=' + (mount.id || mount.tagName.toLowerCase()) + ',' + (mount === document.body ? 'body' : 'toplayer'));
+        // Put the panel INSIDE the popover's own scroll area and hide the host list: no fixed
+        // positioning, no stacking-context gamble — it is in normal flow where the list used to be.
+        const listHost = containerEl.querySelector('.gr-options-container') || optionsHost;
+        const listParent = listHost?.parentElement || null;
+        if (listParent) {
+            listParent.insertBefore(panel, listHost);
+            listHost.style.display = 'none';
+            containerEl._wboSearchPanelListHost = listHost;
+            pushDiagTrace('enh-panel:mount=in-flow');
+        } else {
+            const mount = containerEl.closest('#WorldInfo, dialog, .drawer, [role="dialog"]') || document.body;
+            mount.appendChild(panel);
+            pushDiagTrace('enh-panel:mount=' + (mount.id || mount.tagName.toLowerCase()));
+        }
         containerEl._wboSearchPanel = panel;
         // Searching hides the host group heads: otherwise they linger over an empty list.
         containerEl.classList.add('wbo-enhanced-searching');

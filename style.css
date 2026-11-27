@@ -3063,6 +3063,17 @@ li.wbo-dd-group-hidden,
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
 }
 
+/* In-flow variant: lives where the host list used to be, so no stacking-context gamble. */
+.wbo-enhanced-search-panel.is-in-flow {
+    position: static;
+    inset: auto;
+    width: auto;
+    max-height: none;
+    margin: 6px 4px 8px;
+    z-index: auto;
+    box-shadow: none;
+}
+
 .wbo-esp-head {
     padding: 4px 8px;
     font-weight: 600;
