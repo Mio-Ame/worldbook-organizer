@@ -1,3 +1,13 @@
+### 更详细的诊断 + 按显示名反查书（2026-11-28 · v2.35.59）
+- 用户要求：详细诊断再细一点，方便定位「搜索空白 / 当前角色书名不对」。
+- 诊断增强（`src/native-filter.js`）：
+  - `diagDomSnapshot()`：统计当前 DOM 里下拉各层的数量——`.select2-dropdown`、`#gr-global-dropdown-container`/`.gr-container-enhanced`、`[data-wbo-popover-role]`、`.gr-option`（总数/可见）、`li.select2-results__option`（总数/可见）、`.wbo-s2-item`、`.wbo-gr-world-title`、`.wbo-orig-text`、`[data-wbo-search-head]`、`.wbo-enhanced-search-hidden`、`.wbo-dd-group-hidden`、`.wbo-dd-collapsed`、`li.wbo-dd-dupe-hidden`、`.wbo-dd-filter-bar`。
+  - 新增面包屑 `_diag.trace`（最多 24 条，形如 `enh-search:searching=1,tokens=1,options=139`、`editor-search:rows=69,pill=__all__,mirror=0`）与计数 `runs.decorate` / `runs.searchLayout` / `runs.foreignRowsUpgraded`；详细 JSON 输出 `dom` / `trace` / `runs`。
+  - 短报告加一行 `渲染计数 s2行 x/y gr行 x/y 搜索头 n 装饰 n`。
+  - `renderPath` 改为按「真正在用的下拉」判断：有 `[data-wbo-popover-role]` → enhanced-script；有 `.select2-dropdown` → select2；只有残留壳 → `enhanced-shell-idle`；否则回退最近一次打开的类型。
+- 标题修复：新增 `findMetaByAnyName()`——按真实名、最长已知前缀、以及**显示名（primaryTitle）**反查分类；`resolveRowWorldName()` 与 `resolveEnhancedRowMeta()` 都改用它。这样即使某个 option 的文本被改写成角色名（当前角色书常见），也能拿回正确 meta 并显示「角色名 + 原名」。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 增强浮层搜索：保留原文 + 自主控制可见性（2026-11-28 · v2.35.58）
 - 用户反馈（v2.35.57，`renderPath=enhanced-script`）：搜索依旧整片空白。
 - 定位：`syncEnhancedWorldOptionTitle()` 早期实现把行的原始文本节点**删掉**、换成我们的标题 span，于是美化脚本按 `row.textContent` 做搜索匹配时匹配不到任何行 → 它自己把整表隐藏 → 我们看到的空白。

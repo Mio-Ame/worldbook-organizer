@@ -429,6 +429,27 @@ export function cleanupStaleEnhancedArtifacts() {
 }
 
 /**
+ * Find the classification entry for a book by real name, known prefix, or display title.
+ * Options whose `textContent` was rewritten to the friendly title would otherwise lose their
+ * metadata (which is how a bound character book fell back to its file name).
+ * @param {string} candidate
+ * @returns {any}
+ */
+function findMetaByAnyName(candidate) {
+    const byName = _latestClassification?.byName;
+    const text = String(candidate || '').trim();
+    if (!byName || !text) return null;
+    const direct = byName.get(text);
+    if (direct) return direct;
+    const prefixed = matchKnownWorldName(text);
+    if (prefixed) return byName.get(prefixed) || null;
+    for (const meta of byName.values()) {
+        if (meta?.primaryTitle === text) return meta;
+    }
+    return null;
+}
+
+/**
  * Resolve the classification entry of an enhanced-popover row even when the host script rebuilt
  * it (its text then carries badges, or only the display title).
  * @param {HTMLElement} row
@@ -445,10 +466,8 @@ function resolveEnhancedRowMeta(row) {
     const raw = (row.textContent || '').trim();
     if (raw) candidates.push(raw);
     for (const candidate of candidates) {
-        const meta = byName.get(candidate);
+        const meta = findMetaByAnyName(candidate);
         if (meta) return meta;
-        const prefixed = matchKnownWorldName(candidate);
-        if (prefixed) return byName.get(prefixed);
     }
     return null;
 }
@@ -1081,7 +1100,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.58';
+export const PLUGIN_VERSION = '2.35.59';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1092,9 +1111,22 @@ const _diag = {
     actions: [],
     /** @type {string[]} */
     errors: [],
+    /** Rare, short breadcrumbs of the render pipeline (never user text). @type {string[]} */
+    trace: [],
     foreignRowsUpgraded: 0,
     lastRenderPath: '',
+    searchLayoutRuns: 0,
+    decorateRuns: 0,
 };
+
+/**
+ * Record one breadcrumb for the detailed diagnostic (label only, never user text).
+ * @param {string} label
+ */
+function pushDiagTrace(label) {
+    _diag.trace.push(String(label).slice(0, 80));
+    if (_diag.trace.length > 24) _diag.trace.shift();
+}
 
 /**
  * Record one user-visible action for the diagnostic report (label only).
@@ -1147,13 +1179,6 @@ function detectDiagnosticEnv() {
     const width = Math.round(globalThis.innerWidth || 0);
     const height = Math.round(globalThis.innerHeight || 0);
     const ctx = getHostContext?.() || null;
-    const renderPath = (() => {
-        if (typeof document === 'undefined') return 'none';
-        if (document.getElementById('wbo-mobile-picker-overlay')) return 'mobile-picker';
-        if (document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container')) return 'enhanced-script';
-        if (document.querySelector('.select2-dropdown')) return 'select2';
-        return _diag.lastRenderPath || 'none-open';
-    })();
     return {
         pluginVersion: PLUGIN_VERSION,
         host: isTauriTavern?.() ? 'TauriTavern' : 'SillyTavern',
@@ -1162,10 +1187,45 @@ function detectDiagnosticEnv() {
         os,
         viewport: `${width}×${height}@${globalThis.devicePixelRatio || 1}x`,
         mobileViewport: Boolean(width <= 680),
-        renderPath,
+        renderPath: (() => {
+            if (typeof document === 'undefined') return _diag.lastRenderPath || 'none';
+            if (document.querySelector('[data-wbo-popover-role="editor"], [data-wbo-popover-role="global"]')) return 'enhanced-script';
+            if (document.querySelector('.select2-dropdown')) return 'select2';
+            if (document.querySelector('#gr-global-dropdown-container, .gr-container-enhanced')) return 'enhanced-shell-idle';
+            return _diag.lastRenderPath || 'none-open';
+        })(),
         compatDropdownScript: Boolean(hasCompatibleDropdownScript?.()),
         theme: String(getPowerUserSettings?.()?.theme || ''),
         extensionSettingsKeys: Object.keys(ctx?.extensionSettings || {}).length,
+    };
+}
+
+/**
+ * Snapshot of the DOM the dropdown currently uses — counts only, no text.
+ * @returns {Record<string, number>}
+ */
+function diagDomSnapshot() {
+    if (typeof document === 'undefined') return {};
+    const count = (selector) => document.querySelectorAll(selector).length;
+    const visible = (selector) => [...document.querySelectorAll(selector)]
+        .filter((el) => el instanceof HTMLElement && el.getClientRects().length > 0).length;
+    return {
+        select2Dropdown: count('.select2-dropdown'),
+        enhancedContainers: count('#gr-global-dropdown-container, .gr-container-enhanced'),
+        enhancedEditorRole: count('[data-wbo-popover-role="editor"]'),
+        grOptions: count('.gr-option'),
+        grOptionsVisible: visible('.gr-option'),
+        s2Options: count('li.select2-results__option'),
+        s2OptionsVisible: visible('li.select2-results__option'),
+        wboS2Items: count('.wbo-s2-item'),
+        grWorldTitles: count('.wbo-gr-world-title'),
+        origTextHolders: count('.wbo-orig-text'),
+        searchHead: count('[data-wbo-search-head]'),
+        pluginHiddenRows: count('.wbo-enhanced-search-hidden'),
+        hiddenGroups: count('.wbo-dd-group-hidden'),
+        collapsedGroups: count('.wbo-dd-collapsed'),
+        dupHiddenRows: count('li.wbo-dd-dupe-hidden'),
+        filterBars: count('.wbo-dd-filter-bar'),
     };
 }
 
@@ -1207,6 +1267,7 @@ function buildDiagnosticReport(mode = 'short') {
         foreignRowsUpgraded: _diag.foreignRowsUpgraded,
     };
     const titleStats = { mode: settings.charBookTitleMode, charWithoutOwner, charTitleIsFileName, charWithSubtitle };
+    const dom = diagDomSnapshot();
     const actions = _diag.actions.map((a) => a.label);
     const errors = _diag.errors.map((t) => sanitizeDiagText(t));
     if (mode === 'dev') {
@@ -1223,6 +1284,9 @@ function buildDiagnosticReport(mode = 'short') {
             },
             actions,
             errors,
+            dom: diagDomSnapshot(),
+            trace: _diag.trace,
+            runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
             ua: String(globalThis.navigator?.userAgent || ''),
         }, null, 2);
@@ -1236,6 +1300,7 @@ function buildDiagnosticReport(mode = 'short') {
         `数据 书${counts.books} 组${counts.groups} 收藏${counts.pinned} 挂载${counts.mounted} 角色书${counts.charBooks} 未分组${counts.ungrouped}`,
         `标题 ${titleStats.mode} | 缺归属${charWithoutOwner} 原名${charTitleIsFileName} 副标题${charWithSubtitle}`,
         `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
+        `渲染计数 s2行${dom.s2Options ?? 0}/${dom.s2OptionsVisible ?? 0} gr行${dom.grOptions ?? 0}/${dom.grOptionsVisible ?? 0} 搜索头${dom.searchHead ?? 0} 装饰${_diag.decorateRuns}`,
         `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
         `错误 ${errors.length}`,
     ].join('\n');
@@ -5342,12 +5407,17 @@ function enhanceOpenEditorDropdown() {
         const $jq = globalThis.jQuery;
         const data = $jq ? $jq(row).data('data') : null;
         const option = data?.element instanceof HTMLOptionElement ? data.element : null;
+        const candidates = [];
         if (option) {
-            const fromOption = (option.dataset?.wboRealName || option.textContent || '').trim();
-            if (fromOption) return fromOption;
+            if (option.dataset?.wboRealName) candidates.push(option.dataset.wboRealName);
+            if (option.textContent) candidates.push(option.textContent);
         }
-        const fromData = String(data?.text ?? '').trim();
-        if (fromData) return fromData;
+        if (data?.text) candidates.push(data.text);
+        if (row.textContent) candidates.push(row.textContent);
+        for (const candidate of candidates) {
+            const meta = findMetaByAnyName(candidate);
+            if (meta) return meta.realName;
+        }
         const raw = (row.textContent || '').trim();
         return matchKnownWorldName(raw) || raw;
     };
@@ -5392,6 +5462,7 @@ function enhanceOpenEditorDropdown() {
     };
 
     const decorateGroupItems = () => {
+        _diag.decorateRuns += 1;
         ensureEditorRowMarkup();
         resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         // Titles first: mirror rows are cloned afterwards and must carry the corrected name.
@@ -5611,6 +5682,8 @@ function enhanceOpenEditorDropdown() {
         }
         const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
             .filter((row) => !row.classList.contains('wbo-dd-global-mirror'));
+        _diag.searchLayoutRuns += 1;
+        pushDiagTrace(`editor-search:rows=${rows.length},pill=${activePillGroupId},mirror=${resultsList.querySelectorAll('li.wbo-dd-global-mirror').length}`);
         if (rows.length === 0) return;
         const sig = `${activePillGroupId}|${rows.length}|${rows.map(getDropdownOptionWorldName).join('|')}`;
         const alreadyShown = Boolean(
@@ -7246,6 +7319,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         if (isGlobalPopover) return;
         const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim().toLowerCase() : '';
         const tokens = term ? term.split(/\s+/).filter(Boolean) : [];
+        pushDiagTrace(`enh-search:searching=${searching ? 1 : 0},tokens=${tokens.length},options=${optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector).length}`);
         if (!searching || tokens.length === 0) {
             if (_lastEnhancedSearchSig !== '') clearEnhancedSearchBlock();
             return;
