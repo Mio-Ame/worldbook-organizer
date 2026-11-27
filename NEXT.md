@@ -2,6 +2,16 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 主面板折叠与组合页强调色（2026-11-28 · v2.35.22）
+- 用户要求：主面板（管理分组）里「已开启的全局世界书」在「全部」「非角色书」视图可折叠；当前角色书被移到其他分组后「当前角色世界书」块不能消失；组合页「已选」用暗红底白字；全局下拉的「已收藏」组恢复折叠记忆（手动折叠后切 pill 再回「全部」不自动展开）。
+- 改动：
+  - `src/panel-manager.js`：`ACTIVE_GLOBAL_SECTION_ID` 从静态 `isSingleView: true` 改为可折叠，状态存 `settings.activeGlobalGroupCollapsed`，折叠分支与 `structSig` 同步；`currentCharBooks` 改为在 `classification.byName` 全量里按 `charOwners` 找（不再要求 `isInCharGroup`），书被拖到别的分组时该块仍在；角色组内排序逻辑不变。
+  - `src/core.js`：默认 settings 增加 `activeGlobalGroupCollapsed: false`。
+  - `src/native-filter.js`：全局下拉收藏组去掉 `openByDefault` 与 isolated 特例，折叠状态读 `settings.dropdownCollapsed`，与普通选书下拉一致。
+  - `style.css`：`.wbo-pill.is-emphasis` 改为暗红 `#7f2b2b` + 白字。
+- 验证：单测 245/245；`native-picker-window` 22/22（新增：主面板全局块可折叠、当前角色书在别的分组时「当前角色世界书」仍列出该书、收藏组折叠记忆）；`organize-combos` 8/8（强调色断言更新为 `rgb(127, 43, 43)|rgb(255, 255, 255)`）；全量浏览器结果见下。
+- 边界：仍为模拟视口验证；主面板全局块折叠状态只在总览持久化。
+
 ### 下拉全局分组与组合页折叠（2026-11-27 · v2.35.21）
 - 用户要求（已确认）：普通选书下拉里，挂载 **3 本及以上**全局书时出现可折叠的「全局世界书」分组，全局书同时保留在原分组（两边都在）；切到"文风"等分组时该组仍在上方——位于当前角色书置顶行下方、该分组上方；上方胶囊顺序为 `已收藏 → 全局 → 角色世界书（如显示）→ 其它分组`；当前角色书在普通下拉里仍是**无标题置顶行**。组合页「全部」「非角色书」两个视图里给分组加展开/折叠，样式参考主面板但不带拖动图标，折叠状态记住。
 - 改动：

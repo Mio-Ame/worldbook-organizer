@@ -2120,6 +2120,9 @@ function openManagerModal() {
                 } else if (gid === CURRENT_CHAR_BOOK_SECTION_ID) {
                     settings.currentCharGroupCollapsed = !settings.currentCharGroupCollapsed;
                     willCollapse = settings.currentCharGroupCollapsed;
+                } else if (gid === ACTIVE_GLOBAL_SECTION_ID) {
+                    settings.activeGlobalGroupCollapsed = !settings.activeGlobalGroupCollapsed;
+                    willCollapse = settings.activeGlobalGroupCollapsed;
                 } else {
                     const grp = settings.groups.find((g) => g.id === gid);
                     if (grp) {
@@ -2709,6 +2712,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
         Boolean(settings.showCharBooks),
         Boolean(settings.charGroupCollapsed),
         Boolean(settings.currentCharGroupCollapsed),
+        Boolean(settings.activeGlobalGroupCollapsed),
         Boolean(settings.ungroupedCollapsed),
         Boolean(settings.pinnedGroupCollapsed),
         searchOpts.searchBookName,
@@ -2742,7 +2746,7 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
     const includeCharExplicitly = filterId === SPECIAL_GROUPS.CHARACTER || isAllView;
     const currentChatAvatar = getCurrentCharacterAvatar();
     const currentCharBooks = isOverviewView && currentChatAvatar
-        ? [...(classification.characterBooks || [])].filter((book) =>
+        ? [...(classification.byName?.values?.() || [])].filter((book) =>
             book?.charOwners?.some((owner) => owner.avatar === currentChatAvatar)
             && (!q || matchesSearch(book, q, searchOpts)))
         : [];
@@ -2841,9 +2845,9 @@ function renderManagerGroupsListOnly({ skipIndicatorSync = false } = {}) {
                 id: ACTIVE_GLOBAL_SECTION_ID,
                 name: '已开启的全局世界书',
                 color: '#6b8d85',
-                collapsed: false,
+                collapsed: Boolean(settings.activeGlobalGroupCollapsed),
                 isCustom: false,
-                isSingleView: true,
+                isSingleView: false,
                 isMovable: false,
                 books: activeGlobalBooks,
             });

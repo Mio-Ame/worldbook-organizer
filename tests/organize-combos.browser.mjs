@@ -363,7 +363,7 @@ test('global combo editor splits group pills from scope pills, emphasizes picked
             const pill = document.querySelector('[data-cmb-pill="__selected__"]');
             const style = getComputedStyle(pill);
             return `${style.backgroundColor}|${style.color}|${pill.className.includes('is-emphasis')}`;
-        }), 'rgb(22, 24, 29)|rgb(255, 255, 255)|true');
+        }), 'rgb(127, 43, 43)|rgb(255, 255, 255)|true');
 
         const scrollState = () => cdp.evalFn(() => {
             const host = document.querySelector('#wbo-cmb-pick-list');

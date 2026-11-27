@@ -98,8 +98,8 @@ test('desktop native global picker keeps its search, filters by group and opens 
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-global-group-heading').getAttribute('aria-expanded')), 'true');
         assert.deepEqual(await visible(), [favorite]);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
-        // The global dropdown always reopens its favorites group expanded.
-        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes('已收藏'))?.getAttribute('aria-expanded')), 'true');
+        // The manual fold is remembered instead of reopening expanded.
+        assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes('已收藏'))?.getAttribute('aria-expanded')), 'false');
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         assert.deepEqual(await groupBadges(), []);
@@ -1109,4 +1109,35 @@ test('editor dropdown groups 3+ mounted globals into a foldable block above the 
             return Boolean(box && box.height > 0) && group.getBoundingClientRect().top < styleGroup.getBoundingClientRect().top;
         }), true);
     }, [], globalsSeed);
+});
+test('manager folds the active global block in overview views', async () => {
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        const group = '#wbo-mgr-groups-list .wbo-group[data-group-id="__active_globals__"]';
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('#wbo-mgr-groups-list .wbo-group[data-group-id="__active_globals__"]')?.classList.contains('is-collapsed'))), false);
+        await cdp.clickSelector(`${group} [data-action="toggle-group-collapse"]`);
+        await waitForCondition(cdp, () => document.querySelector('#wbo-mgr-groups-list .wbo-group[data-group-id="__active_globals__"]')?.classList.contains('is-collapsed'));
+        await cdp.clickSelector(`${group} [data-action="toggle-group-collapse"]`);
+        await waitForCondition(cdp, () => !document.querySelector('#wbo-mgr-groups-list .wbo-group[data-group-id="__active_globals__"]')?.classList.contains('is-collapsed'));
+    });
+});
+
+test('manager current character block survives its book leaving the character group', async () => {
+    const charBook = '角色测试书';
+    const seed = createDefaultSeed({
+        characters: [{ avatar: 'example.png', name: '测试角色', data: { extensions: { world: charBook } } }],
+        worldbooks: { [charBook]: { entries: {} }, 普通测试书: { entries: {} } },
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-other', name: '别的组' }],
+            assignments: { [charBook]: 'g-other' },
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await openManager(cdp);
+        assert.equal(await cdp.evalFn(() => Boolean(document.querySelector('.wbo-group[data-group-id="__current_char_book__"]'))), true);
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-group[data-group-id="__current_char_book__"] .wbo-book-item')?.getAttribute('data-book')), charBook);
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-group[data-group-id="g-other"] .wbo-book-item')?.getAttribute('data-book')), charBook);
+    }, [], seed);
 });

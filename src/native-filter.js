@@ -4826,8 +4826,8 @@ function enhanceOpenGlobalDropdown() {
             }
         };
         if (mountedRows.length > 0) appendGroup(ACTIVE_GLOBAL_SECTION_ID, '已开启的全局世界书', mountedRows);
-        // The global dropdown opens its favorites group every time; the ordinary picker keeps its memory.
-        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows.map((item) => item.row), { openByDefault: true });
+        // Favorites follow the saved fold state here, exactly like the ordinary picker.
+        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows.map((item) => item.row));
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
     };
 
@@ -4869,8 +4869,8 @@ function enhanceOpenGlobalDropdown() {
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
         _latestSettings.dropdownCollapsed ??= {};
-        // The favorites group opens expanded here, so its fold is session-only as well.
-        toggleDropdownGroupCollapsed(gid, gid === SPECIAL_GROUPS.PINNED);
+        // Folds here follow the saved state, so a manual fold survives pill switches.
+        toggleDropdownGroupCollapsed(gid, false);
         syncResults();
     };
     const onGroupHeadClick = (event) => {

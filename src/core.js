@@ -203,6 +203,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     groupPanelExpanded: false,
     charGroupCollapsed: true,
     currentCharGroupCollapsed: false,
+    activeGlobalGroupCollapsed: false,
     ungroupedCollapsed: false,
     comboGroupCollapsed: {},
     dropdownCollapsed: {},
