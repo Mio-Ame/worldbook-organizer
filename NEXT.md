@@ -1,3 +1,8 @@
+### Bind popup grouping and titles (2026-11-28 v2.35.33)
+- Build optgroups whenever any group or bare book exists (drop the two-group early return).
+- Read the real name from state.element.dataset.wboRealName before the meta lookup so primaryTitle applies.
+- Tests: unit 245/245; native-picker-window 24/24.
+
 ### 搜索归组跨分组与标签精简（2026-11-28 · v2.35.32）
 - 移动选书面板：搜索改为跨全部分组收集（收藏/全局 pill 不再空），��2 本时固定渲染「搜索匹配到的世界书」分组，单本才带搜索徽章；原分组标签直接显示分组名。
 - 桌面编辑下拉：搜索归组不再跳过「全部」，同样跨组收集；原属标签改为纯分组名。

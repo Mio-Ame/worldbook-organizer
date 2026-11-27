@@ -4047,7 +4047,7 @@ function groupDesktopSingleWorldSelect(selectEl, currentAvatar) {
         currentAvatar,
         prioritizeCharGroup: true,
     });
-    if (sections.length < 2) return;
+    if (sections.length === 0 && bareBooks.length === 0) return;
     const optMap = new Map();
     for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
         if (opt.value !== '') optMap.set(opt.value, opt);
@@ -4087,7 +4087,7 @@ function groupDesktopSingleWorldSelect(selectEl, currentAvatar) {
  */
 function renderSingleWorldResult(state) {
     if (!state.id) return state.text;
-    const realName = String(state.text ?? '').trim();
+    const realName = String(state.element?.dataset?.wboRealName || state.text || '').trim();
     const meta = _latestClassification?.byName?.get(realName);
     if (!meta) return state.text;
     const $jq = globalThis.jQuery;
@@ -4105,7 +4105,7 @@ function renderSingleWorldResult(state) {
  */
 function renderSingleWorldSelection(state) {
     if (!state.id) return state.text;
-    const meta = _latestClassification?.byName?.get(String(state.text ?? '').trim());
+    const meta = _latestClassification?.byName?.get(String(state.element?.dataset?.wboRealName || state.text || '').trim());
     return meta?.primaryTitle || state.text;
 }
 
