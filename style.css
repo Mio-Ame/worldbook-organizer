@@ -2792,8 +2792,31 @@
     align-items: center;
     gap: 6px;
     padding: 5px 8px;
-    overflow: hidden;
+    /* Horizontal scrolling without a janky, invisible scrollbar row: the bar keeps its height and
+       the pills stay vertically centred (a raw overflow-x bar pushed the row up). */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, currentColor 32%, transparent) transparent;
+    scrollbar-gutter: stable;
     border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar {
+    height: 6px;
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.wbo-dd-filter-bar > * {
+    flex: 0 0 auto;
 }
 
 .wbo-dd-filter-bar.is-expanded {

@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.74';
+export const PLUGIN_VERSION = '2.35.75';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7149,11 +7149,28 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (!isGlobalPopover && editorActiveGlobals.size >= 3) {
         validGroupIds.add(EDITOR_GLOBALS_GROUP_ID);
     }
-    const previousGroup = isGlobalPopover
-        ? (isGlobalOpening ? SPECIAL_GROUPS.PINNED : containerEl._wboPopState?.getActivePillId())
+    // Each dropdown keeps its own memory: a 已收藏 choice in the global list must not leak into
+    // the editor list (and vice versa).
+    const remembered = isGlobalPopover
+        ? (_dropdownMemory.globalPillGroupId ?? _dropdownMemory.activePillGroupId)
         : _dropdownMemory.activePillGroupId;
+    const hasMemory = isGlobalPopover
+        ? _dropdownMemory.globalPillMemorySet === true
+        : true;
+    const previousGroup = isGlobalPopover
+        ? (containerEl._wboPopState?.getActivePillId()
+            || (hasMemory && validGroupIds.has(remembered) ? remembered : (isGlobalOpening ? SPECIAL_GROUPS.PINNED : null)))
+        : remembered;
     let activePillGroupId = validGroupIds.has(previousGroup) ? previousGroup : SPECIAL_GROUPS.ALL;
-    if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
+    const rememberPill = (gid) => {
+        if (isGlobalPopover) {
+            _dropdownMemory.globalPillGroupId = gid;
+            _dropdownMemory.globalPillMemorySet = true;
+        } else {
+            _dropdownMemory.activePillGroupId = gid;
+        }
+    };
+    rememberPill(activePillGroupId);
 
     let isRestoringScroll = true;
     let searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
@@ -7905,7 +7922,8 @@ function enhanceCustomDropdownPopover(containerEl) {
                 ? SPECIAL_GROUPS.ALL
                 : gid;
             _isolatedFoldOverride.clear();
-            if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
+            // Persist per dropdown so reopening restores the chosen group.
+            rememberPill(activePillGroupId);
             syncPillButtons();
             syncSections();
             refreshEnhancedSearchForPill();

@@ -1,3 +1,11 @@
+### 全局下拉记住分组 + 分组条滚动不再顶歪（2026-11-28 · v2.35.75）
+- 用户反馈（TauriTavern 2.4.0 / iOS）：全局下拉切到别的分组后重开又回到「已收藏」，没记忆；分组条出现滚动条把胶囊挤高、且美化脚本里看不到滑块。
+- 修复（`src/native-filter.js`）：
+  - 分组记忆**按下拉分开**：新增 `_dropdownMemory.globalPillGroupId` / `globalPillMemorySet`；全局下拉读写的自己的记忆，编辑器下拉继续用 `activePillGroupId`（此前全局点击会写进共享字段，导致编辑器下拉被污染、单测 `flat favorites fill only while its pill is active` 失败）。首次打开全局仍默认 `★已收藏`，之后恢复上次选择。
+- 修复（`style.css` `.wbo-dd-filter-bar`）：`overflow-x:auto; overflow-y:hidden` + `scrollbar-width:thin` + 自定义 6px 圆角滑块（WebKit 与 Firefox 都可见），`scrollbar-gutter:stable` 预留滚动条空间，子项 `flex:0 0 auto`。这样横向滑动时胶囊行不再被顶歪，也不会出现「看不见的滚动条」。
+- 待办（记入 HANDOFF）：用户提出的「全局下拉打开时把已全局的书置顶并展开该分组」尚未实现——尝试强制展开 `dropdownCollapsed[__pinned__]` 会改变用户折叠记忆并打破现有单测，需要单独设计（倾向只在「首次打开且该分组为空视图」时临时展开）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 抽屉守卫挂到增强浮层的全局下拉（2026-11-28 · v2.35.74）
 - 用户 v2.35.73 反馈：搜索正常了，但「第一次点全局世界书框关闭抽屉」再次出现。
 - 诊断证据：`ui` 里有 `down:div.gr-select2-display inDrawer`，但 trace 里**没有** `drawer:kept-open` —— 说明守卫没装上。原因：之前只挂在 Select2 的全局下拉（`enhanceOpenGlobalDropdown`），而该用户走的是**美化脚本浮层**里的全局下拉（`role=global`，由 `enhanceCustomDropdownPopover` 处理），是另一条路径。
