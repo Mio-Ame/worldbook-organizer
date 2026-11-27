@@ -1,3 +1,11 @@
+### 角色世界书标题兜底（2026-11-28 · v2.35.47，U6 真凶）
+- 用户反馈：电脑端普通下拉里「角色世界书」整组按原名显示（设置是「角色名-原名」），不是只有当前角色那一行。
+- 复现与根因：新增的 `wboTitleReport()`（控制台可调用）打印出 `{ primaryTitle: "角色书文件名", owners: [] }` —— 这本书在 `__char__` 组里但**没有任何角色归属**（`include_in_char` 强塞进角色组、或角色卡是 shallow 且绑定缓存为空），`formatCharacterDisplayTitle` 于是原样返回文件名，副标题自然也是空的。这一路和最近的 UI 改动无关，属于分类层的老漏洞，只是这次被看见了。
+- 改动（`src/native-filter.js` 的 `syncRowTitles`）：角色组里的书如果标题仍是原名、且标题模式不是「原名」，先按 live 数据（角色 `data.extensions.world` + `world_info.charLore` 的附加书）找归属角色名；找不到就退回**当前聊天角色名**；`char_with_sub` 下同时补回文件名副标题。每一轮装饰都会重算，所以标题会自愈。
+- 新增诊断：`startNativeObservers` 时挂 `window.wboTitleReport()`，返回标题模式、角色列表和角色组内每本书的 `primaryTitle/subtitle/owners`，下次真机再出问题一行命令就能定位。
+- 验证：单测 245/245；`native-editor-titles` 10/10（新增：shallow 角色 + `include_in_char` 的角色组书显示角色名 + 副标题；另一角色书在角色组内显示对应角色名）；`native-picker-window` 33/33。
+- 边界：兜底只在「角色组 + 标题等于原名 + 模式非 original」时生效；找不到归属角色时借用当前聊天角色名，若一本书其实属于别的角色且归属完全查不到，会显示成当前角色名（比显示文件名更接近预期，但可能不精确）。手机选书面板与增强浮层仍走分类层标题，本轮未改。
+
 ### 宿主自渲染的行也升级成插件行结构（2026-11-28 · v2.35.46，U6 兜底）
 - 用户反馈：电脑端普通下拉里「当前角色」置顶行仍显示文件名，且没有副标题；手机端正常。模拟器里 `char_only` 与默认 `char_with_sub` 两种情况都通过，说明问题不在标题分级逻辑，而是行不是插件模板渲染的（宿主或兼容脚本自己渲染了 `<li>`，标题只好显示 option 原文，也没有 `.wbo-s2-title` 可供修正）。
 - 改动（`src/native-filter.js` 的 `enhanceOpenEditorDropdown`）：新增 `ensureEditorRowMarkup()`，每轮 `decorateGroupItems` 开头把没有 `.wbo-s2-item` 的结果行按分类结果重建为插件结构（`data-wbo-world` + 标题/副标题 + `.wbo-s2-right` 动作区），随后原有的标题同步、徽章、★ 都能正常落位。已有结构的行不受影响。

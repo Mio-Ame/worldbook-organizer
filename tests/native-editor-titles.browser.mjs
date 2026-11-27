@@ -36,6 +36,63 @@ async function withHost(viewport, fixture, verify) {
     } finally { await cdp?.close(); await server.stop(); }
 }
 
+test('character-group book without a live binding still reads as the role name', async t => {
+    // Shallow characters (SillyTavern's default until a card is loaded) plus include_in_char:
+    // the classification has no owner, so without the fallback the row showed the file name.
+    const fixture = seed({
+        charBookTitleMode: 'char_with_sub',
+        charBookOverrides: { [realName]: 'include_in_char' },
+    });
+    fixture.characters = [{ avatar: 'neutral-a.png', name: charName, shallow: true, data: { name: charName, extensions: { world: realName } } }];
+    await withHost(VIEWPORTS.desktop, fixture, async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-s2-title')));
+        await cdp.evalFn(() => {
+            document.querySelector('.select2-dropdown .wbo-dd-pill[data-wbo-pill="__all__"]')
+                ?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        });
+        await waitForCondition(cdp, () => document.querySelector('.select2-dropdown .wbo-s2-title')?.textContent === '中性角色甲');
+        const result = await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return {
+                title: row?.querySelector('.wbo-s2-title')?.textContent,
+                subtitle: row?.querySelector('.wbo-s2-sub')?.textContent,
+                report: window.wboTitleReport?.() || null,
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.title, charName);
+        assert.equal(result.subtitle, realName);
+    });
+});
+
+test('desktop ordinary Select2: another character book also uses its role name', async t => {
+    const otherBook = '别角书文件名';
+    const otherChar = '中性角色乙';
+    const fixture = seed({ charBookTitleMode: 'char_with_sub' });
+    fixture.characters.push({ avatar: 'neutral-b.png', name: otherChar, data: { name: otherChar, extensions: { world: otherBook } } });
+    fixture.worldbooks[otherBook] = { entries: {} };
+    await withHost(VIEWPORTS.desktop, fixture, async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-dd-pill')));
+        const result = await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return {
+                visible: Boolean(row?.closest('li')?.getBoundingClientRect().height),
+                title: row?.querySelector('.wbo-s2-title')?.textContent,
+                subtitle: row?.querySelector('.wbo-s2-sub')?.textContent,
+                group: row?.closest('li[data-wbo-dd-group]')?.getAttribute('data-wbo-dd-group')
+                    || row?.closest('li.select2-results__option--group')?.getAttribute('aria-label'),
+            };
+        }, otherBook);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.visible, true);
+        assert.equal(result.title, otherChar);
+        assert.equal(result.subtitle, otherBook);
+        assert.match(String(result.group), /__char__/);
+    });
+});
+
 test('desktop ordinary Select2: character group uses the requested name', async t => {
     await withHost(VIEWPORTS.desktop, seed(), async cdp => {
         await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));

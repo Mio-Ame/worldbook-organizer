@@ -32,7 +32,7 @@ import {
     orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getActiveGlobalWorldSet, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { getActiveGlobalWorldSet, getCharLoreEntries, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
 import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
 import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
@@ -4903,6 +4903,40 @@ function enhanceOpenEditorDropdown() {
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
     /**
+     * Live character-name index: a book that sits in 角色世界书 must always read as its owner's
+     * name, even when the classification had no binding for it (stale cache / include_in_char /
+     * shallow characters). Built once per dropdown opening.
+     * @type {Map<string, string> | null}
+     */
+    let charNameByBook = null;
+    const getCharNameByBook = () => {
+        if (charNameByBook) return charNameByBook;
+        charNameByBook = new Map();
+        const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+        for (const ch of characters) {
+            const name = String(ch?.name || ch?.data?.name || '').trim();
+            const world = typeof ch?.data?.extensions?.world === 'string' ? ch.data.extensions.world.trim() : '';
+            if (world && name) charNameByBook.set(world, name);
+        }
+        for (const entry of (getCharLoreEntries?.() || [])) {
+            const key = String(entry?.name || '').trim();
+            if (!key) continue;
+            const stem = key.replace(/\.[a-z0-9]+$/i, '');
+            const owner = characters.find((ch) => {
+                const avatar = String(ch?.avatar || '');
+                const name = String(ch?.name || '').trim();
+                return avatar === key || name === key || name === stem || avatar.replace(/\.[a-z0-9]+$/i, '') === stem;
+            });
+            const charName = String(owner?.name || stem).trim();
+            for (const book of (entry?.extraBooks || [])) {
+                const clean = String(book || '').trim();
+                if (clean && charName && !charNameByBook.has(clean)) charNameByBook.set(clean, charName);
+            }
+        }
+        return charNameByBook;
+    };
+
+    /**
      * Select2 only asks `templateResult` once per row, so a row rendered before the character
      * bindings were classified (or before the title mode changed) keeps the raw file name.
      * Re-read the live metadata and correct the title of every row on each decorate pass.
@@ -4913,20 +4947,39 @@ function enhanceOpenEditorDropdown() {
                 if (!(row instanceof HTMLElement)) return;
                 const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
                 if (!meta) return;
+                // A character-group book must never fall back to its file name.
+                const mode = _latestSettings?.charBookTitleMode;
+                let wantedTitle = meta.primaryTitle;
+                let wantedSubtitle = meta.subtitle;
+                if (wantedTitle === meta.realName && mode !== 'original' && meta.groupId === SPECIAL_GROUPS.CHARACTER) {
+                    let ownerName = getCharNameByBook().get(meta.realName);
+                    if (!ownerName) {
+                        // Forced into 角色世界书 (`include_in_char`) or a shallow card whose binding
+                        // is not cached: fall back to the character the chat is running as.
+                        const ctx = getHostContext?.();
+                        const avatar = getCurrentCharacterAvatar?.();
+                        const current = (ctx?.characters || []).find((ch) => String(ch?.avatar || '') === avatar);
+                        ownerName = String(current?.name || ctx?.name2 || '').trim();
+                    }
+                    if (ownerName) {
+                        wantedTitle = ownerName;
+                        if (mode === 'char_with_sub') wantedSubtitle = meta.realName;
+                    }
+                }
                 const titleEl = row.querySelector('.wbo-s2-title');
-                if (titleEl instanceof HTMLElement && meta.primaryTitle && titleEl.textContent !== meta.primaryTitle) {
-                    titleEl.textContent = meta.primaryTitle;
+                if (titleEl instanceof HTMLElement && wantedTitle && titleEl.textContent !== wantedTitle) {
+                    titleEl.textContent = wantedTitle;
                 }
                 const main = row.querySelector('.wbo-s2-main');
                 const subEl = row.querySelector('.wbo-s2-sub');
-                if (meta.subtitle) {
+                if (wantedSubtitle) {
                     if (subEl instanceof HTMLElement) {
-                        if (subEl.textContent !== meta.subtitle) subEl.textContent = meta.subtitle;
+                        if (subEl.textContent !== wantedSubtitle) subEl.textContent = wantedSubtitle;
                     } else if (main instanceof HTMLElement) {
                         const el = document.createElement('span');
                         el.className = 'wbo-s2-sub';
                         el.title = meta.realName;
-                        el.textContent = meta.subtitle;
+                        el.textContent = wantedSubtitle;
                         main.appendChild(el);
                     }
                 } else if (subEl) {
@@ -7060,6 +7113,33 @@ function enhanceCustomDropdownPopover(containerEl) {
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
+    // Console helper: `wboTitleReport()` explains why a character book renders with which title.
+    if (typeof globalThis.window !== 'undefined') {
+        globalThis.window.wboTitleReport = () => {
+            const cls = _latestClassification;
+            if (!cls) return { error: 'no classification yet' };
+            const books = [];
+            for (const [name, meta] of cls.byName) {
+                if (meta?.groupId !== SPECIAL_GROUPS.CHARACTER) continue;
+                books.push({
+                    name,
+                    primaryTitle: meta.primaryTitle,
+                    subtitle: meta.subtitle,
+                    owners: (meta.charOwners || []).map((owner) => `${owner.charName}${owner.orphan ? ' (orphan)' : ''}`),
+                });
+            }
+            return {
+                charBookTitleMode: _latestSettings?.charBookTitleMode,
+                characters: (getHostContext?.()?.characters || []).map((ch) => ({
+                    avatar: ch?.avatar,
+                    name: ch?.name,
+                    shallow: Boolean(ch?.shallow),
+                    world: ch?.data?.extensions?.world || '',
+                })),
+                books,
+            };
+        };
+    }
 
     // Keep the browser default action for panel selects without reaching document-level overrides.
     const selectEvents = ['mousedown', 'touchend', 'keydown'];
