@@ -1,3 +1,13 @@
+### 全局下拉也走自绘搜索结果（2026-11-28 · v2.35.77）
+- 用户反馈（TauriTavern 2.4.0 / iOS）：搜索后结果**仍按分组显示**；诊断 `trace` 为空，说明自绘面板在全局下拉里被 `syncEnhancedSearchBlock()` 开头的 `if (isGlobalPopover) return;` 直接挡掉。
+- 改动（`src/native-filter.js`）：
+  - 移除该早退：全局下拉搜索同样使用自绘面板（`enh-search:…,role=global`）。
+  - `pickableNames()` / `searchSelectEl()` 按角色取值：编辑器看 `#world_editor_select`，全局看 `#world_info`。
+  - 全局下拉的行是「是否全局启用」的开关：点击行改为 **toggle** `option.selected` 并 `trigger("change")`，面板保持打开以便连续勾选，行首显示 `✓`（`.wbo-esp-check`，`.is-on` 加粗）。
+  - trace 增加 `enh-panel:toggle`。
+- 测试：`mobile global dropdown handles direct option rows without native search` 改为断言自绘面板（清理搜索词后再做宽度/展开断言）。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 用例在全量并发时偶发超时，单独跑通过，属既有 flake）。
+
 ### 搜索后点 pill 面板被关：保住焦点（2026-11-28 · v2.35.76）
 - 用户反馈（TauriTavern 2.4.0 / iOS 440×860）：搜索结束后点插件面板（如切换分组）时下拉面板直接关闭。`ui` 日志顺序证实：`down:input.gr-search-input` → `search-blur` → `down:button.wbo-dd-pill`，即**点 pill 使搜索框失焦**，宿主的 blur 逻辑先关掉浮层。这也解释了早前「点搜索框秒关、输入法残留」的同类现象。
 - 修复（`src/native-filter.js`）：

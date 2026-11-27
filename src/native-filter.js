@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.76';
+export const PLUGIN_VERSION = '2.35.77';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7609,8 +7609,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             + ',searchBox=' + (searchInput instanceof HTMLElement ? 1 : 0));
     };
     /** Books that can actually be picked: the select may have detached hidden options. */
+    const searchSelectEl = () => document.getElementById(isGlobalPopover ? 'world_info' : 'world_editor_select');
     const pickableNames = () => {
-        const select = document.getElementById('world_editor_select');
+        const select = searchSelectEl();
         const names = new Set();
         if (!select) return names;
         for (const option of select.options) {
@@ -7619,8 +7620,14 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
         return names;
     };
+    const isGloballySelected = (realName) => {
+        const select = document.getElementById('world_info');
+        if (!select) return false;
+        const option = [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+        return Boolean(option?.selected);
+    };
     const pickEnhancedSearchRow = (realName) => {
-        const select = document.getElementById('world_editor_select');
+        const select = searchSelectEl();
         const option = select
             ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName)
             : null;
@@ -7631,6 +7638,19 @@ function enhanceCustomDropdownPopover(containerEl) {
             return;
         }
         const $jq = globalThis.jQuery;
+        if (isGlobalPopover) {
+            // Global list: a pick toggles whether the book is active globally, and the panel stays
+            // open so several books can be toggled in a row.
+            option.selected = !option.selected;
+            if ($jq) $jq(select).trigger('change');
+            else select.dispatchEvent(new Event('change', { bubbles: true }));
+            pushDiagTrace('enh-panel:toggle');
+            _lastEnhancedSearchTerm = '';
+            renderEnhancedSearchPanel(searchInput instanceof HTMLInputElement
+                ? searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+                : []);
+            return;
+        }
         if ($jq) $jq(select).val(option.value).trigger('change');
         else {
             select.value = option.value;
@@ -7734,15 +7754,19 @@ function enhanceCustomDropdownPopover(containerEl) {
             const head = matches.length > shown.length
                 ? '搜索匹配到的世界书 (' + matches.length + '，显示前 ' + shown.length + ')'
                 : '搜索匹配到的世界书 (' + matches.length + ')';
-            const rowsHtml = shown.map((meta) => [
-                '<button type="button" class="wbo-esp-row" data-wbo-esp="' + escHtml(meta.realName) + '">',
-                '    <span class="wbo-esp-main">',
-                '        <span class="wbo-esp-title">' + escHtml(meta.primaryTitle || meta.realName) + '</span>',
-                (meta.subtitle ? '        <span class="wbo-esp-sub">' + escHtml(meta.subtitle) + '</span>' : ''),
-                '    </span>',
-                '    <span class="wbo-esp-origin">' + escHtml(meta.groupName || '未分组') + '</span>',
-                '</button>',
-            ].join(''));
+            const rowsHtml = shown.map((meta) => {
+                const on = isGlobalPopover && isGloballySelected(meta.realName);
+                return [
+                    '<button type="button" class="wbo-esp-row' + (on ? ' is-on' : '') + '" data-wbo-esp="' + escHtml(meta.realName) + '">',
+                    '    <span class="wbo-esp-main">',
+                    isGlobalPopover ? '        <span class="wbo-esp-check" aria-hidden="true">' + (on ? '✓' : '') + '</span>' : '',
+                    '        <span class="wbo-esp-title">' + escHtml(meta.primaryTitle || meta.realName) + '</span>',
+                    (meta.subtitle ? '        <span class="wbo-esp-sub">' + escHtml(meta.subtitle) + '</span>' : ''),
+                    '    </span>',
+                    '    <span class="wbo-esp-origin">' + escHtml(meta.groupName || '未分组') + '</span>',
+                    '</button>',
+                ].join('');
+            });
             panel.innerHTML = '<div class="wbo-esp-head">' + head + '</div>' + rowsHtml.join('');
         }
         panel.scrollTop = keepScroll;
@@ -7751,7 +7775,6 @@ function enhanceCustomDropdownPopover(containerEl) {
     };
     let _lastEnhancedSearchTerm = '';
     const syncEnhancedSearchBlock = (searching) => {
-        if (isGlobalPopover) return;
         const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
         const tokens = term.toLowerCase().split(/\s+/).filter(Boolean);
         if (!searching || tokens.length === 0) {
@@ -7764,7 +7787,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             return;
         }
         _lastEnhancedSearchTerm = term;
-        pushDiagTrace('enh-search:searching=1,tokens=' + tokens.length);
+        pushDiagTrace('enh-search:searching=1,tokens=' + tokens.length + ',role=' + (isGlobalPopover ? 'global' : 'editor'));
         renderEnhancedSearchPanel(tokens);
     };
     // Switching a pill while searching must refilter our own list too.

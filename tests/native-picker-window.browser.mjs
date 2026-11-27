@@ -784,8 +784,17 @@ test('mobile global dropdown handles direct option rows without native search', 
         assert.equal((await visible())[0], favorite);
         await cdp.clickSelector(`${bar} [data-wbo-pill="g-b"]`);
         await cdp.typeInto(`${pop} .wbo-pop-search`, '普通');
-        await waitForCondition(cdp, () => document.querySelector('.gr-option.wbo-pop-search-hidden'));
-        assert.deepEqual(await visible(), [other]);
+        // v2.35.77: the global list also renders the plugin-owned panel instead of filtering rows.
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-enhanced-search-panel')));
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('.wbo-esp-row')]
+            .map((row) => row.getAttribute('data-wbo-esp'))), [other]);
+        // Clear the term again so the width/expand checks work on the normal list.
+        await cdp.evalFn(() => {
+            const input = document.querySelector('#gr-global-dropdown-container .wbo-pop-search');
+            input.value = '';
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+        });
+        await waitForCondition(cdp, () => !document.querySelector('.wbo-enhanced-search-panel'));
         await cdp.evalFn(() => {
             const pop = document.getElementById('gr-global-dropdown-container');
             pop.style.width = '185px';
