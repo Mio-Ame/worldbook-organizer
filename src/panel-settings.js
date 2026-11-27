@@ -723,6 +723,15 @@ function openSettingsModal() {
         const maxLeft = Math.max(8, (globalThis.innerWidth || 1024) - 260);
         menu.style.left = `${Math.min(Math.max(8, rect.left), maxLeft)}px`;
         menu.style.bottom = `${Math.max(8, (globalThis.innerHeight || 768) - rect.top + 6)}px`;
+        // The menu lives on <body>, outside the modal that defines the theme variables, so copy
+        // the modal's own colours or it renders dark-on-dark in a light theme.
+        const modalStyle = globalThis.getComputedStyle(modal);
+        const surface = modalStyle.getPropertyValue('--wbo-surface').trim();
+        const foreground = modalStyle.getPropertyValue('--wbo-fg').trim();
+        const borderStrong = modalStyle.getPropertyValue('--wbo-border-strong').trim();
+        if (surface) menu.style.background = surface;
+        if (foreground) menu.style.color = foreground;
+        if (borderStrong) menu.style.borderColor = borderStrong;
         document.body.append(menu);
         menu.addEventListener('click', (ev) => {
             const btn = ev.target instanceof Element ? ev.target.closest('[data-diag]') : null;

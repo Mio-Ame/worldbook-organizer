@@ -1,3 +1,9 @@
+### 诊断菜单配色修正（2026-11-28 · v2.35.54）
+- 用户反馈：诊断面板黑底黑字，全黑看不清。
+- 原因：菜单挂在 `document.body` 上，而主题变量（`--wbo-surface` / `--wbo-fg` / `--wbo-border-strong`）只定义在 `.wbo-modal` 作用域内，于是菜单拿到回退深色背景，`color: inherit` 又继承了浅色主题下的深色文字。
+- 改动：`style.css` 的 `.wbo-diag-menu` 回退值改为自洽的一对（`--wbo-surface` → `#232429`、`--wbo-fg` → `#e7e7e4`）；同时在 `src/panel-settings.js` 里读取设置弹窗的 `getComputedStyle`，把 `--wbo-surface` / `--wbo-fg` / `--wbo-border-strong` 内联到菜单上，跟随用户当前主题。
+- 验证：`native-picker-window` 33/33（诊断菜单用例新增断言：菜单文字色与背景色不相同且背景非透明）；单测 245/245。
+
 ### 诊断改为点开菜单 + 美化脚本检测可见（2026-11-28 · v2.35.53）
 - 用户反馈：移动端没有悬停，「连点 3 下」这种靠提示才发现的交互不成立；另外希望主动检测下拉框美化脚本是否启用。
 - 诊断交互（`src/panel-settings.js` + `style.css`）：页脚仍只有「诊断」一个按钮，点一下弹出小菜单（`#wbo-diag-menu`，`pointerdown` 外部关闭，触屏/鼠标一致）：「复制简要诊断」约 10 行可直接贴 Discord；「下载详细诊断」生成 `wbo-diagnostic-<时间>.txt`。菜单底部标注「都不含任何书名 / 角色名」。

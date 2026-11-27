@@ -676,6 +676,12 @@ test('preset group switching is offered only when the compatible script is detec
         await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-diag-menu')));
         assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#wbo-diag-menu [data-diag]')]
             .map((btn) => btn.getAttribute('data-diag'))), ['short', 'dev']);
+        // Text must stay readable: never the same colour as the panel background.
+        assert.equal(await cdp.evalFn(() => {
+            const menu = document.getElementById('wbo-diag-menu');
+            const style = getComputedStyle(menu);
+            return style.color !== style.backgroundColor && style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        }), true);
         await cdp.evalFn(() => document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })));
         await waitForCondition(cdp, () => !document.getElementById('wbo-diag-menu'));
         assert.equal(await cdp.evalFn((selector) => document.querySelector(selector)?.checked, setting), false);

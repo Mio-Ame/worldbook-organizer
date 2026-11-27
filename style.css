@@ -3057,9 +3057,9 @@ li.wbo-dd-group-hidden,
     width: 240px;
     padding: 8px;
     border-radius: 10px;
-    border: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.32));
-    background: var(--wbo-surface, #1f2228);
-    color: inherit;
+    border: 1px solid var(--wbo-border-strong, rgba(128, 128, 128, 0.45));
+    background: var(--wbo-surface, #232429);
+    color: var(--wbo-fg, #e7e7e4);
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
