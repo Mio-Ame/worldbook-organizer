@@ -1328,8 +1328,10 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
-    // Keep a fallback ready even if an enhanced display temporarily owns visibility.
-    if (!hasSelect2) {
+    // The global drawer belongs to SillyTavern. If the host already renders its own Select2
+    // container (desktop and TauriTavern), never inject a second trigger/chips row.
+    const hasHostWidget = hasSelect2 || Boolean(selectEl.parentElement?.querySelector('.select2-container'));
+    if (!hasHostWidget && isNativeMobileSelectMode()) {
         attachGroupedSelectControl(selectEl, {
             multiple: true,
             role: 'global',
@@ -4979,26 +4981,9 @@ function enhanceOpenGlobalDropdown() {
     if (!(resultsList instanceof HTMLElement) || !resultsWrap?.parentElement) return;
     bindDrawerSafeBubbleGuard(dropdownEl);
 
+    // Reuse whatever search field the host already has; never inject another one.
     let searchField = dropdownEl.querySelector('.select2-search__field')
         || globalSel.parentElement?.querySelector('.select2-search__field');
-    if (!(searchField instanceof HTMLInputElement)) {
-        // The host's multi-select can arrive without its own search box; add the same one the
-        // ordinary picker has, right above the results.
-        const wrap = document.createElement('div');
-        wrap.className = 'select2-search select2-search--dropdown wbo-global-search-wrap';
-        const input = document.createElement('input');
-        input.type = 'search';
-        input.className = 'select2-search__field';
-        input.placeholder = '搜索世界书...';
-        input.setAttribute('autocomplete', 'off');
-        input.setAttribute('spellcheck', 'false');
-        wrap.appendChild(input);
-        resultsList.parentElement.insertBefore(wrap, resultsList);
-        searchField = input;
-        input.addEventListener('input', () => {
-            inst.trigger?.('query', { term: input.value });
-        });
-    }
     const readGroups = () => {
         const counts = new Map();
         let favorites = 0;

@@ -2,6 +2,14 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 去掉全局抽屉里多余的触发器与搜索框（2026-11-28 · v2.35.27）
+- 用户截图反馈：全局世界书抽屉出现第三个框（插件 trigger，文案「已选 X 本：…」），并且展开插件面板后点抽屉其它地方会关闭整个原生抽屉；要求不要改动原生展示。
+- 改动：
+  - `src/native-filter.js` 的 `applyGlobalWorldSelectFilter`：只有宿主既没有 Select2 实例、父容器里也没有 `.select2-container` 且为移动模式时才 attach 自建分组控件；桌面（含 TauriTavern 桌面）一律不注入，原生 chips 保持唯一。
+  - `enhanceOpenGlobalDropdown`：删除自建 `wbo-global-search-wrap` 搜索框，只复用宿主已有的 `.select2-search__field`。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-global-drawer` 8/8、`native-mobile-picker-lifecycle` 22/22；全量见下。
+- 未完成：增强浮层路径的搜索归组、iOS 的「全局世界书」块、美化脚本共存、抽屉点击仍可能被原生逻辑关闭（移除自建控件后需真机复核）。
+
 ### 搜索归组扩到收藏/全局与移动端（2026-11-28 · v2.35.26）
 - 用户反馈：桌面下拉在「已收藏」「全局」pill 下搜索时仍按原分组显示，没有归到「搜索匹配到的世界书」；iOS TauriTavern 同样按原分组显示；匹配行旁要标注原分组。
 - 改动：
