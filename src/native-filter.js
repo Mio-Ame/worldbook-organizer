@@ -1328,16 +1328,8 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
-    // The global drawer belongs to SillyTavern. If the host already renders its own Select2
-    // container (desktop and TauriTavern), never inject a second trigger/chips row.
-    const hasHostWidget = hasSelect2 || Boolean(selectEl.parentElement?.querySelector('.select2-container'));
-    if (!hasHostWidget && isNativeMobileSelectMode()) {
-        attachGroupedSelectControl(selectEl, {
-            multiple: true,
-            role: 'global',
-            placeholder: selectEl.getAttribute('data-placeholder') || '没有激活的世界书。点击这里选择。',
-        });
-    }
+    // The global drawer belongs to SillyTavern. Never inject a second trigger/chips row or an
+    // extra search field there — that produced duplicated rows and a stuck soft keyboard.
 
     const sig = computeSelectSignature(selectEl, _globalDetachedMap, classification, settings, 'global');
     if (sig === _lastGlobalSignature) return;
@@ -4032,6 +4024,64 @@ function groupDesktopSingleWorldSelect(selectEl, currentAvatar) {
     $jq(selectEl).trigger('change.select2');
 }
 
+/**
+ * Render one option of a single-select worldbook dropdown with the plugin's friendly title.
+ * @param {any} state
+ */
+function renderSingleWorldResult(state) {
+    if (!state.id) return state.text;
+    const realName = String(state.text ?? '').trim();
+    const meta = _latestClassification?.byName?.get(realName);
+    if (!meta) return state.text;
+    const $jq = globalThis.jQuery;
+    if (!$jq) return state.text;
+    return $jq(`<span class="wbo-s2-item" data-wbo-world="${escHtml(meta.realName)}">
+        <span class="wbo-s2-main">
+            <span class="wbo-s2-title">${escHtml(meta.primaryTitle)}</span>
+            ${meta.subtitle ? `<span class="wbo-s2-sub">${escHtml(meta.subtitle)}</span>` : ''}
+        </span>
+    </span>`);
+}
+
+/**
+ * @param {any} state
+ */
+function renderSingleWorldSelection(state) {
+    if (!state.id) return state.text;
+    const meta = _latestClassification?.byName?.get(String(state.text ?? '').trim());
+    return meta?.primaryTitle || state.text;
+}
+
+/**
+ * Give a desktop single worldbook select the same in-place experience as the extras select:
+ * searchable, grouped optgroups, friendly titles, and a dropdown anchored under the select.
+ * @param {HTMLSelectElement} selectEl
+ * @param {string | null} currentAvatar
+ * @param {HTMLElement | null} hostEl
+ */
+function enhanceDesktopSingleWorldSelect2(selectEl, currentAvatar, hostEl) {
+    const $jq = globalThis.jQuery;
+    if (!$jq || !(selectEl instanceof HTMLSelectElement)) return;
+    if (selectEl.dataset.wboSingleEnhanced === '1') {
+        groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+        return;
+    }
+    const config = {
+        width: '100%',
+        minimumResultsForSearch: 0,
+        templateResult: renderSingleWorldResult,
+        templateSelection: renderSingleWorldSelection,
+    };
+    if (hostEl instanceof HTMLElement) config.dropdownParent = $jq(hostEl);
+    if ($jq(selectEl).data('select2')) {
+        $jq(selectEl).select2(config);
+    } else {
+        $jq(selectEl).select2({ ...config, placeholder: '--- 无主世界书 ---', allowClear: true });
+    }
+    groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+    selectEl.dataset.wboSingleEnhanced = '1';
+}
+
 function enhanceCharBindPopup(charWorldEl) {
     if (!charWorldEl || charWorldEl.dataset.wboEnhanced === '1') return;
     if (!_latestClassification || !_latestSettings) return;
@@ -4064,13 +4114,17 @@ function enhanceCharBindPopup(charWorldEl) {
                 const $jq = globalThis.jQuery;
                 const hasS2 = Boolean($jq && ($jq(primarySelect).data('select2') || $jq(primarySelect).hasClass('select2-hidden-accessible')));
                 if (hasS2) {
-                    groupDesktopSingleWorldSelect(primarySelect, currentAvatar);
+                    enhanceDesktopSingleWorldSelect2(primarySelect, currentAvatar, charWorldEl);
                     return;
                 }
-                if (primaryAttempts < 10) {
+                if (primaryAttempts < 6) {
                     primaryAttempts += 1;
                     setTimeout(waitPrimarySelect2, 60);
+                    return;
                 }
+                // The host never initialized Select2 here: do it ourselves so the list is
+                // searchable, grouped and anchored under the select.
+                enhanceDesktopSingleWorldSelect2(primarySelect, currentAvatar, charWorldEl);
             };
             waitPrimarySelect2();
         }
@@ -4607,9 +4661,9 @@ function enhanceOpenEditorDropdown() {
                 if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
             }
         }
-        // Mirror rows are pickers only; never let a 当前编辑 badge survive a Select2 re-render.
-        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         layoutEditorSearchMatches();
+        // Mirror rows are pickers only; never let a 当前编辑 badge survive any later re-render.
+        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
         if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
     };
     // Keep folding in the current group filter and leave search results visible.

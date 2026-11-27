@@ -2,6 +2,15 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 绑定主世界书桌面增强与全局不再注入控件（2026-11-28 · v2.35.28）
+- 用户反馈：电脑端角色卡「选择一个世界书文件给 xxx」的绑定主世界书展开后不能搜索、不能按分组切换、显示的是文件原名，而且面板弹在页面中间；手机端全局选择时输入法关不掉，怀疑插件往原生框里加了搜索。
+- 改动：
+  - `src/native-filter.js` 新增 `renderSingleWorldResult` / `renderSingleWorldSelection` / `enhanceDesktopSingleWorldSelect2`：桌面主世界书等待宿主 Select2，等不到就主动初始化（`minimumResultsForSearch: 0`、`dropdownParent` 指向角色弹窗以便就地展开），模板改用 `primaryTitle`/别名，随后重建 optgroup 分组。
+  - `enhanceCharBindPopup` 桌面分支改调 `enhanceDesktopSingleWorldSelect2`（保留移动端原分组控件）。
+  - `applyGlobalWorldSelectFilter` 彻底不再为 `#world_info` attach 自建分组控件（自建搜索/触发器会带来多余框与输入法残留），仅保留 `hasSelect2` 供后续签名逻辑使用。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-global-drawer` 8/8、`native-mobile-picker-lifecycle` 22/22、`native-favorites-touch` 6/6；全量见下。
+- 未完成：增强浮层路径的搜索归组、iOS 的「全局世界书」块、美化脚本共存。
+
 ### 去掉全局抽屉里多余的触发器与搜索框（2026-11-28 · v2.35.27）
 - 用户截图反馈：全局世界书抽屉出现第三个框（插件 trigger，文案「已选 X 本：…」），并且展开插件面板后点抽屉其它地方会关闭整个原生抽屉；要求不要改动原生展示。
 - 改动：
