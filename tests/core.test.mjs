@@ -1558,6 +1558,9 @@ test('AI organize sensitive partitioning suppresses false alarms on grouped book
     assert.equal(groupedOnly.bannerMode, 'hidden');
     assert.equal(groupedOnly.ungroupedSensitive.length, 0);
     assert.equal(groupedOnly.scopeSensitive.length, 0);
+    // Character books never enter the sensitive partition, even when their titles look NSFW
+    assert.deepEqual(groupedOnly.sensitiveBooks.map((b) => b.realName), ['nsfw_已归组']);
+    assert.equal(groupedOnly.charSensitive.length, 0);
 
     // Case 2: Ungrouped sensitive book exists -> bannerMode 'warn', scopeSensitive excludes grouped & char books
     const withUngrouped = [

@@ -93,7 +93,9 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     };
 
     const sensitiveSet = new Set(
-        allBooks.filter((b) => isPotentiallySensitiveTitle(b.realName)).map((b) => b.realName),
+        allBooks
+            .filter((b) => !b.isInCharGroup && isPotentiallySensitiveTitle(b.realName))
+            .map((b) => b.realName),
     );
     const isDefaultAiPick = (book) => book.groupId === SPECIAL_GROUPS.UNGROUPED && !sensitiveSet.has(book.realName);
     const defaultChecked = new Set(classification.ungroupedBooks.filter(isDefaultAiPick).map((book) => book.realName));

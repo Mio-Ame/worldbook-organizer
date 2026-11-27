@@ -3044,11 +3044,13 @@ export function analyzeSensitiveOrganizeState({
 
     for (const b of allBooks || []) {
         if (!b?.realName) continue;
-        if (isPotentiallySensitiveTitle(b.realName)) {
+        // Books living in the character group are never sensitive candidates: their titles often
+        // carry in-world wording ("肉", "敏感"…) that would otherwise pull them into an NSFW group.
+        // Books explicitly excluded from the character group keep the normal treatment.
+        const isCharacterBook = Boolean(b.isInCharGroup);
+        if (!isCharacterBook && isPotentiallySensitiveTitle(b.realName)) {
             sensitiveBooks.push(b);
-            if (b.isInCharGroup) {
-                charSensitive.push(b);
-            } else if (b.groupId === SPECIAL_GROUPS.UNGROUPED) {
+            if (b.groupId === SPECIAL_GROUPS.UNGROUPED) {
                 ungroupedSensitive.push(b);
             } else {
                 groupedSensitive.push(b);

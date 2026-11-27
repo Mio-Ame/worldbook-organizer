@@ -2,6 +2,21 @@
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
 
+### 敏感世界书检测排除角色世界书（2026-11-27 · v2.35.18）
+- 用户反馈：部分角色世界书的标题带「肉」「敏感」等字样，被当成疑似敏感书并归组；要求检测敏感书时直接排除角色世界书。
+- 改动：`src/core.js` 的 `analyzeSensitiveOrganizeState`、`src/panel-organize.js` 的 `sensitiveSet` 都按 `isInCharGroup` 排除角色组里的书——它们进普通书分区，不再出现在「疑似敏感世界书」页、敏感计数、全选敏感书与归组目标里；被用户显式 `exclude_from_char` 排除出角色组的绑定书仍按普通书检测（保留既有 M3 R4 一键归组行为）。导入归类路径本来就用 `eligibleNonCharacterTitles` 排除角色书，未改。
+- 验证：单测 73/73（新增断言：角色书不进 `sensitiveBooks`、`charSensitive` 为空）；`organize-combos` 7/7、`import-organizer`＋`feedback-round` 25/25 通过。
+
+### 全局下拉「全部」分组折叠（2026-11-27 · v2.35.18）
+- 用户反馈：全局世界书下拉切到「全部」时，列表顶部只有一行裸的「已收藏」文字，没有分组标题样式也不能折叠；要求「学习普通下拉框那里的分组」，让「全部」下的分组同样能折叠展开。
+- 改动（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`、`style.css`）：
+  - 删掉原来那个自造的无样式 `<li>已收藏</li>`，改为在「全部」下按 `_latestClassification.orderedSections` 顺序重建结果行，为每个有书的分组插入标题行 `li.select2-results__group.wbo-dd-group-head.wbo-global-group-head`，复用普通选书下拉的吸顶背景与 chevron 箭头；已收藏排在第一位，文字格式与普通下拉一致（`已收藏 (1)`、`测试分组乙 (2)`）。
+  - 点击标题走 `toggleDropdownGroupCollapsed(gid, false)`，与普通选书下拉共用 `settings.dropdownCollapsed` 记忆；折叠组内的行加 `wbo-global-group-collapsed` 隐藏，箭头旋转成折叠态。
+  - 搜索中不插标题、不折叠，命中项直接平铺，与普通下拉一致；关闭下拉时清理标题行与新监听。
+  - 收藏书只出现在「已收藏」组，所以它原来所属的分组会变空、不显示标题（与旧置顶行为一致）。
+- 验证：单测 245/245；`tests/native-picker-window.browser.mjs` 14/14（「全部」下标题断言更新为 `已收藏 (1)`、`角色世界书 (1)`、`测试分组乙 (2)`，并断言标题 chevron 为 7px，新增折叠已收藏、折叠普通组、再次展开、重新打开下拉仍记住折叠状态的断言）；仓库全量浏览器测试 266 项中 262 通过，4 项因本机缺 `playwright` 未运行（floating-window、manager-favorites、prompt-preview 及 manager-tools 的触屏用例，与本次改动无关）。
+- 边界：仍为模拟视口（桌面 1280×860、手机 390×844）验证，未在真实 TauriTavern／iOS 上点过；折叠沿用普通下拉的 mousedown 事件，触屏合成事件尚未真机核对。
+
 ### 本轮反馈修复（2026-11-27，单窗口直接修复，未提交）
 - 用户说明自己是小白用户，允许直接改代码，不再要求多窗口 A/B 双审。本轮由单窗口完成修改与测试；未提交、推送、发布，未安装测试包，未操作 TauriTavern。manifest 仍为 2.35.16。
 - 本轮范围按用户选择：做 B01/B02/B04/B05/B06/B07/B08/B03-D01；B09、B10 页面美化与 CSS 拆分这轮不做。

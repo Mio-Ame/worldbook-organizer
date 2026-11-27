@@ -64,8 +64,26 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await cdp.evalFn(() => { document.querySelector('.select2-dropdown').style.width = '640px'; });
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .wbo-dd-expand-btn').hidden);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
-        assert.equal(await cdp.evalFn(() => document.querySelector('.select2-results__options').firstElementChild.textContent), '已收藏');
+        const groupHeads = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-results__options > li.wbo-global-group-head')]
+            .map((head) => `${head.textContent.trim()}|${head.getAttribute('aria-expanded')}`));
+        assert.deepEqual(await groupHeads(), ['已收藏 (1)|true', '角色世界书 (1)|true', '测试分组乙 (2)|true']);
+        assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')]
+            .map((head) => getComputedStyle(head, '::before').width)), ['7px', '7px', '7px']);
         assert.equal((await visible())[0], favorite);
+        const foldHead = (label) => cdp.evalFn((text) => {
+            const head = [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes(text));
+            if (!head) return false;
+            head.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            return true;
+        }, label);
+        assert.equal(await foldHead('已收藏'), true);
+        assert.deepEqual(await visible(), [characterBook, other, globalBook]);
+        assert.deepEqual(await groupHeads(), ['已收藏 (1)|false', '角色世界书 (1)|true', '测试分组乙 (2)|true']);
+        await foldHead('已收藏');
+        assert.deepEqual(await visible(), [favorite, characterBook, other, globalBook]);
+        await foldHead('测试分组乙');
+        assert.deepEqual(await visible(), [favorite, characterBook]);
+        await foldHead('测试分组乙');
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="g-b"]');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         assert.deepEqual(await groupBadges(), []);

@@ -3028,6 +3028,15 @@ li.wbo-dd-collapsed > ul.select2-results__options--nested,
     transform: rotate(-45deg);
 }
 
+/* Foldable headings inside the global dropdown "all" view, matching the ordinary picker. */
+.wbo-global-group-collapsed {
+    display: none !important;
+}
+
+.wbo-global-group-head.is-collapsed::before {
+    transform: rotate(-45deg);
+}
+
 .wbo-global-group-heading[hidden],
 .wbo-global-results-collapsed {
     display: none !important;

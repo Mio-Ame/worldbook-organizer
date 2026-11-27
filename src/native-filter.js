@@ -4604,31 +4604,78 @@ function enhanceOpenGlobalDropdown() {
     };
     _activeGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
 
-    const header = document.createElement('li');
-    header.className = 'wbo-global-favorites-heading wbo-dd-group-head is-isolated';
-    header.setAttribute('role', 'presentation');
-    header.textContent = '已收藏';
     const groupHeading = document.createElement('button');
     groupHeading.type = 'button';
     groupHeading.className = 'select2-results__group wbo-dd-group-head wbo-global-group-heading';
     groupHeading.hidden = true;
     resultsList.parentElement.insertBefore(groupHeading, resultsList);
+
+    const rowWorldName = (row) => row.querySelector('.wbo-s2-item')?.getAttribute('data-wbo-world')
+        || row.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
+        || (row.textContent || '').trim();
+
+    /**
+     * Build foldable group headings above the rows while the "all" pill is active, matching the
+     * ordinary picker's group heads. The global dropdown renders one flat list, so the headings
+     * are rebuilt next to the rows and folding hides the rows of that group.
+     * @param {HTMLElement[]} rows
+     */
+    const layoutGlobalGroupRows = (rows) => {
+        resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
+        for (const row of rows) row.classList.remove('wbo-global-group-collapsed');
+        const searching = Boolean(searchField?.value?.trim());
+        if (searching || _activeGlobalPillId !== SPECIAL_GROUPS.ALL) return;
+
+        const sections = _latestClassification.orderedSections || [];
+        const buckets = new Map();
+        const pinnedRows = [];
+        for (const row of rows) {
+            const meta = _latestClassification.byName.get(rowWorldName(row));
+            if (!meta) continue;
+            if (meta.isPinned) {
+                pinnedRows.push(row);
+                continue;
+            }
+            const gid = meta.groupId || SPECIAL_GROUPS.UNGROUPED;
+            const bucket = buckets.get(gid);
+            if (bucket) bucket.push(row);
+            else buckets.set(gid, [row]);
+        }
+        const orderedIds = sections.map((section) => section.id).filter((id) => buckets.has(id));
+        for (const gid of buckets.keys()) {
+            if (!orderedIds.includes(gid)) orderedIds.push(gid);
+        }
+        const sectionName = (gid) => sections.find((section) => section.id === gid)?.name
+            || (gid === SPECIAL_GROUPS.UNGROUPED ? '未分组' : gid);
+        const appendGroup = (gid, label, groupRows) => {
+            if (groupRows.length === 0) return;
+            const collapsed = isDropdownGroupCollapsed(gid, false);
+            const head = document.createElement('li');
+            head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head';
+            head.setAttribute('role', 'presentation');
+            head.setAttribute('data-wbo-dd-group', gid);
+            head.setAttribute('title', '点击展开或折叠该分组');
+            head.textContent = `${label} (${groupRows.length})`;
+            head.classList.toggle('is-collapsed', collapsed);
+            head.setAttribute('aria-expanded', String(!collapsed));
+            resultsList.append(head);
+            for (const row of groupRows) {
+                row.classList.toggle('wbo-global-group-collapsed', collapsed);
+                resultsList.append(row);
+            }
+        };
+        if (pinnedRows.length > 0) appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows);
+        for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
+    };
+
     const syncResults = () => {
         ensureSelect2RowsHavePinBtn(resultsList);
-        const favorites = [];
-        for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
-            const name = row.querySelector('.wbo-s2-item')?.getAttribute('data-wbo-world')
-                || row.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
-                || (row.textContent || '').trim();
-            const meta = _latestClassification.byName.get(name);
+        const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')];
+        for (const row of rows) {
+            const meta = _latestClassification.byName.get(rowWorldName(row));
             row.classList.toggle('wbo-dd-pin-hidden', !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
-            if (meta?.isPinned) favorites.push(row);
         }
-        if (_activeGlobalPillId === SPECIAL_GROUPS.ALL && favorites.length) {
-            resultsList.prepend(header, ...favorites);
-        } else {
-            header.remove();
-        }
+        layoutGlobalGroupRows(rows);
         const group = _activeGlobalPillId === SPECIAL_GROUPS.PINNED
             ? { id: SPECIAL_GROUPS.PINNED, name: '已收藏' }
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
@@ -4650,6 +4697,26 @@ function enhanceOpenGlobalDropdown() {
         toggleDropdownGroupCollapsed(_activeGlobalPillId, _activeGlobalPillId !== SPECIAL_GROUPS.PINNED);
         syncResults();
     });
+
+    const onGroupHeadDown = (event) => {
+        const head = event.target instanceof Element ? event.target.closest('li.wbo-global-group-head') : null;
+        if (!head) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const gid = head.getAttribute('data-wbo-dd-group');
+        if (!gid) return;
+        _latestSettings.dropdownCollapsed ??= {};
+        toggleDropdownGroupCollapsed(gid, false);
+        syncResults();
+    };
+    const onGroupHeadClick = (event) => {
+        if (!(event.target instanceof Element) || !event.target.closest('li.wbo-global-group-head')) return;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+    resultsList.addEventListener('mousedown', onGroupHeadDown, true);
+    resultsList.addEventListener('click', onGroupHeadClick, true);
+
     const refreshResults = () => {
         if (searchField) searchField.dispatchEvent(new Event('input', { bubbles: true }));
         else inst.trigger?.('query', { term: '' });
@@ -4702,7 +4769,9 @@ function enhanceOpenGlobalDropdown() {
     _openGlobalDropdownCleanup = () => {
         observer.disconnect();
         unbindPin();
-        header.remove();
+        resultsList.removeEventListener('mousedown', onGroupHeadDown, true);
+        resultsList.removeEventListener('click', onGroupHeadClick, true);
+        resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
         groupHeading.remove();
         resultsList.classList.remove('wbo-global-results-collapsed');
         barEl?.remove();
