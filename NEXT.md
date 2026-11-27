@@ -1,3 +1,9 @@
+### 抽屉守卫补时机（2026-11-28 · v2.35.65）
+- 用户 v2.35.64 的 `ui` 日志还原了现场：`down:div.gr-select2-display inDrawer` → `down:#gr-global-dropdown-container role=global` → 随后 `down:#WIDrawerIcon`，即**下拉刚打开的那一下**抽屉就被宿主的「外部点击关闭未固定抽屉」逻辑收掉。
+- 原因：上一版的恢复守卫依赖观察 `#WorldInfo` 的 class 变化，但宿主这次收起发生在守卫安装之前的几十毫秒内，观察器接不到。
+- 修复（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`）：打开下拉后 30 / 120 / 260ms 各检查一次，若抽屉已收起就直接恢复一次（`drawerKeptOpen` 保证每次打开最多一次），并记录 `drawer:kept-open@30|120|260` 便于核对；下拉关闭时清掉定时器。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
 ### 搜索空白=滚动位置；抽屉守卫；界面交互日志（2026-11-28 · v2.35.64）
 - v2.35.63 的诊断 trace：`enh-show:hits=2,hitH=74`、`hostH` 从 6355 缩到 1718 —— 说明命中行确实生成且可见，列表也只剩命中行。用户仍看到空白，指向**滚动位置**：列表保留了搜索前的 scrollTop，2 条结果在顶部、视口停在下方。
 - 修复（`src/native-filter.js`）：应用到搜索结果后把滚动宿主 `scrollTop` 归零，并对首条命中的行做一次 `scrollIntoView({ block: 'nearest' })`。

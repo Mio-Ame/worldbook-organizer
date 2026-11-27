@@ -1117,7 +1117,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.64';
+export const PLUGIN_VERSION = '2.35.65';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -6361,6 +6361,8 @@ function enhanceOpenGlobalDropdown() {
         pointerInsideDrawer = Boolean(target && wiDrawer && wiDrawer.contains(target));
     };
     let drawerGuard = null;
+    /** @type {Array<ReturnType<typeof setTimeout>>} */
+    const drawerRestoreTimers = [];
     if (wiDrawer) {
         document.addEventListener('pointerdown', onDocPointerForDrawer, true);
         drawerGuard = new MutationObserver(() => {
@@ -6374,10 +6376,28 @@ function enhanceOpenGlobalDropdown() {
             pushDiagTrace('drawer:kept-open');
         });
         drawerGuard.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
+        // The host's outside-click closer fires while the opening click is still settling, i.e.
+        // before the observer above is attached. Re-check shortly after opening.
+        const restoreIfClosed = (stage) => {
+            if (drawerKeptOpen || !wiDrawer.isConnected) return;
+            const closed = wiDrawer.classList.contains('closedDrawer')
+                || !wiDrawer.classList.contains('openDrawer');
+            if (!closed) return;
+            drawerKeptOpen = true;
+            wiDrawer.classList.add('openDrawer');
+            wiDrawer.classList.remove('closedDrawer');
+            pushDiagTrace(`drawer:kept-open@${stage}`);
+        };
+        drawerRestoreTimers.push(
+            setTimeout(() => restoreIfClosed('30'), 30),
+            setTimeout(() => restoreIfClosed('120'), 120),
+            setTimeout(() => restoreIfClosed('260'), 260),
+        );
     }
 
     _openGlobalDropdownCleanup = () => {
         drawerGuard?.disconnect();
+        for (const timer of drawerRestoreTimers.splice(0)) clearTimeout(timer);
         document.removeEventListener('pointerdown', onDocPointerForDrawer, true);
         observer.disconnect();
         unbindPin();
