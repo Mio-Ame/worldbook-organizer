@@ -7114,29 +7114,75 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
     // Console helper: `wboTitleReport()` explains why a character book renders with which title.
+    // It reports ONLY structure — counts, booleans and short hashes — so no book, character or
+    // group name ever leaves the user's machine (users paste this into bug reports).
     if (typeof globalThis.window !== 'undefined') {
         globalThis.window.wboTitleReport = () => {
             const cls = _latestClassification;
             if (!cls) return { error: 'no classification yet' };
-            const books = [];
+            const hash = (text) => {
+                let h = 5381;
+                for (const ch of String(text)) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+                return h.toString(16).padStart(8, '0').slice(0, 6);
+            };
+            const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+            const charLore = getCharLoreEntries?.() || [];
+            let charGroupBooks = 0;
+            let charBookWithoutOwner = 0;
+            let charBookTitleIsFileName = 0;
+            let charBookWithSubtitle = 0;
+            let ungroupedBooks = 0;
+            const rows = [];
             for (const [name, meta] of cls.byName) {
+                if (meta?.groupId === SPECIAL_GROUPS.UNGROUPED) ungroupedBooks += 1;
                 if (meta?.groupId !== SPECIAL_GROUPS.CHARACTER) continue;
-                books.push({
-                    name,
-                    primaryTitle: meta.primaryTitle,
-                    subtitle: meta.subtitle,
-                    owners: (meta.charOwners || []).map((owner) => `${owner.charName}${owner.orphan ? ' (orphan)' : ''}`),
+                charGroupBooks += 1;
+                const owners = meta.charOwners || [];
+                const titleIsFileName = meta.primaryTitle === meta.realName;
+                if (owners.length === 0) charBookWithoutOwner += 1;
+                if (titleIsFileName) charBookTitleIsFileName += 1;
+                if (meta.subtitle) charBookWithSubtitle += 1;
+                rows.push({
+                    id: hash(name),
+                    owners: owners.length,
+                    orphanOnly: owners.length > 0 && owners.every((owner) => owner.orphan),
+                    sources: [...new Set(owners.map((owner) => owner.source))].join('+'),
+                    titleIsFileName,
+                    hasSubtitle: Boolean(meta.subtitle),
                 });
             }
+            const overrides = Object.values(_latestSettings?.charBookOverrides || {});
             return {
-                charBookTitleMode: _latestSettings?.charBookTitleMode,
-                characters: (getHostContext?.()?.characters || []).map((ch) => ({
-                    avatar: ch?.avatar,
-                    name: ch?.name,
-                    shallow: Boolean(ch?.shallow),
-                    world: ch?.data?.extensions?.world || '',
-                })),
-                books,
+                plugin: 'worldbook-organizer',
+                titleMode: _latestSettings?.charBookTitleMode,
+                aliasMode: _latestSettings?.aliasTitleMode,
+                flags: {
+                    showCharBooks: Boolean(_latestSettings?.showCharBooks),
+                    hideCharBooksByDefault: Boolean(_latestSettings?.hideCharBooksByDefault),
+                    adaptCharBindPopup: _latestSettings?.adaptCharBindPopup !== false,
+                },
+                characters: {
+                    total: characters.length,
+                    shallow: characters.filter((ch) => ch?.shallow).length,
+                    withPrimary: characters.filter((ch) => typeof ch?.data?.extensions?.world === 'string' && ch.data.extensions.world.trim()).length,
+                },
+                charLore: {
+                    entries: charLore.length,
+                    extraBooks: charLore.reduce((sum, entry) => sum + (entry?.extraBooks?.length || 0), 0),
+                },
+                overrides: {
+                    includeInChar: overrides.filter((value) => value === 'include_in_char').length,
+                    excludeFromChar: overrides.filter((value) => value === 'exclude_from_char').length,
+                },
+                classification: {
+                    books: cls.byName.size,
+                    charGroupBooks,
+                    charBookWithoutOwner,
+                    charBookTitleIsFileName,
+                    charBookWithSubtitle,
+                    ungroupedBooks,
+                },
+                rows,
             };
         };
     }

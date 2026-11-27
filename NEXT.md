@@ -1,3 +1,9 @@
+### 诊断信息改为纯结构统计（2026-11-28 · v2.35.49）
+- 用户反馈：复制出来的诊断里带书名/角色名，粘贴时被内容审核拦下，不愿意外发。
+- 改动：`window.wboTitleReport()` 与设置页「复制诊断」按钮改为**只输出结构**——标题模式、相关开关、角色数（总数/shallow/带主书）、`charLore` 条目与附加书数、`include_in_char`/`exclude_from_char` 计数、分类统计（总书数、角色组书数、无归属数、标题仍是文件名数、有副标题数、未分组数），以及每本角色组书的 `{id: 6位哈希, owners, orphanOnly, sources, titleIsFileName, hasSubtitle}`。不再输出任何书名、角色名、分组名、文件名、`assignments` 键名。
+- 验证：单测 245/245；`native-editor-titles` 11/11（新增 1 项：用固定的中文书名/角色名造数据，断言报告 JSON 里既不含书名也不含角色名/分组名，且 `titleMode` 与 `charGroupBooks` 正常）。
+- 用途：用户贴这份统计即可定位标题问题，不需要外发任何私人文本。
+
 ### 设置页「复制诊断」按钮（2026-11-28 · v2.35.48）
 - 用户是小白、不方便开控制台，所以把 `wboTitleReport()` 的诊断搬到插件设置页底部：新增「复制诊断」按钮，一次点击把标题模式、相关开关、`charBookOverrides`、`assignments` 样本、以及角色组内每本书的 `primaryTitle/subtitle/owners` 复制到剪贴板（复制失败则打印到控制台并提示）。
 - 实现：`src/panel-settings.js` 设置弹窗页脚加按钮 + 处理函数；数据取自 `_callbacks.getState().settings` 与 `window.wboTitleReport()`。

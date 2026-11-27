@@ -36,6 +36,30 @@ async function withHost(viewport, fixture, verify) {
     } finally { await cdp?.close(); await server.stop(); }
 }
 
+test('title report contains structure only, never a book or character name', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'char_with_sub' }), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        await waitForCondition(cdp, () => Boolean(document.querySelector('.select2-dropdown .wbo-s2-title')));
+        const result = await cdp.evalFn(name => {
+            const text = JSON.stringify(window.wboTitleReport?.() || {});
+            const parsed = JSON.parse(text);
+            return {
+                leaksBook: text.includes(name),
+                leaksChar: text.includes('中性角色甲'),
+                leaksGroup: text.includes('角色世界书') || text.includes('未分组'),
+                titleMode: parsed.titleMode,
+                charGroupBooks: parsed.classification?.charGroupBooks,
+            };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.leaksBook, false);
+        assert.equal(result.leaksChar, false);
+        assert.equal(result.leaksGroup, false);
+        assert.equal(result.titleMode, 'char_with_sub');
+        assert.ok(result.charGroupBooks >= 1);
+    });
+});
+
 test('character-group book without a live binding still reads as the role name', async t => {
     // Shallow characters (SillyTavern's default until a card is loaded) plus include_in_char:
     // the classification has no owner, so without the fallback the row showed the file name.

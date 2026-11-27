@@ -642,25 +642,30 @@ function openSettingsModal() {
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
-    // Beginner-friendly counterpart of `wboTitleReport()`: no devtools needed.
+    // Beginner-friendly counterpart of `wboTitleReport()`: no devtools needed. The payload is
+    // structure-only (no book, character, group or file names) so it is safe to paste anywhere.
     modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', async () => {
         const settings = _callbacks?.getState?.().settings || {};
         let titleReport = null;
         try { titleReport = globalThis.window?.wboTitleReport?.() || null; } catch { /* ignore */ }
         const payload = {
-            charBookTitleMode: settings.charBookTitleMode,
-            aliasTitleMode: settings.aliasTitleMode,
-            showCharBooks: settings.showCharBooks,
-            hideCharBooksByDefault: settings.hideCharBooksByDefault,
-            adaptCharBindPopup: settings.adaptCharBindPopup,
-            charBookOverrides: settings.charBookOverrides || {},
-            assignmentsSample: Object.fromEntries(Object.entries(settings.assignments || {}).slice(0, 30)),
+            settings: {
+                charBookTitleMode: settings.charBookTitleMode,
+                aliasTitleMode: settings.aliasTitleMode,
+                showCharBooks: settings.showCharBooks,
+                hideCharBooksByDefault: settings.hideCharBooksByDefault,
+                adaptCharBindPopup: settings.adaptCharBindPopup !== false,
+                showNativeOptgroups: settings.showNativeOptgroups,
+                customGroups: (settings.groups || []).length,
+                assignedBooks: Object.keys(settings.assignments || {}).length,
+                pinnedBooks: (settings.pinnedBooks || []).length,
+            },
             titleReport,
         };
         const text = JSON.stringify(payload, null, 2);
         try {
             await navigator.clipboard.writeText(text);
-            showToast('success', '诊断信息已复制，直接粘贴发给作者即可');
+            showToast('success', '诊断信息已复制（只含统计，不含任何书名）');
         } catch {
             console.log('[worldbook-organizer] 诊断信息', payload);
             showToast('warning', '自动复制失败，已打印到控制台');
