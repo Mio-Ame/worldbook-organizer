@@ -1,3 +1,12 @@
+### 搜索重套 + 行→option 反查 + 抽屉关闭说明（2026-11-28 · v2.35.62）
+- 用户 v2.35.61 诊断结论：`enh-titles:titled=2,fileOnly=140`（142 行只有 2 行拿到标题）、`enh-live:optionsVisible=140,hitH=39`（命中行其实可见有高度）。
+- 改动（`src/native-filter.js`）：
+  - `resolveEnhancedRowMeta()` 增加最后一级兜底：用行的 `data-value` 回查 `#world_editor_select` 里对应 `<option>` 的真实书名。宿主脚本常常先建行、后填文本，这时行上没有任何名字可解析（142 行只套上 2 行就是这一情形）。
+  - 搜索应用后再排一次重套（150ms）：宿主在我们处理完会重渲染列表并丢掉 class，导致「命中但仍看不见」；现在会在下一拍再套一次可见性，直到搜索结束（清空搜索时清掉定时器）。
+- 诊断保持 `enh-titles` / `enh-live` / `enh-show` 三条面包屑，便于下次核对。
+- 「点抽屉其它位置导致抽屉关闭」：属于酒馆原生未固定抽屉的行为（U10），不是本插件所为；插件只在下拉内部阻止冒泡（`bindDrawerSafeBubbleGuard`），点了抽屉空白区仍会被 ST 自身收起。要改需慎动原生交互。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 搜索命中却看不见：现场快照 + 祖先解隐 / 书名审计（2026-11-28 · v2.35.61）
 - 用户 v2.35.60 的诊断 trace：`enh-search:matched=1,meta=139`、`enh-search:matched=2,meta=139` —— **匹配是成功的**，问题在命中行没显示出来；而报告在下拉关闭后才生成，`dom` 全为 0，看不到当时状态。
 - 改动（`src/native-filter.js`）：

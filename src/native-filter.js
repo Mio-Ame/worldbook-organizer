@@ -469,6 +469,18 @@ function resolveEnhancedRowMeta(row) {
         const meta = findMetaByAnyName(candidate);
         if (meta) return meta;
     }
+    // Last resort: map the row back to its `<option>` through `data-value`. The host script can
+    // build rows before any text exists, and those rows carry no name at all.
+    const value = row.dataset?.value;
+    if (value !== undefined) {
+        const select = document.getElementById('world_editor_select');
+        const option = select ? [...select.options].find((item) => item.value === value) : null;
+        const name = (option?.dataset?.wboRealName || option?.textContent || '').trim();
+        if (name) {
+            const meta = findMetaByAnyName(name);
+            if (meta) return meta;
+        }
+    }
     return null;
 }
 
@@ -1101,7 +1113,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.61';
+export const PLUGIN_VERSION = '2.35.62';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7315,6 +7327,17 @@ function enhanceCustomDropdownPopover(containerEl) {
      * @param {boolean} searching
      */
     let _lastEnhancedSearchSig = '';
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let _enhSearchReapply = null;
+    const scheduleEnhancedSearchReapply = () => {
+        if (_enhSearchReapply) clearTimeout(_enhSearchReapply);
+        _enhSearchReapply = setTimeout(() => {
+            _enhSearchReapply = null;
+            if (!containerEl.isConnected) return;
+            const value = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+            if (value) syncEnhancedSearchBlock(true);
+        }, 150);
+    };
     const clearEnhancedSearchBlock = () => {
         optionsHost.querySelectorAll('.wbo-enhanced-search-head').forEach((el) => el.remove());
         optionsHost.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin.is-enhanced-search').forEach((el) => el.remove());
@@ -7330,6 +7353,10 @@ function enhanceCustomDropdownPopover(containerEl) {
             el.classList.remove('wbo-enhanced-search-hidden');
         });
         containerEl.classList.remove('wbo-enhanced-searching');
+        if (_enhSearchReapply) {
+            clearTimeout(_enhSearchReapply);
+            _enhSearchReapply = null;
+        }
         _lastEnhancedSearchSig = '';
     };
     const syncEnhancedSearchBlock = (searching) => {
@@ -7455,6 +7482,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         // No extra node: the block title is a CSS ::before on the first hit, so the host script's
         // layout and height calculations stay untouched.
         rows[0].setAttribute('data-wbo-search-head', `搜索匹配到的世界书 (${rows.length})`);
+        // The host re-renders its list right after typing; apply our visibility once more.
+        scheduleEnhancedSearchReapply();
     };
 
     const popoverScrollHost = getScrollHost();
