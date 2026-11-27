@@ -1215,6 +1215,8 @@ test('global dropdown collects search hits into one 搜索匹配到的世界书 
         });
         assert.match(block.head, /搜索匹配到的世界书 \(3\)/);
         assert.deepEqual([...block.origins].sort(), ['剧情', '剧情', '文风']);
+        // Three hits: the block title carries the info, rows carry no 搜索匹配到的世界书 badge.
+        assert.equal(await cdp.evalFn(() => document.querySelectorAll('.select2-dropdown [data-wbo-search-badge]').length), 0);
         await cdp.evalFn(() => {
             const field = document.querySelector('.select2-dropdown .select2-search__field');
             field.value = '';
@@ -1223,6 +1225,39 @@ test('global dropdown collects search hits into one 搜索匹配到的世界书 
         await waitForCondition(cdp, () => !document.querySelector('.select2-dropdown li[data-wbo-dd-group="__search_matches__"]'));
         assert.equal(await cdp.evalFn(() => document.querySelectorAll('.select2-dropdown .is-search-origin').length), 0);
     }, [], searchSeed);
+});
+
+test('global dropdown re-buckets a book as soon as it is mounted', async () => {
+    const mountSeed = createDefaultSeed({
+        characters: [],
+        worldbooks: Object.fromEntries(['甲书', '乙书', '丙书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [],
+        pluginSettings: {
+            autoScanNewCharacters: false,
+            groups: [{ id: 'g-a', name: '测试分组甲' }, { id: 'g-b', name: '测试分组乙' }],
+            assignments: { 甲书: 'g-a', 乙书: 'g-b', 丙书: 'g-b' },
+            pinnedBooks: [],
+        },
+    });
+    await withHost(VIEWPORTS.desktop, async (cdp) => {
+        await cdp.clickSelector('#WIMultiSelector .select2-container');
+        await waitForCondition(cdp, () => !!document.querySelector('.wbo-global-dd-bar'));
+        assert.ok(await cdp.evalFn(() => document.querySelectorAll('.select2-dropdown [data-wbo-world]').length) > 0);
+        const heads = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-results__options > li.wbo-global-group-head')]
+            .map((head) => head.textContent.trim()));
+        assert.deepEqual(await heads(), ['测试分组甲 (1)', '测试分组乙 (2)']);
+        // Mounting while open must move it into the mounted block immediately.
+        await cdp.evalFn((name) => {
+            const row = [...document.querySelectorAll('.select2-dropdown li.select2-results__option')]
+                .find((item) => item.querySelector('[data-wbo-world]')?.getAttribute('data-wbo-world') === name);
+            row.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            row.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        }, '甲书');
+        await waitForCondition(cdp, () => [...document.querySelectorAll('.select2-results__options > li.wbo-global-group-head')]
+            .some((head) => head.textContent.includes('已开启的全局世界书 (1)')));
+        assert.deepEqual(await heads(), ['已开启的全局世界书 (1)', '测试分组乙 (2)']);
+    }, [], mountSeed);
 });
 
 test('editor search inside a group shows only the matches', async () => {

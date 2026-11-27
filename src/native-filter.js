@@ -5310,6 +5310,11 @@ function enhanceOpenGlobalDropdown() {
     // Reuse whatever search field the host already has; never inject another one.
     let searchField = dropdownEl.querySelector('.select2-search__field')
         || globalSel.parentElement?.querySelector('.select2-search__field');
+    /** Always read the live field: Select2 may recreate its search input between opens. */
+    const liveSearchField = () => (dropdownEl.querySelector('.select2-search__field')
+        || globalSel.parentElement?.querySelector('.select2-search__field')
+        || searchField);
+    const isGlobalSearching = () => Boolean((liveSearchField()?.value || '').trim());
     const readGroups = () => {
         const counts = new Map();
         let favorites = 0;
@@ -5363,7 +5368,12 @@ function enhanceOpenGlobalDropdown() {
     };
     const layoutGlobalSearchMatches = (rows) => {
         const sig = `${_activeGlobalPillId}|${rows.length}|${rows.map(rowWorldName).join('|')}`;
-        if (sig === _lastGlobalSearchSig) return false;
+        // Select2 rebuilds the result rows on every keystroke, which wipes our head and badges:
+        // only trust the signature while the DOM still carries them.
+        const headPresent = Boolean(resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`));
+        const badgePresent = Boolean(resultsList.querySelector('[data-wbo-search-badge]'));
+        const domIntact = rows.length === 1 ? badgePresent : headPresent;
+        if (sig === _lastGlobalSearchSig && domIntact) return false;
         clearGlobalSearchMatches();
         _lastGlobalSearchSig = sig;
         if (rows.length === 0) return false;
@@ -5391,19 +5401,21 @@ function enhanceOpenGlobalDropdown() {
             }
             return true;
         }
+        // Two or more hits: one block title on top, and no per-row 搜索匹配到的世界书 badge.
+        for (const row of rows) row.querySelector('.wbo-s2-right > .is-search-match')?.remove();
         const head = document.createElement('li');
         head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head wbo-search-matches-head';
         head.setAttribute('role', 'presentation');
         head.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
         head.textContent = `搜索匹配到的世界书 (${rows.length})`;
-        rows[0].parentNode.insertBefore(head, rows[0]);
+        resultsList.insertBefore(head, resultsList.firstChild);
         return true;
     };
 
     const layoutGlobalGroupRows = (rows) => {
         resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
         for (const row of rows) row.classList.remove('wbo-global-group-collapsed');
-        const searching = Boolean(searchField?.value?.trim());
+        const searching = isGlobalSearching();
         if (searching) {
             layoutGlobalSearchMatches(rows);
             return;
@@ -5487,16 +5499,16 @@ function enhanceOpenGlobalDropdown() {
     const syncResults = () => {
         ensureSelect2RowsHavePinBtn(resultsList);
         const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')];
+        const searchingNow = isGlobalSearching();
         for (const row of rows) {
             const meta = _latestClassification.byName.get(rowWorldName(row));
-            const searching = Boolean(searchField?.value?.trim());
-            row.classList.toggle('wbo-dd-pin-hidden', !searching && !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
+            row.classList.toggle('wbo-dd-pin-hidden', !searchingNow && !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
         }
         layoutGlobalGroupRows(rows);
         const group = _activeGlobalPillId === SPECIAL_GROUPS.PINNED
             ? { id: SPECIAL_GROUPS.PINNED, name: '已收藏' }
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
-        const searching = Boolean(searchField?.value?.trim());
+        const searching = isGlobalSearching();
         const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, true));
         groupHeading.hidden = !group || searching;
         groupHeading.textContent = group?.name || '';
@@ -5578,6 +5590,25 @@ function enhanceOpenGlobalDropdown() {
 
     const observer = new MutationObserver(syncResults);
     observer.observe(resultsList, { childList: true });
+    // Mounting/unmounting a book while the dropdown is open must re-bucket right away; otherwise
+    // the freshly mounted books keep sitting under 已收藏 / their old group until a reopen.
+    let mountSyncFrame = null;
+    const scheduleMountSync = () => {
+        if (mountSyncFrame !== null) cancelAnimationFrame(mountSyncFrame);
+        mountSyncFrame = requestAnimationFrame(() => {
+            mountSyncFrame = null;
+            try { refreshResults(); } catch { /* ignore */ }
+            syncResults();
+        });
+    };
+    globalSel.addEventListener('change', scheduleMountSync);
+    const onResultsOptionClick = (ev) => {
+        const row = ev.target instanceof Element
+            ? ev.target.closest('li.select2-results__option:not(.select2-results__option--group)')
+            : null;
+        if (row) scheduleMountSync();
+    };
+    dropdownEl.addEventListener('click', onResultsOptionClick, true);
     const unbindPin = bindSelect2PinHandlers(resultsList, () => {
         renderBar();
         refreshResults();
@@ -5588,6 +5619,10 @@ function enhanceOpenGlobalDropdown() {
     _openGlobalDropdownCleanup = () => {
         observer.disconnect();
         unbindPin();
+        if (mountSyncFrame !== null) cancelAnimationFrame(mountSyncFrame);
+        mountSyncFrame = null;
+        globalSel.removeEventListener('change', scheduleMountSync);
+        dropdownEl.removeEventListener('click', onResultsOptionClick, true);
         resultsList.removeEventListener('mousedown', onGroupHeadDown, true);
         resultsList.removeEventListener('click', onGroupHeadClick, true);
         resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
