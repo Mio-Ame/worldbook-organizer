@@ -5,7 +5,11 @@ import {
     closeSubModal,
     createSubModal,
     esc,
+    excludeChipAttrs,
+    excludeChipInnerHtml,
+    excludeCountText,
     syncAllOpenModalsTheme,
+    syncExcludeChip,
     THEME_PALETTES,
 } from './panel-window.js';
 import {
@@ -166,22 +170,15 @@ function openSettingsModal() {
         ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
         { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
     ];
-    const renderExcludeChipsHtml = (targetKey, selectedIds) => {
-        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
-        return sectionOptions.map((sec) => {
-            const active = set.has(sec.id);
-            return `
-                <button type="button"
-                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+    const renderExcludeChipsHtml = (targetKey, hiddenIds) => {
+        const set = new Set(Array.isArray(hiddenIds) ? hiddenIds : []);
+        return sectionOptions.map((sec) => `
+                <button type="button" ${excludeChipAttrs(sec, set.has(sec.id))}
                     data-exclude-target="${esc(targetKey)}"
-                    data-exclude-gid="${esc(sec.id)}"
-                    aria-pressed="${active ? 'true' : 'false'}">
-                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
-                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
-                    <span>${esc(sec.name)}</span>
+                    data-exclude-gid="${esc(sec.id)}">
+                    ${excludeChipInnerHtml(sec, set.has(sec.id))}
                 </button>
-            `;
-        }).join('');
+            `).join('');
     };
 
     const paletteButtonsHtml = THEME_PALETTES.map((p) => `
@@ -323,13 +320,13 @@ function openSettingsModal() {
                         <div class="wbo-exclude-head">
                             <span class="wbo-exclude-title-wrap">
                                 <span>全局激活框</span>
-                                <span class="wbo-exclude-count" data-exclude-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                                <span class="wbo-exclude-count" data-exclude-count="globalHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                             </span>
                             <span class="wbo-ai-quick-picks">
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="globalHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">全部显示</button>
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="globalHiddenGroupIds">反选</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅排除角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="globalHiddenGroupIds">全部排除</button>
                             </span>
                         </div>
                         <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
@@ -341,21 +338,21 @@ function openSettingsModal() {
                         <div class="wbo-exclude-head">
                             <span class="wbo-exclude-title-wrap">
                                 <span>编辑下拉框</span>
-                                <span class="wbo-exclude-count" data-exclude-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                                <span class="wbo-exclude-count" data-exclude-count="editorHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                             </span>
                             <span class="wbo-ai-quick-picks">
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="editorHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">全部显示</button>
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="editorHiddenGroupIds">反选</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅排除角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="editorHiddenGroupIds">全部排除</button>
                             </span>
                         </div>
                         <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
                             ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
                         </div>
                     </div>
-                    <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏。</div>
+                    <div class="wbo-subtle-tip">打勾的分组会显示，划掉的分组已排除，点击切换。已全局激活或正在编辑的世界书不会被隐藏。</div>
                     <div class="wbo-local-divider"></div>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="pinCurrentChatCharBookInEditor">
@@ -507,15 +504,12 @@ function openSettingsModal() {
             const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
             modal.querySelectorAll(`[data-exclude-target="${targetKey}"]`).forEach((btn) => {
                 const gid = btn.getAttribute('data-exclude-gid') || '';
-                const active = set.has(gid);
-                btn.classList.toggle('is-selected', active);
-                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-                const mark = btn.querySelector('.wbo-local-cat-mark');
-                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+                const sec = sectionOptions.find((s) => s.id === gid);
+                if (sec) syncExcludeChip(btn, sec, set.has(gid));
             });
             const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
             const cntEl = modal.querySelector(`[data-exclude-count="${targetKey}"]`);
-            if (cntEl) cntEl.textContent = `隐藏 ${hiddenCnt} / 显示 ${sectionOptions.length - hiddenCnt} 组`;
+            if (cntEl) cntEl.textContent = excludeCountText(hiddenCnt, sectionOptions.length);
         }
         const hideCharCb = modal.querySelector('input[data-setting="hideCharBooksByDefault"]');
         if (hideCharCb instanceof HTMLInputElement) {

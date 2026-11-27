@@ -32,7 +32,7 @@ import {
     orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { getActiveGlobalWorldSet, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
 import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
 import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
@@ -73,6 +73,35 @@ function unbindDrawerSafeBubbleGuard(rootEl) {
         _bubbleGuardCleanupMap.delete(rootEl);
     }
     delete rootEl.dataset.wboBubbleGuarded;
+}
+
+/** Tall touch screens in portrait (e.g. iPad); phones and desktops keep their original sizing. */
+function isTallTouchPortraitViewport() {
+    const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 0;
+    const vh = globalThis.innerHeight || document.documentElement?.clientHeight || 0;
+    const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
+    return coarse && vw > 680 && vh > vw && vh >= 900;
+}
+
+/** @type {{ x: number, y: number, at: number } | null} */
+let _pickerDismissTap = null;
+
+/** Remember the tap that closed a backdrop picker so its trailing click doesn't close the host drawer. */
+function markPickerDismissTap(ev) {
+    _pickerDismissTap = Number.isFinite(ev?.clientX) && Number.isFinite(ev?.clientY)
+        ? { x: ev.clientX, y: ev.clientY, at: Date.now() }
+        : null;
+}
+
+function consumePickerDismissClick(ev) {
+    const tap = _pickerDismissTap;
+    if (!tap) return false;
+    _pickerDismissTap = null;
+    if (!ev?.isTrusted || Date.now() - tap.at > 800) return false;
+    const t = ev.target instanceof Element ? ev.target : null;
+    // A tap on a real control under the old backdrop is its own action, not a stray dismiss click.
+    if (t?.closest?.('button, a, input, select, textarea, label, [role="button"], .gr-option, .select2-container')) return false;
+    return Math.hypot((ev.clientX ?? tap.x) - tap.x, (ev.clientY ?? tap.y) - tap.y) <= 24;
 }
 
 let _pinDirtyOnClose = false;
@@ -601,7 +630,15 @@ function syncEnhancedPinButton(button, pinned) {
 }
 
 function syncEnhancedWorldOptionTitle(row, meta) {
-    if (!meta || (!meta.isCharBound && !meta.isInCharGroup && meta.primaryTitle === meta.realName)) return;
+    if (!meta) return;
+    if (!meta.isCharBound && !meta.isInCharGroup && meta.primaryTitle === meta.realName) {
+        const originalText = _borrowedRowText.get(row);
+        if (originalText) {
+            row.querySelector(':scope > .wbo-gr-world-title')?.replaceWith(...originalText);
+            _borrowedRowText.delete(row);
+        }
+        return;
+    }
     row.dataset.wboEnhancedWorld = meta.realName;
     let label = row.querySelector(':scope > .wbo-gr-world-title');
     if (!label) {
@@ -1147,7 +1184,10 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         .sort(compareAsciiKey)
         .map(([k, v]) => `${k}=${v}`)
         .join('|');
-    const charSig = [...classification.characterBooks.map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)].join('|');
+    const charSig = [...classification.byName.values()]
+        .filter((b) => b.isCharBound || b.primaryTitle !== b.realName)
+        .map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)
+        .join('|');
 
     const foreignOptgroupCount = mode === 'editor'
         ? selectEl.querySelectorAll('optgroup:not([data-wbo-group])').length
@@ -1164,6 +1204,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
     const currentChatAvatarSig = mode === 'editor' && settings.pinCurrentChatCharBookInEditor !== false
         ? (getCurrentCharacterAvatar() || '')
         : '';
+    const activeGlobalSig = mode === 'editor' ? [...getActiveGlobalWorldSet()].sort().join(',') : '';
 
     return JSON.stringify([
         mode,
@@ -1171,6 +1212,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         hiddenSig,
         pinnedSig,
         currentChatAvatarSig,
+        activeGlobalSig,
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
         settings.aliasTitleMode,
@@ -1357,6 +1399,39 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     }
 }
 
+/** Groups the user folded again while viewing them alone; cleared when the pill selection changes. */
+const _isolatedFoldOverride = new Set();
+
+/**
+ * Entering a group via its pill shows it expanded without touching the saved fold state.
+ * @param {string} gid
+ * @param {boolean} isolated whether this group is the only one shown
+ */
+function isDropdownGroupCollapsed(gid, isolated) {
+    if (isolated) return _isolatedFoldOverride.has(gid);
+    return Boolean(_latestSettings?.dropdownCollapsed?.[gid]);
+}
+
+/** @returns {boolean} the new collapsed state */
+function toggleDropdownGroupCollapsed(gid, isolated) {
+    if (isolated) {
+        if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+        else _isolatedFoldOverride.add(gid);
+        return _isolatedFoldOverride.has(gid);
+    }
+    const next = !_latestSettings.dropdownCollapsed[gid];
+    _latestSettings.dropdownCollapsed[gid] = next;
+    saveSettings();
+    return next;
+}
+
+/** Top-of-list order in the ordinary picker: current chat book, active globals, then the edited hidden book. */
+function bareTopTier(meta) {
+    if (meta?.isCurrentChatCharBook) return 0;
+    if (meta?.isActiveGlobal) return 1;
+    return 2;
+}
+
 /**
  * Apply filtering and `<optgroup>` grouping to `#world_editor_select`.
  * Safe for both desktop Select2 and mobile native `<select>`.
@@ -1398,6 +1473,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     const currentChatAvatar = settings.pinCurrentChatCharBookInEditor !== false
         ? getCurrentCharacterAvatar()
         : null;
+    const activeGlobalSet = getActiveGlobalWorldSet();
 
     const bareMetaByOpt = new WeakMap();
 
@@ -1416,8 +1492,9 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
         );
+        const isActiveGlobal = activeGlobalSet.has(realName);
 
-        const visible = isBookVisibleInSelector({
+        const visible = isActiveGlobal || isBookVisibleInSelector({
             bookMeta: meta,
             activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
@@ -1432,8 +1509,8 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             else delete opt.dataset.wboEditing;
             const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
             const isFromHiddenGroup = Boolean(!settings.showCharBooks && editorHiddenSet.has(gid));
-            if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
-                bareMetaByOpt.set(opt, { isActiveEditing, isCurrentChatCharBook });
+            if (isCurrentChatCharBook || isActiveGlobal || (isEditing && isFromHiddenGroup)) {
+                bareMetaByOpt.set(opt, { isActiveEditing, isCurrentChatCharBook, isActiveGlobal });
                 bareTopOpts.push(opt);
             } else {
                 if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
@@ -1457,15 +1534,11 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         bareTopOpts.sort((a, b) => {
             const na = (a.textContent || '').trim();
             const nb = (b.textContent || '').trim();
+            const tier = bareTopTier(bareMetaByOpt.get(a)) - bareTopTier(bareMetaByOpt.get(b));
+            if (tier !== 0) return tier;
             const pa = classification?.byName?.get(na)?.isPinned ? 1 : 0;
             const pb = classification?.byName?.get(nb)?.isPinned ? 1 : 0;
             if (pa !== pb) return pb - pa;
-            const ea = bareMetaByOpt.get(a)?.isActiveEditing ? 1 : 0;
-            const eb = bareMetaByOpt.get(b)?.isActiveEditing ? 1 : 0;
-            if (ea !== eb) return eb - ea;
-            const ca = bareMetaByOpt.get(a)?.isCurrentChatCharBook ? 1 : 0;
-            const cb = bareMetaByOpt.get(b)?.isCurrentChatCharBook ? 1 : 0;
-            if (ca !== cb) return cb - ca;
             const ra = rankMap.get(na);
             const rb = rankMap.get(nb);
             if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
@@ -1484,9 +1557,16 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     }));
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
+    // Hoisting active globals must not collapse the grouped view: count their home groups too.
+    const hoistedGlobalGroups = new Set();
+    for (const opt of bareTopOpts) {
+        if (!bareMetaByOpt.get(opt)?.isActiveGlobal) continue;
+        const gid = classification.byName.get((opt.textContent || '').trim())?.groupId;
+        if (gid && !visibleByGroup.has(gid)) hoistedGlobalGroups.add(gid);
+    }
     // Keep `#world_editor_select` 100% flat & native when only 1 section exists
     // (e.g., user only uses "hide character worldbooks" with 0 custom groups — zero visual intrusion!)
-    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length >= 2;
+    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length + hoistedGlobalGroups.size >= 2;
 
     for (const sec of nonEmptySections) {
         const opts = visibleByGroup.get(sec.id);
@@ -1597,7 +1677,14 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
 
     // On native mobile `<select>` (iOS Safari / iPadOS / TauriTavern iOS / Android where Select2 is skipped),
     // system menus cannot filter or collapse groups. Mount a sleek grouped picker trigger when >= 2 sections exist!
-    syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && useOptgroups));
+    // Option text must stay the real file name for host lookups, so titled books need our picker.
+    const needsTitledPicker = Array.from(selectEl.querySelectorAll('option')).some((opt) => {
+        if (opt.value === '') return false;
+        const realName = (opt.textContent || '').trim();
+        const title = classification.byName.get(realName)?.primaryTitle;
+        return Boolean(title && title !== realName);
+    });
+    syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && (useOptgroups || needsTitledPicker)));
     syncMobileEditorTriggerLabel();
 }
 
@@ -1729,6 +1816,7 @@ function syncMobileEditorTrigger(selectEl, enabled) {
     if (!selectEl) return;
     const existing = document.getElementById(MOBILE_TRIGGER_ID);
     if (!enabled) {
+        _closeMobileEditorPicker?.();
         selectEl.classList.remove('wbo-mobile-select-hidden');
         existing?.remove();
         document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
@@ -1821,7 +1909,14 @@ function openMobileEditorPickerSheet() {
         return;
     }
 
+    // Release a picker removed externally before another can replace its closer.
+    if (_closeMobileEditorPicker) {
+        _closeMobileEditorPicker();
+        if (!triggerEl.isConnected) return;
+    }
+
     syncEditorBeforeOpen();
+    _isolatedFoldOverride.clear();
 
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
         _latestSettings.dropdownCollapsed = {};
@@ -1849,19 +1944,23 @@ function openMobileEditorPickerSheet() {
     const currentChatAvatar = _latestSettings.pinCurrentChatCharBookInEditor !== false
         ? getCurrentCharacterAvatar()
         : null;
+    const activeGlobalSet = getActiveGlobalWorldSet();
     const bareNames = new Set();
     const bareBooks = [];
+    const bareTierByName = new Map();
     for (const [realName] of optValueByRealName.entries()) {
         const meta = _latestClassification.byName?.get(realName);
         const isCurrentChatCharBook = Boolean(
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
         );
+        const isActiveGlobal = activeGlobalSet.has(realName);
         const isEditing = Boolean(activeEditName && realName === activeEditName);
         const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
         const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
-        if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
+        if (isCurrentChatCharBook || isActiveGlobal || (isEditing && isFromHiddenGroup)) {
             bareNames.add(realName);
+            bareTierByName.set(realName, bareTopTier({ isCurrentChatCharBook, isActiveGlobal }));
             bareBooks.push(meta || {
                 realName,
                 primaryTitle: realName,
@@ -1872,15 +1971,11 @@ function openMobileEditorPickerSheet() {
         }
     }
     bareBooks.sort((a, b) => {
+        const tier = (bareTierByName.get(a.realName) ?? 2) - (bareTierByName.get(b.realName) ?? 2);
+        if (tier !== 0) return tier;
         const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
         const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
         if (pa !== pb) return pb - pa;
-        const ea = activeEditName && a.realName === activeEditName ? 1 : 0;
-        const eb = activeEditName && b.realName === activeEditName ? 1 : 0;
-        if (ea !== eb) return eb - ea;
-        const ca = currentChatAvatar && a.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
-        const cb = currentChatAvatar && b.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
-        if (ca !== cb) return cb - ca;
         return compareZhCn(a.primaryTitle || a.realName, b.primaryTitle || b.realName);
     });
 
@@ -1941,6 +2036,8 @@ function openMobileEditorPickerSheet() {
 
     const scrollRestoreTimers = [];
     let restoringScroll = true;
+    let pickerClosed = false;
+    let searchTimer = null;
     const cancelScrollRestore = () => {
         restoringScroll = false;
         while (scrollRestoreTimers.length) clearTimeout(scrollRestoreTimers.pop());
@@ -1985,13 +2082,14 @@ function openMobileEditorPickerSheet() {
 
         const availTotal = Math.max(120, Math.floor(effectiveBottom - effectiveTop));
         const minClampH = Math.min(120, availTotal);
+        const capH = isTallTouchPortraitViewport() ? 640 : 420;
         if (openAbove) {
             const desiredEdgeFromTop = Math.max(
                 effectiveTop + minClampH,
                 Math.min(rect.top - 4, effectiveBottom - 6),
             );
             const availAbove = Math.max(120, Math.floor(desiredEdgeFromTop - effectiveTop));
-            const maxH = Math.max(120, Math.min(420, availAbove));
+            const maxH = Math.max(120, Math.min(capH, availAbove));
             popover.style.top = 'auto';
             popover.style.bottom = `${Math.round(layoutVh - desiredEdgeFromTop)}px`;
             popover.style.maxHeight = `${maxH}px`;
@@ -1999,7 +2097,7 @@ function openMobileEditorPickerSheet() {
             const maxTopAllowed = Math.max(effectiveTop, effectiveBottom - minClampH - 6);
             const topPx = Math.max(effectiveTop, Math.min(rect.bottom + 4, maxTopAllowed));
             const availBelow = Math.max(120, Math.floor(effectiveBottom - topPx - 6));
-            const maxH = Math.max(120, Math.min(420, availBelow));
+            const maxH = Math.max(120, Math.min(capH, availBelow));
             popover.style.bottom = 'auto';
             popover.style.top = `${Math.round(topPx)}px`;
             popover.style.maxHeight = `${maxH}px`;
@@ -2010,14 +2108,18 @@ function openMobileEditorPickerSheet() {
     /** @type {MutationObserver | null} */
     let wiDrawerObserver = null;
     const onGlobalDismiss = (ev) => {
+        if (!overlay.isConnected) { closePicker(); return; }
         const t = ev?.target instanceof Element ? ev.target : null;
         if (t && (popover.contains(t) || triggerEl.contains(t))) return;
         if (isPointInsideElementRect(ev, triggerEl)) {
             triggerEl.dataset.wboDismissedTapAt = String(Date.now());
         }
+        // The backdrop vanishes before this tap's click, which then lands on the page under it.
+        if (ev?.isTrusted && t && overlay.contains(t)) markPickerDismissTap(ev);
         closePicker();
     };
     const onViewportChange = (ev) => {
+        if (!overlay.isConnected) { closePicker(); return; }
         const curVw = globalThis.innerWidth || document.documentElement.clientWidth || initialVw;
         const activeEl = document.activeElement;
         const isInputFocused = Boolean(activeEl && popover.contains(activeEl));
@@ -2035,6 +2137,10 @@ function openMobileEditorPickerSheet() {
     };
 
     const closePicker = () => {
+        if (pickerClosed) return;
+        pickerClosed = true;
+        clearTimeout(searchTimer);
+        searchTimer = null;
         cancelScrollRestore();
         if (_closeMobileEditorPicker === closePicker) {
             _closeMobileEditorPicker = null;
@@ -2049,6 +2155,8 @@ function openMobileEditorPickerSheet() {
         globalThis.removeEventListener('orientationchange', onViewportChange);
         globalThis.visualViewport?.removeEventListener('resize', onViewportChange);
         globalThis.visualViewport?.removeEventListener('scroll', onViewportChange);
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement && overlay.contains(focused)) focused.blur();
         overlay.remove();
         triggerEl.classList.remove('is-open');
         flushPinDirtyOnClose();
@@ -2064,7 +2172,7 @@ function openMobileEditorPickerSheet() {
     const wiDrawer = document.getElementById('WorldInfo');
     if (wiDrawer) {
         wiDrawerObserver = new MutationObserver(() => {
-            if (wiDrawer.classList.contains('closedDrawer') || !triggerEl.isConnected) {
+            if (!overlay.isConnected || wiDrawer.classList.contains('closedDrawer') || !triggerEl.isConnected) {
                 closePicker();
             }
         });
@@ -2180,7 +2288,7 @@ function openMobileEditorPickerSheet() {
                 ? sec.books.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
                 : sec.books;
             if (books.length === 0) return '';
-            const collapsed = !q && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
+            const collapsed = !q && isDropdownGroupCollapsed(sec.id, isIsolated);
             const rowsHtml = collapsed
                 ? ''
                 : books.map(renderMpRowHtml).join('');
@@ -2227,6 +2335,7 @@ function openMobileEditorPickerSheet() {
         }
         const gid = btn.getAttribute('data-mp-pill') || SPECIAL_GROUPS.ALL;
         activePillId = (gid === activePillId && gid !== SPECIAL_GROUPS.ALL) ? SPECIAL_GROUPS.ALL : gid;
+        _isolatedFoldOverride.clear();
         _dropdownMemory.activePillGroupId = activePillId;
         renderPills();
         renderList();
@@ -2281,9 +2390,7 @@ function openMobileEditorPickerSheet() {
             if (searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
-            const willCollapse = !_latestSettings.dropdownCollapsed[gid];
-            _latestSettings.dropdownCollapsed[gid] = willCollapse;
-            saveSettings();
+            const willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid && gid !== SPECIAL_GROUPS.PINNED);
             const prevTop = listEl.scrollTop;
             renderList();
             if (willCollapse) {
@@ -2331,16 +2438,16 @@ function openMobileEditorPickerSheet() {
 
     if (searchInput instanceof HTMLInputElement) {
         let composing = false;
-        let searchTimer = null;
         searchInput.addEventListener('compositionstart', () => { composing = true; });
         searchInput.addEventListener('compositionend', () => {
+            if (pickerClosed) return;
             composing = false;
             clearTimeout(searchTimer);
             searchQuery = searchInput.value;
             renderList();
         });
         searchInput.addEventListener('input', () => {
-            if (composing) return;
+            if (pickerClosed || composing) return;
             searchQuery = searchInput.value;
             clearTimeout(searchTimer);
             searchTimer = setTimeout(() => { renderList(); }, 80);
@@ -2425,6 +2532,18 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
                 _isApplying = false;
             }
         }, 60);
+    }
+}
+
+/** Re-sort only `#world_editor_select` (e.g. after a global toggle) without touching `#world_info`. */
+export function refreshEditorWorldSelect() {
+    if (_isApplying || !_latestClassification || !_latestSettings) return;
+    _isApplying = true;
+    try {
+        applyEditorWorldSelectFilter(_latestClassification, _latestSettings);
+    } finally {
+        _editorSelectObserver?.takeRecords();
+        _isApplying = false;
     }
 }
 
@@ -4092,6 +4211,7 @@ function cleanupOpenEditorDropdown() {
  */
 function enhanceOpenEditorDropdown() {
     cleanupOpenEditorDropdown();
+    _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
     const selectEl = document.getElementById('world_editor_select');
     if (!$ || !selectEl || !_latestSettings) return;
@@ -4195,7 +4315,7 @@ function enhanceOpenEditorDropdown() {
             } else {
                 const hiddenByPill = isGroupIsolated && gid !== activePillGroupId;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const isCollapsed = !searching && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                const isCollapsed = !searching && isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId);
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
@@ -4210,8 +4330,8 @@ function enhanceOpenEditorDropdown() {
         if (head.classList.contains('is-isolated')) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
-        _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
-        saveSettings();
+        const isolated = !isSearching() && activePillGroupId === gid && gid !== SPECIAL_GROUPS.PINNED && gid !== SPECIAL_GROUPS.ALL;
+        toggleDropdownGroupCollapsed(gid, isolated);
         decorateGroupItems();
     };
     const onResultsClick = (ev) => {
@@ -4289,6 +4409,7 @@ function enhanceOpenEditorDropdown() {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
+            _isolatedFoldOverride.clear();
             _dropdownMemory.activePillGroupId = activePillGroupId;
             syncPillButtons();
             decorateGroupItems();
@@ -4451,6 +4572,7 @@ function cleanupOpenGlobalDropdown() {
  */
 function enhanceOpenGlobalDropdown() {
     cleanupOpenGlobalDropdown();
+    _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
     const globalSel = document.getElementById('world_info');
     if (!$ || !globalSel || !_latestClassification) return;
@@ -4511,7 +4633,7 @@ function enhanceOpenGlobalDropdown() {
             ? { id: SPECIAL_GROUPS.PINNED, name: '已收藏' }
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
         const searching = Boolean(searchField?.value?.trim());
-        const collapsed = Boolean(group && !searching && _latestSettings.dropdownCollapsed?.[group.id]);
+        const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, group.id !== SPECIAL_GROUPS.PINNED));
         groupHeading.hidden = !group || searching;
         groupHeading.textContent = group?.name || '';
         groupHeading.setAttribute('aria-expanded', String(!collapsed));
@@ -4525,8 +4647,7 @@ function enhanceOpenGlobalDropdown() {
     groupHeading.addEventListener('click', (event) => {
         event.stopPropagation();
         _latestSettings.dropdownCollapsed ??= {};
-        _latestSettings.dropdownCollapsed[_activeGlobalPillId] = !_latestSettings.dropdownCollapsed[_activeGlobalPillId];
-        saveSettings();
+        toggleDropdownGroupCollapsed(_activeGlobalPillId, _activeGlobalPillId !== SPECIAL_GROUPS.PINNED);
         syncResults();
     });
     const refreshResults = () => {
@@ -4557,6 +4678,7 @@ function enhanceOpenGlobalDropdown() {
             ev.preventDefault();
             const id = button.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             _activeGlobalPillId = id === _activeGlobalPillId ? SPECIAL_GROUPS.ALL : id;
+            _isolatedFoldOverride.clear();
             barEl.querySelectorAll('[data-wbo-pill]').forEach((pill) => {
                 const active = pill.getAttribute('data-wbo-pill') === _activeGlobalPillId;
                 pill.classList.toggle('is-active', active);
@@ -4861,6 +4983,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         delete containerEl.dataset.wboPopoverReady;
         delete containerEl.dataset.wboEditingWorld;
         delete containerEl.dataset.wboChatAvatar;
+        delete containerEl.dataset.wboTitleSig;
+        delete containerEl.dataset.wboGlobalSig;
         delete containerEl.dataset.wboEnhancedStyle;
         containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
         containerEl.querySelector('.wbo-enhanced-picker-clear')?.remove();
@@ -5000,10 +5124,19 @@ function enhanceCustomDropdownPopover(containerEl) {
     });
     if (realOptionNodes.length === 0) return;
     const alreadyHasPins = realOptionNodes.every((optEl) => Boolean(optEl.querySelector('.wbo-gr-pin-btn')));
+    const titleSig = `${_latestSettings.charBookTitleMode}|${_latestSettings.aliasTitleMode}|${realOptionNodes
+        .map((optEl) => {
+            const meta = _latestClassification.byName.get(getOptionText(optEl));
+            return meta ? `${meta.primaryTitle}:${meta.subtitle}` : '';
+        })
+        .join(',')}`;
+    const editorGlobalSig = isGlobalPopover ? '' : [...getActiveGlobalWorldSet()].sort().join(',');
     const stateChanged =
-        !isGlobalPopover &&
-        ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
-            (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || ''));
+        (containerEl.dataset.wboTitleSig || '') !== titleSig ||
+        (containerEl.dataset.wboGlobalSig || '') !== editorGlobalSig ||
+        (!isGlobalPopover &&
+            ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
+                (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || '')));
     const hasGlobalControls = !isGlobalPopover || (
         containerEl.querySelector('.wbo-pop-filter-bar') &&
         containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector)
@@ -5011,6 +5144,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (alreadyHasPins && containerEl.dataset.wboPopoverReady === '1' && !stateChanged && hasGlobalControls && !isGlobalOpening) return;
 
     containerEl.dataset.wboPopoverReady = '1';
+    containerEl.dataset.wboTitleSig = titleSig;
+    containerEl.dataset.wboGlobalSig = editorGlobalSig;
     if (isGlobalOpening) containerEl.dataset.wboGlobalOpen = '1';
     containerEl.dataset.wboEditingWorld = activeEditName;
     containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
@@ -5084,6 +5219,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     const placeholders = [];
     const bareEditorItems = [];
     const bareEditorMeta = new WeakMap();
+    const editorActiveGlobals = isGlobalPopover ? new Set() : getActiveGlobalWorldSet();
     /** @type {Map<string, HTMLElement[]>} */
     const bucketByGroup = new Map();
 
@@ -5113,11 +5249,13 @@ function enhanceCustomDropdownPopover(containerEl) {
                 (currentChatAvatar && meta?.charOwners?.some((o) => o.avatar === currentChatAvatar)),
             );
             const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
-            if (isCurrentChatCharBook || (isEditingRow && isFromHiddenGroup)) {
+            const isActiveGlobal = editorActiveGlobals.has(worldName);
+            if (isCurrentChatCharBook || isActiveGlobal || (isEditingRow && isFromHiddenGroup)) {
                 bareEditorMeta.set(optEl, {
                     isPinned: Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName)),
                     isEditing: isEditingRow,
                     isCurrentChatCharBook,
+                    isActiveGlobal,
                     groupId: gid,
                 });
                 bareEditorItems.push(optEl);
@@ -5161,15 +5299,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         bareEditorItems.sort((a, b) => {
             const ma = bareEditorMeta.get(a);
             const mb = bareEditorMeta.get(b);
+            const tier = bareTopTier(ma) - bareTopTier(mb);
+            if (tier !== 0) return tier;
             const pa = ma?.isPinned ? 1 : 0;
             const pb = mb?.isPinned ? 1 : 0;
             if (pa !== pb) return pb - pa;
-            const ea = ma?.isEditing ? 1 : 0;
-            const eb = mb?.isEditing ? 1 : 0;
-            if (ea !== eb) return eb - ea;
-            const ca = ma?.isCurrentChatCharBook ? 1 : 0;
-            const cb = mb?.isCurrentChatCharBook ? 1 : 0;
-            if (ca !== cb) return cb - ca;
             const ta = _latestClassification.byName.get(getOptionText(a))?.primaryTitle || getOptionText(a);
             const tb = _latestClassification.byName.get(getOptionText(b))?.primaryTitle || getOptionText(b);
             return compareZhCn(ta, tb);
@@ -5369,11 +5503,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         for (const secEl of sectionEls) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
             const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
+            const enteredGroup = isIsolated && gid === activePillGroupId && gid !== SPECIAL_GROUPS.PINNED;
             if (headEl instanceof HTMLElement) {
                 const canCollapse = !searching;
                 headEl.classList.toggle('is-isolated', !canCollapse);
                 headEl.title = canCollapse ? '点击展开或折叠该分组' : '';
-                headEl.setAttribute('aria-expanded', String(searching || !_latestSettings.dropdownCollapsed[gid]));
+                headEl.setAttribute('aria-expanded', String(searching || !isDropdownGroupCollapsed(gid, enteredGroup)));
             }
             const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
             for (const o of optsInSec) {
@@ -5411,8 +5546,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
                 secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const collapsed = Boolean(_latestSettings.dropdownCollapsed[gid]);
-                secEl.classList.toggle('wbo-dd-collapsed', collapsed);
+                secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, enteredGroup));
             }
         }
     };
@@ -5472,9 +5606,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             const gid = head.getAttribute('data-wbo-dd-group');
             if (!st || !gid || head.classList.contains('is-isolated')) return;
             st.cancelRestore();
-            const collapsed = !_latestSettings.dropdownCollapsed[gid];
-            _latestSettings.dropdownCollapsed[gid] = collapsed;
-            saveSettings();
+            const activePill = st.getActivePillId();
+            const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL && gid !== SPECIAL_GROUPS.PINNED;
+            const collapsed = toggleDropdownGroupCollapsed(gid, entered);
             const scroller = findScrollableListEl(optionsHost, containerEl);
             st.syncSections();
             if (collapsed) {
@@ -5542,6 +5676,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
+            _isolatedFoldOverride.clear();
             if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
             syncPillButtons();
             syncSections();
@@ -6024,7 +6159,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         const isRecentOrphanClick =
             Date.now() - _lastWorldSelectMouseDownAt < 500 &&
             (t === document.body || t === document.documentElement || !t.isConnected);
-        if (inDropdownOverlay || inWorldTriggerPath || isRecentOrphanClick) {
+        if (inDropdownOverlay || inWorldTriggerPath || isRecentOrphanClick || consumePickerDismissClick(ev)) {
             ev.stopPropagation();
         }
     };

@@ -75,8 +75,8 @@ export function openImportRulesModal({ intro = false, stack = false, onResolved 
             <div class="wbo-ai-status" data-import-rule-status role="status" hidden></div>
         </div>
         <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
-            <button type="button" class="wbo-btn" data-import-rules-cancel>${intro ? '跳过' : '取消'}</button>
             <button type="button" class="wbo-btn wbo-btn-primary" data-import-rules-save>${intro ? '保存选择' : '保存规则'}</button>
+            <button type="button" class="wbo-btn" data-import-rules-cancel>${intro ? '跳过' : '取消'}</button>
         </div>
     `, { pinnedLayout: true, stack });
 

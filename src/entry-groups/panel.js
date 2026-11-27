@@ -3987,8 +3987,8 @@ function renderAutoGroupSchemeEditor(host, state) {
                 <button type="button" class="weg-btn" id="weg-scheme-add"><i class="fa-solid fa-plus" aria-hidden="true"></i> 添加规则</button>
             </div>
             <div class="weg-submodal-footer">
-                <button type="button" class="weg-btn" data-weg-scheme-back>取消</button>
                 <button type="button" class="weg-btn weg-btn-primary" id="weg-scheme-save">保存方案</button>
+                <button type="button" class="weg-btn" data-weg-scheme-back>取消</button>
             </div>
         </div>
     `;
@@ -4083,8 +4083,8 @@ function renderSubmodalHost() {
                         <p class="weg-empty-desc">当前有 ${dirtyCount} 个展开的条目存在未保存修改，离开后这些改动将会丢失。</p>
                     </div>
                     <div class="weg-submodal-footer weg-discard-footer">
-                        <button type="button" class="weg-btn weg-btn-subtle" id="weg-discard-stay-btn">继续编辑</button>
                         <button type="button" class="weg-btn weg-btn-danger" id="weg-discard-drop-btn">放弃全部修改</button>
+                        <button type="button" class="weg-btn weg-btn-subtle" id="weg-discard-stay-btn">继续编辑</button>
                     </div>
                 </div>
             `;
@@ -4123,9 +4123,9 @@ function renderSubmodalHost() {
                     <p class="weg-empty-desc">${promptBody}</p>
                 </div>
                 <div class="weg-submodal-footer weg-discard-footer">
-                    <button type="button" class="weg-btn weg-btn-subtle" id="weg-discard-stay-btn">继续编辑</button>
-                    <button type="button" class="weg-btn weg-btn-danger" id="weg-discard-drop-btn">放弃修改</button>
                     ${isExtDeleted ? '' : `<button type="button" class="weg-btn weg-btn-primary" id="weg-discard-save-btn">${saveLabel}</button>`}
+                    <button type="button" class="weg-btn weg-btn-danger" id="weg-discard-drop-btn">放弃修改</button>
+                    <button type="button" class="weg-btn weg-btn-subtle" id="weg-discard-stay-btn">继续编辑</button>
                 </div>
             </div>
         `;
@@ -4194,8 +4194,8 @@ function renderSubmodalHost() {
                     </div>
                 </div>
                 <div class="weg-submodal-footer">
-                    <button type="button" class="weg-btn weg-btn-subtle" data-weg-sub-close="1">取消</button>
                     <button type="button" class="weg-btn weg-btn-primary" id="weg-group-save-btn">${isEdit ? '保存修改' : '创建分组'}</button>
+                    <button type="button" class="weg-btn weg-btn-subtle" data-weg-sub-close="1">取消</button>
                 </div>
             </div>
         `;
@@ -4366,9 +4366,9 @@ function renderSubmodalHost() {
                     ${!bulk || bulk.phase === 'ready' ? `<div class="weg-detect-list">${listHtml}</div>` : ''}
                 </div>
                 <div class="weg-submodal-footer">
+                    <button type="button" class="weg-btn weg-btn-primary" id="weg-detect-apply-btn" ${scanning || checkedCount === 0 ? 'disabled' : ''}>应用所选分组 (${checkedCount})</button>
                     ${bulk ? `<button type="button" class="weg-btn" id="weg-detect-back">${scanning ? '取消扫描' : '返回当前书'}</button>`
                     : '<button type="button" class="weg-btn weg-btn-subtle" data-weg-sub-close="1">取消</button>'}
-                    <button type="button" class="weg-btn weg-btn-primary" id="weg-detect-apply-btn" ${scanning || checkedCount === 0 ? 'disabled' : ''}>应用所选分组 (${checkedCount})</button>
                 </div>
             </div>
         `;

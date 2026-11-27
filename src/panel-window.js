@@ -39,6 +39,24 @@ function placeOverlayAboveOpenPanels(overlay) {
     if (layer > currentLayer) overlay.style.zIndex = String(layer);
 }
 
+/** Tall touch screens in portrait (e.g. iPad) get taller window caps; phones and desktops keep theirs. */
+function isTallTouchPortrait() {
+    const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 0;
+    const vh = globalThis.innerHeight || document.documentElement?.clientHeight || 0;
+    const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
+    return coarse && vw > 680 && vh > vw && vh >= 900;
+}
+
+/**
+ * @param {number} baseVh
+ * @param {number} ratio
+ * @param {number} cap height cap used on phones and desktops
+ */
+function stableWindowHeight(baseVh, ratio, cap) {
+    const limit = isTallTouchPortrait() ? Math.max(cap, baseVh - 140) : cap;
+    return Math.round(Math.min(baseVh * (isTallTouchPortrait() ? 0.88 : ratio), limit));
+}
+
 function isDesktopAutoFocusAllowed() {
     const w = globalThis.innerWidth || (typeof document !== 'undefined' ? document.documentElement?.clientWidth : 0) || 0;
     const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
@@ -824,8 +842,8 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
         // Lock a steady window height so switching tabs/views NEVER jumps the modal vertically!
         const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
         const stableH = wide
-            ? Math.round(Math.min(baseVh * 0.84, 680))
-            : Math.round(Math.min(baseVh * 0.78, 600));
+            ? stableWindowHeight(baseVh, 0.84, 680)
+            : stableWindowHeight(baseVh, 0.78, 600);
         modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
     }
 
@@ -866,7 +884,50 @@ function createSubModal(title, bodyHtml, { wide = false, pinnedLayout = false, s
     return { overlay, modal };
 }
 
+/**
+ * Exclusion chips read "checked = shown, struck through = excluded"; settings still store hidden ids.
+ * @param {{ name: string, color?: string }} sec
+ * @param {boolean} hidden
+ */
+function excludeChipInnerHtml(sec, hidden) {
+    return `
+        <span class="wbo-local-cat-mark" aria-hidden="true">${hidden ? '' : '<i class="fa-solid fa-check"></i>'}</span>
+        <span class="wbo-pill-dot" style="background:${esc(sec.color || '#8c99a6')}"></span>
+        <span class="wbo-exclude-chip-name">${esc(sec.name)}</span>
+        ${hidden ? '<span class="wbo-exclude-chip-state">已排除</span>' : ''}
+    `;
+}
+
+/**
+ * @param {HTMLElement} btn
+ * @param {{ name: string, color?: string }} sec
+ * @param {boolean} hidden
+ */
+/** Class and ARIA attributes for an exclusion chip button, matching {@link syncExcludeChip}. */
+function excludeChipAttrs(sec, hidden) {
+    const label = `${sec.name}：${hidden ? '已排除，点击恢复显示' : '显示中，点击排除'}`;
+    return `class="wbo-local-cat-btn wbo-exclude-chip ${hidden ? 'is-excluded' : 'is-selected'}" aria-pressed="${hidden ? 'false' : 'true'}" aria-label="${esc(label)}"`;
+}
+
+function excludeCountText(hiddenCount, total) {
+    return `显示 ${total - hiddenCount} 组 · 排除 ${hiddenCount} 组`;
+}
+
+function syncExcludeChip(btn, sec, hidden) {
+    btn.classList.toggle('is-selected', !hidden);
+    btn.classList.toggle('is-excluded', hidden);
+    btn.setAttribute('aria-pressed', hidden ? 'false' : 'true');
+    btn.setAttribute('aria-label', `${sec.name}：${hidden ? '已排除，点击恢复显示' : '显示中，点击排除'}`);
+    btn.innerHTML = excludeChipInnerHtml(sec, hidden);
+}
+
 export {
+    isTallTouchPortrait,
+    stableWindowHeight,
+    excludeChipAttrs,
+    excludeChipInnerHtml,
+    excludeCountText,
+    syncExcludeChip,
     _callbacks,
     _modalWindowCleanupMap,
     _previewCache,

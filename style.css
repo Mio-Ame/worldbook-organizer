@@ -1387,7 +1387,6 @@
     height: var(--wbo-stable-h, min(80vh, 680px));
     max-height: calc(100svh - 24px);
 }
-
 .wbo-modal.is-resized,
 .wbo-modal.is-pinned-layout.is-resized,
 .wbo-modal.is-wide.is-resized,
@@ -3737,6 +3736,27 @@ details[open] > summary .wbo-details-chev {
 .wbo-local-divider {
     height: 1px;
     background: var(--wbo-border);
+}
+
+.wbo-exclude-chip.is-excluded {
+    border-style: dashed !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+}
+
+.wbo-exclude-chip.is-excluded .wbo-exclude-chip-name {
+    text-decoration: line-through;
+    text-decoration-thickness: 1.5px;
+}
+
+.wbo-exclude-chip.is-excluded .wbo-pill-dot {
+    opacity: 0.45;
+}
+
+.wbo-exclude-chip-state {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.85;
 }
 
 /* Dedicated Group Management modal */
@@ -8416,6 +8436,34 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
 .wbo-cmb-pick-feedback {
     color: var(--wbo-fg-muted);
     font-size: 12px;
+}
+
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-right {
+    justify-content: flex-start;
+}
+
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-left {
+    justify-content: flex-end;
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-ai-footer.wbo-ai-footer-single.wbo-footer-confirm-first .wbo-ai-footer-left {
+        flex: 1 1 0;
+    }
+}
+
+#wbo-cmb-step-edit > .wbo-step-scroll {
+    overflow: hidden !important;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list {
+    flex: 1 1 auto;
+    min-height: 96px;
+    max-height: none;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list ~ .wbo-ai-status {
+    flex-shrink: 0;
 }
 
 /* Customizable AI Organize Presets Bar & Manager Cards */

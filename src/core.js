@@ -1830,7 +1830,7 @@ export function classifyWorldbooks({
             if (cfg.aliasTitleMode === 'alias_with_sub' && alias !== realName) {
                 subtitle = realName;
             }
-        } else if (isInCharGroup && cfg.charBookTitleMode !== 'original') {
+        } else if ((isInCharGroup || (isCharBound && !isExcludedFromChar)) && cfg.charBookTitleMode !== 'original') {
             const charTitle = formatCharacterDisplayTitle(realName, charOwners, perCharBooks);
             primaryTitle = charTitle;
             if (cfg.charBookTitleMode === 'char_with_sub' && charTitle !== realName) {

@@ -21,6 +21,7 @@ import {
     MANAGER_OVERLAY_ID,
     openInlineTextPrompt,
     PROMPT_OVERLAY_ID,
+    stableWindowHeight,
     WAND_ENTRY_ID,
     WI_QUICK_ACTIONS_ID,
 } from './panel-window.js';
@@ -1501,7 +1502,7 @@ function openManagerModal() {
     applyTauriSurface(modal, 'fullscreen-window');
     // Lock a stable height at open time so desktop tab/list shifts never bounce the window
     const baseVh = Math.max(globalThis.innerHeight || 0, document.documentElement?.clientHeight || 0, 560);
-    const stableH = Math.round(Math.min(baseVh * 0.84, 720));
+    const stableH = stableWindowHeight(baseVh, 0.84, 720);
     modal.style.setProperty('--wbo-stable-h', `${stableH}px`);
 
     modal.innerHTML = `<div class="wbo-mgr-window-scroll">

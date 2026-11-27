@@ -11,8 +11,12 @@ import {
     createSubModal,
     detectHostThemeClass,
     esc,
+    excludeChipAttrs,
+    excludeChipInnerHtml,
+    excludeCountText,
     isDesktopAutoFocusAllowed,
     MANAGER_OVERLAY_ID,
+    syncExcludeChip,
     UNDO_SVG,
     WAND_ENTRY_ID,
     WI_QUICK_ACTIONS_ID,
@@ -481,13 +485,13 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                     <div class="wbo-ai-book-list wbo-cmb-pick-list" id="wbo-cmb-pick-list"></div>
                     <div class="wbo-ai-status" id="wbo-cmb-edit-status"></div>
                 </div>
-                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
+                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single wbo-footer-confirm-first">
+                    <div class="wbo-ai-footer-right">
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-save-apply-btn">保存并立即启用</button>
+                        <button type="button" class="wbo-btn" id="wbo-cmb-save-only-btn">仅保存</button>
+                    </div>
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-cmb-cancel-edit-btn">取消</button>
-                    </div>
-                    <div class="wbo-ai-footer-right">
-                        <button type="button" class="wbo-btn" id="wbo-cmb-save-only-btn">仅保存</button>
-                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-save-apply-btn">保存并立即启用</button>
                     </div>
                 </div>
             </div>
@@ -1036,22 +1040,15 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
         ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
         { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
     ];
-    const renderChips = (targetKey, selectedIds) => {
-        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
-        return sectionOptions.map((sec) => {
-            const active = set.has(sec.id);
-            return `
-                <button type="button"
-                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+    const renderChips = (targetKey, hiddenIds) => {
+        const set = new Set(Array.isArray(hiddenIds) ? hiddenIds : []);
+        return sectionOptions.map((sec) => `
+                <button type="button" ${excludeChipAttrs(sec, set.has(sec.id))}
                     data-qe-target="${esc(targetKey)}"
-                    data-qe-gid="${esc(sec.id)}"
-                    aria-pressed="${active ? 'true' : 'false'}">
-                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
-                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
-                    <span>${esc(sec.name)}</span>
+                    data-qe-gid="${esc(sec.id)}">
+                    ${excludeChipInnerHtml(sec, set.has(sec.id))}
                 </button>
-            `;
-        }).join('');
+            `).join('');
     };
 
     const backdrop = document.createElement('div');
@@ -1106,17 +1103,17 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             </div>
 
             <div class="wbo-qhub-pane" data-qhub-pane="exclude"${activeHubTab === 'exclude' ? '' : ' hidden'}>
-                <div class="wbo-exclude-tip">勾选下方分组即在对应下拉框中隐藏（默认排除角色世界书）</div>
+                <div class="wbo-exclude-tip">打勾的分组会显示，划掉的分组已排除。点击分组可切换。</div>
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
                         <span class="wbo-exclude-title">全局激活框</span>
-                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                     </div>
                     <div class="wbo-exclude-quick-row">
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds" title="恢复默认：仅排除角色世界书">默认(仅角色书)</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds" title="恢复默认：只排除角色世界书">默认(仅排除角色书)</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">全部显示</button>
                         <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全部排除</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
                 </div>
@@ -1124,14 +1121,14 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
                         <span class="wbo-exclude-title">编辑下拉框</span>
-                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                     </div>
                     <div class="wbo-exclude-quick-row">
                         <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅排除角色书</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">全部显示</button>
                         <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全部排除</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
                 </div>
@@ -1258,15 +1255,12 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             const set = new Set(Array.isArray(cur[key]) ? cur[key] : []);
             pop.querySelectorAll(`[data-qe-target="${key}"]`).forEach((btn) => {
                 const gid = btn.getAttribute('data-qe-gid') || '';
-                const active = set.has(gid);
-                btn.classList.toggle('is-selected', active);
-                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-                const mark = btn.querySelector('.wbo-local-cat-mark');
-                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+                const sec = sectionOptions.find((s) => s.id === gid);
+                if (sec) syncExcludeChip(btn, sec, set.has(gid));
             });
             const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
             const cntEl = pop.querySelector(`[data-qe-count="${key}"]`);
-            if (cntEl) cntEl.textContent = `已排除 ${hiddenCnt} / ${sectionOptions.length} 组`;
+            if (cntEl) cntEl.textContent = excludeCountText(hiddenCnt, sectionOptions.length);
         }
     };
 
@@ -1524,12 +1518,12 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
     pop.innerHTML = `
         <div class="wbo-vis-title">${esc(groupName)}</div>
         <label class="wbo-check-line">
-            <input type="checkbox" data-vis-scope="globalHiddenGroupIds"${gHidden ? ' checked' : ''}>
-            <span>全局激活框隐藏</span>
+            <input type="checkbox" data-vis-scope="globalHiddenGroupIds"${gHidden ? '' : ' checked'}>
+            <span>在全局激活框显示</span>
         </label>
         <label class="wbo-check-line">
-            <input type="checkbox" data-vis-scope="editorHiddenGroupIds"${eHidden ? ' checked' : ''}>
-            <span>编辑下拉框隐藏</span>
+            <input type="checkbox" data-vis-scope="editorHiddenGroupIds"${eHidden ? '' : ' checked'}>
+            <span>在编辑下拉框显示</span>
         </label>
     `;
 
@@ -1566,7 +1560,7 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
             if (!scopeKey) return;
             const cur = _callbacks.getState().settings;
             const set = new Set(Array.isArray(cur[scopeKey]) ? cur[scopeKey] : []);
-            if (cb.checked) {
+            if (!cb.checked) {
                 set.add(groupId);
                 if (cur.showCharBooks) cur.showCharBooks = false;
             } else {

@@ -1,0 +1,148 @@
+import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import test from 'node:test';
+
+const suite = process.env.WBO_E2E_SUITE;
+if (!suite) throw new Error('WBO_E2E_SUITE required');
+const load = name => import(pathToFileURL(resolve(suite, 'lib', name)).href);
+const { createMockStServer } = await load('mock-server.mjs');
+const { VIEWPORTS, launchEdgeCdp } = await load('cdp.mjs');
+const { createDefaultSeed } = await load('fixtures.mjs');
+const { resetAndBoot, waitForCondition } = await load('assert-helpers.mjs');
+const prefix = '/scripts/extensions/third-party/worldbook-organizer/';
+const realName = '角色书文件名';
+const charName = '中性角色甲';
+function seed(extra = {}) {
+    return createDefaultSeed({
+        characters: [{ avatar: 'neutral-a.png', name: charName, data: { name: charName, extensions: { world: realName } } }],
+        worldbooks: { [realName]: { entries: {} }, '普通书乙': { entries: {} } },
+        selected_world_info: [],
+        pluginSettings: { autoScanNewCharacters: false, showCharBooks: true, hideCharBooksByDefault: false,
+            cachedCharBindings: {}, groups: [], assignments: {}, aliases: {}, notes: {},
+            charBookOverrides: {}, pinnedBooks: [], globalHiddenGroupIds: [], editorHiddenGroupIds: [],
+            charBookTitleMode: 'char_only', pinCurrentChatCharBookInEditor: false, ...extra },
+    });
+}
+async function withHost(viewport, fixture, verify) {
+    const server = createMockStServer();
+    let cdp;
+    try {
+        const url = await server.start();
+        cdp = await launchEdgeCdp();
+        await resetAndBoot(cdp, url, { viewport, query: viewport.mobile ? 'mobile=1' : '', seed: fixture });
+        await verify(cdp);
+        assert.deepEqual(cdp.getErrors().runtimeErrors, []);
+    } finally { await cdp?.close(); await server.stop(); }
+}
+
+test('desktop ordinary Select2: character group uses the requested name', async t => {
+    await withHost(VIEWPORTS.desktop, seed(), async cdp => {
+        await cdp.evalFn(() => jQuery('#world_editor_select').select2('open'));
+        const result = await cdp.evalFn(name => {
+            const row = document.querySelector(`.select2-dropdown [data-wbo-world="${name}"]`);
+            return { visible: !!row?.getBoundingClientRect().height, title: row?.querySelector('.wbo-s2-title')?.textContent };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.deepEqual(result, { visible: true, title: charName });
+    });
+});
+
+test('mobile grouped ordinary picker: character group uses the requested name', async t => {
+    await withHost(VIEWPORTS.mobile, seed(), async cdp => {
+        await cdp.clickSelector('#wbo-mobile-editor-trigger');
+        const result = await cdp.evalFn(name => {
+            const rows = [...document.querySelectorAll('#wbo-mobile-picker-overlay [data-wbo-world], #wbo-mobile-picker-overlay [data-book]')];
+            const titles = [...document.querySelectorAll('#wbo-mobile-picker-overlay .wbo-mp-row-title')].map(el => el.textContent);
+            return { visible: !!document.getElementById('wbo-mp-search')?.getBoundingClientRect().height, titles };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.visible, true);
+        assert.ok(result.titles.includes(charName));
+    });
+});
+
+test('mobile flat ordinary selector: char_only must also control the visible native option', async t => {
+    await withHost(VIEWPORTS.mobile, seed({ showNativeOptgroups: false }), async cdp => {
+        const result = await cdp.evalFn(name => {
+            const select = document.getElementById('world_editor_select');
+            const option = [...select.options].find(el => el.textContent === name);
+            return { picker: !!document.getElementById('wbo-mobile-editor-trigger'),
+                nativeVisible: !!select.getBoundingClientRect().height && !select.classList.contains('wbo-mobile-select-hidden'),
+                optionText: option?.textContent, optionValue: option?.value };
+        }, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.picker, true, 'titled books use the plugin picker instead of the system menu');
+        assert.equal(result.nativeVisible, false);
+        assert.equal(result.optionText, realName, 'real option text stays the file name for host lookups');
+        await cdp.clickSelector('#wbo-mobile-editor-trigger');
+        const titles = await cdp.evalFn(() => [...document.querySelectorAll('#wbo-mobile-picker-overlay .wbo-mp-row-title')].map(el => el.textContent));
+        assert.ok(titles.includes(charName), JSON.stringify(titles));
+        await cdp.clickSelector(`[data-mp-world="${realName}"]`);
+        await new Promise(done => setTimeout(done, 300));
+        assert.equal(await cdp.evalFn(() => document.getElementById('world_editor_select').selectedOptions[0]?.textContent), realName);
+        const label = await cdp.evalFn(() => document.querySelector('#wbo-mobile-editor-trigger .wbo-mobile-trigger-text')?.textContent);
+        assert.equal(label, charName);
+    });
+});
+
+test('ordinary grouped picker: manually grouped bound book must still use the requested role name', async t => {
+    await withHost(VIEWPORTS.mobile, seed({ groups: [{ id: 'custom-a', name: '自定义组甲' }], assignments: { [realName]: 'custom-a' } }), async cdp => {
+        await cdp.clickSelector('#wbo-mobile-editor-trigger');
+        const result = await cdp.evalFn(() => ({
+            visible: !!document.getElementById('wbo-mp-search')?.getBoundingClientRect().height,
+            titles: [...document.querySelectorAll('#wbo-mobile-picker-overlay .wbo-mp-row-title')].map(el => el.textContent),
+        }));
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.visible, true);
+        assert.ok(result.titles.includes(charName));
+    });
+});
+
+test('reused enhanced ordinary picker: original to char_only must update the existing row', async t => {
+    await withHost(VIEWPORTS.desktop, seed({ charBookTitleMode: 'original' }), async cdp => {
+        await cdp.evalFn(() => {
+            const style = document.createElement('style');
+            style.setAttribute('data-gr-dropdown-style', '');
+            document.head.append(style);
+            const select = document.getElementById('world_editor_select');
+            select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            const container = document.createElement('div');
+            container.id = 'gr-global-dropdown-container';
+            container.className = 'gr-container-enhanced open';
+            container.style.cssText = 'position:fixed;top:150px;left:20px;width:400px;z-index:9000;background:white';
+            const host = document.createElement('div');
+            host.className = 'gr-options-container';
+            for (const option of select.options) {
+                const row = document.createElement('div');
+                row.className = 'gr-option'; row.dataset.value = option.value; row.textContent = option.textContent;
+                row.style.minHeight = '29px'; host.append(row);
+            }
+            container.append(host); document.body.append(container);
+        });
+        await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-role="editor"] .wbo-gr-world-title'));
+        const result = await cdp.evalFn(async (p, name) => {
+            const native = await import(p + 'src/native-filter.js');
+            const core = await import(p + 'src/core.js');
+            const settings = structuredClone(SillyTavern.getContext().extensionSettings.worldbook_organizer);
+            settings.charBookTitleMode = 'char_only';
+            const characters = SillyTavern.getContext().characters;
+            const worldNames = [name, '普通书乙'];
+            const bindingMap = core.buildCharacterBindingIndex({ characters, worldNamesSet: new Set(worldNames) });
+            const classification = core.classifyWorldbooks({ worldNames, bindingMap, settings });
+            const row = [...document.querySelectorAll('#gr-global-dropdown-container .gr-option')].find(el => el.dataset.wboEnhancedWorld === name);
+            const before = row?.querySelector('.wbo-gr-world-title')?.textContent;
+            native.applyAllNativeWorldFilters(classification, settings, { force: true });
+            await new Promise(done => setTimeout(done, 420));
+            // Reopen this same container through a normal opening event; host did not rebuild its children.
+            document.getElementById('world_editor_select').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+            await new Promise(done => setTimeout(done, 420));
+            return { before, expectedMeta: classification.byName.get(name).primaryTitle,
+                visible: !!row?.getBoundingClientRect().height, after: row?.querySelector('.wbo-gr-world-title')?.textContent };
+        }, prefix, realName);
+        t.diagnostic(JSON.stringify(result));
+        assert.equal(result.expectedMeta, charName);
+        assert.equal(result.visible, true);
+        assert.equal(result.after, charName);
+    });
+});
