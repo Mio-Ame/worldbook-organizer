@@ -8180,16 +8180,25 @@ function enhanceOpenGlobalDropdown() {
         }
         for (const row of rows) row.removeAttribute('data-wbo-pill-row');
         // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
-        const pinnedTotal = pinnedRows.length + mountedPinnedCount;
+        // Recompute the "both pinned and mounted" count from the live sets: the classification can
+        // lag behind a star click, and then the head lost its 「X 本已全局，位于全局分组」 note.
+        const pinnedFromSettings = new Set(_latestSettings?.pinnedBooks || []);
+        const mountedPinnedFromSettings = [...getActiveGlobalWorldSet()].filter((name) => pinnedFromSettings.has(name)).length;
+        const mountedPinnedTotal = Math.max(mountedPinnedCount, mountedPinnedFromSettings);
+        const pinnedTotal = pinnedRows.length + mountedPinnedTotal;
         if (pinnedTotal > 0) {
             appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows, {
                 count: pinnedTotal,
-                note: mountedPinnedCount > 0 ? `${mountedPinnedCount} 本已全局，位于全局分组` : '',
+                note: mountedPinnedTotal > 0 ? `${mountedPinnedTotal} 本已全局，位于全局分组` : '',
                 allowEmpty: true,
             });
         }
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
         enforceSelect2GroupOrder(resultsList);
+        // Sticky order: the group the user is inside must paint above the blocks above it. Applied
+        // here as well because Select2 rebuilds this list after `syncResults` has run.
+        [...resultsList.querySelectorAll('li.select2-results__group, .wbo-global-heading-slot')]
+            .forEach((head, index) => { head.style.zIndex = String(10 + index); });
     };
 
     const syncResults = () => {
@@ -8249,8 +8258,10 @@ function enhanceOpenGlobalDropdown() {
         for (const row of rows) {
             if (group && !mountedNames.has(rowWorldName(row))) row.classList.toggle('wbo-global-group-collapsed', collapsed);
         }
-        // Every sync is a chance for a group head to end up in the wrong place (this is the global
-        // dropdown that showed 「文风」 above 已开启的全局世界书 and 未分组 right under it).
+        // Every head is sticky at top:0; the one that must win is the group the user is scrolling
+        // inside. Painting order follows z-index, so later heads get a higher one.
+        [...resultsList.querySelectorAll('li.select2-results__group, .wbo-global-heading-slot')]
+            .forEach((head, index) => { head.style.zIndex = String(10 + index); });
         enforceSelect2GroupOrder(resultsList);
         observer.takeRecords();
     };
@@ -8311,6 +8322,13 @@ function enhanceOpenGlobalDropdown() {
             const button = ev.target instanceof Element ? ev.target.closest('[data-wbo-pill]') : null;
             if (!button) return;
             ev.preventDefault();
+            // Per-pill scroll memory: leaving 文风 at its bottom must not drag 剧情 to the bottom
+            // too — save the position of the pill being left, restore the one being entered.
+            const leavingPill = _activeGlobalPillId;
+            const host = findScrollableListEl(resultsList, resultsList.closest('.select2-dropdown') || resultsList.parentElement);
+            if (host && host.clientHeight > 0) {
+                _dropdownMemory.scrollTopByGroup['g:' + leavingPill] = host.scrollTop;
+            }
             const id = button.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             _activeGlobalPillId = id === _activeGlobalPillId ? SPECIAL_GROUPS.ALL : id;
             _sessionGlobalPillId = _activeGlobalPillId;
@@ -8321,6 +8339,14 @@ function enhanceOpenGlobalDropdown() {
                 pill.setAttribute('aria-pressed', String(active));
             });
             refreshResults();
+            const restorePillScroll = () => {
+                const targetHost = findScrollableListEl(resultsList, resultsList.closest('.select2-dropdown') || resultsList.parentElement);
+                if (targetHost) targetHost.scrollTop = _dropdownMemory.scrollTopByGroup['g:' + _activeGlobalPillId] ?? 0;
+            };
+            restorePillScroll();
+            // The list is rebuilt on the next frames; re-apply twice so the position sticks.
+            setTimeout(restorePillScroll, 0);
+            setTimeout(restorePillScroll, 70);
         });
         resultsWrap.parentElement.insertBefore(barEl, resultsWrap);
         pillScrollEl.scrollLeft = scrollLeft;
