@@ -1,3 +1,12 @@
+### 原生条目按钮「点了没反应」的判定探针（2026-11-28 · dev v2.35.114）
+- 用户提出另一种可能：不是“隐藏书导致目标缺失”，而是**点击本身没有反应**（事件没到宿主处理器）。
+- 代码审计结论：插件内所有 `stopImmediatePropagation` 都只作用于自绘星标按钮（`.wbo-gr-pin-btn` / `.wbo-s2-pin-btn`）且带 `closest()` 守卫；`bindDrawerSafeBubbleGuard()` 也只绑在插件自己的浮层容器上，**没有绑到 `#world_popup` / `#WorldInfo`**。所以“被我们全局拦截”在代码上缺乏依据。
+- 新增探针（仅 dev）：在 `#world_popup_entries_list` 上 capture 监听 `click`，记录 `native-entry:click,cls=<按钮 class 前 24 字>,label=<按钮文字前 12 字>`。
+  - 报告里**有**这行 → 点击到达页面，问题在宿主处理逻辑或它依赖的列表；
+  - 报告里**没有**这行 → 点击在到达条目列表前被吞（再去查其它脚本/上游监听）。
+- 该探针只记录不发散，不进 `highlights`（避免占位），仍需配合 `native-entry:options-restored@popup-open` 一起读。
+- 验证：单测 247/247。
+
 ### 老版本用户的原生「移动 / 复制」失效：判定与免打扰修复（2026-11-28 · v2.35.112）
 - 背景：反馈者仍在用**旧 main（≈v2.35.16 及更早）**，且不希望被要求做诊断。
 - 代码核对（`git show 0893235:src/native-filter.js`）：老版本同样使用 `_globalDetachedMap` / `_editorDetachedMap` **把 `<option>` 从 select 里摘掉**来隐藏世界书；而酒馆原生「移动 / 复制」的目标书列表正是从这些 select 读取。**被隐藏的书不在列表里 → 目标选不到 → 按钮“点了没反应”**。这与反馈一致，且与用户机器无关，只与“隐藏了多少书”有关。

@@ -8885,6 +8885,16 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 if (!target?.closest('#world_popup, #world_popup_entries_list')) return;
                 restoreForNative('pointerdown');
             }, true);
+            // Probe: proves whether a click on the native entry controls reaches the page at all. If
+            // the line is missing from a report, something upstream swallowed it; if it is present,
+            // the host's own handler is the one doing nothing.
+            document.addEventListener('click', (event) => {
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target?.closest('#world_popup_entries_list')) return;
+                const button = target.closest('button, .menu_button, [data-action]');
+                const label = (button?.textContent || '').trim().slice(0, 12);
+                pushDiagTrace(`native-entry:click,cls=${String(button?.className || '').slice(0, 24)},label=${label}`);
+            }, true);
             const popupWatcher = new MutationObserver(() => {
                 const popup = document.getElementById('world_popup');
                 if (!popup || popup.style.display === 'none') return;
