@@ -30,6 +30,19 @@ export function readPanelSource() {
         .join('\n');
 }
 
+/**
+ * Every source file of the native-filter layer: the hub plus the focus modules it was split into
+ * (src/native-filter/*.js). The static guards scan the whole set, so a rule moved into a submodule
+ * is still covered by them.
+ */
+export function getNativeFilterSourcePaths() {
+    const focused = readdirSync(new URL('../src/native-filter/', import.meta.url))
+        .filter((name) => name.endsWith('.js'))
+        .sort()
+        .map((name) => `../src/native-filter/${name}`);
+    return ['../src/native-filter.js', ...focused];
+}
+
 import {
     AI_ORGANIZE_CATEGORY_PRESETS,
     AI_ORGANIZE_NAMING_PRESETS,
