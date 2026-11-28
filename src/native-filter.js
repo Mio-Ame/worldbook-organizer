@@ -1182,7 +1182,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.129';
+export const PLUGIN_VERSION = '2.35.130';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and

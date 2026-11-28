@@ -1,3 +1,20 @@
+### 只拆不改的重构：样式 / 单测 / native-filter / core 分模块 + 历史材料归档（2026-11-28 · v2.35.130，dev）
+- **改了什么**（全部是搬移，不改逻辑、不改导出符号、不改选择器与声明顺序，每个提交可单独回滚）：
+  1. 样式：`style.css`（217 KB / 1100 条顶层规则）按顶层规则边界切成 `styles/10…80-*.css` 八片；按顺序拼接与原文件**逐字节相同**（脚本比对差值为 0）。顺序改为数据：新增 `src/style-manifest.js` 作为唯一权威顺序表，`index.js` 按该顺序逐个 `<link>` 注入并各自带 `?v=`（先挂新的再摘旧的，仍然不会闪样式）；`style.css` 保留为 `manifest.json` 的入口，正文变成按同一顺序的 `@import` 索引。
+  2. 单测：`tests/core.test.mjs`（6.9k 行 / 73 个 `test()`）按测试边界拆成 `core-domain / core-organize / core-native-picker / core-panel / core-manager / core-runtime` 六个文件；共享的前置（helper + 唯一那份 `../src/core.js` import 清单）抽到 `tests/core-prelude.mjs` 并原样 re-export，**没有一个测试体被改**。总数仍 247。
+  3. `src/native-filter.js`：11,347 → 8,987 行，四个职责簇搬进 `src/native-filter/`：`diagnostics.js`（诊断采样/手势/报告）、`dropdown-order.js`（行属性自愈与分组顺序校正）、`desktop-extras.js`（桌面附加下拉/角色绑定弹窗）、`enhanced-observer-utils.js`（增强弹层的观察器工具）。搬移边界由脚本做**写入闭包检查**决定：只要被搬的声明会被外部重新赋值、或它去重新赋值外部声明的变量，就不搬（ESM 导入绑定只读，这类搬移会改语义）。23 个对外导出一个没动。
+  4. `src/core.js`：4,335 行 → 11 行 re-export 索引 + `src/core/{settings,bindings,classify,organize,entries}.js`；该层无 DOM、只有两个 const 缓存，闭包检查零违规，83 个导出原样 re-export。
+  5. 材料整理：`AGENT.md`、两份 HANDOFF、`更新说明-v2.35.109.md` 用 `git mv` 移进 `docs/archive/`（保留历史）；新增 `docs/architecture/模块地图.md`（每个文件的行数/职责/导出/被谁 import + 拆分后结构 + ESM 副作用顺序表）与 `docs/regression-log.md`（置顶标题回归的根因台账）。未跟踪的现场材料（`本轮材料/**`、`问题反馈/**`、`.edge-profile-*`）一个没动。
+- **为什么**：`native-filter.js` 556 KB / 11k 行、`core.test.mjs` 364 KB、`style.css` 217 KB，改一行要滚很久，且任何一处小改动都可能碰掉旁边不相关的行为；先把「文件边界」按职责拆开，后续改动才有落点。这轮刻意不碰行为，就是为了让拆分本身可验证、可回滚。
+- **怎么验**（每步都跑过）：
+  1. `node --input-type=module -e "import('./src/native-filter.js').then(()=>console.log('loads'))"` → `loads`；`import('./src/core.js')` → 83 个导出。
+  2. `node --test tests/*.test.mjs` → **247/247**（拆测试前后总数一致）。
+  3. 先删残留浏览器目录，再 `WBO_E2E_SUITE=本轮材料\B03-R2-补充验证\formal-isolated-suite` 跑 `native-editor-titles` + `native-picker-window` → **56/56**。
+  4. 悬浮球四项 grep = 0；三处版本号一致（2.35.130）。
+  5. 附加脚本：样式分片拼接逐字节比对 = 相同；native-filter 的 267 个顶层声明在 hub+子模块中各出现恰好一次（0 缺失 / 0 重复 / 0 多出）。
+- **没拆的部分（有意）**：`panel-*.js`、`entry-groups/*.js` 这轮没拆。它们的闭包检查是红的——单个文件里十几个模块级单例（例如管理器的 `_searchQuery`/`_batchMode`/`_lastModalListSig`）被同一文件里的多个函数反复重新赋值，纯搬移会把这些写入变成对导入绑定的赋值（运行时直接报错）。要拆必须先把这些状态收进一个状态模块（改成读写成员而不是重新绑定变量），那属于改代码，不在本轮「只拆不改」范围内，已写进报告的下一步方案。
+- **状态**：只提交在 `dev`，`main` 未动（仍为 9d821a0 / v2.35.129）。
+
 ### 普通下拉记忆上次状态（分组内全局块展开态 + 顶部横向滚动）+ 项目记忆入库（2026-11-28 · v2.35.129，dev）
 - 需求：不刷新酒馆的前提下，重新打开「普通下拉」时应保持上次的样子——例如在「文风」分组里把「已开启的全局世界书」展开，下次打开仍是展开；顶部胶囊栏横向滚到哪也保持。
 - 实现（全部是**会话内记忆**，不写配置、不污染设置）：

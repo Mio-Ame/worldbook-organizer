@@ -65,7 +65,7 @@ import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 import { STYLE_SHEETS } from './src/style-manifest.js';
 
-export const STYLE_ASSET_VERSION = '2.35.129';
+export const STYLE_ASSET_VERSION = '2.35.130';
 let _initialized = false;
 let _entryGroupingGate = null;
 let _disabled = false;
