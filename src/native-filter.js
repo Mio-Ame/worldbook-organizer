@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.99';
+export const PLUGIN_VERSION = '2.35.100';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1443,7 +1443,8 @@ function detectDiagnosticEnv() {
         mobileViewport: Boolean(width <= 680),
         renderPath: (() => {
             if (typeof document === 'undefined') return _diag.lastRenderPath || 'none';
-            if (document.querySelector('[data-wbo-popover-role="editor"], [data-wbo-popover-role="global"]')) return 'enhanced-script';
+            if (document.querySelector('[data-wbo-popover-role="global"]')) return 'enhanced-script:global';
+            if (document.querySelector('[data-wbo-popover-role="editor"]')) return 'enhanced-script:editor';
             if (document.querySelector('.select2-dropdown')) return 'select2';
             if (document.querySelector('#gr-global-dropdown-container, .gr-container-enhanced')) return 'enhanced-shell-idle';
             return _diag.lastRenderPath || 'none-open';
@@ -7358,7 +7359,25 @@ function enhanceCustomDropdownPopover(containerEl) {
     const rememberPill = (gid) => rememberDropdownPill(isGlobalPopover ? 'global' : 'editor', gid);
     // Do not let the first render overwrite a real user choice with the default.
     if (!hasMemory) rememberPill(activePillGroupId);
-    pushDiagTrace(`enh-pill:open=${activePillGroupId},hasMemory=${hasMemory ? 1 : 0},remembered=${remembered || '-'},role=${isGlobalPopover ? 'global' : 'editor'}`);
+    pushDiagTrace(`enh-pill:open=${activePillGroupId},hasMemory=${hasMemory ? 1 : 0},remembered=${remembered || '-'},role=${isGlobalPopover ? 'global' : 'editor'}`
+        + `,sections=${orderedSections.length},pinned=${initialPopPinned}`);
+    // Live sync: toggling a character book (the little person button) changes the global list while
+    // this popover is open; without a re-render its 角色书 group stayed stale until reopen.
+    if (isGlobalPopover && !containerEl._wboGlobalSyncBound) {
+        containerEl._wboGlobalSyncBound = true;
+        const globalSelect = document.getElementById('world_info');
+        const resync = () => {
+            if (!containerEl.isConnected) return;
+            pushDiagTrace('enh-sync:world-info-changed');
+            try { enhanceCustomDropdownPopover(containerEl); } catch { /* ignore */ }
+        };
+        globalSelect?.addEventListener('change', resync);
+        if (globalSelect) {
+            const observer = new MutationObserver(resync);
+            observer.observe(globalSelect, { childList: true, subtree: true, attributeFilter: ['selected'] });
+            containerEl._wboGlobalSyncObserver = observer;
+        }
+    }
     // Safety net: persist the pick straight from the DOM, whatever handler the host script runs.
     containerEl.addEventListener('click', (event) => {
         const target = event.target instanceof Element ? event.target : null;
@@ -7842,7 +7861,12 @@ function enhanceCustomDropdownPopover(containerEl) {
                 secEl.classList.toggle('wbo-dd-collapsed', Boolean(_latestSettings.dropdownCollapsed[gid]));
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
-                secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
+                // In the global list a book that is both favourited and in a group must stay in that
+                // group; the 已收藏 section only exists for its own pill.
+                const hidePinnedInGlobal = isGlobalPopover
+                    && gid === SPECIAL_GROUPS.PINNED
+                    && activePillGroupId !== SPECIAL_GROUPS.PINNED;
+                secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill || hidePinnedInGlobal);
                 secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, enteredGroup));
             }
         }

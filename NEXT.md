@@ -1,3 +1,12 @@
+### 全局下拉实时同步角色书显隐、已收藏块彻底隔离、诊断补下拉类型（2026-11-28 · v2.35.100）
+- 用户反馈：① 全局下拉展开时点「小人」按钮切换角色书显隐，下拉里不同步，必须关掉重开；② 脚本全局下拉在「既收藏又属于某分组」的书上仍多出「已收藏」分组；③ 诊断想知道当前是全局下拉还是普通下拉。
+- 修复（`src/native-filter.js`）：
+  - 全局下拉绑定 `#world_info` 的 `change` + `MutationObserver(childList/selected)`：角色书显隐一变就重新 `enhanceCustomDropdownPopover(containerEl)`，trace 记 `enh-sync:world-info-changed`；观察器挂在 `containerEl._wboGlobalSyncObserver`。
+  - 全局下拉里 `__pinned__` 分区块只在「★已收藏」胶囊激活时显示（`hidePinnedInGlobal`），其余胶囊一律隐藏，收藏书回到它自己的分组。
+  - 诊断 `env.renderPath` 细化为 `enhanced-script:global` / `enhanced-script:editor`；`enh-pill:open` 增加 `sections=`、`pinned=`，一眼看出下拉类型与规模。
+- 已知未处理：点脚本「置顶」偶尔关闭抽屉（宿主行为，需真机证据）；「角色世界书为 1」按用户要求搁置。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 已收藏不再多出一个分组、脚本置顶裸行、诊断弹窗文案与主次（2026-11-28 · v2.35.99）
 - 用户反馈：① 已收藏的书若属于「文风」分组，仍会多出一个「已收藏」分组——原生行为应是**在原分组内置顶**；② 脚本置顶但未全局的书跑进了「已开启的全局世界书」，应像当前角色书那样**裸行显示在全局块上方**；③ 诊断弹窗要写明「可在 Discord 帖子反馈或私聊 niviskitten」，并把**下载详细诊断**做成显眼的主按钮；④ 点脚本置顶会关抽屉、要再点一次才展开。
 - 修复（`src/native-filter.js` + `style.css` + `src/panel-settings.js`）：
