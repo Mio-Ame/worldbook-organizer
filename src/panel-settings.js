@@ -5,7 +5,11 @@ import {
     closeSubModal,
     createSubModal,
     esc,
+    excludeChipAttrs,
+    excludeChipInnerHtml,
+    excludeCountText,
     syncAllOpenModalsTheme,
+    syncExcludeChip,
     THEME_PALETTES,
 } from './panel-window.js';
 import {
@@ -15,7 +19,7 @@ import {
     SPECIAL_GROUPS,
 } from './core.js';
 import { showToast } from './host.js';
-import { hasCompatibleDropdownScript } from './native-filter.js';
+import { detectEnhancedScriptSignals, hasCompatibleDropdownScript, isEnhancedScriptActive } from './native-filter.js';
 import { openImportRulesModal } from './panel-import-rules.js';
 import { getNativeGroupingPreferences } from './entry-groups/host.js';
 import { canConfigureNativeGrouping, setNativeEntryButtonVisible } from './entry-groups/panel.js';
@@ -166,22 +170,15 @@ function openSettingsModal() {
         ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
         { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
     ];
-    const renderExcludeChipsHtml = (targetKey, selectedIds) => {
-        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
-        return sectionOptions.map((sec) => {
-            const active = set.has(sec.id);
-            return `
-                <button type="button"
-                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+    const renderExcludeChipsHtml = (targetKey, hiddenIds) => {
+        const set = new Set(Array.isArray(hiddenIds) ? hiddenIds : []);
+        return sectionOptions.map((sec) => `
+                <button type="button" ${excludeChipAttrs(sec, set.has(sec.id))}
                     data-exclude-target="${esc(targetKey)}"
-                    data-exclude-gid="${esc(sec.id)}"
-                    aria-pressed="${active ? 'true' : 'false'}">
-                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
-                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
-                    <span>${esc(sec.name)}</span>
+                    data-exclude-gid="${esc(sec.id)}">
+                    ${excludeChipInnerHtml(sec, set.has(sec.id))}
                 </button>
-            `;
-        }).join('');
+            `).join('');
     };
 
     const paletteButtonsHtml = THEME_PALETTES.map((p) => `
@@ -323,13 +320,13 @@ function openSettingsModal() {
                         <div class="wbo-exclude-head">
                             <span class="wbo-exclude-title-wrap">
                                 <span>全局激活框</span>
-                                <span class="wbo-exclude-count" data-exclude-count="globalHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                                <span class="wbo-exclude-count" data-exclude-count="globalHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                             </span>
                             <span class="wbo-ai-quick-picks">
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="globalHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">全部显示</button>
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="globalHiddenGroupIds">反选</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅角色书</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="globalHiddenGroupIds">清空</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="globalHiddenGroupIds">仅排除角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="globalHiddenGroupIds">全部排除</button>
                             </span>
                         </div>
                         <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="globalHiddenGroupIds">
@@ -341,21 +338,21 @@ function openSettingsModal() {
                         <div class="wbo-exclude-head">
                             <span class="wbo-exclude-title-wrap">
                                 <span>编辑下拉框</span>
-                                <span class="wbo-exclude-count" data-exclude-count="editorHiddenGroupIds">隐藏 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / 显示 ${sectionOptions.length - sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} 组</span>
+                                <span class="wbo-exclude-count" data-exclude-count="editorHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                             </span>
                             <span class="wbo-ai-quick-picks">
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="copy-global" data-exclude-scope="editorHiddenGroupIds">同全局</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="editorHiddenGroupIds">全选</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">全部显示</button>
                                 <button type="button" class="wbo-link-btn" data-exclude-preset="invert" data-exclude-scope="editorHiddenGroupIds">反选</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅角色书</button>
-                                <button type="button" class="wbo-link-btn" data-exclude-preset="clear" data-exclude-scope="editorHiddenGroupIds">清空</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="char-only" data-exclude-scope="editorHiddenGroupIds">仅排除角色书</button>
+                                <button type="button" class="wbo-link-btn" data-exclude-preset="select-all" data-exclude-scope="editorHiddenGroupIds">全部排除</button>
                             </span>
                         </div>
                         <div class="wbo-local-cats wbo-exclude-chips" data-exclude-list="editorHiddenGroupIds">
                             ${renderExcludeChipsHtml('editorHiddenGroupIds', settings.editorHiddenGroupIds)}
                         </div>
                     </div>
-                    <div class="wbo-subtle-tip">点击选中要默认隐藏的分组；已全局激活或正在编辑的世界书不会被隐藏。</div>
+                    <div class="wbo-subtle-tip">打勾的分组会显示，划掉的分组已排除，点击切换。已全局激活或正在编辑的世界书不会被隐藏。</div>
                     <div class="wbo-local-divider"></div>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="pinCurrentChatCharBookInEditor">
@@ -425,8 +422,20 @@ function openSettingsModal() {
                     </label>
                 </div>
 
-                ${hasCompatibleDropdownScript() ? `<div class="wbo-card" data-dropdown-script-settings>
+                <div class="wbo-card" data-dropdown-script-settings>
                     <div class="wbo-ai-section-head"><span>下拉框美化酒馆脚本适配</span></div>
+                    <div class="wbo-setting-inline-row">
+                        <span>检测状态</span>
+                        <span class="wbo-hint" data-enhanced-script-status></span>
+                    </div>
+                    <label class="wbo-check-line">
+                        <span>这个脚本在用吗</span>
+                        <select data-setting-select="enhancedScriptMode">
+                            <option value="auto">自动检测（推荐）</option>
+                            <option value="on">当作已启用（强制适配）</option>
+                            <option value="off">当作未启用</option>
+                        </select>
+                    </label>
                     <label class="wbo-check-line">
                         <input type="checkbox" data-setting="adaptEnhancedPresetGroups">
                         <span>预设下拉框显示分组切换</span>
@@ -435,7 +444,8 @@ function openSettingsModal() {
                         <input type="checkbox" data-setting="overrideEnhancedDropdownStyle">
                         <span>覆盖脚本配色，跟随酒馆主题</span>
                     </label>
-                </div>` : ''}
+                    <div class="wbo-hint" data-enhanced-script-hint></div>
+                </div>
             </div>
             </div>
 
@@ -447,6 +457,9 @@ function openSettingsModal() {
                     <i class="fa-solid fa-upload"></i> 导入配置
                 </button>
                 <input type="file" id="wbo-modal-import-file" accept=".json" hidden>
+                <button type="button" class="wbo-btn" id="wbo-modal-diag-btn" title="生成问题诊断信息">
+                    <i class="fa-solid fa-clipboard-list"></i> 诊断
+                </button>
                 <span class="wbo-spacer"></span>
                 <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-settings-close-btn">完成</button>
             </div>
@@ -507,15 +520,12 @@ function openSettingsModal() {
             const set = new Set(Array.isArray(cur[targetKey]) ? cur[targetKey] : []);
             modal.querySelectorAll(`[data-exclude-target="${targetKey}"]`).forEach((btn) => {
                 const gid = btn.getAttribute('data-exclude-gid') || '';
-                const active = set.has(gid);
-                btn.classList.toggle('is-selected', active);
-                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-                const mark = btn.querySelector('.wbo-local-cat-mark');
-                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+                const sec = sectionOptions.find((s) => s.id === gid);
+                if (sec) syncExcludeChip(btn, sec, set.has(gid));
             });
             const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
             const cntEl = modal.querySelector(`[data-exclude-count="${targetKey}"]`);
-            if (cntEl) cntEl.textContent = `隐藏 ${hiddenCnt} / 显示 ${sectionOptions.length - hiddenCnt} 组`;
+            if (cntEl) cntEl.textContent = excludeCountText(hiddenCnt, sectionOptions.length);
         }
         const hideCharCb = modal.querySelector('input[data-setting="hideCharBooksByDefault"]');
         if (hideCharCb instanceof HTMLInputElement) {
@@ -645,6 +655,96 @@ function openSettingsModal() {
     });
 
     modal.querySelector('#wbo-modal-export-btn')?.addEventListener('click', triggerConfigExport);
+    // One footer button that opens a two-choice sheet, so touch devices work without hover:
+    // 「复制简要诊断」 (Discord-friendly text) or 「下载详细诊断」 (a .txt file).
+    // Both are structure-only — no book, character or group name ever leaves the user's machine.
+    const closeDiagMenu = () => {
+        const menu = document.getElementById('wbo-diag-menu');
+        menu?.remove();
+        document.removeEventListener('pointerdown', onDiagOutside, true);
+    };
+    const onDiagOutside = (event) => {
+        const menu = document.getElementById('wbo-diag-menu');
+        if (menu && event.target instanceof Node && menu.contains(event.target)) return;
+        closeDiagMenu();
+    };
+    const copyShortDiagnostics = async () => {
+        const text = (() => {
+            try { return globalThis.window?.wboBuildDiagnostic?.('short') || ''; } catch { return ''; }
+        })();
+        if (!text) {
+            showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('success', '已复制简要诊断（约 10 行，不含任何书名）');
+        } catch {
+            console.log('[worldbook-organizer] 诊断\n' + text);
+            showToast('warning', '自动复制失败，已打印到控制台');
+        }
+    };
+    const downloadDetailedDiagnostics = () => {
+        const text = (() => {
+            try { return globalThis.window?.wboBuildDiagnostic?.('dev') || ''; } catch { return ''; }
+        })();
+        if (!text) {
+            showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+            return;
+        }
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const blob = new Blob([text], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `wbo-diagnostic-${stamp}.txt`;
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        showToast('success', '已生成详细诊断文件');
+    };
+    modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', (event) => {
+        const existing = document.getElementById('wbo-diag-menu');
+        if (existing) {
+            closeDiagMenu();
+            return;
+        }
+        const anchor = event.currentTarget;
+        if (!(anchor instanceof HTMLElement)) return;
+        const rect = anchor.getBoundingClientRect();
+        const menu = document.createElement('div');
+        menu.id = 'wbo-diag-menu';
+        menu.className = 'wbo-diag-menu';
+        menu.innerHTML = `
+            <button type="button" data-diag="short"><i class="fa-solid fa-clipboard"></i> 复制简要诊断<span>约 10 行，可直接贴 Discord</span></button>
+            <button type="button" data-diag="dev"><i class="fa-solid fa-file-arrow-down"></i> 下载详细诊断<span>生成 .txt，含运行环境与报错</span></button>
+            <div class="wbo-diag-menu-note">都不含任何书名 / 角色名</div>
+        `;
+        const maxLeft = Math.max(8, (globalThis.innerWidth || 1024) - 260);
+        menu.style.left = `${Math.min(Math.max(8, rect.left), maxLeft)}px`;
+        menu.style.bottom = `${Math.max(8, (globalThis.innerHeight || 768) - rect.top + 6)}px`;
+        // The menu lives on <body>, outside the modal that defines the theme variables, so copy
+        // the modal's own colours or it renders dark-on-dark in a light theme.
+        const modalStyle = globalThis.getComputedStyle(modal);
+        const surface = modalStyle.getPropertyValue('--wbo-surface').trim();
+        const foreground = modalStyle.getPropertyValue('--wbo-fg').trim();
+        const borderStrong = modalStyle.getPropertyValue('--wbo-border-strong').trim();
+        if (surface) menu.style.background = surface;
+        if (foreground) menu.style.color = foreground;
+        if (borderStrong) menu.style.borderColor = borderStrong;
+        document.body.append(menu);
+        menu.addEventListener('click', (ev) => {
+            const btn = ev.target instanceof Element ? ev.target.closest('[data-diag]') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            const kind = btn.getAttribute('data-diag');
+            closeDiagMenu();
+            if (kind === 'dev') downloadDetailedDiagnostics();
+            else copyShortDiagnostics();
+        });
+        document.addEventListener('pointerdown', onDiagOutside, true);
+    });
+    modal.addEventListener('close', closeDiagMenu);
     const importInput = modal.querySelector('#wbo-modal-import-file');
     modal.querySelector('#wbo-modal-import-btn')?.addEventListener('click', () => {
         if (importInput instanceof HTMLInputElement) {
@@ -664,6 +764,34 @@ function openSettingsModal() {
         }
     });
     modal.querySelector('[data-open-import-rules]')?.addEventListener('click', () => openImportRulesModal({ stack: true }));
+
+    // Explain the dropdown-beautify detection instead of silently hiding/showing the card.
+    const renderEnhancedScriptStatus = () => {
+        const signals = detectEnhancedScriptSignals();
+        const mode = _callbacks?.getState?.().settings?.enhancedScriptMode || 'auto';
+        const active = isEnhancedScriptActive();
+        const statusEl = modal.querySelector('[data-enhanced-script-status]');
+        const hintEl = modal.querySelector('[data-enhanced-script-hint]');
+        const matched = [
+            signals.scriptTree ? '脚本树' : '',
+            signals.styleMarker ? '样式标记' : '',
+            signals.runtimeDom ? '运行中的下拉' : '',
+        ].filter(Boolean);
+        if (statusEl) {
+            statusEl.textContent = active
+                ? `已识别（${mode === 'on' ? '手动指定' : matched.join(' + ') || '自动'}）`
+                : '未识别';
+        }
+        if (hintEl) {
+            hintEl.textContent = active
+                ? '下面两项只在装了该脚本时才有意义；已识别的功能会按它自动适配。'
+                : '没检测到该脚本。如果你确实装了但它较新、标记不同，可把「这个脚本在用吗」改成「当作已启用」强制适配。';
+        }
+    };
+    renderEnhancedScriptStatus();
+    modal.querySelector('select[data-setting-select="enhancedScriptMode"]')?.addEventListener('change', () => {
+        setTimeout(renderEnhancedScriptStatus, 0);
+    });
     modal.querySelector('#wbo-settings-close-btn')?.addEventListener('click', closeSubModal);
 }
 

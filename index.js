@@ -43,6 +43,7 @@ import {
     applyAllNativeWorldFilters,
     getDetachedWorldNames,
     pruneDetachedWorldNames,
+    refreshEditorWorldSelect,
     setCurrentlyEditingWorld,
     startNativeObservers,
     syncMobileEditorTriggerLabel,
@@ -63,7 +64,7 @@ import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.16';
+export const STYLE_ASSET_VERSION = '2.35.95';
 let _initialized = false;
 let _entryGroupingGate = null;
 let _disabled = false;
@@ -683,6 +684,8 @@ async function init() {
     if ($) {
         _domWorldInfoChangeHandler = () => {
             syncEmbeddedPanelIndicators();
+            // Active globals sit at the top of the editor picker, so re-sort it on toggle.
+            refreshEditorWorldSelect();
         };
         _domEditorChangeHandler = () => {
             const sel = document.getElementById('world_editor_select');

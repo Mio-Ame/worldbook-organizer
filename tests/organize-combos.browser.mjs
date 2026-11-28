@@ -222,11 +222,18 @@ test('global combo names are safe to select and their editors can jump directly 
             .filter((tag) => tag.getBoundingClientRect().height > 0).map((tag) => tag.textContent.trim()));
         assert.deepEqual(await comboTags(), ['已全局', '组合测试组']);
         await cdp.clickSelector('[data-cmb-pill="fixture-quick-group"]');
-        const result = await cdp.evalFn(() =>
+        // A mounted global book stays out of the group list; the character rule never applies to it.
+        assert.deepEqual(await cdp.evalFn(() =>
+            [...document.querySelectorAll('.wbo-cmb-pick-row:not([hidden]) .wbo-cmb-book-check')].map((item) => item.value),
+        ), []);
+        assert.equal(await cdp.evalFn(() => {
+            const row = document.querySelector('.wbo-cmb-pick-row[data-cmb-gid="fixture-quick-group"]');
+            return Boolean(row?.hidden) && row.getAttribute('data-cmb-global') === '1';
+        }), true);
+        await cdp.clickSelector('[data-cmb-pill="__global__"]');
+        assert.deepEqual(await cdp.evalFn(() =>
             [...document.querySelectorAll('.wbo-cmb-pick-row:not([hidden]) .wbo-cmb-book-check')].map((item) => [item.value, item.checked]),
-        );
-        assert.deepEqual(result, [['组合测试书', true]]);
-        assert.deepEqual(await comboTags(), ['已全局']);
+        ), [['组合测试书', true]]);
         await cdp.clickSelector('#wbo-submodal-overlay .wbo-modal-close');
         await openManager(cdp);
         await cdp.clickSelector('#wbo-manager-overlay [data-action="create-group"]:not([hidden])');
@@ -326,4 +333,77 @@ test('the group pill toggle follows available width and preserves the expanded p
         await cdp.clickSelector('#wbo-mgr-pills-expand');
         assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-mgr-pills-expand').getAttribute('aria-expanded')), 'false');
     }, VIEWPORTS.mobile);
+});
+
+test('global combo editor splits group pills from scope pills, emphasizes picked and remembers per-pill scroll', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => `批量书${String(i).padStart(2, '0')}`);
+    const seed = createDefaultSeed({
+        characters: [{ avatar: 'example.png', name: '测试角色', data: { extensions: { world: '角色书' } } }],
+        worldbooks: Object.fromEntries([...many, '收藏书', '角色书'].map((name) => [name, { entries: {} }])),
+        selected_world_info: [many[0]],
+        pluginSettings: {
+            nativeQuickActionsMode: 'merged',
+            quickHubLastTab: 'presets',
+            groups: [{ id: 'fixture-scroll-group', name: '滚动测试组', color: '#6b7a8c' }],
+            assignments: Object.fromEntries(many.slice(0, 20).map((name) => [name, 'fixture-scroll-group'])),
+            pinnedBooks: ['收藏书'],
+            autoScanNewCharacters: false,
+        },
+    });
+    await withMockHost(seed, async (cdp) => {
+        await cdp.clickSelector('#wbo-wi-merged-btn');
+        await cdp.clickSelector('#wbo-qhub-free-new');
+        await waitForCondition(cdp, () => Boolean(document.querySelector('#wbo-cmb-pick-list')));
+
+        const pillOrder = (selector) => cdp.evalFn((sel) =>
+            [...document.querySelectorAll(`${sel} [data-cmb-pill]`)].map((btn) => btn.getAttribute('data-cmb-pill')), selector);
+        assert.deepEqual(await pillOrder('#wbo-cmb-group-pills'), ['__pinned__', 'fixture-scroll-group', '__ungrouped__']);
+        assert.deepEqual(await pillOrder('#wbo-cmb-pills'), ['__selected__', '__all__', '__global__', '__nonchar__', '__char__']);
+        assert.equal(await cdp.evalFn(() => {
+            const pill = document.querySelector('[data-cmb-pill="__selected__"]');
+            const style = getComputedStyle(pill);
+            return `${style.backgroundColor}|${style.color}|${pill.className.includes('is-emphasis')}`;
+        }), 'rgb(127, 43, 43)|rgb(255, 255, 255)|true');
+
+        const scrollState = () => cdp.evalFn(() => {
+            const host = document.querySelector('#wbo-cmb-pick-list');
+            if (!host) return null;
+            return { top: Math.round(host.scrollTop), max: Math.round(host.scrollHeight), client: Math.round(host.clientHeight) };
+        });
+        const scrollToBottom = () => cdp.evalFn(() => {
+            const host = document.querySelector('#wbo-cmb-pick-list');
+            host.scrollTop = host.scrollHeight;
+        });
+
+        await cdp.clickSelector('[data-cmb-pill="fixture-scroll-group"]');
+        assert.ok((await scrollState()).max > (await scrollState()).client, 'group pill view must be scrollable');
+        // A never-visited pill starts at the top.
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        assert.equal((await scrollState()).top, 0);
+        await cdp.evalFn(() => {
+            const host = document.querySelector('#wbo-cmb-pick-list');
+            host.scrollTop = 120;
+        });
+        await cdp.clickSelector('[data-cmb-pill="__nonchar__"]');
+        assert.equal((await scrollState()).top, 0, 'a different pill keeps its own position');
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        assert.equal((await scrollState()).top, 120, 'mid-list positions are remembered too');
+
+        await scrollToBottom();
+        await cdp.clickSelector('[data-cmb-pill="__nonchar__"]');
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        const restored = await scrollState();
+        assert.ok(restored.top > 120, `the bottom-most position is kept as-is, got ${JSON.stringify(restored)}`);
+
+        // Groups fold in the all / non-character views and keep that choice; concrete groups stay static.
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        await cdp.clickSelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"] [data-cmb-fold]');
+        await waitForCondition(cdp, () => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]')?.classList.contains('is-folded'));
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"] .wbo-gp-sec-body')?.getBoundingClientRect().height), 0);
+        await cdp.clickSelector('[data-cmb-pill="fixture-scroll-group"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-folded')), false);
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-static')), true);
+        await cdp.clickSelector('[data-cmb-pill="__all__"]');
+        assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-cmb-pick-list .wbo-gp-sec[data-cmb-sec="fixture-scroll-group"]').classList.contains('is-folded')), true);
+    });
 });

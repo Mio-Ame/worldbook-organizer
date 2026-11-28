@@ -1387,7 +1387,6 @@
     height: var(--wbo-stable-h, min(80vh, 680px));
     max-height: calc(100svh - 24px);
 }
-
 .wbo-modal.is-resized,
 .wbo-modal.is-pinned-layout.is-resized,
 .wbo-modal.is-wide.is-resized,
@@ -1998,6 +1997,41 @@
     padding: 10px 16px 12px !important;
     border-top: 1px solid var(--wbo-border) !important;
     background: var(--wbo-bg) !important;
+    /* Narrow phones: let the label wrap inside the button instead of spilling out of it. */
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.wbo-modal-footer.wbo-pinned-footer .wbo-btn {
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+    line-height: 1.25;
+}
+
+@media (max-width: 480px) {
+    .wbo-modal-footer.wbo-pinned-footer {
+        padding: 8px 10px 10px !important;
+    }
+
+    .wbo-modal-footer.wbo-pinned-footer .wbo-btn {
+        font-size: 0.86em;
+        padding-inline: 8px;
+    }
+
+    /* 「完成」 always keeps its own row and stays tappable. */
+    .wbo-modal-footer.wbo-pinned-footer .wbo-spacer {
+        display: none;
+    }
+
+    .wbo-modal-footer.wbo-pinned-footer .wbo-btn-primary {
+        flex: 1 1 100%;
+    }
 }
 
 .wbo-pinned-top {
@@ -2793,8 +2827,31 @@
     align-items: center;
     gap: 6px;
     padding: 5px 8px;
-    overflow: hidden;
+    /* Horizontal scrolling without a janky, invisible scrollbar row: the bar keeps its height and
+       the pills stay vertically centred (a raw overflow-x bar pushed the row up). */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, currentColor 32%, transparent) transparent;
+    scrollbar-gutter: stable;
     border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar {
+    height: 6px;
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.wbo-dd-filter-bar::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.wbo-dd-filter-bar > * {
+    flex: 0 0 auto;
 }
 
 .wbo-dd-filter-bar.is-expanded {
@@ -3029,6 +3086,15 @@ li.wbo-dd-collapsed > ul.select2-results__options--nested,
     transform: rotate(-45deg);
 }
 
+/* Foldable headings inside the global dropdown "all" view, matching the ordinary picker. */
+.wbo-global-group-collapsed {
+    display: none !important;
+}
+
+.wbo-global-group-head.is-collapsed::before {
+    transform: rotate(-45deg);
+}
+
 .wbo-global-group-heading[hidden],
 .wbo-global-results-collapsed {
     display: none !important;
@@ -3036,6 +3102,263 @@ li.wbo-dd-collapsed > ul.select2-results__options--nested,
 
 li.wbo-dd-group-hidden,
 .wbo-pop-section.wbo-dd-group-hidden {
+    display: none !important;
+}
+
+/* Plugin-owned search result panel in the enhanced popover: the host script keeps rebuilding its
+   list, so searching renders our own overlay instead of fighting it. */
+.wbo-enhanced-search-panel {
+    z-index: 100090;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+    padding: 6px;
+    border-radius: 10px;
+    border: 1px solid var(--wbo-border-strong, rgba(128, 128, 128, 0.45));
+    background: var(--wbo-surface, #232429);
+    color: var(--wbo-fg, #e7e7e4);
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
+}
+
+/* In-flow variant: lives where the host list used to be, so no stacking-context gamble.
+   Colours are inherited from the popover — never copied from a row. */
+.wbo-enhanced-search-panel.is-in-flow {
+    position: static;
+    inset: auto;
+    width: auto;
+    max-height: none;
+    margin: 6px 4px 8px;
+    z-index: auto;
+    background: transparent;
+    color: inherit;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+}
+
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-row {
+    color: inherit;
+}
+
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-head,
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-origin,
+.wbo-enhanced-search-panel.is-in-flow .wbo-esp-sub {
+    opacity: 0.75;
+}
+
+.wbo-dd-group-note {
+    display: inline;
+    margin-inline-start: 6px;
+    font-size: 0.82em;
+    font-weight: 400;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+    .wbo-dd-group-note {
+        display: block;
+        margin-inline-start: 0;
+        white-space: normal;
+    }
+}
+
+.wbo-esp-check {
+    flex: 0 0 auto;
+    width: 1em;
+    text-align: center;
+    opacity: 0.85;
+}
+
+.wbo-esp-row.is-on .wbo-esp-title {
+    font-weight: 600;
+}
+
+.wbo-esp-head {
+    padding: 4px 8px;
+    font-weight: 600;
+    font-size: 0.92em;
+    opacity: 0.8;
+}
+
+.wbo-esp-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.wbo-esp-row:hover,
+.wbo-esp-row:focus-visible {
+    background: rgba(128, 128, 128, 0.18);
+}
+
+.wbo-esp-main {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
+    flex-wrap: nowrap;
+}
+
+.wbo-esp-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-esp-sub {
+    flex: 0 0 auto;
+    font-size: 0.82em;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+.wbo-esp-origin {
+    flex: 0 0 auto;
+    font-size: 0.78em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(128, 128, 128, 0.16);
+    opacity: 0.8;
+}
+
+.wbo-esp-empty {
+    padding: 10px 8px;
+    opacity: 0.75;
+}
+
+@media (max-width: 680px) {
+    .wbo-esp-main {
+        flex-wrap: wrap;
+    }
+
+    .wbo-esp-title,
+    .wbo-esp-sub {
+        white-space: normal;
+    }
+}
+
+/* While searching, the enhanced popover shows one 「搜索匹配到的世界书」 head, so the
+   per-group heads are noise (kept as a class so host re-renders keep the state). */
+.wbo-enhanced-searching .wbo-pop-section > .wbo-dd-group-head {
+    display: none !important;
+}
+
+/* Search visibility is owned by the plugin: the host script can hide every row at once. */
+.wbo-enhanced-search-hidden {
+    display: none !important;
+}
+
+/* The search block title is drawn on the first hit instead of inserting a node, so the host
+   script's list layout and height calculation stay untouched. Host rows are usually flex, so the
+   pseudo element has to claim a whole line of its own — otherwise it sits beside the title and
+   gets squeezed into vertical text. */
+.wbo-enhanced-searching .gr-option[data-wbo-search-head] {
+    flex-wrap: wrap;
+    align-items: flex-start;
+}
+
+.wbo-enhanced-searching .gr-option[data-wbo-search-head]::before {
+    content: attr(data-wbo-search-head);
+    flex: 0 0 100%;
+    width: 100%;
+    display: block;
+    padding: 4px 8px;
+    font-weight: 600;
+    font-size: 0.92em;
+    line-height: 1.4;
+    white-space: normal;
+    writing-mode: horizontal-tb;
+    text-shadow: none;
+    box-shadow: none;
+    opacity: 0.85;
+}
+
+/* A group without hits is removed entirely, so no tall blank strip is left behind. */
+.wbo-enhanced-searching .wbo-pop-section.wbo-enhanced-section-hidden {
+    display: none !important;
+}
+
+/* Shown by the plugin when the term matches nothing at all. */
+.wbo-enhanced-search-empty {
+    padding: 10px 8px;
+    font-size: 0.94em;
+    opacity: 0.75;
+    white-space: normal;
+}
+
+/* Tap-to-open diagnostic chooser (works on touch, no hover required). */
+.wbo-diag-menu {
+    position: fixed;
+    z-index: 100000;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 240px;
+    padding: 8px;
+    border-radius: 10px;
+    border: 1px solid var(--wbo-border-strong, rgba(128, 128, 128, 0.45));
+    background: var(--wbo-surface, #232429);
+    color: var(--wbo-fg, #e7e7e4);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.wbo-diag-menu button {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.28));
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.wbo-diag-menu button > span {
+    font-size: 0.82em;
+    opacity: 0.68;
+}
+
+.wbo-diag-menu button:active,
+.wbo-diag-menu button:hover {
+    background: rgba(128, 128, 128, 0.16);
+}
+
+.wbo-diag-menu-note {
+    font-size: 0.78em;
+    opacity: 0.6;
+    text-align: center;
+}
+
+/* Group pills above the bind-popup's primary worldbook list (U2). */
+.wbo-bind-dd-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--wbo-border, rgba(128, 128, 128, 0.24));
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+/* A book already listed inside a globals/favorites block must not repeat as a bare row. */
+li.wbo-dd-dupe-hidden {
     display: none !important;
 }
 
@@ -3054,6 +3377,41 @@ li.wbo-dd-group-hidden,
     color: var(--wbo-accent, #4c6ef5);
     font-weight: 600;
     opacity: 1;
+}
+
+.wbo-s2-badge.is-global {
+    background: rgba(107, 141, 133, 0.18);
+    border: 1px solid rgba(107, 141, 133, 0.4);
+    color: #6b8d85;
+    font-weight: 600;
+    opacity: 1;
+}
+
+.wbo-dd-group-note {
+    margin-inline-start: 8px;
+    font-weight: 400;
+    font-size: 0.92em;
+    opacity: 0.72;
+}
+
+/* The former group name is only meaningful inside the flat favorites list. */
+.wbo-s2-badge.is-origin.wbo-origin-hidden {
+    display: none;
+}
+
+.wbo-s2-badge.is-search-match {
+    background: rgba(224, 159, 62, 0.18);
+    border: 1px solid rgba(224, 159, 62, 0.45);
+    color: #d9973a;
+    font-weight: 600;
+    opacity: 1;
+}
+
+.wbo-s2-badge.is-search-origin {
+    background: rgba(128, 128, 128, 0.16);
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    color: inherit;
+    opacity: 0.8;
 }
 
 /* Character / Persona / Chat / Move-entry popup single-row filter bar */
@@ -3737,6 +4095,27 @@ details[open] > summary .wbo-details-chev {
 .wbo-local-divider {
     height: 1px;
     background: var(--wbo-border);
+}
+
+.wbo-exclude-chip.is-excluded {
+    border-style: dashed !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+}
+
+.wbo-exclude-chip.is-excluded .wbo-exclude-chip-name {
+    text-decoration: line-through;
+    text-decoration-thickness: 1.5px;
+}
+
+.wbo-exclude-chip.is-excluded .wbo-pill-dot {
+    opacity: 0.45;
+}
+
+.wbo-exclude-chip-state {
+    font-size: 11px;
+    font-weight: 500;
+    opacity: 0.85;
 }
 
 /* Dedicated Group Management modal */
@@ -7007,10 +7386,26 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     overflow-wrap: anywhere;
 }
 
+/* Original row text is kept in the DOM (host search reads textContent) but never shown. */
+.wbo-orig-text {
+    display: none !important;
+}
+
+/* 角色名 + 原名 放在同一行，只有窄屏（手机）才允许折行 */
 .wbo-gr-world-title > small {
-    display: block;
+    display: inline;
+    margin-inline-start: 6px;
     font-size: 0.78em;
     opacity: 0.72;
+    white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+    .wbo-gr-world-title > small {
+        display: block;
+        margin-inline-start: 0;
+        white-space: normal;
+    }
 }
 
 .wbo-exclude-title-wrap {
@@ -7055,6 +7450,63 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     scrollbar-width: thin;
 }
 
+/* Global combo editor: group pills on the first row, scopes on the second. */
+.wbo-cmb-pill-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* Foldable group headings inside the combo picker (all / non-character views). */
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    width: 100%;
+    background: var(--wbo-bg-elevated, #212226);
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 6px;
+    text-align: start;
+    color: inherit;
+    cursor: pointer;
+}
+
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle:hover {
+    background: var(--wbo-surface-hover, #2c2e34);
+}
+
+.wbo-gp-sec.is-folded .wbo-gp-sec-body {
+    display: none !important;
+}
+
+.wbo-gp-sec.is-folded .wbo-cmb-sec-toggle .wbo-gp-chev {
+    transform: rotate(-90deg);
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle {
+    cursor: default;
+    pointer-events: none;
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle .wbo-gp-chev {
+    visibility: hidden;
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis {
+    border-color: #7f2b2b !important;
+    background: #7f2b2b !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis .wbo-pill-count {
+    opacity: 0.82;
+    color: #ffffff;
+}
+
 .wbo-book-group-switcher > .wbo-pill {
     flex: 0 0 auto;
     white-space: nowrap;
@@ -7065,6 +7517,40 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     flex-direction: column;
     gap: 4px;
     margin-top: 6px;
+}
+
+/* Combo picker: no boxed card around the rows, headings sit right under the search bar. */
+.wbo-cmb-pick-list .wbo-gp-sec {
+    margin-top: 2px;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 6px;
+    padding: 3px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-body {
+    border: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+    gap: 1px;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 4px !important;
+    padding: 2px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row:hover {
+    background: var(--wbo-surface-hover) !important;
 }
 
 .wbo-gp-sec:first-child {
@@ -8418,6 +8904,34 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     font-size: 12px;
 }
 
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-right {
+    justify-content: flex-start;
+}
+
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-left {
+    justify-content: flex-end;
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-ai-footer.wbo-ai-footer-single.wbo-footer-confirm-first .wbo-ai-footer-left {
+        flex: 1 1 0;
+    }
+}
+
+#wbo-cmb-step-edit > .wbo-step-scroll {
+    overflow: hidden !important;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list {
+    flex: 1 1 auto;
+    min-height: 96px;
+    max-height: none;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list ~ .wbo-ai-status {
+    flex-shrink: 0;
+}
+
 /* Customizable AI Organize Presets Bar & Manager Cards */
 .wbo-ai-save-preset-bar {
     display: flex;
@@ -8506,4 +9020,55 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
     .wbo-modal .wbo-input:not([type="search"]) {
         min-height: 34px !important;
     }
+}
+
+.wbo-mp-row-actions {
+    flex-wrap: nowrap !important;
+    min-width: 0;
+    margin-left: auto;
+}
+
+.wbo-mp-row-text {
+    min-width: 0;
+}
+
+.wbo-s2-badge.is-search-origin {
+    max-width: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Search rows: badges must stay complete; only the book title may ellipsize. */
+.wbo-s2-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.wbo-s2-right .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.wbo-s2-main {
+    min-width: 0;
+}
+
+.wbo-mp-row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+    gap: 4px;
+}
+
+.wbo-mp-row-actions .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
 }

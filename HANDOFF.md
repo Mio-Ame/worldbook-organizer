@@ -1,0 +1,176 @@
+# 交接说明：worldbook-organizer v2.35.17 → v2.35.37
+
+## 0. 这份文档是什么
+
+本窗口从 `v2.35.17` 起持续按用户反馈修改插件，累计 20 个提交（全部在 `dev`）。本文件写给接手审查的另一个 agent：包含**全部改动清单**、**用户反馈过的问题（含未解决）**、**关键代码位置**、**测试现状**、**已知风险**。
+
+分支：`dev`，最新提交见 `git log --oneline`。所有测试用 `WBO_E2E_SUITE` 指向 `本轮材料/B03-R2-补充验证/formal-isolated-suite`。
+
+---
+
+## 1. 改动清单（按版本）
+
+| 版本 | 主题 | 关键改动 |
+| --- | --- | --- |
+| 2.35.17 | 反馈修复轮 | B01 选书顺序、B02 组合表单、B03-D01 外点关闭、B04 按钮顺序、B05 分组展开、B06 角色名、B07 iPad 竖屏高度、B08 排除分组语义 |
+| 2.35.18 | 全局下拉折叠 + 敏感书 | 全局下拉「全部」下分组标题可折叠（`layoutGlobalGroupRows`）；敏感检测排除角色组（`analyzeSensitiveOrganizeState`、`sensitiveSet`） |
+| 2.35.19 | 编辑下拉置顶 + 组合页两行 | 编辑下拉当前角色书置顶（`decorateGroupItems` 尾部）；组合页 pill 分两行（`#wbo-cmb-group-pills` / `#wbo-cmb-pills`）、「已选」强调、per-pill 滚动记忆 |
+| 2.35.20 | 主面板常驻块 + 眼睛浮层 | 主面板「已开启的全局世界书」常驻、新增「当前角色世界书」块；眼睛浮层外部点击关闭；编辑下拉「已全局」徽章 |
+| 2.35.21 | 编辑下拉全局块 + 组合页折叠 | `__globals__` 镜像块（≥3 本挂载）；组合页分组折叠（`comboGroupCollapsed`） |
+| 2.35.22 | 主面板折叠 / 组合页强调色 | 全局块可折叠（`activeGlobalGroupCollapsed`）；当前角色按 `charOwners` 全量取书；已选暗红 `#7f2b2b`；全局下拉收藏组恢复折叠记忆 |
+| 2.35.23 | 全局下拉归属 / 会话 pill / 搜索匹配 / 绑定面板 | 既收藏又挂载只进全局块；`_sessionGlobalPillId`；编辑下拉搜索归组（`layoutEditorSearchMatches`）；绑定主世界书改原生 Select2（`groupDesktopSingleWorldSelect`） |
+| 2.35.24 | 收藏块 / 标题 / 组合页样式 / 眼睛二次点击 | 普通下拉「已收藏」镜像块；置顶行回填 `primaryTitle`；组合页去卡片样式；去掉「已选 X 本」徽章；眼睛按 `data-wboGid` 判定二次点击 |
+| 2.35.25 | 收藏计数与提示 | 收藏组标题按收藏总数计数并追加「X 本已全局，位于全局分组」（`.wbo-dd-group-note`） |
+| 2.35.26 | 搜索归组扩到收藏/全局与移动端 | 编辑下拉 PINNED/GLOBALS pill 也归组；移动 picker `renderList` 搜索归组；`原属：X` 徽章 |
+| 2.35.27 | 去掉全局抽屉多余控件 | `#world_info` 不再 attach 自建 trigger（移动模式且宿主无 Select2 例外）；移除自建全局搜索框 |
+| 2.35.28 | 绑定主世界书增强 + 全局不注入 | `enhanceDesktopSingleWorldSelect2`（搜索/optgroup/dropdownParent）；`applyGlobalWorldSelectFilter` 不再注入控件 |
+| 2.35.29 | iOS 全局块 + 绑定默认展开 | 移动 picker 加「全局世界书」pill/section；绑定弹窗 `collapseCharByDefault: false` |
+| 2.35.30 | iOS 当前角色置顶 + 标签 | `getMobileCurrentCharBooks` / `pinCurrentCharRows` / `当前角色` 徽章 |
+| 2.35.31 | 收藏 pill 与绑定初始化 | 组合页 `__pinned__` 不再排除全局书；绑定 Select2 首次检测即初始化 |
+| 2.35.32 | 搜索跨组 + 标签精简 | 移动端搜索跨全部分组、≥2 建组、原属改纯分组名；桌面 `skip` 只保留非搜索；行内布局修复 |
+| 2.35.33 | 绑定分组与显示名 | 去掉「≥2 组才建 optgroup」早退；模板用 `state.element.dataset.wboRealName` 查 `primaryTitle` |
+| 2.35.34 | 标签完整显示 | 徽章 `flex: 0 0 auto`、`max-width: none`；动作区右对齐 |
+| 2.35.35 | 镜像徽章守卫 | `renderSelect2OptionResult` 对镜像行不渲染「当前编辑」徽章（消除竞态） |
+| 2.35.36 | 镜像星标 + 全局搜索放宽 | 镜像行保留 ★；全局下拉搜索时不再按 pill 过滤 |
+| 2.35.37 | 搜索徽章回填 | `decorateGroupItems` 末尾按实时搜索词补「搜索匹配到的世界书」+ 分组名徽章（幂等） |
+
+---
+
+## 2. 用户反馈过的问题（完整清单）
+
+### 已解决（请审查实现是否正确）
+
+1. 主面板「已收藏」单组视图带折叠箭头 → 改静态标题。
+2. 组合页分组顺序：已收藏 → 用户分组 → 未分组（不含角色组）。
+3. 组合页 pill 两行 + 「已选」强调色。
+4. 分组切换滚动位置记忆（任意位置，不只底部）。
+5. 挂载全局书时出现「全局」pill（组合页）。
+6. 全局下拉「全部」下分组可折叠；收藏组默认展开后改为记忆折叠。
+7. 敏感书检测排除角色组。
+8. 全局下拉既收藏又挂载只显示在全局块（后来加计数与「X 本已全局」提示）。
+9. 全局下拉会话级记住最后 pill。
+10. 编辑下拉当前角色书置顶 + 显示名（`primaryTitle`）。
+11. 搜索归类：单本带徽章、多本建组、清空不残留（桌面 + 移动 picker）。
+12. 绑定主世界书：不闪原生框、搜索可用、显示名、就地展开（部分）。
+13. 眼睛浮层：外部点击关闭、再点同眼睛关闭、同时只一个。
+14. 去掉全局抽屉多余的第三个框与自建搜索框（输入法卡住）。
+15. 组合页去掉书单卡片与外层留白、去掉「已选 X 本」。
+16. 徽章不被压缩/截断；★ 右对齐。
+17. 组合页「已收藏」pill 不再空白（不排除全局书）。
+18. **U1 已修（v2.35.38）**：普通下拉里全局书不再显示 2～3 遍，且按用户追加确认的三条口径实现：①「已收藏」块里不再列既收藏又挂载的书，标题旁加「X 本已全局，位于全局分组」；②只有 1～2 本全局时（哪怕有一本是收藏的）不建分组，按「当前角色」那样用原名裸行显示，且不渲染空的「已收藏」标题；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但在原分组里置顶。实现要点：`syncEditorDupeRows()`（`wbo-dd-dupe-hidden`，每轮重算、搜索不隐藏）、`buildEditorMirrorBlock()` 的 `allowEmpty`/`countOverride`/`note`、`hoistPinnedRowsInsideGroups()`、「当前角色」判定跳过镜像行。测试：`native-picker-window` 新增 3 项。
+19. **普通下拉块顺序 / 已全局徽章 / 全局组展开（v2.35.39）**：「已收藏」块排到「全局世界书」块下方（`orderEditorBlocks()`）；1～2 本全局的裸行补上「已全局」徽章（`syncGlobalBadges()` 每轮按实时挂载集合补建，解决 Select2 只渲染一次导致的缺徽章）；点进「全局」pill 直接展开，在其它分组 pill 下默认折叠但点块标题可展开（`forceFold` 让位于 `_isolatedFoldOverride`）。测试：`native-picker-window` 新增 1 项 + 加 2 处断言，28/28。
+20. **增强浮层（兼容脚本 / iOS）全局块与扁平收藏（v2.35.40）**：`enhanceCustomDropdownPopover` 的编辑器路径现在也有「全局世界书」区块（≥3 本，置顶、可折叠、可点开）与 `__globals__` 胶囊；「已收藏」胶囊改为扁平列表（书移入收藏块、原分组区块隐藏、行右侧显示原分组徽章，离开胶囊即还原），已挂载且收藏的书不进收藏块；行内按实时挂载补「已全局」徽章（电脑端 Select2、增强浮层、手机选书面板三处都有）。电脑端 1～2 本全局的裸行改排到「已收藏」**上方**，文案改「显示在上方」。测试：单测 245/245（R6.2、M2 断言按新形态更新）、`native-picker-window` 30/30、`native-favorites-script`/`native-editor-titles`/`native-popover-sweep` 15/15。
+21. **手机选书面板的「全局世界书」区块（v2.35.41）**：用户未启用兼容下拉脚本，iOS 实际走 `openMobileEditorPickeSheet`；该路径此前只有「全局世界书」胶囊，全部视图里 3 本全局仍是裸行、具体分组里完全看不到。现在 ≥3 本时把它们收进可折叠的「全局世界书」区块（`data-mp-globals-sec`）并置顶；分组 pill 下该块仍在上方、默认折叠、点标题可展开。测试：`native-mobile-picker-lifecycle` 23/23（新增 1 项）。电脑端「1～2 本全局缺已全局徽章」按用户要求**暂不处理**。
+
+### 未解决 / 部分解决（请接手修复）
+
+| # | 问题 | 现状与线索 |
+| --- | --- | --- |
+| U1 | ~~电脑端普通下拉全局书重复~~ | **已解决（v2.35.38）**，口径见上。残留小问题：当前角色书自己就是挂载全局书时，块内副本被隐藏、只留顶部置顶行，块头计数仍按全量；隐藏行仍在 Select2 的 `[aria-selected]` 集合里（与既有隐藏类同性质）。 |
+| U2 | ~~绑定弹窗没有分组切换胶囊~~ | **已解决（v2.35.45）**：`attachBindWorldGroupPills()` 按 optgroup 生成「全部 + 各分组」胶囊，点选只显示对应 optgroup，关闭下拉即拆除，不写设置。 |
+| U3 | ~~增强浮层无「全局世界书」块 / 无搜索归组~~ | **已解决（v2.35.40 + v2.35.55）**：全局块、`__globals__` 胶囊、扁平收藏块、原分组徽章，以及搜索时按 `syncEnhancedSearchBlock()` 归到「搜索匹配到的世界书 (N)」。 |
+| U4 | iOS 全局搜索 `NO RESULTS FOUND` | **未再复现**：用户实际走的是手机选书面板；全局下拉搜索已在 v2.35.44 改为跨分组。保留为观察项，需真机证据再动。 |
+| U5 | ~~电脑端全局下拉搜索没有「搜索匹配到的世界书」分组~~ | **已解决（v2.35.42）**：`layoutGlobalSearchMatches()` 把命中行收进 `__search_matches__` 标题块（≥2 本）、单本给徽章、每行补原分组徽章，清空搜索即撤。残留：增强浮层（兼容脚本）路径的搜索归组未与这条合并。 |
+| U6 | ~~当前角色显示名在普通下拉又变原名~~ | **已解决（v2.35.50）**：诊断证明分类层完全正确（69/69 有归属），真因是宿主自渲染行；`resolveRowWorldName()` + `matchKnownWorldName()` 认书后升级行结构，`syncRowTitles()` 兜底标题。 |
+| U7 | 组合页默认进入「已收藏」 | 仍未做（会破坏 `organize-combos` 两个用例，需连引导/滚动记忆一起改） |
+| U8 | ~~普通下拉全局块阈值与命名~~ | **已解决（v2.35.78→2.35.91）**：阈值改为 **≥1 本**、标题统一「已开启的全局世界书 (N)」；两个下拉都建块并置顶，`enh-globals:` / `enh-order:` 有判据。 |
+| U9 | ~~`参考仓库/下拉框美化.json` 兼容~~ | **已验证（v2.35.55）**：真脚本 eval 进页面后打开编辑器下拉，滤镜条/分组块/★都在、无重复行、无报错；仍建议真机复核一次。 |
+| U10 | 点原生世界书抽屉其它位置会关闭抽屉 | **已缓解（v2.35.74→2.35.90）**：`installDrawerOpenGuard()` 在增强浮层与 Select2 两条全局下拉路径都装守卫，打开后 30/120/260ms + class 变化时恢复一次，trace 记 `drawer:kept-open@…`；用户实测已出现该 trace。左侧“点抽屉空白仍会收起”属 ST 自身行为，未干预。 |
+
+---
+
+## 3. 关键代码位置
+
+- `src/native-filter.js`
+  - `applyGlobalWorldSelectFilter`（约 1324）：全局抽屉不再注入控件。
+  - `openMobileEditorPickerSheet` / `renderList` / `renderPills`（约 2000-2400）：移动选书；`getMobileGlobalBooks`、`getMobileCurrentCharBooks`、`pinCurrentCharRows`、搜索归组。
+  - `enhanceDesktopSingleWorldSelect2` / `renderSingleWorldResult` / `renderSingleWorldSelection` / `groupDesktopSingleWorldSelect`（约 3945-4070）：绑定弹窗主世界书。
+  - `enhanceCharBindPopup`（约 4110）：绑定弹窗入口（桌面/移动分支）。
+  - `enhanceOpenEditorDropdown` / `decorateGroupItems` / `layoutEditorGlobalBlock` / `layoutEditorSearchMatches`（约 4290-4750）：编辑下拉分组、镜像块、搜索归组、徽章回填。
+  - `enhanceOpenGlobalDropdown` / `layoutGlobalGroupRows`（约 4900-5150）：全局下拉分组、会话 pill、收藏计数。
+- `src/panel-quick.js`
+  - `openGroupVisibilityPopover`（约 1578）：眼睛浮层。
+  - `openEditView` / `applyEditFilters` / pill 处理（约 727-1010）：组合页两行 pill、折叠、滚动记忆、`__pinned__` 过滤。
+- `src/panel-manager.js`
+  - `pushOverviewPinnedSections`、`currentCharBooks`、`activeGlobalGroupCollapsed`、PINNED 单组视图（约 2740-2900）。
+- `src/core.js`
+  - `analyzeSensitiveOrganizeState`（约 3033）、`currentCharGroupCollapsed` / `activeGlobalGroupCollapsed` / `comboGroupCollapsed` 默认值。
+- `style.css`
+  - `.wbo-cmb-pill-rows`、`.wbo-pill.is-emphasis`、`.wbo-dd-group-note`、`.wbo-s2-badge.is-search-*`、`.wbo-mp-row-actions`、`.wbo-s2-right`。
+
+---
+
+## 4. 测试现状
+
+- 单测：`node --test tests/*.test.mjs` → 245/245 通过。
+- 浏览器：`WBO_E2E_SUITE=… node --test tests/*.browser.mjs`。
+  - v2.35.38 复跑：`native-picker-window` 26/26、`native-mobile-picker-lifecycle` 22/22、`native-global-drawer` 8/8、`organize-combos` 8/8、`native-favorites-touch` 6/6、`native-extras-cleanup` 2/2、`feedback-round`／`native-editor-titles`／`native-empty-groups`／`native-favorites-script` 全通过。
+  - 环境性失败（本机无 playwright）：`floating-window`、`manager-favorites`、`prompt-preview`、`manager-tools` 的触屏用例。
+  - 偶发：`feedback-round` 某些用例在全量并发时超时，单文件复跑通过。
+- 新增测试：`native-picker-window` 中的镜像块、会话 pill、编辑下拉置顶/徽章、眼睛二次点击、绑定弹窗 optgroup、搜索单本/多本；`organize-combos` 中的 pill 两行、强调色、滚动记忆、折叠；v2.35.38 的两项去重用例（`editor dropdown shows every global book once…`、`editor dropdown lists a pinned global only once below the globals threshold`）。
+
+---
+
+## 5. 已知风险 / 审查建议
+
+1. **去重用的隐藏类**（U1 修法）：`syncEditorDupeRows` 给真实行加 `wbo-dd-dupe-hidden`（`display:none`），每轮 `decorateGroupItems` 先清空再加，幂等；搜索期间跳过。审查重点：① 角色书自己就是挂载全局书时，块内那份克隆被隐藏、只留顶部置顶行，块头计数仍是全量；② 隐藏行仍留在 Select2 的 `[aria-selected]` 集合里，键盘上下可能短暂落在不可见行（与既有 `wbo-dd-group-hidden`／`wbo-dd-pin-hidden` 同性质，未新增风险类别）；③ 若将来把「块收录的书」改成真实行搬进块内，`syncEditorDupeRows` 与镜像事件管线要一并重写。
+2. **`renderSelect2OptionResult` 的镜像判断**依赖 `state.element`，若某些 Select2 版本不传该字段，徽章守卫会失效（有兜底清理）。
+3. **搜索徽章回填**每次 `decorateGroupItems` 执行，若行被频繁重建可能抖动；已用存在性判断收敛。
+4. **全局下拉搜索放宽**后，非匹配 pill 的行可能短暂可见（Select2 matcher 仍会过滤，需复核）。
+5. **绑定主世界书**主动初始化 Select2 可能覆盖宿主后续初始化，需在真实 ST 验证是否重复初始化。
+6. **`_sessionGlobalPillId` 为页面级内存**，刷新即失；若用户期望持久化需改设置。
+7. **移动端两条渲染路径**（mobile picker / 增强浮层）逻辑重复且已漂移，建议后续合并为一套。
+8. **所有改动均为模拟视口验证**，未在真实 iOS/TauriTavern 与真实 ST 1.19 上验证；U3/U4/U9/U10 都需要真机证据。
+9. **普通收藏（未挂载）仍是「已收藏」块 + 原分组各一份**：用户 2026-11-28 明确要求保持这样，并要求收藏书在原分组里置顶（`hoistPinnedRowsInsideGroups`）。以后若要改成「只出现一次」，需连这条口径一起改。
+
+---
+
+## 6. 建议接手顺序
+
+1. ~~U1（去重）~~ 已在 v2.35.38 完成；若用户要「普通收藏也只出现一次」，接一段与该改动同源的收尾。
+2. U5（全局下拉搜索分组）——与 U1 相邻，可共用一套「临时分组」实现。
+3. U3 + U4（iOS 增强浮层）——合并两条渲染路径后再改。
+4. U6（显示名回归）——回 core 层修 `charBookTitleMode`。
+5. U2、U7、U8、U9、U10 按用户优先级排。
+
+---
+
+## 7. 提交流程约定（用户要求）
+
+- 每次改完直接推 `dev`，并在回复里给「重点检查」清单。
+- 用户是产品决策者，遇到歧义先确认（他多次纠正过理解）。
+- 不要擅自改动酒馆原生展示（用户明确要求）。
+
+---
+
+## 8.5 2026-11-28 第三轮（v2.35.55 → v2.35.95）
+
+- **美花脚本浮层搜索**：改为插件自绘面板（就地替换宿主列表，`.wbo-enhanced-search-panel.is-in-flow`）；全局下拉同样适用，行点击在编辑器=切书、在全局=切换启用（✓ 标记）；搜索不认分组胶囊。
+- **面板稳健性**：按容器单例、`pointerdown` 保住搜索框焦点、`pointerup` 拾取、几何夹进视口、监听 resize/visualViewport；清除时统一解绑监听与抽屉守卫。
+- **置顶模型**：两个下拉都建「已开启的全局世界书 (N)」块（阈值 ≥1），固定排在「选择以编辑」之后；当前角色书（`extensions.world`）紧随其后置顶；已收藏块说明改为标题内联 span「其中 N 本已全局，显示在上方」；已收藏胶囊内可直接关闭全局书。
+- **记忆**：全局下拉与编辑器下拉**各自**记忆 pill（`globalPillGroupId` / `activePillGroupId`），`__globals__` 在两端都登记为合法 id；保存值优先于容器旧状态。
+- **不再整页滚动**：把编辑中的书带进视野改为只调整浮层滚动宿主的 `scrollTop`，禁用 `scrollIntoView`。
+- **诊断**：`enh-search:raw/tokens/ws`、`enh-metrics:rows/visible/hostH/panelH/pageScroll`、`enh-globals:*`、`enh-order:`（顺序指纹）、`enh-pill:*`、`drawer:kept-open@*`、`ime`、`scriptFlips`/`themeFlips`、`dom` 增加 `pageScrollTop/bodyScrollTop/popoverH/listHostH/searchPanelH/hiddenRowsInline/sectionHidden`；短报告新增「快检」行；`stVersion` 多级兜底 + `tauriVersion`。
+- **dev 悬浮球**：`DEV_QUICK_DIAG_BALL = true`（单击详细、双击简短）。**合并 main 前必须改为 `false`**（否则 main 也带悬浮球）。
+- **通用约定**：`插件与工具/AGENT.md`（并复制到插件根）规定诊断字段、必须覆盖的检测面、修复后「重点检查」表格（含判据）、以及同一现象 2 轮修不好立即引入只读审查 agent。
+- **已知限制**：搜索框只输入一个空格会留少量空行（宿主自身过滤所致，用户决定不修）。
+- **未完成**：U7（组合页默认进入「已收藏」）。
+
+---
+
+## 8. 2026-11-28 第二轮（v2.35.38 → v2.35.54）
+- **U1 去重**（v2.35.38–.41）：普通下拉里挂载的全局书不再显示 2～3 遍（`syncEditorDupeRows` 隐藏重复真实行）；「已收藏」块只留标题 + 计数说明；1～2 本全局按裸行走、排在已收藏上方；手机选书面板补「全局世界书」区块。
+- **U5 全局下拉搜索归组**（v2.35.42–.43）：命中 ≥2 本收进 `__search_matches__` 标题块，1 本给徽章；搜索值改为实时读取搜索框；≥3 本去掉行内徽章；勾选挂载后下一帧重新分桶（不再停留在已收藏）。
+- **U2 绑定弹窗胶囊**（v2.35.45）：主世界书下拉挂「全部 + 各分组」胶囊。
+- **U6 标题真因**（v2.35.46–.50）：`ensureEditorRowMarkup()` 把宿主自渲染行升级成插件结构；`resolveRowWorldName()` / `matchKnownWorldName()` 用 Select2 数据与前缀匹配认书；`syncRowTitles()` 对角色组做标题兜底。
+- **诊断体系**（v2.35.48–.54）：设置页「诊断」按钮弹出菜单（触屏可用），「复制简要诊断」约 10 行可贴 Discord，「下载详细诊断」生成 .txt；仅含结构、计数与短哈希，不含任何书名/角色名（有测试断言）；菜单配色跟随主题。
+- **美化脚本检测**（v2.35.53）：`detectEnhancedScriptSignals()` / `isEnhancedScriptActive()` + 新设置 `enhancedScriptMode: auto|on|off`，设置页永远显示适配卡并给出识别结论。
+- 测试基线：单测 245/245；`native-picker-window` 33/33、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23、`native-global-drawer` 8/8、`organize-combos` 8/8。
+
+### 仍待处理
+
+1. **U3 增强浮层搜索归组**（唯一明确缺口）：增强浮层搜索时没有「搜索匹配到的世界书」分组。
+2. **U7** 组合页默认进入「已收藏」：会牵动 `organize-combos` 两个用例与引导/滚动记忆。
+3. **U8** 全局块阈值（≥3 本）与命名是否符合预期 —— 需要用户拍板。
+4. **U9** 与下拉框美化脚本的隔离验证（用户现在开着该脚本，可借机核对镜像块/分组头/搜索框）。
+5. **U10** 点原生抽屉其它位置会关闭抽屉（疑似 ST 原生行为，需真机复核）。

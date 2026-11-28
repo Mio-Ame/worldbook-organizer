@@ -93,7 +93,9 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
     };
 
     const sensitiveSet = new Set(
-        allBooks.filter((b) => isPotentiallySensitiveTitle(b.realName)).map((b) => b.realName),
+        allBooks
+            .filter((b) => !b.isInCharGroup && isPotentiallySensitiveTitle(b.realName))
+            .map((b) => b.realName),
     );
     const isDefaultAiPick = (book) => book.groupId === SPECIAL_GROUPS.UNGROUPED && !sensitiveSet.has(book.realName);
     const defaultChecked = new Set(classification.ungroupedBooks.filter(isDefaultAiPick).map((book) => book.realName));
@@ -574,8 +576,8 @@ function openAiOrganizeModal({ initialTab = null } = {}) {
                 <div class="wbo-ai-status" id="wbo-ai-preview-status"></div>
                 </div>
                 <div class="wbo-modal-footer wbo-pinned-footer wbo-footer-pair">
-                    <button type="button" class="wbo-btn" id="wbo-ai-cancel-btn">取消</button>
                     <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-ai-apply-btn">确认应用</button>
+                    <button type="button" class="wbo-btn" id="wbo-ai-cancel-btn">取消</button>
                 </div>
             </div>
         `,

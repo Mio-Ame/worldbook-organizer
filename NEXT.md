@@ -1,6 +1,978 @@
+### 手机窄屏设置面板按钮溢出修复 + HANDOFF 收尾（2026-11-28 · v2.35.95）
+- 用户反馈：手机端设置面板变窄时「导出配置」「导入配置」文字溢出按钮；并要求 main 版删除诊断悬浮球。
+- 修复（`style.css` `.wbo-modal-footer.wbo-pinned-footer`）：
+  - 页脚改 `flex-wrap: wrap` + `gap`，按钮 `min-width:0 / max-width:100% / white-space:normal / overflow-wrap:anywhere`，文字在按钮内折行而不再溢出；
+  - `<480px`：按钮字号与内边距收紧，隐藏 `wbo-spacer`，「完成」独占一行（`flex:1 1 100%`）保证可点。
+- 文档：`HANDOFF.md` 更新 U8（阈值 ≥1 与命名，已解决）、U10（抽屉守卫两条路径，已缓解），新增「第三轮（v2.35.55 → v2.35.95）」章节；明确标注 **合并 main 前把 `DEV_QUICK_DIAG_BALL` 改为 false**。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 并发偶发超时，单独通过）。
+
+### 单独空格问题不再追（已知限制）· 回退实验分支（2026-11-28 · v2.35.94）
+- 用户决定：只在搜索框输入**一个空格**导致少量空行的情况不再投入修复（真实用户不会这样输入）。
+- 处理：回退 v2.35.93 的「纯空白→自绘全量列表」实验分支，恢复为「空白视为无搜索、撤面板、交由宿主渲染」，避免留下一个意外的全量平铺行为。
+- 保留的仍是纯诊断能力：`enh-search:raw=<长度>,tokens=<n>,ws=<0|1>` 与 `enh-metrics:rows,visible,hostH,panelH,pageScroll`、`dom` 里的像素/滚动字段——将来同类问题仍可直接读出数据。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 空格搜索不再留白 + 搜索/显隐/像素检测（2026-11-28 · v2.35.93）
+- 用户补充：是**输入空格时**就出现几行空白（不是删掉空格后）；报告里只有 `key:Backspac`，说明空格那一下没有任何 trace，属于盲区。
+- 修复（`src/native-filter.js`）：
+  - `syncEnhancedSearchBlock()` 现在**无条件**记录输入状态：`enh-search:raw=<长度>,tokens=<n>,ws=<0|1>,role=…`；纯空白时追加 `enh-search:whitespace-restore`。
+  - 纯空白输入时，除了撤面板，还在 `requestAnimationFrame` 与 120ms 后各做一次行级清理（宿主自己的过滤在我们之后执行，只在同步阶段清理会被它覆盖），确保不残留空白行。
+  - 新增几何/显隐快照 trace：`enh-metrics:rows=,visible=,hostH=,panelH=,pageScroll=`。
+  - `diagDomSnapshot()` 增加像素与滚动字段：`pageScrollTop`、`bodyScrollTop`、`popoverH`、`listHostH`、`searchPanelH`、`hiddenRowsInline`、`sectionHidden`——「页面被滚动」「列表被压成 0 高」「行被内联隐藏」这三类问题可直接读出。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 空白搜索词不再留下空行（2026-11-28 · v2.35.92）
+- 用户验证（v2.35.91）：`enh-globals:char-book-pinned=1`、`enh-order:ph>charBook>globals>pinned>row>row>group>group` —— 当前角色书置顶与排列顺序均已正确；剩下「在搜索框敲一个空格 → 出现几行空白，删掉空格即恢复」。
+- 原因：纯空白词被拆成 0 个 token，我们直接走「清空搜索」分支，但**宿主自己**已按空格过滤并隐藏了若干行，而我们的清理只撤掉面板，没有回收行级隐藏。
+- 修复（`src/native-filter.js` `removeEnhancedSearchPanel()`）：撤面板的同时清理 `.wbo-enhanced-search-hidden`、`.wbo-pop-search-hidden`、`.gr-option-hidden` 及其内联 `display:none`/`hidden`，并清掉 `.wbo-enhanced-section-hidden` 与空态提示，列表立即复原。
+- 关于「自动滚到视野后有小幅回弹」：那是 `edited-revealed` 的居中滚动被宿主的滚动恢复逻辑纠回，属于正常收尾，不影响可用性；若希望完全不动，可在设置里关掉自动滚动（后续可加开关）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 当前角色书定位改从宿主上下文取 + 顺序指纹 + AGENT.md 补全（2026-11-28 · v2.35.91）
+- 用户 v2.35.90 诊断：`enh-globals:char-book-pinned=0` —— 两条查找路径（分类 `charOwners`、行文本匹配）都没命中，所以当前角色书仍未置顶。
+- 修复（`src/native-filter.js`）：
+  - 优先直接从宿主上下文取绑定书：`getHostContext().characters` 里当前角色（`currentChatCharName()`）的 `data.extensions.world`；取不到才退回分类 `charOwners`。
+  - 行定位先走 `<option>` 值：按 option 的 `value` 直接找 `row.dataset.value`，避免行文本被改写后匹配失败；再退回 `resolveEnhancedRowMeta` / 前缀匹配。
+  - 新增**顺序指纹** trace：`enh-order:ph>charBook>globals>pinned>group`（前 8 项），顺序类问题可被直接证明。
+- `AGENT.md`（插件外通用 + 插件内同步）新增：
+  - 「必须覆盖的检测面」清单表（版本/环境抖动/渲染路径/排列顺序/元素定位/可见性/视口/交互流/状态机/失败面）；
+  - 「修复后必须交付重点检查清单」表格规范（检查项 / 操作 / 期望 / **判据**），没有判据不算完成；
+  - 升级机制写死：同一现象连续 2 轮修不好 → 立刻引入另一个 agent 只读审查，材料给文件路径 + diff + 最近 3 份诊断。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 修复整页被滚动 + 快检/脚本与主题切换检测（2026-11-28 · v2.35.90）
+- 用户反馈：v2.35.89 后**整个酒馆页面上移**、顶栏跑出视口无法点击（必须刷新），以及「当前角色世界书又按原名显示」。
+- 根因：`editedRow.scrollIntoView()` 会连带滚动**整页**（行不在可滚容器内或宿主布局用 body 滚动）。
+- 修复（`src/native-filter.js`）：改为只操作浮层自己的滚动宿主——测量行与宿主的 rect，仅在行超出可视区时按 `scrollTop += delta` **居中**，绝不调用 `scrollIntoView`。
+- 诊断增强：
+  - 短报告新增 `快检` 行：`角色书名正常/异常N`、`全局块=1/0,count,pinnedMounted`、`脚本稳定/切换记录`、`主题切换N`；
+  - 新增 `scriptFlips`（美化脚本开→关→开的带时间记录）与 `themeFlips`（主题切换的哈希记录），详细 JSON 一并输出；
+  - `isEnhancedScriptActive()` 与主题读取处都会写这两个历史，因此「先关后开后关」能被检出。
+- 测试：诊断短报告行数上限从 12 放宽到 14（新增快检行）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 当前角色书置顶、编辑书滚动到视野、AGENT.md 通用约定（2026-11-28 · v2.35.89）
+- 用户澄清需求：①「当前角色世界书」应固定置顶（不是被编辑的那本）；② 选中另一本开始编辑时，希望**滚动到它**（保留在原分组原位，不搬走）；③ 询问无脚本路径是否有同样问题；④ 把「诊断 + 悬浮球 + 反复修不好就换 agent」写进所有插件的通用约定。
+- 诊断证据（v2.35.87/88）：`enh-globals:current-moved=1|0` 不稳定，且搬动的是「正在编辑的书」，与用户期望相反。
+- 修复（`src/native-filter.js`）：
+  - 拆成两件事：**当前角色书**（按 `currentChatCharName()` + `meta.charOwners` 定位）移到占位行下方置顶 → trace `enh-globals:char-book-pinned=1|0`；
+  - **正在编辑的书**不再搬离原分组，改为 `scrollIntoView({ block: "center" })` 让它出现在视野 → trace `enh-globals:edited-revealed=1`；
+  - 占位行文案仍同步为书名（`enh-globals:placeholder-titled=1`）。
+- 无脚本（Select2）路径：已有独立的 `__current_char_book__` 置顶块逻辑，不需要同样修补；本轮未改动该路径。
+- 新增 `F:\MyAiProject\01-酒馆-ST\插件与工具\AGENT.md` 并复制到本插件根目录：约定「诊断必须包含 env(含宿主版本)/counts/flags/actions/ui(带时间戳)/trace/errors/dom/runs」「必须内置 dev 悬浮球（单击详细、双击简短，main 关闭）」「同一现象 2 轮修不好立刻引入另一个 agent 只读审查」「回复必须给验证结果」。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 当前书「移动」到最顶（不是复制）+ 更宽松的行匹配（2026-11-28 · v2.35.88）
+- 用户 v2.35.87 反馈：当前角色世界书仍在「已收藏」下方，且「选择以编辑」没被替换。诊断里 `enh-globals:placeholder-titled=1` 说明我们改的是**另一行**占位，不是脚本显示的那行。
+- 修复（`src/native-filter.js`）：
+  - 找行改用 `resolveEnhancedRowMeta(row)?.realName || getOptionText(row)`，再用 `matchKnownWorldName()` 兜底前缀匹配，避免「名字对不上 → 什么都没动」。
+  - 行为改为**移动**该行到 `children[placeholders.length]`（提示行正下方、所有块之上），不再另建行；trace 分 `enh-globals:current-moved=1|0`。
+  - 占位行文案继续同步为 `meta.primaryTitle`。
+  - `insertBefore` 的锚点为空时改用 `appendChild`（mock DOM 下 undefined 锚点会抛错）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 占位行承担当前书名、诊断时间戳、dev 悬浮球（2026-11-28 · v2.35.87）
+- 用户反馈：① 当前角色世界书又出现在「已收藏」下方，按脚本逻辑应当**替换**「选择以编辑」这一行而不是另起一行；② 希望 dev 版加一个悬浮球直接导出诊断（main 不需要）；③ 诊断里的操作要不要带时间。
+- 修复（`src/native-filter.js`）：
+  - 删除「额外置顶一行」的做法（`enh-globals:current-hoisted`）；改为把占位行的文案改成当前书名（有选中取选中，否则回退当前聊天角色绑定的书，用 `primaryTitle`），trace 记 `enh-globals:placeholder-titled=1`。列表里不再出现重复的当前书行。
+  - `pushDiagUi()` 每条记录前加 `+123.4s`（相对页面加载的 performance.now），报告可直接按时间线读；环形缓冲 30 → 40 条。
+  - 新增 `DEV_QUICK_DIAG_BALL`（当前 true）：右下角 🩺 悬浮球，单击导出**详细**诊断、双击导出简短版；`installQuickDiagBall()` 在诊断安装处调用，`main` 合并前把该常量改为 false 即可。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 全局下拉也登记全局胶囊 + 当前书置顶提到最前（2026-11-28 · v2.35.86）
+- 用户 v2.35.84 诊断关键行：`enh-pill:open=__pinned__,hasMemory=1,remembered=__globals__,role=global` —— 记忆里存的是 `__globals__`，但 `validGroupIds` 在**全局下拉**里没有这个 id，校验失败后回退到容器旧状态（已收藏）。
+- 修复（`src/native-filter.js`）：
+  - `activeGlobalCount` 对全局下拉改用 `getActiveGlobalWorldSet().size`，两端都登记 `EDITOR_GLOBALS_GROUP_ID`（仍不登记 `★已收藏`，避免改变全局下拉初始分组）。
+  - 「当前书置顶」重做：改为在**占位行归位之后**插入到 `children[placeholders.length]` 位置，因此一定紧跟「选择以编辑」下方、在已收藏说明与全局块之上；无选中值时回退到当前聊天角色绑定的书（`currentChatCharName()` + `meta.charOwners`）。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 并发下偶发超时，单独通过）。
+
+### 已收藏说明行内联、行归位、全局下拉也带提示（2026-11-28 · v2.35.85）
+- 用户反馈（SillyTavern 1.19 / Edge）：①「已收藏」展开后是空的，只剩一行说明；② 说明应在标题**同一行**、文案不要「在此可关闭」；③ 全局下拉里「既是已收藏又是全局」的书缺少小字提示；④ 询问无脚本（Select2）路径是否也有分组记忆问题。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - 说明行改为挂在**分组标题内**的 `<span class="wbo-dd-group-note">`，文案 `其中 N 本已全局，显示在上方`；宽屏 `display:inline`（与标题同行），`<680px` 才换行。
+  - 「已收藏」空掉的根因：`favoriteOptionHomes` 在构建分组前抓到的是扁平宿主，恢复时行被追加到分组**外面**。现在按 `meta.groupId` 找 `.wbo-pop-section[data-wbo-dd-group="…"] .wbo-pop-group-body` 归位，抓不到才用旧引用。
+  - 全局下拉的「已开启的全局世界书」标题也加提示：`其中 N 本同时也是已收藏`。
+  - Select2（无脚本）路径：分组只在 ≥3 本全局时才创建，且一旦创建 id 就已在合法分组内，因此**不存在**同样的记忆缺陷；恢复原阈值 `>= 3`，不改变无脚本用户的既有行为。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 用例并发下偶发超时，单独跑通过）。
+
+### 记住「全局世界书」胶囊的选择（2026-11-28 · v2.35.84）
+- 用户定位到：切到「全局世界书」分组后重开下拉会跳回「已收藏」，切其它分组正常。
+- 原因：`EDITOR_GLOBALS_GROUP_ID` 只有在「编辑器下拉且 ≥3 本全局」时才被加入 `validGroupIds`；记忆里存的是这个 id，重开时被判为非法 → 回退默认。
+- 修复（`src/native-filter.js`）：门槛改为该下拉存在 ≥1 本已全局书即登记该 pill（全局下拉不登记，避免改变其初始 pill 与滚动行为）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 已收藏可关闭全局、说明行、提示行置顶（2026-11-28 · v2.35.83）
+- 用户反馈（SillyTavern 1.19 / Edge）：①「已收藏」里无法关闭已开启的全局书；②「选择以编辑」跑到已收藏分组后面；③「已收藏」旁缺少「X 本已全局」的说明，看起来像空分组；④ 建议诊断里检测「既是全局又是收藏」。
+- 修复（`src/native-filter.js`）：
+  - 新增 `mountedAndPinned`：既是已收藏又是已全局的行。`★已收藏` 胶囊激活时把它们一并放进扁平列表，所以可以直接在这里关掉全局（离开该胶囊后归位到置顶块）。
+  - `★已收藏 (N)` 的 N 现在包含这些书；并在列表顶部加说明行 `.wbo-dd-group-note`：「其中 K 本已全局，显示在上方；在此可关闭」。
+  - 「选择以编辑」占位行在构建完所有块之后**统一移到最前**（倒序插入保持原有顺序），不再被置顶块/已收藏块挤下去。
+  - 诊断：`enh-globals:…,pinnedMounted=K` —— 直接给出「既是全局又是收藏」的数量。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 分组记忆改为 DOM 级兜底 + 诊断（2026-11-28 · v2.35.82）
+- 用户（TauriTavern / iOS，v2.35.80）：全局下拉切分组后重开仍回到「已收藏」；报告里 `enh-globals:block=1,count=6,role=global` 说明置顶块已正常。
+- 原因排查：之前记忆只写在某个点击处理器里，若宿主脚本自己接管/重绑 pill 点击，记忆就写不进去，重开只能回默认值。
+- 修复（`src/native-filter.js`）：
+  - 记忆下沉到模块级 `rememberDropdownPill(role, gid)`；全局与编辑器各自独立字段（`globalPillGroupId` / `activePillGroupId`）。
+  - 浮层容器上再加一层 **capture `click`** 监听：只要点到 `.wbo-dd-pill` 就写记忆，不依赖任何具体处理器。
+  - 新增诊断：`enh-pill:open=<pill>,hasMemory=0|1,remembered=<pill>,role=…` 与 `enh-pill:remember=<pill>,role=…`，可确认“有没有记住/有没有读回”。
+  - `isActiveGlobalName()` / `isGloballySelected()` 增加 `select.options` 兜底与 try/catch：参考脚本的模拟宿主里 `#world_info` 不是原生 select，之前会抛错导致整个增强中断（`coexist` 用例因此失败）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 「选择以编辑」保持在最上、当前编辑书置顶（2026-11-28 · v2.35.81）
+- 用户反馈：普通下拉里脚本自带的「选择以编辑」提示行被我们的「已开启的全局世界书」块挤到下面；正在编辑的那本书也没有置顶。
+- 修复（`src/native-filter.js`）：
+  - 记录占位行位置 `topAnchor`（`placeholders` 最后一个之后的节点），置顶块改为插到 `topAnchor` 之前而不是 `firstChild`，因此「选择以编辑」始终在最上面（与原生一致）。
+  - 新增「当前编辑书置顶」：按 `#world_editor_select` 的当前 value 找到对应行，插到置顶块之前（也就是占位行下方第一行），并记 `enh-globals:current-hoisted=1`。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 全局下拉也有「已开启的全局世界书」置顶块（2026-11-28 · v2.35.80）
+- 用户（TauriTavern / iOS）：全局下拉里既没有「已开启的全局世界书」分组，全局书也没有被顶到最上面；并提示可能与美化脚本自身的「置顶」功能冲突。
+- 真正原因：这段置顶块的代码整体被包在 `if (!isGlobalPopover)` 里——**只对编辑器下拉生效**，全局下拉从来没建过这个块，与脚本的置顶无关。
+- 修复（`src/native-filter.js`）：
+  - 置顶块改为**两个下拉都建**：新增 `isActiveGlobalName()`，编辑器看 `editorActiveGlobals`、全局看 `#world_info` 中被选中的 option；命中行移入该块并插到列表最前面。
+  - `syncSpecialSections()` 不再对全局下拉整体早退（只跳过「已收藏」扁平列表那段），保证置顶块在全局下拉里也参与显示/折叠，且任何 pill 下都在最上方。
+  - 新增诊断面包屑 `enh-globals:block=0|1,count=N,role=global|editor`，下次报告可直接确认块有没有建、几本。
+- 测试更新：全局下拉用例改为断言「置顶块在最前 + 首行是全局书」；编辑器 pin 按钮用例选择器从 `> .gr-option` 改为后代选择器（行已移入分组容器内）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（其中一条并发下偶发超时，单独跑通过）。
+
+### 全局下拉重开时优先使用保存的分组（2026-11-28 · v2.35.79）
+- 用户（TauriTavern / iOS）：关闭全局选择框再打开，又默认回到「已收藏」。
+- 诊断证据：每次重开 `ui` 里紧跟 `down:button.wbo-dd-pill.is-pinned-all`，即活动 pill 仍是「已收藏」；`trace` 显示搜索面板正常。
+- 原因：全局下拉重开时 `containerEl` 被复用，`_wboPopState.getActivePillId()` 仍返回创建时的「已收藏」，而它在优先级里排在记忆之前，把用户选择覆盖掉。
+- 修复（`src/native-filter.js`）：优先级改为 **保存的分组 > 容器旧运行态 > 首次默认「已收藏」**；并且首帧渲染不再把默认值写入记忆（仅当尚无记忆时初始化）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 美化脚本下拉里始终显示「已开启的全局世界书」置顶块（2026-11-28 · v2.35.78）
+- 用户澄清：装美化脚本后，**已设为全局的世界书没有置顶**，也没有原生那种「已开启的全局世界书」分组（原生/无脚本时两者都有）。
+- 原因：增强浮层里这个置顶块的门槛是 `mountedGlobalOptions.length >= 3`（早前为减少干扰定的），只有 1–2 本全局书时整块不渲染，全局书就散落在各自分组里。
+- 修复（`src/native-filter.js`）：门槛降到 `>= 1`，标题改为与原生一致的「已开启的全局世界书 (N)」，仍固定插在列表最前面（在「已收藏」之前），且这些书只出现在该块里（不进原分组、不进扁平收藏）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12（其中一条 Select2 标题用例在全量并发时偶发超时，单独跑通过）。
+
+### 全局下拉也走自绘搜索结果（2026-11-28 · v2.35.77）
+- 用户反馈（TauriTavern 2.4.0 / iOS）：搜索后结果**仍按分组显示**；诊断 `trace` 为空，说明自绘面板在全局下拉里被 `syncEnhancedSearchBlock()` 开头的 `if (isGlobalPopover) return;` 直接挡掉。
+- 改动（`src/native-filter.js`）：
+  - 移除该早退：全局下拉搜索同样使用自绘面板（`enh-search:…,role=global`）。
+  - `pickableNames()` / `searchSelectEl()` 按角色取值：编辑器看 `#world_editor_select`，全局看 `#world_info`。
+  - 全局下拉的行是「是否全局启用」的开关：点击行改为 **toggle** `option.selected` 并 `trigger("change")`，面板保持打开以便连续勾选，行首显示 `✓`（`.wbo-esp-check`，`.is-on` 加粗）。
+  - trace 增加 `enh-panel:toggle`。
+- 测试：`mobile global dropdown handles direct option rows without native search` 改为断言自绘面板（清理搜索词后再做宽度/展开断言）。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 用例在全量并发时偶发超时，单独跑通过，属既有 flake）。
+
+### 搜索后点 pill 面板被关：保住焦点（2026-11-28 · v2.35.76）
+- 用户反馈（TauriTavern 2.4.0 / iOS 440×860）：搜索结束后点插件面板（如切换分组）时下拉面板直接关闭。`ui` 日志顺序证实：`down:input.gr-search-input` → `search-blur` → `down:button.wbo-dd-pill`，即**点 pill 使搜索框失焦**，宿主的 blur 逻辑先关掉浮层。这也解释了早前「点搜索框秒关、输入法残留」的同类现象。
+- 修复（`src/native-filter.js`）：
+  - `createDropdownFilterBar()`：pill 条上 capture 监听 `pointerdown` / `mousedown`，命中 `.wbo-dd-pill` 时 `preventDefault()`——点击前保住焦点，`click` 仍会正常触发。
+  - `enhanceCustomDropdownPopover()`：容器上 capture 监听 `pointerdown`，命中 `.wbo-dd-pill` / `.wbo-dd-group-head` / `.wbo-s2-pin` 时 `preventDefault()`（排除 `input/textarea`，也**不拦行选择**，避免影响移动端滚动）。
+- 说明：搜索框失焦记录（`search-blur`）仍会出现于用户主动收起键盘/点外部，但已不会由插件自身的控件触发。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-mobile-picker-lifecycle` 23/23（59/59）。
+
+### 全局下拉记住分组 + 分组条滚动不再顶歪（2026-11-28 · v2.35.75）
+- 用户反馈（TauriTavern 2.4.0 / iOS）：全局下拉切到别的分组后重开又回到「已收藏」，没记忆；分组条出现滚动条把胶囊挤高、且美化脚本里看不到滑块。
+- 修复（`src/native-filter.js`）：
+  - 分组记忆**按下拉分开**：新增 `_dropdownMemory.globalPillGroupId` / `globalPillMemorySet`；全局下拉读写的自己的记忆，编辑器下拉继续用 `activePillGroupId`（此前全局点击会写进共享字段，导致编辑器下拉被污染、单测 `flat favorites fill only while its pill is active` 失败）。首次打开全局仍默认 `★已收藏`，之后恢复上次选择。
+- 修复（`style.css` `.wbo-dd-filter-bar`）：`overflow-x:auto; overflow-y:hidden` + `scrollbar-width:thin` + 自定义 6px 圆角滑块（WebKit 与 Firefox 都可见），`scrollbar-gutter:stable` 预留滚动条空间，子项 `flex:0 0 auto`。这样横向滑动时胶囊行不再被顶歪，也不会出现「看不见的滚动条」。
+- 待办（记入 HANDOFF）：用户提出的「全局下拉打开时把已全局的书置顶并展开该分组」尚未实现——尝试强制展开 `dropdownCollapsed[__pinned__]` 会改变用户折叠记忆并打破现有单测，需要单独设计（倾向只在「首次打开且该分组为空视图」时临时展开）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 抽屉守卫挂到增强浮层的全局下拉（2026-11-28 · v2.35.74）
+- 用户 v2.35.73 反馈：搜索正常了，但「第一次点全局世界书框关闭抽屉」再次出现。
+- 诊断证据：`ui` 里有 `down:div.gr-select2-display inDrawer`，但 trace 里**没有** `drawer:kept-open` —— 说明守卫没装上。原因：之前只挂在 Select2 的全局下拉（`enhanceOpenGlobalDropdown`），而该用户走的是**美化脚本浮层**里的全局下拉（`role=global`，由 `enhanceCustomDropdownPopover` 处理），是另一条路径。
+- 修复（`src/native-filter.js`）：
+  - 新增模块级 `installDrawerOpenGuard()`：记录指针是否落在抽屉内，`#WorldInfo` class 变化 + 打开后 30/120/260ms 三次检查，被收起则恢复一次（`drawer:kept-open@…`），返回 `dispose`。
+  - `enhanceCustomDropdownPopover()` 检测到 `role=global` 时安装该守卫（`containerEl._wboDrawerGuard`），重复打开先 dispose 旧的。
+  - `closeAllOpenWorldDropdowns()` 遍历 `[data-wbo-popover-role]` 释放所有守卫，避免监听泄漏。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
+### 面板回归原位、配色交还宿主、搜索不认 pill（2026-11-28 · v2.35.73）
+- 用户 v2.35.72 反馈：黑底蓝字；面板浮起来盖住 pill 条；切分组后结果消失（别的分组的书看不到）。
+- 诊断证据：`enh-panel:mount=in-flow` + `enh-panel:box=590,225,520` —— 明明是就地挂载，却仍被写上了 fixed 的内联定位；`matches=0` 是我按 pill 过滤造成的。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - `positionEnhancedSearchPanel()`：`is-in-flow` 面板直接清空 `position/left/top/width/maxHeight/z-index/visibility/opacity/display` 内联样式并返回，只记 `enh-panel:box=in-flow,<高度>` —— 不再遮挡 pill 条。
+  - 配色不再从 `.gr-option` 反抄（那会抄到深底或链接蓝）：就地模式清空 `background/color/fontSize/border/boxShadow`，由 `.is-in-flow` 规则 `background: transparent; color: inherit` 继承浮层配色；标题/副标题/分组标签用 opacity 降级。
+  - 搜索恢复为**全局**：移除按 `activePillGroupId` 过滤结果的逻辑（pill 只影响非搜索态列表），符合「搜索应覆盖全部分组」。
+- 验证：单测 245/245；`native-picker-window` 36/36（用例改为：切到剧情 pill 后结果仍为 3 行、分组标签仍含「文风」）、`native-editor-titles` 12/12。
+
+### 面板跟随宿主配色 + 搜索中可切分组（2026-11-28 · v2.35.72）
+- 用户反馈（v2.35.71）：面板终于可见，但**黑底白字**、与未启用脚本时的搜索样式不一致，且搜索中无法切换分组（原分组标签正常）。
+- 改动（`src/native-filter.js`）：
+  - **配色**：面板处于 `is-in-flow` 时读取宿主 `.gr-option`（取不到则容器）的 `getComputedStyle`，把 `background-color` / `color` / `font-size` 内联到面板上，跟随美化脚本当前配色；未取到背景时清除内联背景回落到主题变量。
+  - **分组切换**：`renderEnhancedSearchPanel()` 现在按 `activePillGroupId` 过滤——`全部` 不过滤、`★已收藏` 只留收藏、单个分组只留该组；新增 `refreshEnhancedSearchForPill()`，在 pill 点击后（`syncSections()` 之后）重渲染面板，绕过「同词不重算」的缓存。
+- 与无脚本用户：这段仍只在增强浮层执行；Select2 与手机选书面板未改。
+- 验证：单测 245/245；`native-picker-window` 36/36（搜索用例新增：切到「剧情」后只剩 2 行且分组标签全为「剧情」，再切「全部」恢复 3 行）、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（71/71）。
+
+### 搜索结果面板改为「就地替换宿主列表」（2026-11-28 · v2.35.71）
+- v2.35.70 诊断：`enh-panel:mount=body` —— 这个浮层挂在 body 上，不在抽屉子树里，所以 fixed + z-index 一直在赌层级；`box` 有尺寸却看不见就是被上层盖住。
+- 方案：**不再浮层**。搜索时把面板作为普通流元素插到宿主列表原来的位置（`.gr-options-container` 之前），并把该列表 `display:none`；清空搜索时移除面板并还原列表显示。这样不存在 z-index / overflow / top-layer 问题，面板必然可见。
+  - `ensureSearchPanel()`：优先 `containerEl.querySelector(".gr-options-container")` 的父节点挂载（`enh-panel:mount=in-flow`）；找不到才退回抽屉子树/body。
+  - `removeEnhancedSearchPanel()`：还原被隐藏列表的 `display`，并移除 `wbo-enhanced-searching`（分组标题恢复）。
+  - 样式新增 `.wbo-enhanced-search-panel.is-in-flow`（静态定位、自适应宽度、无阴影），浮层原样式保留给兜底路径。
+- 与无脚本用户的关系：这条路径只在「检测到美化脚本浮层 `.gr-container-enhanced`」时才会执行；Select2 普通下拉、手机选书面板完全不受影响（`native-picker-window`、`native-editor-titles`、`native-mobile-picker-lifecycle` 全绿）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-mobile-picker-lifecycle` 23/23（合计 71/71）。
+
+### 面板挂进抽屉层、搜索时隐藏分组标题（2026-11-28 · v2.35.69→v2.35.70）
+- v2.35.69 诊断：`enh-panel:box=590,225,520,98,rectOk=0` —— 面板在视口内、有高度，却看不见；`rectOk=0` 说明浮层几何退化（改走居中兜底）。结论：面板被**更高层**遮住，`<body>` 上的 `position: fixed` 会落在 `<dialog>`/顶层容器之下，z-index 无效。
+- 修复（`src/native-filter.js` `ensureSearchPanel`）：挂载点改为 `containerEl.closest("#WorldInfo, dialog, .drawer, [role=dialog]")`，与浮层同层渲染，并 trace `enh-panel:mount=…,toplayer|body`。
+- 「分组名残留」：v2.35.66 换成自绘面板时删掉了「搜索时隐藏宿主分组标题」的逻辑，于是宿主列表被它自己过滤成空、标题还留着。现在打开面板即给容器加 `wbo-enhanced-searching`（CSS 隐藏 `.wbo-pop-section > .wbo-dd-group-head`），关闭面板移除。
+- 诊断：`ime` 计数已在 v2.35.69 落地，本轮新增 `enh-panel:mount` 面包屑，便于确认层级。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-global-drawer` 8/8。
+
+### 面板几何兜底 + 输入法/搜索框诊断（2026-11-28 · v2.35.69）
+- 用户 v2.35.68 诊断：`enh-panel:matches=1,shown=1`（面板生成了）但界面仍大片空白 → 面板被放在视口之外或尺寸为 0。
+- 修复（`src/native-filter.js` 的 `positionEnhancedSearchPanel`）：
+  - 若浮层 `getBoundingClientRect()` 退化（宽<160 / 高<80 / 完全在视口外），不再用它定位，改为**视口居中**的 520px 面板；
+  - 宽高与 `top` 都夹进 `visualViewport`，并显式写回 `zIndex/visibility/opacity/display`，避免被宿主样式压掉；
+  - 新增 trace `enh-panel:box=left,top,width,height,rectOk,searchBox`，下次报告能直接看出面板落在哪里。
+- 诊断扩展：新增 `ime` 计数（`compositionStart/compositionEnd/focus/blur/blurDuringComposition`），并在 UI 日志里记录 `ime-start` / `ime-end` / `search-blur`，用于验证「点搜索框秒关、输入法残留」这类问题；短报告新增一行 `输入法 组合a/b 失焦n(打字中m)`，宿主为 TauriTavern 时附带 `Tauri <版本>`。
+- 关于「是否需要检测输入法」：不采集输入法名称（浏览器不提供，且属于隐私），只判断「打字过程中是否发生失去焦点 / 搜索框是否被移除」——这足以区分是宿主的 blur 逻辑关闭浮层，还是插件自己开的搜索控件被移除。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 面板加固（审查结论落地）+ 诊断补版本（2026-11-28 · v2.35.68）
+- 独立审查（subagent）对 v2.35.66/67 的自绘面板列出 5 高危 / 6 中危；本轮把高危与可立即执行的中危全部落地（`src/native-filter.js`）：
+  - **面板单例**：面板存在 `containerEl._wboSearchPanel`，同一容器二次 enhance 会先复用/重建，不再出现两块面板叠加。
+  - **点击时序**：面板 `pointerdown` 做 `preventDefault + stopPropagation`（保住搜索框焦点，避免宿主 blur 先关浮层），拾取改在 `pointerup` 并保留 `click` 兜底。
+  - **只列可选书**：命中先用 `#world_editor_select` 现存 option 过滤（隐藏组里的书会被 detach）；选不到对应 option 时**不清词、不关面板**，只记 `enh-panel:missing-option`。
+  - **位置跟随**：`positionEnhancedSearchPanel()` 按「搜索框底边」定位并夹到视口内，监听 `window.resize`、`visualViewport.resize/scroll`、列表滚动宿主 scroll，软键盘改变高度也跟随。
+  - **键盘**：面板打开时 `ArrowUp/Down` 在面板内移动高亮、`Enter` 选中、`Esc` 收起，不再打到看不见的宿主列表。
+  - **清理**：`removeEnhancedSearchPanel()` 统一移除面板、解绑 `bindDrawerSafeBubbleGuard`、断开 watcher、移除所有监听；浮层从 DOM 移除时 watcher 兜底清理；`closeAllOpenWorldDropdowns()` 仍全局兜底。
+  - **残留标记**：启动/打开下拉时清理旧版本遗留的 `[data-wbo-search-head]`、`.wbo-enhanced-search-hidden`、`.wbo-enhanced-section-hidden`、`.is-enhanced-search`（用户反馈的「分组名残留」）。
+  - 选中后清词会派发 `input` 事件并调用 `_wboPopState.syncSections()`，避免「半过滤」状态。
+- 诊断：`stVersion` 增加 `SillyTavern.version` / `#version_display` / `.versionDisplay` 兜底，并新增 `tauriVersion`（读 `__TAURITAVERN__`），短报告宿主行可显示 `TauriTavern 2.4.x` / `SillyTavern 1.19.x`。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12、`native-favorites-script` 6/6。
+- 未采纳（记录在此，后续可做）：面板 owner 精确删除（目前按类名全局删除）、按 IP 的 120 条截断提示已加标题、IME composition 单测覆盖。
+
+### 增强浮层搜索改为插件自绘面板（2026-11-28 · v2.35.66）
+- 背景：连续多版都在和美化脚本的列表博弈（行被重建、高度固定、命中被藏），用户已多次遇到「搜索空白、滚到底才看到一本」。
+- 方案切换（`src/native-filter.js`）：搜索时**不再改动宿主列表**，改为在浮层内自绘一个结果面板 `.wbo-enhanced-search-panel`（`position: fixed` 按浮层 rect 定位，`max-height` 取浮层高度与 70vh 的较小值）。
+  - 数据源直接用分类结果（`searchableText`，含别名/备注/角色名），按 `primaryTitle` 排序，最多渲染 120 条；标题为 `搜索匹配到的世界书 (N)`，每行显示「角色名/别名 + 原名 + 原分组徽章」；无命中显示 `没有匹配的世界书`。
+  - 点击某行：把 `#world_editor_select` 的值切到该书并触发 `change`，清空搜索框、收起面板，并记录 `enh-panel:pick`。
+  - 清空搜索 / 关闭浮层即移除面板（`syncEnhancedSearchBlock` 的 0 token 分支），宿主 DOM 完全不受影响。
+  - 删除了上一版的行隐藏/祖先解隐/高度释放/定时重套逻辑（全部失效路径），trace 精简为 `enh-search:searching,tokens` 与 `enh-panel:matches,shown`。
+- 样式（`style.css`）：面板跟随 `--wbo-surface/--wbo-fg`，行悬停高亮，标题与原名同一行（手机端可折行），分组徽章右对齐。
+- 验证：单测 245/245；`native-picker-window` 36/36（搜索用例改为断言自绘面板：标题计数、行数、分组徽章、点击选中、无命中空态、清空后移除）、`native-editor-titles` 12/12。
+
+### 抽屉守卫补时机（2026-11-28 · v2.35.65）
+- 用户 v2.35.64 的 `ui` 日志还原了现场：`down:div.gr-select2-display inDrawer` → `down:#gr-global-dropdown-container role=global` → 随后 `down:#WIDrawerIcon`，即**下拉刚打开的那一下**抽屉就被宿主的「外部点击关闭未固定抽屉」逻辑收掉。
+- 原因：上一版的恢复守卫依赖观察 `#WorldInfo` 的 class 变化，但宿主这次收起发生在守卫安装之前的几十毫秒内，观察器接不到。
+- 修复（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`）：打开下拉后 30 / 120 / 260ms 各检查一次，若抽屉已收起就直接恢复一次（`drawerKeptOpen` 保证每次打开最多一次），并记录 `drawer:kept-open@30|120|260` 便于核对；下拉关闭时清掉定时器。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
+### 搜索空白=滚动位置；抽屉守卫；界面交互日志（2026-11-28 · v2.35.64）
+- v2.35.63 的诊断 trace：`enh-show:hits=2,hitH=74`、`hostH` 从 6355 缩到 1718 —— 说明命中行确实生成且可见，列表也只剩命中行。用户仍看到空白，指向**滚动位置**：列表保留了搜索前的 scrollTop，2 条结果在顶部、视口停在下方。
+- 修复（`src/native-filter.js`）：应用到搜索结果后把滚动宿主 `scrollTop` 归零，并对首条命中的行做一次 `scrollIntoView({ block: 'nearest' })`。
+- 抽屉被关（用户判断非原生，稳定复现且只在第一次）：全局下拉打开期间监听 `#WorldInfo` 的 class 变化；若「指针确实落在抽屉内部」且抽屉刚被收起，则恢复一次（每次打开最多一次），并在 trace 里记 `drawer:kept-open`。下拉关闭时移除监听。
+- 诊断再升级：新增 `_diag.ui`（最近 30 条界面交互），记录 `pointerdown` / `keydown` 的**脱敏**描述——`tag#id.class`、`role=`、是否 `inDrawer`、书名的 6 位哈希；绝不记录书名/角色名正文。详细 JSON 增加 `ui` 字段。
+- 验证：单测 245/245（`describeDiagTarget` 对 mock DOM 做防御，日志不得影响 UI）；`native-picker-window` + `native-editor-titles` 48/48。
+
+### 搜索块排版 / 空态 / data-index 反查（2026-11-28 · v2.35.63）
+- 用户反馈（v2.35.62，`renderPath=enhanced-script`）：命中结果里「搜索匹配到的世界书」跑到书名旁边、被压成竖排并带蓝色阴影；每个命中之间出现大段空白；无命中时整条仍是空白。
+- 原因：宿主行是 flex 布局，我们的 `::before` 被当成并排的 flex item；另外只隐藏了 `.gr-option`，没隐藏「不含命中的整个分组」，分组空体留下了大段高度。
+- 修复（`style.css` + `src/native-filter.js`）：
+  - `[data-wbo-search-head]` 行改为 `flex-wrap: wrap`，`::before` 用 `flex: 0 0 100%` 独占一行，并显式 `white-space: normal` / `writing-mode: horizontal-tb` / 清除 `text-shadow`、`box-shadow`（蓝色阴影来自宿主 hover 样式）。
+  - 不含命中的 `.wbo-pop-section` 整段加 `wbo-enhanced-section-hidden` 隐藏，不再留空白高度。
+  - 命中 0 本时由插件插入 `没有匹配的世界书` 提示（`.wbo-enhanced-search-empty`）并隐藏所有分组；清空搜索时移除。
+  - `resolveEnhancedRowMeta()` 增加 `data-index` 兜底（宿主行可能只有 index 没有 value），并保留 `data-value` 反查。
+- 验证：单测 245/245；`native-picker-window` 36/36（增强搜索用例新增：空态提示出现、所有分区块被隐藏、清空后提示移除）。
+
+### 搜索重套 + 行→option 反查 + 抽屉关闭说明（2026-11-28 · v2.35.62）
+- 用户 v2.35.61 诊断结论：`enh-titles:titled=2,fileOnly=140`（142 行只有 2 行拿到标题）、`enh-live:optionsVisible=140,hitH=39`（命中行其实可见有高度）。
+- 改动（`src/native-filter.js`）：
+  - `resolveEnhancedRowMeta()` 增加最后一级兜底：用行的 `data-value` 回查 `#world_editor_select` 里对应 `<option>` 的真实书名。宿主脚本常常先建行、后填文本，这时行上没有任何名字可解析（142 行只套上 2 行就是这一情形）。
+  - 搜索应用后再排一次重套（150ms）：宿主在我们处理完会重渲染列表并丢掉 class，导致「命中但仍看不见」；现在会在下一拍再套一次可见性，直到搜索结束（清空搜索时清掉定时器）。
+- 诊断保持 `enh-titles` / `enh-live` / `enh-show` 三条面包屑，便于下次核对。
+- 「点抽屉其它位置导致抽屉关闭」：属于酒馆原生未固定抽屉的行为（U10），不是本插件所为；插件只在下拉内部阻止冒泡（`bindDrawerSafeBubbleGuard`），点了抽屉空白区仍会被 ST 自身收起。要改需慎动原生交互。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 搜索命中却看不见：现场快照 + 祖先解隐 / 书名审计（2026-11-28 · v2.35.61）
+- 用户 v2.35.60 的诊断 trace：`enh-search:matched=1,meta=139`、`enh-search:matched=2,meta=139` —— **匹配是成功的**，问题在命中行没显示出来；而报告在下拉关闭后才生成，`dom` 全为 0，看不到当时状态。
+- 改动（`src/native-filter.js`）：
+  - 搜索路径内新增现场快照 `enh-live:optionsVisible=…,hostConnected=…,hostH=…,secHidden=…,collapsed=…` 与 `enh-show:hits=…,ancestorUnhide=…,hostH=…,hitH=…`：报告关闭后生成也能看到搜索当时究竟可见几行、容器高度是否为 0。
+  - 命中行兜底：自下而上清除祖先节点上的 `display:none`/`hidden`/`wbo-pop-group-hidden`/`wbo-dd-collapsed`；若列表容器高度为 0，清掉其 `display`/`max-height` 约束。
+  - 书名审计：每轮统计 `enh-titles:titled=…,fileOnly=…,charFileOnly=…`——「只剩文件名」的行数、其中属于角色绑定行的数量，直接对应用户的「当前角色世界书显示原名」。
+  - `syncEnhancedWorldOptionTitle()` 的标题兜底条件从「在角色组」放宽为「在角色组**或**被角色绑定」，覆盖书被移出角色组的情况。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 增强搜索匹配放宽 + 匹配明细（2026-11-28 · v2.35.60）
+- 用户 v2.35.59 的诊断 trace 显示：`enh-search:searching=1,tokens=1,options=142` —— 搜索函数跑了、读到搜索词，但没有任何命中（142 行全被判为不匹配），所以没有搜索头、列表被宿主清空后就是空白。
+- 改动（`src/native-filter.js` 的 `syncEnhancedSearchBlock`）：
+  - 匹配改为三重 haystack：`meta.searchableText`、行名、**行原始文本**（`row.textContent`，含被隐藏的 `.wbo-orig-text`）。这样即使 meta 解析不到（option 文本被改写、行结构被宿主重建），也能按子串命中。
+  - 新增面包屑 `enh-search:matched=N,meta=M`：下一次诊断可直接看出「命中几行、其中几行拿到了 meta」，据此判断是匹配问题还是渲染问题。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 更详细的诊断 + 按显示名反查书（2026-11-28 · v2.35.59）
+- 用户要求：详细诊断再细一点，方便定位「搜索空白 / 当前角色书名不对」。
+- 诊断增强（`src/native-filter.js`）：
+  - `diagDomSnapshot()`：统计当前 DOM 里下拉各层的数量——`.select2-dropdown`、`#gr-global-dropdown-container`/`.gr-container-enhanced`、`[data-wbo-popover-role]`、`.gr-option`（总数/可见）、`li.select2-results__option`（总数/可见）、`.wbo-s2-item`、`.wbo-gr-world-title`、`.wbo-orig-text`、`[data-wbo-search-head]`、`.wbo-enhanced-search-hidden`、`.wbo-dd-group-hidden`、`.wbo-dd-collapsed`、`li.wbo-dd-dupe-hidden`、`.wbo-dd-filter-bar`。
+  - 新增面包屑 `_diag.trace`（最多 24 条，形如 `enh-search:searching=1,tokens=1,options=139`、`editor-search:rows=69,pill=__all__,mirror=0`）与计数 `runs.decorate` / `runs.searchLayout` / `runs.foreignRowsUpgraded`；详细 JSON 输出 `dom` / `trace` / `runs`。
+  - 短报告加一行 `渲染计数 s2行 x/y gr行 x/y 搜索头 n 装饰 n`。
+  - `renderPath` 改为按「真正在用的下拉」判断：有 `[data-wbo-popover-role]` → enhanced-script；有 `.select2-dropdown` → select2；只有残留壳 → `enhanced-shell-idle`；否则回退最近一次打开的类型。
+- 标题修复：新增 `findMetaByAnyName()`——按真实名、最长已知前缀、以及**显示名（primaryTitle）**反查分类；`resolveRowWorldName()` 与 `resolveEnhancedRowMeta()` 都改用它。这样即使某个 option 的文本被改写成角色名（当前角色书常见），也能拿回正确 meta 并显示「角色名 + 原名」。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
+### 增强浮层搜索：保留原文 + 自主控制可见性（2026-11-28 · v2.35.58）
+- 用户反馈（v2.35.57，`renderPath=enhanced-script`）：搜索依旧整片空白。
+- 定位：`syncEnhancedWorldOptionTitle()` 早期实现把行的原始文本节点**删掉**、换成我们的标题 span，于是美化脚本按 `row.textContent` 做搜索匹配时匹配不到任何行 → 它自己把整表隐藏 → 我们看到的空白。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - 原始文本节点改为**保留但隐藏**：新 `<span class="wbo-orig-text" hidden>` 包住原文本（`textContent` 仍包含它），宿主脚本的搜索恢复正常；恢复原名时把该 span 拆掉还原。
+  - 搜索可见性改由插件自己掌控：命中行强制显示（清 `display:none`/`hidden`/常见隐藏类），非命中行加 `.wbo-enhanced-search-hidden` 隐藏；清空搜索时全部复原。即使宿主脚本把整表藏起来，命中行也一定能看到。
+  - 诊断的 `search/胶囊` 计数现在也包含 `[data-wbo-search-head]`，便于确认搜索块是否生效。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` + `native-favorites-script` 18/18。
+- 边界：同时开两份美化脚本仍属宿主侧冲突；插件不再删除任何脚本节点，只删已无任何脚本 DOM 残留时的 `<style>`。
+
+### 增强浮层：零侵入搜索头 / 不删外来 DOM / 标题自愈（2026-11-28 · v2.35.57）
+- 用户反馈：开着脚本时搜索只看到「搜索匹配到的世界书 (17)」一行、下面还是整块等高空白且必须点分组才见结果；当前角色书仍显示全名；关掉脚本后全局世界书抽屉的触发器与已勾选显示消失（刷新才恢复）。
+- 定位：①上一版把「搜索块标题」作为新节点插进宿主列表，破坏了宿主自己的布局/高度计算；②上一版的残留清理会删除 `.gr-select2-display`、`#gr-global-dropdown-container`，而用户同时装了两份美化脚本，删掉的正是**仍在运行**那一份的触发器（全局书无法选择）。
+- 修复（`src/native-filter.js` + `style.css`）：
+  - 搜索块标题改为**零节点**方案：给第一条命中行加 `data-wbo-search-head="搜索匹配到的世界书 (N)"`，由 CSS `::before` 绘制标题；宿主 DOM 结构完全不变。
+  - 命中行若被宿主隐藏（脚本在我们替换显示名后可能认不出行），主动清掉 `display:none`/`hidden` 与常见隐藏类，保证命中可见；0 命中时清掉自身状态交回宿主的空态。
+  - 残留清理只删 `style[data-gr-dropdown-style]`，且仅当页面里已经没有任何 `.gr-select2-display` / `.gr-container-enhanced` / `#gr-global-dropdown-container` 时才动手；**永不删除外来 DOM**。
+  - 新增标题自愈：每轮 `syncSections` 检查没有 `.wbo-gr-world-title` 的行并补标题（宿主后建的行也能显示角色名 + 原名），`syncEnhancedWorldOptionTitle` 里对角色组也做归属兜底。
+- 验证：单测 245/245；`native-picker-window` + `native-editor-titles` + `native-favorites-script` 54/54（搜索块改为断言属性 + 无额外节点 + 命中行可见；残留清理用例改为「有外来 DOM 时不动、无外来 DOM 时只删样式」）。
+- 边界：同时启用两份美化脚本仍属宿主侧冲突，建议只留一份；我们不再代为删除任何脚本节点。
+
+### 增强浮层搜索空白、脚本残留与标题行内（2026-11-28 · v2.35.56）
+- 用户反馈（脚本开启/页面残留其样式时）：搜到结果必须点进分组才看得到；普通下拉搜索后胶囊下方整片空白、只剩分组标题且高度沿用搜索前。
+- 修复（`src/native-filter.js`）：
+  - 编辑器增强浮层搜索时**不再自行隐藏整段分组**（原来按「有没有可见子行」判断，宿主脚本隐藏行的方式不同就会误判，导致整片空白、只能点 pills 才见到行）；改为把可见性完全交给宿主脚本，我们只负责隐藏分组标题并插搜索头。
+  - 搜索头改为插在 `optionsHost` 首个子元素（section 级），不再塞进分组 body，宿主的高度计算与行布局不受影响。
+  - 命中 0 本时主动清掉自己的类与头，交回宿主脚本的空态，避免留下空白固定高度区域。
+  - `resolveEnhancedRowMeta()`：宿主重建行后按 `data-wbo-enhanced-world` → 标题的 `title` 属性 → 文本 → 最长书名前缀依次解析，标题不会再因为行里混入 ★/徽章而丢失。
+  - 角色组行在增强浮层里也做标题兜底（`liveCharNameForBook()` / `currentChatCharName()`），与普通下拉一致。
+- 脚本残留（`cleanupStaleEnhancedArtifacts()`）：检测到 TavernHelper 里该脚本被禁用时，移除其残留的 `style[data-gr-dropdown-style]`、`#gr-global-dropdown-container`、`.gr-container-enhanced`、`.gr-select2-display`，避免它继续覆盖我们的样式；插件启动与每次打开下拉时都会重新检查。`detectEnhancedScriptSignals()` 的脚本树信号改为忽略 `enabled === false` 的条目。
+- 标题排版（`style.css`）：`.wbo-gr-world-title > small` 宽屏改为同行显示（`display: inline` + 6px 间距），`≤680px` 才折行——「角色名 + 原名」在够宽时不再分两行。
+- 诊断：`renderPath` 现在记住最近一次打开的下拉类型（`select2-editor` / `select2-global` / `enhanced-script` / `mobile-picker`），下拉关掉后也能看出走的哪条路径。
+- 验证：单测 245/245；`native-picker-window` + `native-editor-titles` + `native-favorites-script` 54/54（含真脚本共存、搜索归组、禁用脚本清理、副标题行内四项）。
+
+### 增强浮层搜索归组 + 美化脚本共存验证（2026-11-28 · v2.35.55，U3 + U9）
+- U3：增强浮层（兼容脚本那套 `.gr-container-enhanced`）在编辑器下拉里搜索时，命中行原先散落在各自分组标题下。新增 `syncEnhancedSearchBlock()`：按搜索词自己匹配命中行（不依赖宿主是否隐藏了行，因为脚本会重建行、抹掉内联样式），≥2 本插一个「搜索匹配到的世界书 (N)」头、1 本给行内徽章 + 原分组徽章；搜索期间用容器类 `.wbo-enhanced-searching`（CSS）隐藏各分组标题，清空搜索即还原。行本身不动，宿主脚本仍完全掌控自己的 DOM。
+- U9：新增真脚本共存用例——把 `参考仓库/下拉框美化.json` 的内容在页面里 `eval` 起来，再打开编辑器下拉，断言：插件滤镜条/分组区块/收藏★都在、没有重复行、无运行时错误。实测该脚本在模拟宿主里**确实会**打开编辑器下拉，因此这条是真实验证而非跳过。
+- 验证：单测 245/245；`native-picker-window` + `native-editor-titles` + `native-favorites-script` + `native-global-drawer` 合计 61/61。
+- 边界：搜索头的计数按「词匹配」算，若宿主脚本对别名字段有不同匹配规则，可能与其显示行数略有出入（已按 `searchableText` 对齐，含别名/备注/角色名）。
+
+### 诊断菜单配色修正（2026-11-28 · v2.35.54）
+- 用户反馈：诊断面板黑底黑字，全黑看不清。
+- 原因：菜单挂在 `document.body` 上，而主题变量（`--wbo-surface` / `--wbo-fg` / `--wbo-border-strong`）只定义在 `.wbo-modal` 作用域内，于是菜单拿到回退深色背景，`color: inherit` 又继承了浅色主题下的深色文字。
+- 改动：`style.css` 的 `.wbo-diag-menu` 回退值改为自洽的一对（`--wbo-surface` → `#232429`、`--wbo-fg` → `#e7e7e4`）；同时在 `src/panel-settings.js` 里读取设置弹窗的 `getComputedStyle`，把 `--wbo-surface` / `--wbo-fg` / `--wbo-border-strong` 内联到菜单上，跟随用户当前主题。
+- 验证：`native-picker-window` 33/33（诊断菜单用例新增断言：菜单文字色与背景色不相同且背景非透明）；单测 245/245。
+
+### 诊断改为点开菜单 + 美化脚本检测可见（2026-11-28 · v2.35.53）
+- 用户反馈：移动端没有悬停，「连点 3 下」这种靠提示才发现的交互不成立；另外希望主动检测下拉框美化脚本是否启用。
+- 诊断交互（`src/panel-settings.js` + `style.css`）：页脚仍只有「诊断」一个按钮，点一下弹出小菜单（`#wbo-diag-menu`，`pointerdown` 外部关闭，触屏/鼠标一致）：「复制简要诊断」约 10 行可直接贴 Discord；「下载详细诊断」生成 `wbo-diagnostic-<时间>.txt`。菜单底部标注「都不含任何书名 / 角色名」。
+- 美化脚本检测：新增 `detectEnhancedScriptSignals()`（脚本树 / `style[data-gr-dropdown-style]` / 运行中的 `.gr-container-enhanced`、`.gr-select2-display` 三类信号）与 `isEnhancedScriptActive()`（受新设置 `enhancedScriptMode: auto|on|off` 约束）。设置页「下拉框美化酒馆脚本适配」卡片现在**始终显示**，带「检测状态：已识别（信号）/未识别」+ 三态选择「自动检测 / 当作已启用（强制适配）/ 当作未启用」，解决脚本较新、标记不同就看不到适配开关的问题。
+- 诊断内容：短文本改为 `美化脚本 有(auto)|无(on)|…`；详细 JSON 增加 `enhancedScript: { active, mode, scriptTree, styleMarker, runtimeDom }`。
+- 验证：单测 245/245（新增 `enhancedScriptMode` 归一化）；`native-picker-window` 33/33（原「未检测到就不显示卡片」的断言改为「始终显示 + 状态为未识别/已识别」，并新增点开诊断菜单断言两个选项 + 点外部关闭）；`native-editor-titles` 12/12。
+- 边界：`enhancedScriptMode=on` 只影响我们对「是否装了美化脚本」的判断与适配开关的可用性，不会去启用别人的脚本。
+
+### 诊断收成一个按钮（2026-11-28 · v2.35.52）
+- 用户反馈：设置页放两个诊断按钮太拥挤。
+- 改动（`src/panel-settings.js`）：页脚只保留「复制诊断」一个按钮——点一下把 10 行短诊断复制到剪贴板；**2 秒内连点 3 下**改为下载 `wbo-diagnostic-<时间>.txt` 详细诊断。按钮提示里写明了这个手势，界面不再多占位置。
+- 验证：单测 245/245；`native-editor-titles` 12/12、`native-picker-window` 33/33（`wboBuildDiagnostic` 两种模式的断言不变）。
+
+### 两档诊断：短文本复制 + 详细文件（2026-11-28 · v2.35.51）
+- 用户需求：设置页诊断要包含运行环境、宿主、分辨率、开着的第三方脚本、主题、最近操作、版本；短到能贴 Discord、不泄露隐私；另外要一个开发者用的更详细信息。
+- 实现（`src/native-filter.js` + `src/panel-settings.js`）：
+  - 新增 `detectDiagnosticEnv()` / `buildDiagnosticReport(mode)` / `PLUGIN_VERSION`，通过 `window.wboBuildDiagnostic(mode)` 暴露；`pushDiagAction()` 记录最近操作标签（最多 12 条），`window` 的 `error` 事件写入脱敏后的报错摘要（最多 6 条）。
+  - 短诊断（10 行内）：版本、宿主（TauriTavern/SillyTavern + ST 版本）、浏览器/系统/视口@DPR/mobile、当前渲染路径（select2 / enhanced-script / mobile-picker / none-open）、宿主自渲染行被升级的次数、美化脚本有无、原生分组开关、数据规模（书/组/收藏/挂载/角色书/未分组）、标题统计（模式/缺归属/原名/副标题）、折叠记忆与隐藏重复行数、最近操作、错误数。
+  - 详细诊断：以上全部 + `flags`、`actions`、`errors`、完整 UA，序列化为 JSON 并以 `wbo-diagnostic-<时间>.txt` 下载，规避字数限制。
+  - 脱敏：任何已知书名/角色名/分组名在输出前被替换为 `<book>` / `<char>` / `<group>`，并截断到 240 字；不输出 assignments 键名。
+  - 设置页底部两个按钮：「复制诊断」（短文本进剪贴板）与「详细诊断」（下载 .txt）。
+- 验证：单测 245/245；`native-editor-titles` 12/12（新增 1 项：短诊断 6～12 行、含版本/渲染/标题统计，短与详细两份都不含测试用的书名与角色名，详细模式可 JSON.parse 且带 UA）。
+- 边界：`PLUGIN_VERSION` 为源码常量，发版时需与 `manifest.json` 同步（发版脚本已一并改）。
+
+### 诊断定位：分类没问题，问题在宿主自渲染的行（2026-11-28 · v2.35.50）
+- 用户提供的结构诊断（不含任何书名）：`titleMode=char_with_sub`、`charGroupBooks=69`、`charBookWithoutOwner=0`、`charBookTitleIsFileName=0`、`charBookWithSubtitle=69`。**分类层 100% 正确**，69 本角色书都解析出了角色名和文件名副标题。
+- 结论：显示成文件名的是**渲染层**——那些 `<li>` 不是插件模板画的（宿主自己渲染），插件既改不到标题，`ensureEditorRowMarkup` 的上一次版本又用 `textContent` 找书，行上带 ★／徽章等杂字时匹配失败，于是原地不动。
+- 改动（`src/native-filter.js`）：
+  - 新增 `resolveRowWorldName()`：优先读 Select2 挂在行上的 `data.data.element`（源 `<option>`）→ `data.data.text` → 行文本；再经 `matchKnownWorldName()` 用「最长已知书名前缀」兜底，星星/徽章不再影响认书。
+  - `getDropdownOptionWorldName()` 同样接入上述兜底，超时/延迟渲染的行也能正确归类、去重、加徽章。
+  - `ensureEditorRowMarkup()` 改用 `resolveRowWorldName()`，宿主渲染的行会被升级成插件结构（`data-wbo-world` + 标题/副标题 + 动作区），标题随即变成「角色名 + 文件名」。
+- 验证：单测 245/245；`native-editor-titles` 11/11（把「宿主行」用例改成带 `☆` 后缀，验证杂字不影响认书）；`native-picker-window` 33/33。
+- 边界：只升级 `li.select2-results__option` 结构；若某个宿主把行换成 `div` 等其它结构，这条兜底不会命中。
+
+### 诊断信息改为纯结构统计（2026-11-28 · v2.35.49）
+- 用户反馈：复制出来的诊断里带书名/角色名，粘贴时被内容审核拦下，不愿意外发。
+- 改动：`window.wboTitleReport()` 与设置页「复制诊断」按钮改为**只输出结构**——标题模式、相关开关、角色数（总数/shallow/带主书）、`charLore` 条目与附加书数、`include_in_char`/`exclude_from_char` 计数、分类统计（总书数、角色组书数、无归属数、标题仍是文件名数、有副标题数、未分组数），以及每本角色组书的 `{id: 6位哈希, owners, orphanOnly, sources, titleIsFileName, hasSubtitle}`。不再输出任何书名、角色名、分组名、文件名、`assignments` 键名。
+- 验证：单测 245/245；`native-editor-titles` 11/11（新增 1 项：用固定的中文书名/角色名造数据，断言报告 JSON 里既不含书名也不含角色名/分组名，且 `titleMode` 与 `charGroupBooks` 正常）。
+- 用途：用户贴这份统计即可定位标题问题，不需要外发任何私人文本。
+
+### 设置页「复制诊断」按钮（2026-11-28 · v2.35.48）
+- 用户是小白、不方便开控制台，所以把 `wboTitleReport()` 的诊断搬到插件设置页底部：新增「复制诊断」按钮，一次点击把标题模式、相关开关、`charBookOverrides`、`assignments` 样本、以及角色组内每本书的 `primaryTitle/subtitle/owners` 复制到剪贴板（复制失败则打印到控制台并提示）。
+- 实现：`src/panel-settings.js` 设置弹窗页脚加按钮 + 处理函数；数据取自 `_callbacks.getState().settings` 与 `window.wboTitleReport()`。
+- 验证：单测 245/245；`panel-settings.js` 可正常加载。
+- 用途：以后任何「书名/分组不对」的反馈，用户只要点这个按钮把剪贴板内容发来即可。
+
+### 角色世界书标题兜底（2026-11-28 · v2.35.47，U6 真凶）
+- 用户反馈：电脑端普通下拉里「角色世界书」整组按原名显示（设置是「角色名-原名」），不是只有当前角色那一行。
+- 复现与根因：新增的 `wboTitleReport()`（控制台可调用）打印出 `{ primaryTitle: "角色书文件名", owners: [] }` —— 这本书在 `__char__` 组里但**没有任何角色归属**（`include_in_char` 强塞进角色组、或角色卡是 shallow 且绑定缓存为空），`formatCharacterDisplayTitle` 于是原样返回文件名，副标题自然也是空的。这一路和最近的 UI 改动无关，属于分类层的老漏洞，只是这次被看见了。
+- 改动（`src/native-filter.js` 的 `syncRowTitles`）：角色组里的书如果标题仍是原名、且标题模式不是「原名」，先按 live 数据（角色 `data.extensions.world` + `world_info.charLore` 的附加书）找归属角色名；找不到就退回**当前聊天角色名**；`char_with_sub` 下同时补回文件名副标题。每一轮装饰都会重算，所以标题会自愈。
+- 新增诊断：`startNativeObservers` 时挂 `window.wboTitleReport()`，返回标题模式、角色列表和角色组内每本书的 `primaryTitle/subtitle/owners`，下次真机再出问题一行命令就能定位。
+- 验证：单测 245/245；`native-editor-titles` 10/10（新增：shallow 角色 + `include_in_char` 的角色组书显示角色名 + 副标题；另一角色书在角色组内显示对应角色名）；`native-picker-window` 33/33。
+- 边界：兜底只在「角色组 + 标题等于原名 + 模式非 original」时生效；找不到归属角色时借用当前聊天角色名，若一本书其实属于别的角色且归属完全查不到，会显示成当前角色名（比显示文件名更接近预期，但可能不精确）。手机选书面板与增强浮层仍走分类层标题，本轮未改。
+
+### 宿主自渲染的行也升级成插件行结构（2026-11-28 · v2.35.46，U6 兜底）
+- 用户反馈：电脑端普通下拉里「当前角色」置顶行仍显示文件名，且没有副标题；手机端正常。模拟器里 `char_only` 与默认 `char_with_sub` 两种情况都通过，说明问题不在标题分级逻辑，而是行不是插件模板渲染的（宿主或兼容脚本自己渲染了 `<li>`，标题只好显示 option 原文，也没有 `.wbo-s2-title` 可供修正）。
+- 改动（`src/native-filter.js` 的 `enhanceOpenEditorDropdown`）：新增 `ensureEditorRowMarkup()`，每轮 `decorateGroupItems` 开头把没有 `.wbo-s2-item` 的结果行按分类结果重建为插件结构（`data-wbo-world` + 标题/副标题 + `.wbo-s2-right` 动作区），随后原有的标题同步、徽章、★ 都能正常落位。已有结构的行不受影响。
+- 验证：单测 245/245；`native-editor-titles` 8/8（新增 1 项：把行改回纯文本模拟宿主渲染，一次分组操作后标题恢复成角色名 + 副标题文件名）；`native-picker-window` 33/33。
+- 边界：只重建结果行的内容，不动 Select2 绑定的数据与事件；若宿主把行渲染成非 `li.select2-results__option` 结构，这条兜底也不会命中。
+
+### 绑定主世界书的分组胶囊与 U6 复核（2026-11-28 · v2.35.45）
+- U2：`enhanceDesktopSingleWorldSelect2` 现在给绑定弹窗的主世界书下拉挂分组胶囊——`attachBindWorldGroupPills()` 在 `select2:open` 时按 `optgroup[data-wbo-group]` 生成「全部 + 各分组」胶囊，点胶囊只显示对应 optgroup（裸行只在「全部」显示），下拉结果被 Select2 重渲染后自动重套过滤（MutationObserver），关闭下拉即拆除。
+- U6 复核：新增用例「绑定的角色书被手动移到自定义分组后，普通下拉仍显示角色名」——通过（书被置顶为「当前角色」裸行，标题取 `primaryTitle`）。结论：U6 早在 v2.35.33 的 `data-wboRealName` 取值修复里一并解决，交接文档该条可关闭。
+- 验证：单测 245/245；`native-picker-window` 34/34、`native-extras-cleanup` 2/2、`character-binding` 1/1（合计 37/37）。
+- 边界：胶囊只在桌面原生 Select2 的绑定弹窗里出现（移动端走插件分组控件，本身已有分组）；胶囊过滤不写设置，重新打开回到「全部」。
+
+### 全局下拉跨分组搜索与搜索徽章去重（2026-11-28 · v2.35.44）
+- 用户反馈：①全局下拉在「剧情」pill 下搜「文风」的书仍然搜不到（只有「全部」能搜到）；②普通下拉搜索命中 1～2 本时，每切一次分组就多叠一个分组徽章，还可能显示成别的书的徽章。
+- 原因与改动（`src/native-filter.js`）：
+  - `globalSelect2Matcher` 先按 pill 过滤再交给搜索匹配，所以别的分组的书根本没被渲染出来。现在只要 `params.term` 非空就跳过 pill 过滤（搜索跨全部分组，命中后再归到「搜索匹配到的世界书」）。
+  - `layoutEditorSearchMatches` 的单本分支原来无脑插入「搜索匹配到的世界书」与「原分组」两个徽章：每换一次 pill 就重新插入一遍，而 `clearEditorSearchMatches` 只清 `is-search-match`，于是原分组徽章无限叠加（还会残留上一本书的组名）。现在单本分支加存在性判断，`clearEditorSearchMatches` 同时清掉 `is-search-origin`。
+- 验证：单测 245/245；`native-picker-window` 33/33（新增 1 项：单本搜索后连续切 4 次 pill，行内只剩 1 个原分组徽章且组名正确；全局下拉用例补「剧情 pill 下搜到文风的书」断言）。
+- 边界：全局下拉搜索会临时忽略 pill 过滤，退出搜索后恢复按 pill 过滤。
+
+### 全局下拉搜索标题与开关同步（2026-11-28 · v2.35.43）
+- 用户反馈：①全局下拉搜索只出徽章、看不到「搜索匹配到的世界书 (N)」标题；在「剧情」pill 下搜不到「文风」的书；②下拉打开时勾选开启全局后，「已开启的全局世界书」计数不涨，新挂载的书还留在「已收藏」。
+- 原因与改动（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`）：
+  - 搜索标题会被 Select2 每次按键后的整表重渲染冲掉，而签名判重又让它不再重建 → 现在签名命中时还要求「标题/徽章仍在 DOM 里」才跳过，否则重建；标题改为插到结果列表最前面，保证可见。
+  - 搜索状态改为每次实时读取 `dropdownEl.querySelector(".select2-search__field")` 的值（原来缓存的节点在 Select2 换输入框后会失效，导致仍按 pill 过滤，别的分组的命中被隐藏）。
+  - 命中 ≥3 本时去掉行内「搜索匹配到的世界书」徽章，只保留块标题；1 本仍是行内徽章；每行仍带原分组徽章（已有同名分组徽章时不重复）。
+  - 新增挂载态即时同步：下拉打开期间监听 `#world_info` 的 `change` 与结果行点击，下一帧重新分桶 —— 勾选后立即进「已开启的全局世界书」，不再停留在「已收藏」。
+- 验证：单测 245/245；`native-picker-window` 32/32（新增 1 项：打开下拉后勾选一本书，标题立刻变成「已开启的全局世界书 (1)」且原分组少一本；搜索用例补「≥3 本无行内徽章」断言）。
+- 边界：挂载后的书只出现在「已开启的全局世界书」块里（不回到原分组），靠该块置顶 + 一次点击取消勾选来纠错，避免又出现重复显示。
+
+### 全局下拉搜索归组（2026-11-28 · v2.35.42，U5）
+- 交接文档 U5：普通下拉搜索早已把命中项收进「搜索匹配到的世界书」，全局下拉只是放宽了 pill 过滤，命中行仍平铺。
+- 改动（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`）：新增 `layoutGlobalSearchMatches()` / `clearGlobalSearchMatches()`——搜索时把命中行收进一个 `__search_matches__` 标题块（≥2 本），只命中 1 本时给该行加「搜索匹配到的世界书」徽章；每行补原分组徽章（若行内已有同名分组徽章则不重复添加）；签名判重避免观察器抖动，清空搜索后标题与徽章一并撤掉。
+- 验证：单测 245/245；`native-picker-window` 31/31（新增 1 项：全局下拉搜「许文」单本徽章、搜「许」3 本收进 `搜索匹配到的世界书 (3)` 且每行带原分组、清空后全撤；原有全局下拉用例的徽章断言按新形态更新）。
+- 边界：全局下拉的命中项仍受宿主 Select2 matcher 过滤，本改动只负责归组与徽章；增强浮层（兼容脚本）路径的搜索归组另有实现，未改。
+
+### 手机选书面板的全局世界书分组（2026-11-28 · v2.35.41）
+- 用户反馈：iOS（未开启兼容下拉脚本，走手机选书面板）在「全部」里 3 本全局仍是裸行、在「文风」里干脆看不到全局书；胶囊本身是有的。
+- 改动（`src/native-filter.js` 的 `openMobileEditorPickerSheet`）：
+  - 新增「全局世界书」区块：挂载 ≥3 本时把它们从裸行里抽出来放进该区块（`data-mp-globals-sec`），排在列表最上方，可折叠、记忆折叠状态。
+  - 具体分组 pill 下也渲染该区块，默认折叠、点标题可展开（`_isolatedFoldOverride` 记录手动展开）；点「全局世界书」pill 进入即展开。
+  - 行内「已全局」徽章沿用上一版的渲染（手机端已可见）。
+- 验证：`native-mobile-picker-lifecycle` 23/23（新增 1 项：全部视图 3 本全局进区块且不在裸行、胶囊存在、文风 pill 下区块存在且折叠、点标题展开出 3 行）。
+- 边界：电脑端「1～2 本全局没有已全局徽章」按用户要求暂不处理（手机端已有）。
+
+### 增强浮层全局块、已全局徽章与块序（2026-11-28 · v2.35.40）
+- 用户反馈：①iOS TauriTavern（走兼容脚本增强浮层）在「全部」和各分组里都没有「全局世界书」；③1～2 本全局时两端都没有「已全局」徽章；④「已收藏」里出现了按原分组分段 + 折叠箭头，应该改成一行一本、后面用徽章标原分组（如「文风」）。
+- 改动（`src/native-filter.js`）：
+  - 增强浮层（`.gr-container-enhanced`）编辑器路径新增「全局世界书」区块：挂载 ≥3 本时把已挂载书从各分组抽出、放到最上方，并新增 `__globals__` 胶囊；进其它分组时该块默认折叠、点标题可展开（`_isolatedFoldOverride`）。
+  - 同路径新增扁平「已收藏」区块：点「已收藏」胶囊时把收藏书移入该块、隐藏各原分组区块，行右侧显示原分组徽章（`.is-origin`，只在收藏视图显示）；离开该胶囊后书回到原分组。已挂载且收藏的书不进收藏块（与电脑端一致）。
+  - 增强浮层的行内动作区按实时挂载集合补「已全局」徽章（`mountedGlobalSet`），手机选书面板的行也补了同一徽章。
+  - 电脑端普通下拉：1～2 本全局的裸行改为排在「已收藏」块**上方**（`hoistBareGlobalsAboveFavorites`），对应说明文案由「显示在下方」改为「显示在上方」。
+- 验证：单测 245/245（R6.2、M2 两处断言按新形态更新：编辑器浮层现在有一个扁平收藏区块打头）；`native-picker-window` 30/30（新增增强浮层用例：全局块 3 本且排第一、收藏胶囊扁平 + 原分组徽章、分组区块隐藏、退出胶囊后回到原分组、在「文风」下点全局块标题可展开）；`native-favorites-script` + `native-editor-titles` + `native-popover-sweep` 15/15。
+- 边界：增强浮层的收藏块只在点「已收藏」胶囊时收纳书，退出即还原；仍为模拟视口（夹具合成 `.gr-container-enhanced`）验证，未在 iOS 真机核对。
+
+### 下拉块顺序、已全局徽章与全局组展开（2026-11-28 · v2.35.39）
+- 用户反馈：①普通下拉里「已收藏」应排在「全局世界书」下一位（和全局下拉一致）；②只有 1～2 本全局书时要有「已全局」徽章；③点进「全局」pill 应自动展开，而且在其它分组下点全局块标题也要能展开（原来两个方向都展不开）。
+- 改动：
+  - 新增 `orderEditorBlocks()`：「全局世界书」块始终压在「已收藏」块上方，不管哪一块最后被重建。
+  - 新增 `syncGlobalBadges()`：每轮 `decorateGroupItems` 按实时挂载集合补建／移除「已全局」徽章——Select2 只渲染一次行，书在打开下拉后挂载、或行在分类刷新前渲染时，旧实现会丢徽章。
+  - 折叠：`forceFold` 不再作用于「当前 pill 就是全局组」的情况，点进全局 pill 直接展开；在其它分组 pill 下仍默认折叠，但用 `_isolatedFoldOverride` 记住手动展开，点块标题即可展开。
+- 验证：单测 245/245；`native-picker-window` 28/28（新增：块顺序 全局→已收藏、1～2 本全局两颗「已全局」徽章、全局 pill 进入即展开 + 在「文风」下点标题展开）。
+- 边界：`_isolatedFoldOverride` 是页面级内存，重开下拉即复位（每次打开又回到默认折叠）；仍然只在模拟视口验证。
+
+### 普通下拉全局书去重（2026-11-28 · v2.35.38）
+- 用户反馈（HANDOFF U1）：电脑端普通选书下拉里，挂载的全局书会显示 2～3 遍——「全局世界书」块 + 顶部裸行，既收藏又挂载时再多「已收藏」块一遍。
+- 本轮追加确认（用户原话）：①「已收藏」分组里不再列那本既收藏又挂载的书，标题旁保留「X 本已全局…」说明；②只有一本、两本全局书时（哪怕其中一本是已收藏的）不建分组，按「当前角色」那样用原名裸行显示；③普通收藏（未挂载）保持「已收藏」块 + 原分组各一份，但要在原分组里置顶。
+- 改动：
+  - src/native-filter.js 的 enhanceOpenEditorDropdown：新增 syncEditorDupeRows()，仅在存在「全局世界书」块时把该块已收录的真实行用 wbo-dd-dupe-hidden 藏起来；每轮 decorateGroupItems 先清标记再重算（幂等，切 pill／搜索自动还原，搜索期间不隐藏）。
+  - uildEditorMirrorBlock() 增加 llowEmpty / countOverride / ote：「已收藏」块可只留标题（≥3 本全局且收藏全被全局块收录时），标题按收藏总数计数并带「X 本已全局，位于全局分组」。
+  - 「已收藏」块不再镜像已挂载的收藏书；不足 3 本（无全局块）时该块不渲染空标题，说明文案改为「X 本已全局，显示在下方」；全局书本身按裸行显示。
+  - 新增 hoistPinnedRowsInsideGroups()：收藏书在自己所属分组里排到组内第一行（同组其它书顺序不变，已正确时不重排，避免观察器抖动）。
+  - 「当前角色」置顶判定跳过镜像行，避免把块内克隆行当成真实行顶到最上面。
+  - style.css 增加 li.wbo-dd-dupe-hidden { display: none !important; }。
+- 验证：单测 245/245；ative-picker-window 27/27（新增 3 项：≥3 本全局每本只可见一次 + 「已收藏 (2)1 本已全局，位于全局分组」+ 镜像行点击仍可选中；1～2 本全局走裸行且不渲染空的「已收藏」标题；普通收藏在原分组置顶）。
+- 边界：全局书自己就是当前角色书时，块内那份副本被隐藏、只留顶部置顶行，块头计数仍是全量；隐藏行仍留在 Select2 的 [aria-selected] 集合里，键盘上下可能短暂停在不可见行（与既有 wbo-dd-group-hidden 同性质）。
+
+### Mirror stars and global search filter (2026-11-28 v2.35.36)
+- Mirror rows keep their star button so globals/favorites can be pinned from the block.
+- Global dropdown stops filtering by the active pill while searching, so matches from other groups stay visible.
+- Tests: native-picker-window 24/24.
+
+### Badge layout and mirror guards (2026-11-28 v2.35.35)
+- Search rows: badges no longer shrink or ellipsize (group name / 当前角色 stay complete); only the title ellipsizes, actions stay right aligned.
+- Mirror rows never render the 当前编辑 badge at template level, removing the flaky duplicate that pushed 当前角色 left.
+- Tests: unit 245/245; native-picker-window 24/24; native-mobile-picker-lifecycle 22/22.
+
+### Mobile search chips layout (2026-11-28 v2.35.34)
+- Origin chip no longer truncates group names; row actions stay right-aligned.
+- Tests: native-picker-window 24/24, native-mobile-picker-lifecycle 22/22.
+
+### Bind popup grouping and titles (2026-11-28 v2.35.33)
+- Build optgroups whenever any group or bare book exists (drop the two-group early return).
+- Read the real name from state.element.dataset.wboRealName before the meta lookup so primaryTitle applies.
+- Tests: unit 245/245; native-picker-window 24/24.
+
+### 搜索归组跨分组与标签精简（2026-11-28 · v2.35.32）
+- 移动选书面板：搜索改为跨全部分组收集（收藏/全局 pill 不再空），��2 本时固定渲染「搜索匹配到的世界书」分组，单本才带搜索徽章；原分组标签直接显示分组名。
+- 桌面编辑下拉：搜索归组不再跳过「全部」，同样跨组收集；原属标签改为纯分组名。
+- 样式：行内动作区不换行、原分组徽章省略号截断，避免竖排错乱。
+- 验证：单测 245/245；
+ative-mobile-picker-lifecycle 22/22、
+ative-picker-window 24/24。
+
+### 组合页收藏 pill 与绑定弹窗立即初始化（2026-11-28 · v2.35.31）
+- 组合页「已收藏」pill 的过滤不再排除已挂载的全局书（之前会整组为空）。
+- 绑定弹窗主世界书改为首次检测后立即初始化 Select2，减少原生选择框闪现。
+- 未完成：组合页默认进入已收藏（会改动既有测试与引导，需单独一批）、普通下拉的全局块阈值/增强浮层路径、绑定弹窗的分组胶囊。
+
+### iOS 当前角色书置顶与标签（2026-11-28 · v2.35.30）
+- 用户反馈：iOS TauriTavern 进入其他分组后，当前角色世界书不再置顶；建议加「当前角色」标签。
+- 改动：移动选书面板新增 getMobileCurrentCharBooks() 与 pinCurrentCharRows()：在「全部」、具体分组、「已收藏」、「全局世界书」各视图渲染后，把当前聊天角色的书作为无标题行插到列表最前，并从原分组/收藏组/全局组中去重移除；enderMpRowHtml 对 __currentChar 行加 当前角色 徽章（.wbo-s2-badge.is-current-char）。leader 使用 wbo-mp-bare-sec 类，保持单测里「当前角色书在最上、无分组头」的约定。
+- 验证：单测 245/245；
+ative-mobile-picker-lifecycle 22/22、
+ative-picker-window 24/24。
+- 仍未完成：iOS 增强浮层（syncSections）路径的置顶/搜索归组/全局块；桌面「已收藏」pill 搜索归组现场复核；美化脚本共存。
 # `worldbook-organizer` 精修交接说明（v2.35.16）
 
 ## 0. 交接断点（2026-11-27 · v2.35.16）
+
+### iOS 全局分组块与绑定弹窗默认展开（2026-11-28 · v2.35.29）
+- 用户反馈：iOS TauriTavern 挂载 4 本以上仍没有「全局世界书」分组；绑定弹窗里「角色世界书」组不是默认展开；桌面「已收藏」pill 搜索未归组。
+- 改动：
+  - `src/native-filter.js` 移动选书面板：新增 `getMobileGlobalBooks()`，挂载 ≥3 本时在 pills 里加「全局世界书」（位于已收藏之后、各分组之前），点进后渲染为可折叠 section（记忆折叠），搜索时也按该 pill 收集匹配。
+  - `enhanceCharBindPopup` 的移动分支把 `collapseCharByDefault` 固定为 `false`，绑定弹窗各分组（含角色世界书）统一默认展开。
+  - 编辑下拉镜像行在 `decorateGroupItems` 开头与末尾各清理一次「当前编辑」徽章，消除偶发重复。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-mobile-picker-lifecycle` 22/22。
+- 未完成：iOS 增强浮层（`syncSections`）路径的搜索归组与全局块；桌面「已收藏」pill 搜索归组的现场复核（代码已允许，需真机确认是否仍按原分组显示）；美化脚本共存。
+
+### 绑定主世界书桌面增强与全局不再注入控件（2026-11-28 · v2.35.28）
+- 用户反馈：电脑端角色卡「选择一个世界书文件给 xxx」的绑定主世界书展开后不能搜索、不能按分组切换、显示的是文件原名，而且面板弹在页面中间；手机端全局选择时输入法关不掉，怀疑插件往原生框里加了搜索。
+- 改动：
+  - `src/native-filter.js` 新增 `renderSingleWorldResult` / `renderSingleWorldSelection` / `enhanceDesktopSingleWorldSelect2`：桌面主世界书等待宿主 Select2，等不到就主动初始化（`minimumResultsForSearch: 0`、`dropdownParent` 指向角色弹窗以便就地展开），模板改用 `primaryTitle`/别名，随后重建 optgroup 分组。
+  - `enhanceCharBindPopup` 桌面分支改调 `enhanceDesktopSingleWorldSelect2`（保留移动端原分组控件）。
+  - `applyGlobalWorldSelectFilter` 彻底不再为 `#world_info` attach 自建分组控件（自建搜索/触发器会带来多余框与输入法残留），仅保留 `hasSelect2` 供后续签名逻辑使用。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-global-drawer` 8/8、`native-mobile-picker-lifecycle` 22/22、`native-favorites-touch` 6/6；全量见下。
+- 未完成：增强浮层路径的搜索归组、iOS 的「全局世界书」块、美化脚本共存。
+
+### 去掉全局抽屉里多余的触发器与搜索框（2026-11-28 · v2.35.27）
+- 用户截图反馈：全局世界书抽屉出现第三个框（插件 trigger，文案「已选 X 本：…」），并且展开插件面板后点抽屉其它地方会关闭整个原生抽屉；要求不要改动原生展示。
+- 改动：
+  - `src/native-filter.js` 的 `applyGlobalWorldSelectFilter`：只有宿主既没有 Select2 实例、父容器里也没有 `.select2-container` 且为移动模式时才 attach 自建分组控件；桌面（含 TauriTavern 桌面）一律不注入，原生 chips 保持唯一。
+  - `enhanceOpenGlobalDropdown`：删除自建 `wbo-global-search-wrap` 搜索框，只复用宿主已有的 `.select2-search__field`。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-global-drawer` 8/8、`native-mobile-picker-lifecycle` 22/22；全量见下。
+- 未完成：增强浮层路径的搜索归组、iOS 的「全局世界书」块、美化脚本共存、抽屉点击仍可能被原生逻辑关闭（移除自建控件后需真机复核）。
+
+### 搜索归组扩到收藏/全局与移动端（2026-11-28 · v2.35.26）
+- 用户反馈：桌面下拉在「已收藏」「全局」pill 下搜索时仍按原分组显示，没有归到「搜索匹配到的世界书」；iOS TauriTavern 同样按原分组显示；匹配行旁要标注原分组。
+- 改动：
+  - `src/native-filter.js`：`layoutEditorSearchMatches` 的跳过条件只保留「全部」与非搜索状态，`__pinned__` / `__globals__` 下也把匹配行收进临时块；搜索期间不再构建全局/收藏镜像块（避免重复）；单行与多行都给每个匹配行插入 `原属：X` 徽章（`.is-search-origin`）。
+  - 移动选书面板（`openMobileEditorPickerSheet` 的 `renderList`）：搜索词非空时按当前 pill 收集匹配（全部/已收藏/具体组），1 本走单行 + 「搜索匹配到的世界书」徽章，≥2 本渲染同名 section，行上带 `原属：X`；清空搜索恢复原分组。
+  - `style.css`：`.wbo-s2-badge.is-search-origin`（灰底淡色）。
+- 验证：单测 245/245；`native-picker-window` 24/24、`native-mobile-picker-lifecycle` 22/22、`organize-combos` 8/8；全量见下。
+- 未完成：增强浮层（`syncSections` 路径）的搜索归组、iOS 的「全局世界书」块、美化脚本共存、抽屉点击。
+
+### 已收藏计数与已全局提示（2026-11-28 · v2.35.25）
+- 用户要求：既收藏又全局的书在「已收藏」旁的数字仍按收藏总数标注，不扣除已全局的部分，并标注「X 本已全局，位于全局分组」。
+- 改动：全局下拉 `layoutGlobalGroupRows` 统计 `mountedPinnedCount`，收藏组标题用 `pinnedTotal = 收藏未挂载 + 已挂载收藏`，并在标题内追加 `.wbo-dd-group-note`（文案 `X 本已全局，位于全局分组`）；收藏全被挂载时仍保留标题（`allowEmpty`）。普通下拉的「已收藏」镜像块同样按全部收藏计数并追加同一提示（克隆行去掉星标与所有动态徽章，避免「当前编辑」重复）。`style.css` 增加 `.wbo-dd-group-note`。
+- 验证：单测 245/245；`native-picker-window` 24/24（双标书场景断言标题为 `已收藏 (1)1 本已全局，位于全局分组`、收藏书仍只在全局块）；全量见下。
+
+### 收藏块、置顶标题、组合页样式与小眼睛二次点击（2026-11-28 · v2.35.24）
+- 用户反馈：手机端再点同一个眼睛关不掉；iOS TauriTavern 没有「全局世界书」分组；要兼容 `参考仓库/下拉框美化.json`；普通下拉里「已收藏」没有分组栏；当前角色书又按文件名显示；切到「全局」「文风」后收藏书仍残留；切到文风时全局块应默认折叠；组合页自建分组外面的浅色卡片与留白要清掉，「已选 X 本」不再显示；点抽屉其他位置会把原生抽屉关掉。
+- 本轮改动：
+  - `src/panel-quick.js`：眼睛浮层改为按 `backdrop.dataset.wboGid` 判定——再点同一个眼睛直接关闭，与事件顺序无关；捕获阶段的 pointerdown 不再处理眼睛本身（交给 click 判定）。
+  - `src/native-filter.js`：编辑下拉的镜像块抽成 `buildEditorMirrorBlock()`，`__pinned__` 在「全部」视图也生成「已收藏 (N)」分组（为空则无），排在「全局世界书」上方；具体分组视图下收藏镜像组隐藏、全局镜像组默认折叠（`forceFold`）；置顶的当前角色书把 `.wbo-s2-title` 改写为 `meta.primaryTitle`，回归到角色名显示；镜像行克隆时去掉「当前编辑」徽章，避免重复。
+  - `src/panel-quick.js` + `style.css`：组合编辑视图去掉顶部「已选 X 本」徽章；书单去掉分组与书行的边框/底色/内边距，标题贴到搜索框下方，行改为主面板式无框排版。
+- 验证：单测 245/245；`native-picker-window` 24/24（新增已收藏镜像块、具体组隐藏收藏块、当前角色书标题、眼睛二次点击开→关→开）；全量见下。
+- 未完成（下一轮）：iOS/TauriTavern 移动选书面板的「全局世界书」块、下拉框美化脚本共存核对、抽屉点击被关闭、收藏书残留的现场复核。
+
+### 全局下拉归属、会话 pill、搜索匹配与绑定面板（2026-11-28 · v2.35.23）
+- 用户要求：① 既收藏又挂载的书只在「已开启的全局世界书」里出现一次，不进「已收藏」；② 全局下拉记住本次会话最后选的分组 pill，不再每次回到「已收藏」；③ 普通选书下拉在当前分组里搜索时不能夹带其他分组：1 本匹配→只显示该行并打「搜索匹配到的世界书」徽章，≥2 本→在当前分组上方建同名临时分组，清空搜索后不残留；④ 全局下拉补上和普通下拉一样的搜索框；⑤ 角色卡「绑定主世界书」改成像附加世界书那样由原生 Select2 就地展开，不再用插件弹层。
+- 改动：
+  - `src/native-filter.js`：`layoutGlobalGroupRows` 里 `isPinned && isMounted` 归入 mounted 块（收藏组不再重复）；新增 `_sessionGlobalPillId`（内存，页面会话级）并在打开时校验（ALL 恒有效），pill 点击后记录；`layoutEditorSearchMatches()` 在具体分组 + 搜索时隐藏原组、单行加 `is-search-match` 徽章/多行建 `__search_matches__` 临时分组，清空搜索即拆掉；全局下拉在宿主无 `.select2-search__field` 时自建同款搜索输入并驱动 `query`；`enhanceCharBindPopup` 桌面端改为等待宿主 Select2 后调用新函数 `groupDesktopSingleWorldSelect()`（只重建 optgroup，保留原生就地展开），移动端仍用插件分组控件。
+  - `style.css`：新增 `.wbo-s2-badge.is-search-match`（琥珀色徽章）。
+- 验证：单测 245/245；`native-picker-window` 24/24（新增：双标书只出现在全局块、胶囊会话记忆、全局下拉搜索框存在、分组内搜索单本徽章/多本临时组/清空后消失、绑定主世界书不再生成插件 trigger 且 optgroup 分组生效）；`native-extras-cleanup` 2/2（弹窗观察判定改为 `.character_world` 的 `wboEnhanced` 标记）；全量浏览器结果见下。
+- 边界：搜索匹配的临时分组只在编辑下拉、具体分组 pill 下生效（ALL/PINNED/全局块视图不启用）；绑定主世界书的 optgroup 重建依赖宿主已初始化 Select2。
+
+### 主面板折叠与组合页强调色（2026-11-28 · v2.35.22）
+- 用户要求：主面板（管理分组）里「已开启的全局世界书」在「全部」「非角色书」视图可折叠；当前角色书被移到其他分组后「当前角色世界书」块不能消失；组合页「已选」用暗红底白字；全局下拉的「已收藏」组恢复折叠记忆（手动折叠后切 pill 再回「全部」不自动展开）。
+- 改动：
+  - `src/panel-manager.js`：`ACTIVE_GLOBAL_SECTION_ID` 从静态 `isSingleView: true` 改为可折叠，状态存 `settings.activeGlobalGroupCollapsed`，折叠分支与 `structSig` 同步；`currentCharBooks` 改为在 `classification.byName` 全量里按 `charOwners` 找（不再要求 `isInCharGroup`），书被拖到别的分组时该块仍在；角色组内排序逻辑不变。
+  - `src/core.js`：默认 settings 增加 `activeGlobalGroupCollapsed: false`。
+  - `src/native-filter.js`：全局下拉收藏组去掉 `openByDefault` 与 isolated 特例，折叠状态读 `settings.dropdownCollapsed`，与普通选书下拉一致。
+  - `style.css`：`.wbo-pill.is-emphasis` 改为暗红 `#7f2b2b` + 白字。
+- 验证：单测 245/245；`native-picker-window` 22/22（新增：主面板全局块可折叠、当前角色书在别的分组时「当前角色世界书」仍列出该书、收藏组折叠记忆）；`organize-combos` 8/8（强调色断言更新为 `rgb(127, 43, 43)|rgb(255, 255, 255)`）；全量浏览器结果见下。
+- 边界：仍为模拟视口验证；主面板全局块折叠状态只在总览持久化。
+
+### 下拉全局分组与组合页折叠（2026-11-27 · v2.35.21）
+- 用户要求（已确认）：普通选书下拉里，挂载 **3 本及以上**全局书时出现可折叠的「全局世界书」分组，全局书同时保留在原分组（两边都在）；切到"文风"等分组时该组仍在上方——位于当前角色书置顶行下方、该分组上方；上方胶囊顺序为 `已收藏 → 全局 → 角色世界书（如显示）→ 其它分组`；当前角色书在普通下拉里仍是**无标题置顶行**。组合页「全部」「非角色书」两个视图里给分组加展开/折叠，样式参考主面板但不带拖动图标，折叠状态记住。
+- 改动：
+  - `src/native-filter.js`：新增 `EDITOR_GLOBALS_GROUP_ID = '__globals__'`；`getActiveGlobalWorldSet().size >= 3` 时在编辑下拉里构造镜像组（`.wbo-dd-global-mirror`，克隆真实行、去掉收藏按钮、点击镜像按书名选中真实 option 并关闭下拉），组头带数量并可折叠；`groups` 描述符把「全局」插到角色组之前（无角色组则最前），胶囊因此得到 `已收藏 → 全局 → 角色世界书 → 其他`；`decorateGroupItems` 的 gid 优先读 `data-wbo-dd-group`、具体分组视图下不隐藏全局块；镜像组用签名判重避免观察器自触发死循环，`ensureSelect2RowsHavePinBtn` 跳过镜像行。
+  - `src/panel-quick.js` + `style.css` + `src/core.js`：组合页分组标题改成 `wbo-gp-sec-toggle`（吸顶、带箭头与数量），仅在「全部」「非角色书」视图可折叠（其他视图标题静态、无箭头），折叠状态存 `settings.comboGroupCollapsed`；新增默认字段 `comboGroupCollapsed: {}`。
+- 验证：单测 245/245；`native-picker-window` 20/20（新增：3 本全局 → 「全局世界书 (3)」组、镜像三本、胶囊第二位是 `__globals__`、组在列表第一位、可折叠、切到「文风」后仍可见且位于其上方）；`organize-combos` 8/8（新增：组合页折叠、具体分组视图展开且静态、回到「全部」仍记得折叠）；全量浏览器结果见下。
+- 边界：镜像行点击走 `select2('close')`，未在真实宿主验证选择后的 `change` 连锁；组合页折叠只在两个总览视图生效。
+
+### 主面板常驻块、眼睛浮层与下拉标签（2026-11-27 · v2.35.20）
+- 用户要求（已确认）：
+  - 插件主面板（管理分组）里，「已开启的全局世界书」不能被"角色世界书分组不显示"连带隐藏，必须常驻；新增常驻「当前角色世界书」分组，放在「已开启的全局世界书」上面，包含该角色绑定的主书与附加书，可折叠、默认展开，不进入上方的分组胶囊；当前角色书同时仍出现在「角色世界书」分组里、排在该组顶部；只在总览视图（全部/默认）出现；与「已收藏」的重复可以接受。
+  - 主面板分组标题的小眼睛浮层：点面板外任何地方都要自动关闭、不残留；点面板内不关；再点同一个眼睛按钮是关闭；点别的眼睛按钮关旧开新；同一时间只有一个。
+  - 普通选书下拉（编辑世界书）里给已挂载全局书加「已全局」标签，样式与位置照「当前编辑」徽章。
+- 改动：
+  - `src/panel-manager.js`：`isOverviewView` 统一驱动 `activeGlobalBooks`/`currentCharBooks`（后者用 `getCurrentCharacterAvatar()` + `charOwners`，含附加书）；`pushOverviewPinnedSections()` 在总览先放「当前角色世界书」→「已开启的全局世界书」；角色组改为把当前角色书排到组首而不是移除；新增 `CURRENT_CHAR_BOOK_SECTION_ID` 折叠分支写 `settings.currentCharGroupCollapsed`；该组不出现在 pills、不显示眼睛按钮；`structSig` 加入当前角色与折叠状态。
+  - `src/core.js`：默认 settings 增加 `currentCharGroupCollapsed: false`。
+  - `src/panel-quick.js`：可见性浮层增加 document 捕获阶段的 `pointerdown` 外部关闭（共享气泡守卫会阻断普通冒泡），并对"再点同一个眼睛"做 300ms 同组标记避免重开；修复插入时误删的 `rect`。
+  - `src/native-filter.js` + `style.css`：`renderSelect2OptionResult` 在 `showEditingBadge`（编辑下拉）时按 `getActiveGlobalWorldSet()` 渲染 `已全局` 徽章，配色与「当前编辑」同位置。
+- 验证：单测 245/245；`native-picker-window` 19/19（新增：主面板分组顺序 `当前角色世界书 → 已开启全局 → 角色世界书 → 已收藏`、当前角色书在角色组第一位、当前角色组不在 pills、当前角色组可折叠、编辑下拉「已全局」徽章、眼睛浮层外部点击/再点同一眼睛关闭）；全量浏览器测试见下。
+- 边界：当前角色组与全局组只在总览出现；「当前角色世界书」与「已收藏」可能重复列出同一本书（用户已确认可接受）；仍为模拟视口验证。
+
+### 主面板收藏组标题与组合页分组行（2026-11-27 · v2.35.19）
+- 用户要求（已确认）：主面板点进「★ 已收藏」后标题不要用折叠图标，要和其他分组的单组视图一样；全局世界书组合的「自由勾选新建组合」里，第一行 pill 是分组（★ 已收藏 → 用户自己的分组 → 未分组，不含角色书），第二行换行是范围（已选 → 全部 → 全局 → 非角色书 → 角色书），「已选」用黑底白字的强调样式；每个 pill 记住自己上一次的滚动位置（任意位置，不只底部），切回时恢复、首次进入在顶部；有挂载全局书时出现「全局」pill（紧跟「全部」），进入具体分组时隐藏已挂载的全局书行。
+- 追加确认（2026-11-27）：
+  - 全局下拉（`#world_info`）里已挂载的全局书单独置顶，排在「已收藏」上方；既已收藏又已挂载的书只进「已收藏」，并在该组内置顶。全局下拉的「全部」视图每次都默认展开「已收藏」组；普通选书下拉保持原来的折叠记忆，不默认展开。
+  - 「当前聊天角色的世界书置顶」只做在**普通选书下拉（编辑世界书）**：任何分组 pill 下都置顶在列表第一位、不加分组标题，原分组里不再重复。全局面板与全局下拉都不做。
+  - 电脑端角色卡「绑定世界书」的增强面板会探出酒馆页面：给该弹层加了打开后的实测夹紧（横向/纵向都拉回视口内 8px）。
+- 改动：
+  - `src/panel-manager.js` 的 PINNED 单组视图改为 `isSingleView: true` + `collapsed: false`，标题渲染成和其他分组相同的静态头，无 chevron。
+  - `src/panel-quick.js` 组合编辑：`#wbo-cmb-pills` 拆成 `#wbo-cmb-pill-rows` 内两行容器（`#wbo-cmb-group-pills` 分组 / `#wbo-cmb-pills` 范围）；pill 点名、数量、颜色点按上述顺序重建；行上新增 `data-cmb-global` / `data-cmb-pinned`；`__global__`/`__pinned__` 两个新范围，进入具体分组时 `(!isGlobalBook || isChar)`；`editPillScrollState` 只记 `scrollTop`，切换前保存、切换后恢复；滚动宿主优先取 `#wbo-cmb-pick-list` 自身。
+  - `src/native-filter.js` 全局下拉 `layoutGlobalGroupRows` 增加「已开启的全局世界书」置顶组（`ACTIVE_GLOBAL_SECTION_ID`），收藏组内已挂载书排最前，收藏组 `openByDefault: true`（只影响全局下拉）；普通编辑下拉的 `decorateGroupItems` 末尾把当前聊天角色书移出原组、预置到 `resultsList` 首位并加 `wbo-dd-current-char`，搜索时不干预；`attachGroupedSelectControl` 的 `positionPopover` 末尾新增 `clampPopoverIntoViewport()`。
+  - `style.css` 增加 `.wbo-cmb-pill-rows` 两行布局与 `.wbo-pill.is-emphasis`（#16181d 底、白字、白计数）。
+- 验证：单测 245/245；`organize-combos` 8/8（两行 pill 顺序、已选强调色 `rgb(22, 24, 29)|rgb(255, 255, 255)`、进入分组隐藏已挂载全局书、「全局」pill 可见该书、未访问 pill 在顶部、中间位置 120 与底部位置分别记住）；`native-picker-window` 16/16（主面板收藏单组视图静态标题；全局下拉组头顺序 `已开启的全局世界书 → 已收藏 → 角色世界书 → 测试分组乙`、收藏组默认展开；编辑下拉里当前角色书始终排第一；角色绑定弹层在右边缘时完整落在视口内）；`feedback-round` 15/15。
+- 边界：仍为模拟视口验证；「其他」分组目前只有「未分组」，角色书只在第二行开关里；收藏分区不单独列书，只作为 pill 筛选；编辑下拉的角色书置顶在搜索中不生效（保留搜索结果顺序）。
+
+### 敏感世界书检测排除角色世界书（2026-11-27 · v2.35.18）
+- 用户反馈：部分角色世界书的标题带「肉」「敏感」等字样，被当成疑似敏感书并归组；要求检测敏感书时直接排除角色世界书。
+- 改动：`src/core.js` 的 `analyzeSensitiveOrganizeState`、`src/panel-organize.js` 的 `sensitiveSet` 都按 `isInCharGroup` 排除角色组里的书——它们进普通书分区，不再出现在「疑似敏感世界书」页、敏感计数、全选敏感书与归组目标里；被用户显式 `exclude_from_char` 排除出角色组的绑定书仍按普通书检测（保留既有 M3 R4 一键归组行为）。导入归类路径本来就用 `eligibleNonCharacterTitles` 排除角色书，未改。
+- 验证：单测 73/73（新增断言：角色书不进 `sensitiveBooks`、`charSensitive` 为空）；`organize-combos` 7/7、`import-organizer`＋`feedback-round` 25/25 通过。
+
+### 全局下拉「全部」分组折叠（2026-11-27 · v2.35.18）
+- 用户反馈：全局世界书下拉切到「全部」时，列表顶部只有一行裸的「已收藏」文字，没有分组标题样式也不能折叠；要求「学习普通下拉框那里的分组」，让「全部」下的分组同样能折叠展开。
+- 改动（`src/native-filter.js` 的 `enhanceOpenGlobalDropdown`、`style.css`）：
+  - 删掉原来那个自造的无样式 `<li>已收藏</li>`，改为在「全部」下按 `_latestClassification.orderedSections` 顺序重建结果行，为每个有书的分组插入标题行 `li.select2-results__group.wbo-dd-group-head.wbo-global-group-head`，复用普通选书下拉的吸顶背景与 chevron 箭头；已收藏排在第一位，文字格式与普通下拉一致（`已收藏 (1)`、`测试分组乙 (2)`）。
+  - 点击标题走 `toggleDropdownGroupCollapsed(gid, false)`，与普通选书下拉共用 `settings.dropdownCollapsed` 记忆；折叠组内的行加 `wbo-global-group-collapsed` 隐藏，箭头旋转成折叠态。
+  - 搜索中不插标题、不折叠，命中项直接平铺，与普通下拉一致；关闭下拉时清理标题行与新监听。
+  - 收藏书只出现在「已收藏」组，所以它原来所属的分组会变空、不显示标题（与旧置顶行为一致）。
+  - 点进「★ 已收藏」pill 与点进其他分组一致：进入即默认展开，只有本次手动折叠才收；不再继承「全部」里对收藏组的折叠记忆（`isDropdownGroupCollapsed(gid, true)` + `_isolatedFoldOverride`，桌面全局下拉、手机选书列表、增强浮层的收藏分区与标题点击一并统一）。
+- 验证：单测 245/245；`tests/native-picker-window.browser.mjs` 14/14（「全部」下标题断言更新为 `已收藏 (1)`、`角色世界书 (1)`、`测试分组乙 (2)`，并断言标题 chevron 为 7px，新增折叠已收藏、折叠普通组、再次展开、重新打开下拉仍记住折叠状态的断言）；仓库全量浏览器测试 266 项中 262 通过，4 项因本机缺 `playwright` 未运行（floating-window、manager-favorites、prompt-preview 及 manager-tools 的触屏用例，与本次改动无关）。
+- 边界：仍为模拟视口（桌面 1280×860、手机 390×844）验证，未在真实 TauriTavern／iOS 上点过；折叠沿用普通下拉的 mousedown 事件，触屏合成事件尚未真机核对。
+
+### 本轮反馈修复（2026-11-27，单窗口直接修复，未提交）
+- 用户说明自己是小白用户，允许直接改代码，不再要求多窗口 A/B 双审。本轮由单窗口完成修改与测试；未提交、推送、发布，未安装测试包，未操作 TauriTavern。manifest 仍为 2.35.16。
+- 本轮范围按用户选择：做 B01/B02/B04/B05/B06/B07/B08/B03-D01；B09、B10 页面美化与 CSS 拆分这轮不做。
+- 已修复：
+  - B02：组合新建页书单填满到底栏，列表内部滚动；校验提示保持可见（`style.css` 组合书单规则）。
+  - B06：角色书手动放入自定义分组也显示角色名（`core.js`）；手机单组或关闭分组时，有角色名的书改用插件选书面板，真实 option 文本不变（`native-filter.js`）；增强下拉复用旧行时，标题设置变化会刷新，恢复文件名时还原原文本。
+  - B01：普通选书顺序为当前角色书 → 已开启全局书 → 各分组；隐藏组里已开启的书也可选；关闭全局后回原分组；开关全局时只重排编辑下拉框。三种选书（桌面、手机、增强）一致。
+  - B05：点分组胶囊进入已折叠分组时本次展开，可手动再折叠；回到「全部」保持原折叠记忆，保存的设置不变（用户选「只在分组里展开」）。
+  - B04：确认在左、取消在右：AI 整理、导入规则、组合编辑，条目分组的保存方案、新建分组、自动分组应用、放弃修改提示。其余对话框原本已是此顺序。
+  - B08：排除分组改为「打勾=显示，划线+已排除=不显示」，快捷按钮改名为全部显示／全部排除／仅排除角色书，计数改为「显示 N 组 · 排除 N 组」；分组眼睛菜单改为「在…显示」。保存的 hiddenGroupIds 含义不变，旧设置原样读取。
+  - B03-D01：点手机选书浮层外部关闭时，不再连带收起未固定的世界书抽屉；之后单独点外部仍会正常收起。
+  - B07：iPad 竖屏（触屏、宽度大于 680、竖屏且高度不低于 900）下主面板和子窗口用满屏幕高度，手机选书浮层最高 640px；电脑、手机尺寸不变。仅模拟尺寸验证，需 iPad 真机看一眼。
+- 验证：单测 245/245；本仓库 37 个浏览器测试文件 255/255（含本轮新增 `tests/feedback-round.browser.mjs` 21 项、`tests/native-editor-titles.browser.mjs` 5 项）。修复前对照：B01、B02、B05、B03-D01 的新测试在 HEAD 代码上失败，修复后通过。浏览器测试使用 `本轮材料/B03-R2-补充验证/formal-isolated-suite`（关闭浏览器扩展）和 `WBO_NATIVE_DRAG_ASSETS` 指向已有的拖动测试资源。
+- 未运行：floating-window、manager-favorites、manager-tools、prompt-preview 四个文件依赖 playwright，本机未安装，未安装依赖。
+- 中途全量测试曾发现两处由本轮引入的问题并已修：设置页漏导入导致打不开；全局书置顶后手机只剩一个分组时退回系统下拉。均已回归通过。
+- 待用户验收：手机和 iPad 上实际点一遍普通选书顺序、分组展开、排除分组显示、点外部关闭不收抽屉；iPad 竖屏窗口高度。产物在 `本轮材料/本轮修复/`（日志、截图）。
+
+### B11 新写手接任与隔离复现（2026-11-27）
+- 新窗口已接任唯一写手；用户允许直接修复，并表示后续不必再走多窗口双审。本轮仍未改产品代码，未操作 TauriTavern。
+- 新增探针 `本轮材料/B11-角色书相邻切换/probe-real-enhancer.browser.mjs`：加载未改动的真实下拉美化脚本（`ref-enhance-script.js`，取自 `参考仓库/下拉框美化.json`），先进入角色聊天、点角色卡地球打开角色书，再依次选紧邻书和下一本，断言下拉选中项、实际加载书名与正文。`probe-real-enhancer.log` 中 3 项失败均为夹具问题（按钮零尺寸／抽屉未开）；修正后 `probe-real-enhancer-v2.log` 为 3/4 通过，唯一失败是桌面未选书状态下弹层未打开（夹具入口问题，未进入产品断言）。真实 Select2 加真实美化脚本、手机触摸加真实美化脚本两条路径首次点紧邻书即正确加载正文，**仍未复现假切换**。
+- 静态核对：插件各选书入口按 option 元素或实时 world_names 重算索引后再触发 change，未找到首次点击写错值的路径。宿主 `#world_editor_select` 的 change 处理（公开源码 6381 行）没有“只认最后一次”的保护，两次重叠的 `showWorldEditor` 后完成者会覆盖先完成者；若进入聊天后角色书被再次重载（例如条目分组按存档恢复路线写盘后 `reloadEditor`），用户在其加载完成前点紧邻书，就会出现下拉显示新书、正文仍是角色书。这是当前首要假设，**未经运行证实**，不据此改代码。
+- 下一关：请用户做一次最小对照（见本轮回复），优先确认关闭本插件后是否仍复现、等待几秒后正文是否自行变化、条目分组测试功能是否开启。
+- **结论（用户现场确认）**：B11 由用户 TauriTavern 中仍启用的旧版独立扩展「世界书条目分组」0.3.8 冲突引起；用户停用该扩展后问题消失。该扩展作者同为 Mio-Ame（仓库 `worldbook-entry-groups`），功能已内置于本插件，按用户要求不修复旧扩展。本插件未改代码，B11 关闭。内置条目分组的「切换存档恢复路线」默认关闭；若用户开启后再遇到同类假切换，再按本节探针复查。
+
+### 本次窗口移交（2026-11-27）
+- 用户要求转交另一窗口／agent；接手快照已写入 `本轮材料/B11-角色书相邻切换/交接说明-2026-11-27.md`。该文件仅为接手入口，持续进度仍只维护本文件。
+- 本窗口在交接说明写完并核验后停止工程操作；新写手接任后先检查工作区，避免两边同时修改。本次只写交接说明与此进度条目，未运行新测试，未改产品源码、宿主或冻结审查材料。
+- 最新授权边界不变：不再操控用户 TauriTavern，现场由用户自行复现；B11 根因未确认、未修复、未送审。保留已有 B03 R2 改动与所有失败／未验边界。
+
+### 最新边界与 B11 现象纠正（2026-11-27）
+- 用户要求停止操控其 TauriTavern，真实宿主由用户自行复现；已停止窗口交互，后续不再主动操控该实例。继续在项目内做源码分析、隔离测试与审查材料准备，不把此前「可以使用看看」作为继续操作授权。
+- B11 是“假切换”：点击后界面有变化，但实际仍停留在原角色世界书；点击下下本才正常。不能描述为界面卡死。验证须同时记录下拉显示、选中 option 的书名／值、实际加载书名和条目正文，不能仅凭标题变化判定成功。
+- 本轮未改产品代码；保留 B03 R2 的 native-filter.js +20/-3。HEAD 为 0893235f21dc2510a3839a2cc400ec9ae7561665，源码 SHA-256 bfa4a480f0f3e8025257efabf9b9d4acf10e6bf0bdd67c4f82e6a37178fe5839。B11 探针在 本轮材料/B11-角色书相邻切换/，首次6项均为浏览器启动失败；修正后四路径8项为7通过、1真实Select2占位入口未打开，不能记作产品红测。之后给探针增加正文及实际加载书名断言，编号变更假设单项通过，尚未得到可复现的产品失败。
+- 公开宿主对应版本源码已仅下载到项目材料。异步正文加载竞态、选项缓存、宿主刷新等均为待验证假设，没有确认根因，不据此实施修复。尚未准备可供修复方案双审的固定包，不声称已送审或已修复。
+- 已加载 TavernWeave 路由 sillytavern-extension-dev（snapshot 2026-08-16），ST-A0／ST-D5／ST-E5；目标仅为B11完整选书流程，保护分组、设置及未保存内容，CSS和其他功能另批。下一关是用户现场复现证据与本地隔离红测，之后改前双审；未安装、提交、推送、发布或设为driver-accepted。
+
+### 本轮需求总表与美化顺序（2026-11-27，已对照本轮用户消息）
+本表汇总需求，不将「已登记」视为「已实现／已验收」，也不把询问中的候选功能变为必须实施。详细证据及审查回应保留在下文；新决定优先于较早候选。
+
+| 编号 | 分类 | 用户需求与当前状态 |
+| --- | --- | --- |
+| B03 | 必须修复 | 普通选书搜索下拉消失、输入法仍在。局部关闭清理已修、R2双审与隔离补验完成，测试包已备；原视频误关根因及真实宿主验收仍开放。 |
+| B03-D01 | 必须修复候选 | 审查发现外部关闭可能连带收宿主抽屉；模拟已观察，真实ST影响及独立流程仍待验证，不与原视频直接认定同根因。 |
+| B02 | 必须修复 | 全局组合下方大块空白，已隔离复现，修复与新版本双审待做。 |
+| B06 | 必须修复 | 普通选书要求角色名却显示文件名，需追查引入版本。三条条件已隔离复现并有历史追溯；具体现场条件、修复和双审待做。 |
+| B11 | 必须修复 | 进入角色聊天后角色世界书置顶并成为正在编辑；紧接着下一本首次点击不能切换，再点后一本文可切换。当前优先排查此完整选书流程；隔离夹具校正中，真实宿主未确认复现，未改产品，改前双审待准备。 |
+| B01 | 已有功能优化 | 普通选书中已开启全局书直接置于列表前部，不必展开原组；隐藏组已开启书须可选。最新偏好已登记，未实现，角色／收藏相对排序待该批明确。 |
+| B04 | 已有功能优化 | 对话框左侧确认、右侧取消；目标已登记，适用对话框清单及视觉／键盘顺序待核对，未实施。 |
+| B05 | 已有功能优化 | 下拉点进某分组后默认展开，直接挑选组内内容；范围及折叠记忆边界待该批明确，未实施。 |
+| B07 | 已有功能优化 | iPad／平板竖屏适配；已有专项登记，含触控、下拉／窗口边界、软键盘、滚动、底部按钮及横竖屏状态保护，未实施。 |
+| B08 | 已有功能优化 | 排除分组用划去等方式表达，避免勾选被误解为启用；具体交互方案待确认，不倒置已有保存设置，未实施。 |
+| B09 | 已有功能优化＋新增功能候选 | 一键批量开启／关闭全局书的必要性与范围评估。已有全关／撤回需先评估入口；新增按范围开关及全库开启不当已确认范围，未实施。 |
+| 后续条目分组 | 已有功能优化／具体需求待补 | 完善现有测试功能；先收尾当前反馈，再按单一使用流程确认小批次。默认关闭及测试定位保持，分组／设置／方案／撤销／未保存编辑受保护，未开始。 |
+| CSS 拆分 | 独立维护批次 | 修复稳定后单独保持行为拆分，保留入口与样式顺序，不夹带功能或美化；未开始。 |
+| B10 | 已有功能优化 | 页面美化，用户认为当前页面仍不够好看；作为正式main版之后的独立阶段，新登记，未设计／未实施。 |
+
+- 最新阶段顺序：先按已确认小批次完成反馈修复、适配及功能完善，逐批独立双审与验证；CSS保持行为拆分单独安排并完成验证；正式版main推送完成后，再进入B10页面美化。条目分组仍在当前反馈之后，候选需求先明确范围，不能借「修复所有内容」无限扩张。
+- main是用户新提出的未来正式交付目标，替代把dev作为永久终点的理解；本消息仅登记阶段顺序，不等于授权现在提交、合并、推送或发布。正式交付前提供具体版本、差异、验证与遗留边界，按届时明确授权执行。美化不得提前夹入修复或CSS拆分。
+- B10到期先列当前页面问题和视觉方案供用户预览，再按一个完整使用流程分批实施；沿用唯一写手＋A／B独立只读审查、新快照复核及最多两轮规则。验收须含桌面、手机、iPad竖屏、明暗主题、窄窗、软键盘、可读性和操作可达性，保持已有功能、状态与未保存编辑；当前不启动视觉设计或修改样式。
+- 协作与产物要求均已保留：唯一写手实施／测试／登记；两名审查者只写各自指定报告，正文不铺窗口；意见逐条编号回应，严重争议交独立新会话。所有产物与临时输出在本项目内，不输出C盘；不改宿主数据、不安装编排框架、不擅自调用付费模型，未经本轮明确授权不提交／推送／发布。
+- 本次只补总表与B10阶段安排，未改产品／测试／冻结审查包；当前执行焦点仍为B03真实宿主验证准备，不提前开始B01／B07／B10或CSS拆分。
+
+### 最新补充：B01 全局书直接置顶偏好与 B03 测试包（2026-11-27，仅登记与准备）
+- B01【已有功能展示优化／未实施】：用户最新倾向为普通选书中将已开启的全局书直接显示在列表前部，无需先展开原归属分组；较早的临时「全局」筛选入口是历史候选，当前展示方向按此新偏好整理，不把旧候选当作已实现。源码核对 `src/native-filter.js` 的 `applyEditorWorldSelectFilter` 与手机普通选书 `bareBooks`：目前前部直显主要针对当前角色书、隐藏组中的当前编辑书，并非全部已开启全局书自动置顶。
+- B01 候选边界：仅调整普通选书的展示，不新增永久全局分组、不改 assignments、不自动写入收藏或改变宿主全局开启集合；同一本书在同一视图出现一次，关闭全局后按既有角色／收藏／分组身份展示。用户已要求隐藏组中的已开启书在全局相关展示中可选，此需求继续保留；其他隐藏设置保持原样。当前角色书与收藏已有优先规则不因「直接置顶」被默认为推翻，具体相对顺序在 B01 小批次方案中列清后按确认范围执行。
+- B01 批次仍为「打开普通选书→查找已开启全局书→搜索／选择编辑→关闭重开」。验收覆盖原生、手机与增强路径，检查无需展开原组即可选中、去重、开关后位置恢复、隐藏组例外、角色／收藏交集、书名身份与宿主索引正确、未保存编辑不丢失；本轮不实施 B01，不混入 B03、全局批量开关、CSS 拆分或条目分组。实施前提供新版本差异和精简审查包，由原两名审查者独立检查，旧结论不代替新版复核。
+- B03 测试准备已完成：`本轮材料/B03-R2-真机测试包/`，准备标识 `B03-R2-H1-local-package`，候选仍 `v2.35.16+B03-R2.927171045875`，manifest 仍 2.35.16。冻结89项输入核验；33个运行文件打包／解压逐字节一致，30个JS语法及109个静态相对模块引用检查通过，manifest检查通过。ZIP SHA-256 `eb6554c77e9a4e912199d893ace6a7573ebf54e1e9ed051cfea38233d31a7775`，444996字节；运行清单 SHA-256 `780d3b784b07c6960bd2463e70e786728f4e234ad62983c13d4666f870ada042`。包仅含运行文件，不含私人反馈、报告、浏览器profile、宿主数据或设置；未安装、提交、推送或发布。此前 `B03-R2-真机测试准备/打包未完成.txt` 是保留的失败记录，不是成功测试包。
+- 设备信息以用户新回复为准：用户电脑为 SillyTavern＋Edge，手机为 iOS TauriTavern；原反馈者设备未知，之前「应该安卓」仅未证实猜测。自己两端通过只能证明对应路径，不能代替反馈者复验、关闭原视频根因缺口或设为 driver-accepted。下一关先核对指定测试实例的安装入口、实际加载文件及备份回退，再取得具体安装授权；插件源码ZIP不用于整包数据导入，不擅自改真实宿主，不要求用户现在安装或操作手机。操作单入口 `本轮材料/B03-R2-真机测试包/先看这里.md`。
+
+### 最新断点：B03 关闭清理 R2 双审与隔离补验完成，真实宿主待验（2026-11-27）
+- 候选 `v2.35.16+B03-R2.927171045875`；HEAD 仍 `0893235f21dc2510a3839a2cc400ec9ae7561665`，dev，manifest 仍 2.35.16。产品仅 native-filter.js 对 HEAD +20/-3；新增专项 22/22、单测 245/245；相邻整轮 54/56，其中夹具 bad port 单项原样复验 1/1，连续全局触摸超时仍未解决。原视频自动消失的根因仍未定位，B03 未关闭。
+- R2 材料及各自入口：`本轮材料/B03-关闭清理-R2/审查包/reviewer-A-R2.md`、`reviewer-B-R2.md`。用户人工转交；未自动发送或调用模型。报告分别写 `本轮材料/反馈/审查者A-B03-R2.txt`、`审查者B-B03-R2.txt`，正文仅在文件中。此为最后常规复核轮，两份新版意见均已返回；不沿用 R1 的无阻断结论，不设 driver-accepted。
+- A、B的R2现已收齐；A原报告SHA-256 `120167b25a8f373bd807dde086b9ef27481d54f8ef3bcf680cfe5837e36f7a3c`，B原报告SHA-256 `45c6c443c99ff325e982084aaa8b9075f0bbbdf1ce9aa68103f94976a58b6698`。两人均认为新快照代码无阻断，但保留验收缺口，不能关闭B03。B全部意见的编号回应及补验见下方新记录；不覆盖原报告或冻结包，不增加R3常规复核，不把审查意见当Git／发布授权。
+- S1补验仅在项目内复制的测试helper增加 `--disable-extensions`：HEAD／候选交替各3次，共6/6通过（每次30个touchStart＋30个touchEnd）；正式夹具同样单行变化后原六文件56/56通过。原54/56及原6次触摸超时均保留，不回写成全绿；支持启动环境干扰方向，但未定位具体扩展或原视频根因。源码／测试89文件、R1包16项、R2包39项逐项核验未变。证据入口 `本轮材料/B03-R2-补充验证/补充证据包/README.md`；下一关为原自动消失的真实宿主／手机复现及未验边界，不进入其他功能或CSS拆分，不设driver-accepted。
+- 最新全局批量开关询问已登记 B09；已有“关闭所有全局”和“撤回切换”，新增范围开关仅候选。B01/B02/B04/B05/B06/B07/B08/B09 未夹入，条目分组及 CSS 拆分均未开始。保留全部已有改动及未跟踪 `.claude/`，未提交、推送、发布或改真实宿主。以下按阶段保留历史证据；历史“尚未返回”不代表当前状态。
+
+### 下一轮协作与反馈（2026-11-27，仅文档准备）
+- 协作规范及主窗口／只读审查提示词见根目录 `协作指南.md`；采用单窗口统筹、唯一写手、按需独立审查。提示词不等于只读权限；未硬隔离时只转交材料，不开放工作区工具。
+- 工作区现有未跟踪的“问题反馈”含两张图片、一段视频；仅按文件名登记普通选书全局书展示、组合页空白、手机搜索框与输入法问题，尚未查看媒体、复现或修复，不纳入提交。
+- 先修反馈，再单独评估 CSS 拆分：主样式 8,509 行／206,826 字节，条目样式 3,250 行／82,042 字节。建议保留现有两个入口，按显式顺序抽取并拼接，不混入选择器重排或视觉修改；本次未实施拆分，不宣称性能改善。
+- 本轮只创建协作指南并更新此记录，未改运行代码、配置、模型接入或权限，未提交和推送。后续执行与发布分别核对授权。
+
+### 后续条目分组协作约束（2026-11-27，本轮追加）
+- 顺序：先完成当前 B01/B02/B03 反馈的复现、修复、两名独立只读审查与验证，再进入条目分组；CSS 拆分独立安排，不混入 bug 或功能修改。
+- 本窗口为唯一产品写手，独占源码修改、补丁、测试与进度登记。两名审查者独立阅读同一脱敏版本材料；用户随后明确允许审查者仅写各自指定报告文件，正文不铺在聊天窗口，不改源码、测试、规则、进度或他人报告。工程只读隔离未确认时仍人工转交材料，不据此宣称已配置硬权限。
+- 后续具体需求先登记在本文件，分为「必须修复的问题／已有功能优化／新增功能」。目前仅收到完善方向，尚无具体条目分组需求；不据此扩展功能范围。
+- 按依赖整理小批次，每批只覆盖一个完整使用流程，先说明本批范围、排除项及验收，再按确认范围执行；不随单条需求即时改代码。
+- 每批固定新版本／工作区差异标识与审查包，两名审查者独立检查；旧版结论不得代替新版复核。审查意见逐条编号回应：已修复＋证据、拒绝＋依据、待验证＋证据缺口；最多两轮，严重争议转独立新会话仲裁。
+- 保护边界：维持条目分组的测试功能定位、默认关闭状态及用户设置；保护已有分组、开关方案、撤销记录与未保存编辑内容。未经本轮明确授权不提交、推送或发布。
+
+### 当前反馈预审 R0（2026-11-27，本轮现场证据）
+- 基线 dev / v2.35.16 / HEAD 0893235f21dc2510a3839a2cc400ec9ae7561665。产品源码及仓库测试无改动；源码＋测试路径/字节哈希清单 SHA-256 为 9d7b8849ea980688cfd73e5c8a6eabc3fbf493cec9b5fc5cb5925e61bde321c1。本轮仅在本文件追加约束与预审断点，进入时的 +6 行和未跟踪文件全部保留。
+- 已实际查看两图并解码视频，媒体仅留本地，不纳入审查包或提交。以下证据更新上方「仅文档准备」阶段的未查看状态，不倒改历史记录。
+- B03【必须修复／根因待验证】：视频约 2.74 秒出现键盘、约 3.42 秒下拉消失，键盘仍在；仅能确认现象。当前原生路径已有聚焦/高度变化保护。隔离 Edge 的 390×844→390×520 原生与刷新移除增强路径保留同一输入、焦点与文本；增强事件探针同样保留输入，但抽屉状态异常，不能认定有效现场复现。首次探针零尺寸点击失败属于夹具问题。缺真实 iOS 键盘/手势及关闭调用链，尚不猜测修复。
+- B02【必须修复／隔离复现】：手机组合新建页 37 本中性书；书单高 210px，可用中部 534px，scrollHeight 1259px/clientHeight 208px，列表下方至底栏 314px。候选为组合书单专属高度/滚动修正，不改共享 AI 书单或拆 CSS；期望布局断言为红。
+- B01【已有功能展示优化／隔离复现缺口】：普通选书无独立全局书入口；中性全局书仍在原组出现一次，未证明漏书。候选只读临时全局筛选分组，保留原分组、当前角色与收藏规则；新增入口的期望断言为红。
+- 按完整流程拆候选批次：①普通选书搜索输入与关闭（B03，先补观测）；②组合新建/筛选勾选/保存或取消（B02）；③普通选书全局筛选/搜索/选择编辑（B01）。两名改前审查返回后按确认范围实施；每批新版本标识、新包及两名独立复核，CSS 与条目分组仍后排。
+- 基线探针由唯一写手运行，均带 node --max-old-space-size=1024 --test --test-concurrency=1。首轮 B01/B02 为预期红测，B03 为夹具错误；修正临时事件打开方式后仅 B03 探针 1/1，但有上述有效性缺口，不计为现场验收。未跑完整回归，未改 tests、manifest、样式缓存号或产品版本。
+- 材料已迁至项目内 `本轮材料/反馈预审-R0/sanitized-review`：reviewer-A-R0.md（逻辑边界）、reviewer-B-R0.md（手机交互/布局/清理）、source-sha256.txt。两包独立使用同一产品快照，仅含匿名现象、最小源码节选、方案和验证方法；不含原始反馈。浏览器临时夹具、失败及对照日志、私人视频抽帧在同级上层目录，仅供本地诊断，不转交整个材料目录。R0 两包保持原字节，包内文档哈希是其冻结时记录，不代表后续 NEXT.md。
+- 审查状态：A 已返回，原文为 `本轮材料/反馈/审查者A.txt`，SHA-256 `fa85cce0cbb5337da61252ef0105ca0bf932f33c6fd2109fef63cb904c2eb334`；B 未返回。A 的逐条回应见下表，未修改 A 原文，不将 A 的意见或写手回应提前提供给 B。当前仍人工转交，未自动接通或调用外部模型；审查报告写文件是用户新增的有限授权，未配置共享工作区硬隔离。
+- 下一关：等待 B 的独立改前审查；补足 B03 复现证据后确定各批最小修复。自动化不能代替真实宿主和手机验收；未经本轮明确授权不提交、推送、发布。
+- 报告输出补充要求已存于 `本轮材料/反馈/审查报告输出要求.md`，可分别随各自冻结包人工转交：正文和建议 diff 仅写自己的指定报告，窗口只回复路径及状态；B 的本次位置为 `本轮材料/反馈/审查者B.txt`，A 现有原文不覆盖。仅放开报告写入，不扩展工程权限；未声称已向审查者发送。
+
+### 审查者 A 的 R0 逐条回应（2026-11-27，改前静态核对）
+以下均对产品快照 `0893235 / 9d7b88…21c1`，不是修复后结论。本轮只读源码核对和文档登记，未改产品、未应用建议 diff、未运行新测试。状态「待验证」包含已找到静态依据、但尚缺实现或运行证据的事项；不代表拒绝，也不关闭争议。
+
+| 编号 | 回应 | 已核对依据与缺少的证据 |
+| --- | --- | --- |
+| A-01 | 待验证 | `core.js:1989` 的安全例外只接收本次传入的选中/编辑/当前角色状态；编辑筛选 `native-filter.js:1420` 未传全局开启状态，不可见选项进入游离表，隐藏组全局书漏候选的静态风险成立。缺三类选择器的隐藏组运行复现，以及全局视图是否临时显示隐藏组书的范围决定；不擅自采纳新增「隐藏分组」标记或提示文案。 |
+| A-02 | 待验证 | 同意把全局作为过滤条件，不新增真实 optgroup、不复制相同 value 的选项。当前没有 B01 补丁；缺前后 option 数量、原分组计数与全视图去重证据。 |
+| A-03 | 待验证 | `native-filter.js:3900` 的编辑记忆与 `4439` 的 `_activeGlobalPillId` 分开；增强共用函数仍需按角色门控。保留 ID、防持久化、非空记忆及清空后回落均需新实现与三路径验证，不能以现有 PINNED 行为替代。 |
+| A-04 | 待验证 | 已有 `getLiveWorldIndexMap:937`、`syncSelectOptionsWithLiveWorldNames:970`、`ensureEditorOptionAttached:2438` 做宿主索引校正与失效清理，应优先复用，不能认定现有代码已存在错开书。缺 B01 新路径对删除/改名/索引移位和权威空书单的回归。 |
+| A-05 | 待验证 | 手机 bare 与 sections 分离且去重；全局过滤须覆盖二者并排除非全局当前角色书。缺重叠夹具、当前编辑标记及点选前后全局开启集不变的证据。 |
+| A-06 | 待验证 | 接受入口可发现、独立视图不受原组折叠遮挡、复用现有主题的方向；位置与零全局时显示/回落尚需和 A-03 一起定案。缺 390px、多分组、搜索和主题/增强对照，不把「不展开也必可见」当现成结论。 |
+| A-07 | 待验证 | `panel-quick.js:799` 确认保存校验失败写入书单后的状态行，故原候选外层滚动方案需重审；保存来源为 `pickedSet`（796），不是读取列表勾选 DOM。未见该流程保存/恢复书单 scrollTop，不能把这一推测登记为已有缺陷。建议 CSS 尚未运行；缺长/短/空列表、状态可见、勾选后位置、键盘与按钮命中证据。 |
+| A-08 | 待验证 | 同意基线程序聚焦＋尺寸变化不足以覆盖真实 tap，增强 drawerOpen=false 也不能计有效通过；R0 包已标明该限制。缺有效性前置断言、触摸序列、visualViewport 位移与真实手机证据；未以旧探针否认 B03。 |
+| A-09 | 待验证 | 可优先在隔离诊断中记录关闭来源、焦点与视口几何，区分 DOM 被移除和移出视区；当前未加产品 reason 参数、日志或复制按钮。缺真实消失时调用链；新增诊断构建及界面按钮不自动成为本批交付范围。 |
+| A-10 | 待验证 | 视频能确认键盘与下拉的时序，不能仅凭样式断言实际 DOM 所属。缺宿主/系统/插件版本、原生或增强类型，以及静置、英文/中文合成、滚动、收键盘三状态对照；尚不要求用户重复提供已存在素材。 |
+| A-11 | 待验证 | `closePicker:2037` 直接移除 overlay，未主动 blur；`flushPinDirtyOnClose:84` 会先清 dirty 再重算，已有避免重复 dirty 刷新的保护。局部 blur 与一次关闭标记为候选清理改动，不能据此认定 B03 根因；缺不影响外部输入、合成输入、各关闭路径与停用清理的测试和手机证据。 |
+| A-P1 | 待验证 | 全局集合纯函数示意仅供参考，优先复用既有排名/宿主校验；尚未引入新导出或新抽象。缺三路径适用性、隐藏候选边界、未知排名和去重验证。 |
+| A-P2 | 待验证 | 环形缓冲示意未运行，若采用应限临时诊断并不采集书名/文本；还需限制目标标识，防带私人标识的 id。缺启停清理、容量和实际采样有效性证据，当前未加常驻诊断。 |
+| A-M01 | 待验证 | 补查可见性本体、手机 options 来源及 bare/section、点选路径；提供给审查者的 R0 节选仍不完整。缺新批次补充源码和运行断言；相关边界归 A-01/A-04/A-05。 |
+| A-M02 | 待验证 | 编辑和全局胶囊记忆在当前源码分别存储；增强路径的门控和新虚拟 ID 仍需实施后验证。缺重开、清空、跨选择器记忆互不污染证据。 |
+| A-M03 | 待验证 | `applyGlobalWorldSelectFilter:1271` 传入 `isSelected`，`core.js:2000` 选中直接可见，故正常过滤保留已开启项；全局 DOM 优先读取与宿主重建竞态尚无新运行证据。 |
+| A-M04 | 待验证 | `positionPopover:1951` 已使用 vv offsetTop/height；冒泡守卫 `49` 含 touchstart；胶囊扩展 `4019` 用局部 MutationObserver/ResizeObserver，在脱离 DOM 的 size 回调中断开。增强视口处理和关闭后 observer 实际释放仍需进一步核对，不以静态清理分支当运行验收。 |
+| A-M05 | 待验证 | 已查明状态写入、保存来源及样式位置；主样式仅共享书单 210px 限高，手机 step-scroll 规则调整 padding，未找到组合专属覆盖。缺 A-07 提议落地后的尺寸/滚动/校验提示验证。 |
+| A-M06 | 待验证 | 普通手势开启全局入口会互斥收起编辑选书，支持优先每次开窗读取、不新增常驻订阅；尚未把程序改状态或宿主重建的边界跑完，不据此关闭所有状态同步问题。 |
+
+注：A-M01～A-M06 对应 A 原文「材料不足 / 未验边界」六组补充，A-P1/P2 对应两段示意；原文、编号主项及补充均已回应。B 未返回前不实施；收到 B 后统一核实但保留各自来源。后续改动固定新快照、最多两轮复核，严重争议转独立新会话仲裁。
+
+### 审查者 B 的 R0 逐条回应与首批边界（2026-11-27）
+- B 原文 `本轮材料/反馈/审查者B.txt` 已完整读取并保留，SHA-256 `35489ecaf210770375be95fee4b0d4dcb3f4bd50eed106129d1ba83d4d8ceac5`。R0 两份独立审查均已返回；不存在自动外部模型调用。
+- 用户本次补充：B01 的「全局」入口须显示隐藏分组中已开启的书，其他视图和隐藏设置不变。此决定解决 A-01/B-11 的产品取舍，不等于隐藏选项临时挂载方案已验证。设备仅知「应该为安卓」，系统、宿主、浏览器版本和增强状态未知；不得把 iOS 推测当现场事实。
+- 唯一写手补做隔离诊断，文件及日志位于 `本轮材料/反馈诊断-R0B/`。初次受限环境两项均在 Page.enable 超时，未进入产品断言；放行后重跑正常执行。最新基线 `b03-baseline-product-path.log` 为 1/2：原生和移除增强刷新两态真实触摸事件＋合成事件＋模拟高度改变保留同一输入与焦点；增强态没有可见编辑触发器，判为夹具无效，不算通过。新增红测确认产品从分组切到普通选择框时直接移除浮层，五个全局监听在 resize 后仍残留；正常关闭及最终 stop 路径均归零。该清理缺陷不等同于视频根因。
+
+| 编号 | 回应 | 核对依据、证据或缺口 |
+| --- | --- | --- |
+| B-01 | 待验证 | `positionPopover:1956–2005` 已使用 visualViewport 的 offsetTop/height，不能把 H2 的「完全未考虑」当已证实缺陷；`bindDrawerSafeBubbleGuard:49–55` 已拦 touchstart。现有 touch/composition 模拟仍无真实软键盘或视口平移。缺消失当刻的关闭来源、DOM/几何与抽屉状态；不新增 localStorage 调试设置或关闭后日志界面，不调视口阈值。 |
+| B-02 | 待验证 | closePicker 缺显式局部 blur 与防重入，静态事实成立；`flushPinDirtyOnClose:84` 先清 dirty，不能断言已有重复收藏写入。首批仅补本浮层焦点释放、关闭幂等及迟到搜索清理，需先红后绿与外部输入保护证据；手机键盘行为仍待真机。 |
+| B-03 | 待验证 | `schedulePopoverSweep:5927` 只增强节点，不移除手机浮层；5991 是目标匹配。另找到真实产品路径 `syncMobileEditorTrigger:1731–1734`，模式关闭直接 remove，最新红测确认五个全局监听残留。首批从移除入口走统一 close，并为已脱离浮层的既有事件入口补清理；缺改后循环、停用和回归证据。 |
+| B-04 | 待验证 | 用户仅能确认可能安卓；没有 scale、innerWidth/clientWidth 分离或旋转事件时序证据。保留现有宽度基准及阈值，缺真实设备几何记录，不凭平台猜测改逻辑。 |
+| B-05 | 拒绝（本批提前优化） | 现无同帧重复定位成本、抖动或长任务证据，改成 rAF 会改变定位时序。按 B 原建议保留现状；未来有测量再独立评估，不把未优化称为已验证无性能问题。 |
+| B-06 | 拒绝（缺少 init/teardown 的前提） | `startNativeObservers:5682` 首先 stop；`stop:6136–6139` 遍历 closer，`6205–6208` 移除两类 guard 后置 null；`teardown:6249` 先 stop 再移除节点。无须重复新增同套注销。增强刷新及多次启停的运行边界仍需后续验证，不据静态核对关闭这些边界。 |
+| B-07 | 待验证 | `detectEnhancedPopoverRole:510–513` 成功识别后会置 null，`stop:6132` 也置 null；「只在下次触发器才覆盖」并非所有路径成立。未成功开启且超过 750ms 时有残留引用的风险尚需中止场景及堆证据；立即去掉 previous 会破坏新旧共享容器识别，暂不应用建议 diff。 |
+| B-08 | 待验证 | 状态行确实承载保存校验失败（panel-quick:799）；共享书单 max-height 为 210px。采纳后续 B02 保持列表内部滚动的方向，不用 JS 测高。外层 step-scroll 有 flex/overflow/min-height 的 !important，但未找到组合列表针对 max-height 的覆盖。缺长短空列表、极矮窗及状态/按钮命中验证，不直接照搬 96px。 |
+| B-09 | 待验证 | 接受虚拟过滤、编辑角色门控、三路径一致与无分组场景入口可见的要求；`core:467` 已枚举 SPECIAL_GROUPS，虚拟 ID 不加入该枚举。候选集只取已挂载 option 的建议不足以满足用户新增的隐藏书显示决定，须结合权威书单校验和现有重新挂载能力。缺新方案及重叠矩阵回归。 |
+| B-10 | 待验证 | `getEnhancedPopoverOptionText:395` 优先 wboEnhancedWorld，排除 UI 子节点并 trim；包装函数 `4906` 在全局角色还按实时 value 校正。`applyGlobalWorldSelectFilter` 给可见性函数传入已选状态，core 选中例外保留开启项。缺别名、首尾空格、隐藏组与宿主重建的运行对照，不能仅据 getter 名称判定错配。 |
+| B-11 | 拒绝（继续隐藏的产品方案） | 用户已明确选「全局中显示隐藏组已开启书」。采用例外视图方向，保护其他视图、设置、开启集与宿主索引；不将高风险提示忽略，重新挂载和回退机制在 B01 专批实现并重新送两位复核。 |
+| B-M01 | 待验证 | 已补读 onGlobalDismiss 全文、开窗前互斥/同步、overlay 挂 body；需将相关完整函数放入改后包，缺新实现的关闭边界运行证据。 |
+| B-M02 | 待验证 | 已补读定位、冒泡守卫、合成输入及 80ms 搜索延迟和 flush；输入节点不因搜索替换，但 close 当前未取消局部 searchTimer。首批补迟到回调验证，真机仍未验。 |
+| B-M03 | 待验证 | 已检索 remove、sweep 与 closeAll；正常互斥先遍历 closers，stop 先清理再 DOM remove。产品模式切换存在绕行，已红测；外部直接移除的恢复边界同批验证。 |
+| B-M04 | 待验证 | 注册/停止/teardown 全文已读，静态注销存在，见 B-06。缺循环启停后的监听计数与增强移除对照。 |
+| B-M05 | 待验证 | 组合 change 只更新 pickedSet 与过滤，未发现重渲染时保存恢复 listEl.scrollTop；搜索显式重置的是外层 scrollTop（946）。后续 B02 改滚动层必须同步核对搜索定位，不把 A/B 的滚动读写推测当已证实。 |
+| B-M06 | 待验证 | getOptionText、SPECIAL_GROUPS 枚举、模块内 _dropdownMemory 和桌面 PINNED 均已补查；编辑与全局记忆分开。缺新全局虚拟 ID 的三路径实现、持久设置零污染证据。 |
+| B-M07 | 待验证 | 缺用户实际宿主版本及其抽屉关闭源码；当前只用模拟宿主，不将模拟的 document click 逻辑冒充现场版本。 |
+| B-C01 | 待验证 | 同意所给五组 add/remove 引用与标志匹配；运行显示正常 close 会归零，模式切换直接 remove 才绕过 close。缺本批修复后的全部路径验证。 |
+| B-C02 | 待验证 | observer 在 close 中先断开再移除 DOM 的顺序已核对；缺本批局部 blur 引发重入及停止后的实际计数验证。 |
+
+B-M01～M07 对应 B 的七项补充材料，B-C01/C02 对应两项未发现问题的核对，不漏登。所有残余证据缺口保持开放，用户的范围决定不替代工程复核。
+
+首批范围沿用 R0 中 B03 的完整流程「打开普通选书→搜索/合成输入→选择或关闭→回到原界面」，本次先落已复现的清理缺陷及局部焦点释放。仅允许 `src/native-filter.js` 的手机浮层生命周期、相应回归测试和本文件记录；不改视口算法、阈值、实际宿主、设置默认值或新诊断 UI。B02/B01/B04、条目分组和 CSS 拆分均不混入。验收：模式切换、显式关闭、外部移除后既有事件、连续关闭与启停后全局监听归零；搜索延迟不改已移除节点；不误 blur 外部输入；保留原生触摸/合成/高度变化行为。自动化清理通过仍不代表视频问题已修，真机证据和增强有效夹具继续待补。
+
+### 后续需求登记（2026-11-27，待分批确认）
+- B05【已有功能优化／新登记，未实施】：用户要求「下拉框中点进某个分组应该默认展开」，进入分组后应直接看到组内可选项，避免再次展开。后续按「打开下拉→点进分组→挑选项目或返回」单一流程整理，核对普通/全局选书、手机/桌面/增强路径的适用范围，验收已有折叠组点进后可选、切换与搜索一致、之后仍能手动折叠；需在该批明确是否只影响本次进入的视图与折叠记忆。不随本条即时改代码，不混入当前 B03 关闭清理，也不据此改条目分组默认状态或 CSS 拆分。
+
+### B03 关闭清理实施与 R1 复核状态（2026-11-27）
+- 唯一写手已实施 `src/native-filter.js` 手机普通选书局部关闭清理：模式关闭先走统一关闭；关闭防重入；取消 80ms 搜索任务；仅释放本浮层内焦点；现有 viewport／dismiss／drawer 事件发现浮层已脱离时补做清理；关闭后的合成／输入事件不再更新列表。新增 `tests/native-mobile-picker-lifecycle.browser.mjs`，未改标题、分组、视口定位或阈值、CSS、manifest 或条目分组。
+- 红绿证据：`lifecycle-red.log` 初始 8 项为 4 通过／4 失败，分别证实模式关闭与外部 remove 后 resize／drawer 清理遗漏、关闭后搜索仍修改脱离列表；`lifecycle-green.log` 原 8 项转绿。之后扩为 13 项，实际遮罩／选书／抽屉／触发器／停用关闭均通过，20 次开关、外部输入焦点保护及 stop 后五个全局监听归零。完整单测 `unit.log` 245/245。
+- 相邻浏览器回归 `browser-adjacent.log` 47 项中 46 通过／1 失败，含上述正式专项 13/13；唯一失败为 390×844 连续全局开关＋参考脚本启停的 Input.dispatchTouchEvent 协议超时。只复验该项仍超时，见 `browser-timeout-recheck.log`；再仅替换未修改的 HEAD native-filter 模块做基线对照，`browser-timeout-baseline.log` 同样超时（第 53 次 touchStart）。不能据此宣称全套通过或已证明纯环境问题；该项列为既有／环境边界待定位，不扩大本批补丁，不调整超时掩盖失败。
+- A-11.1／B-02.1【已修复＋自动化证据】：局部焦点释放、防重入和搜索延迟清理，13 项专项覆盖内部 blur 一次、外部输入仍聚焦、输入后迟到任务不再写已移除列表。A-11.2／B-02.2【待验证＋缺少真机证据】：真实安卓软键盘随显式关闭收起，以及原视频下拉自动消失根因均未验证；局部清理修复不能关闭这部分意见。
+- B-03.1／B-M02.1／B-M03.1【已修复＋红绿证据】：已复现的模式关闭直接 remove 以及已有事件入口中的残留监听、迟到搜索均走统一清理。B-03.2／B-M02.2／B-M03.2【待验证＋缺少证据】：实际增强普通编辑夹具、外部 remove 后没有任何后续事件时的闭包／observer 存活、真实安卓输入和未知宿主版本；不把已计数的五类全局监听归零当完整堆释放证明。
+- A-M04【待验证＋证据边界】：专项只量化本次手机浮层新增的全局监听与关闭后 DOM 变化，未对所有 pills observer、增强容器和整个堆做存活分析。B-07【待验证】：中止 sharedPopoverOpening 后 detached previous 引用缺少存活证据，本批未改。其余 R0 意见沿用逐条回应，尚未实施的 B01/B02 仍不关闭。
+- 改后 R1 材料位于 `本轮材料/B03-关闭清理-R1/审查包/`，保持 manifest 2.35.16，候选标识 `v2.35.16+B03-R1.fa2a3a3b4f4e`；89 个产品／测试文件清单 SHA-256 `fa2a3a3b4f4e44be7985924265942957b5be3d9d4863759753f3796a71390b32`，完整产品＋新增测试 diff SHA-256 `3ca2e6d128234af6b1f03fc8c77959539f84a3a8a7cf98a15e8a5c557233c592`。R0 两包及两份报告原字节哈希复核一致。两名既有审查者须独立复核该固定新快照；报告分别写 `本轮材料/反馈/审查者A-B03-R1.txt`、`审查者B-B03-R1.txt`，正文不铺窗口、不覆盖 R0。尚未收到两份 R1 复核，不自行设为通过或 driver-accepted。
+
+### 审查者 B 的 B03-R1 逐条回应（2026-11-27，A-R1 未返回）
+- 已完整读取用户交回的 `本轮材料/反馈/审查者B-B03-R1.txt`，原文保持不变，SHA-256 `5f4c02eaa73b467cb79ddd3622d6c266d4ebb03347158618174959f4ce1f23a1`。报告对应 `v2.35.16+B03-R1.fa2a3a3b4f4e`，共 6 项（中 2、低 4），B 认为无代码阻断项，但附有范围及补证条件；不是写手验收、合入或发布授权。
+- 接收时核验：R1 包内 16 个文件与 package-sha256.txt 全部一致，工作区 native-filter 与新增正式测试的哈希分别仍为 `b04427816e5c66dfdc8a62c506416046b6a0579397b733be7b558ca7bdc1ff27`、`8208cedebf57e33d90a7ad2ae7a5e20996d2d3e818bce39815100626ff9ecdf1`。A 的 `审查者A-B03-R1.txt` 当前不存在；不把 R0 的 A 结论代替 R1，不提前将 B 报告或本节交给 A。
+- 本次只做只读源码／材料核对及本文件登记，未应用 B 的建议 diff，未修改产品或正式测试，未运行新测试。两份独立 R1 收齐后统一处理；任何实施均另出新快照，进入最后一轮 R2 复核，不覆盖 R1 包与报告。
+
+| 编号 | 回应 | 已核实依据、后续动作与缺少证据 |
+| --- | --- | --- |
+| B-R1-01.1 | 已修复（记录）＋现有证据 | 本文件及 R1 README 已明确本批仅为关闭清理，原视频自动消失根因和真实安卓键盘仍待验证，B03 保持未关闭；不会以局部 blur 消除键盘残留作为主诉已修复的证据。 |
+| B-R1-01.2 | 待验证＋缺少关闭来源 | reason 参数及环形缓冲属于下一步诊断建议；目前无现场误关调用链或启用开关的已确认方案，不直接添加产品设置／常驻记录。需先核对现有关闭入口、现场可采样路径及最小诊断范围，再确定是否需要专用诊断版本；不默认为本批交付内容。 |
+| B-R1-01.3 | 待验证（现场）＋补充源码依据 | `index.js:676` 的 startNativeObservers 仅在 init 中调用，init 的 593 行有 _initialized／_disabled 门控；设置 onMutation 在 664 行走 recomputeAndRender，宿主事件经 scheduleRefresh 在 489 行同样只重算；onDisable 在 858 行调用 teardown，native-filter:6251 再 stop。B 将重启列为未证实候选，写手补查未找到普通保存／事件刷新重启 observers 的路径。显式再次调用 start 确实会关闭浮层，但不能据此确定视频根因；缺外部重新导入／重启或真机调用证据。R2 补充 index.js 完整入口与生命周期上下文。 |
+| B-R1-02 | 待验证＋缺少等价重复对照 | 认可证据缺口：诊断副本换了 mock-server 导入并包装 send 打触摸计数，未随包提供差异；不能只凭同名超时证明两侧同一步或本批无关。保留正式 47 项中的失败和单项复验失败，不设为环境豁免。待 A 收齐后，以同一测试／诊断封装、同一夹具、可明确核验的 HEAD／候选模块替换分别重复对照，记录停止步骤与事件／页面响应信息；需要提供测试及 helper 的必要源码。B 建议的每侧 3 次、超时 200ms 响应探针、对话框／crash 和监听计数均为待验证方案，当前没有这组结果或累积原因证据，不因推测改产品。 |
+| B-R1-03 | 待验证＋缺少运行红绿证据 | 静态路径成立：旧 overlay 已被外部 remove、未触发清理事件，直接 trigger.click() 可跳过 pointerdown，openMobileEditorPickerSheet 的已开窗分支找不到 overlay 后未先清旧 closer，新 closer 将覆盖全局引用。候选为在正常 toggle 分支之后、syncEditorBeforeOpen 之前清旧 closer，并检查 trigger 仍 connected。待补无 pointerdown 重开后监听只能为 5、overlay 唯一、内部后续 pointerdown 不清新触发器 is-open，以及清理 flush 后触发器失效的回归；尚未应用建议或宣称已修复。 |
+| B-R1-04.1 | 待验证＋缺少精确回归 | 认可原 body dismiss 用例修前即通过，不能证明新增 detached 自愈分支必要性。需补外部 remove 后指针点击触发器重开，并核对监听数、唯一 overlay 及 is-open；现有 red 日志继续保留，不把该用例改写成既有红测。 |
+| B-R1-04.2 | 待验证＋缺少合成关闭证据 | 新专项未覆盖真实合成中的关闭／同步 compositionend；需补 CDP IME 及可控同步合成事件，检查关闭后列表无写入、焦点不残留与运行时错误。模拟 IME 仍不能替代真实安卓键盘。 |
+| B-R1-04.3 | 待验证＋缺少 observer 证据 | 当前监听包装不计 MutationObserver；五个监听归零不能证明抽屉 observer 无迟到回调。候选用局部测试包装只统计 #WorldInfo observe／disconnect 及关闭后的回调，不添加产品 hook。是否本轮补充待两份 R1 统一处理，不以间接证据声称已释放所有 observer。 |
+| B-R1-04.4 | 待验证＋缺少有效增强普通路径 | 同意增强开启时手机普通编辑的原夹具无可见触发器，仍未通过；R1 README 与本文件已列缺口。后续若补夹具须先证明可见入口、真实路径和抽屉有效性，不能点击隐藏节点或以全局增强测试代替。 |
+| B-R1-04.5 | 待验证＋已确认输入类别 | 已读 helper：cdp.mjs:291–295 的 clickPoint 使用 Input.dispatchMouseEvent，clickSelector:532 起调用它；因此本专项“实际关闭操作”是浏览器命中后的鼠标操作，不能称真实触摸。现有全局触摸回归不能代替普通手机浮层；待补 overlay／trigger 的受信触摸和兼容 click／600ms 窗口用例，补包提供 helper 来源。 |
+| B-R1-04.6 | 拒绝所有新增覆盖项都必须修前失败＋具体依据 | 修复某分支的回归应先红后绿；外部焦点保护、停用、observer 计数等邻接保护可在 HEAD 与候选均通过。不能为满足全红而扭曲测试或放宽验证；逐项记录基线结果与候选结果，对未能复现的推测维持待验证。 |
+| B-R1-05 | 待验证＋缺少真机焦点转移证据 | 搜索聚焦后点击外部输入与点击遮罩的键盘闪动尚无安卓／iOS 录屏；现有“先聚焦外部再关窗”不覆盖此路径。按建议本批不改关闭时机，保留真机验收点；不以推测把 pointerdown 改为 pointerup／click，避免连带改防重开窗口。 |
+| B-R1-06 | 待验证＋缺少释放／堆证据 | 静态确认 bindDropdownPillsExpansion:4030–4078 未向 closePicker 提供显式 dispose，脱离检测位于 ResizeObserver 回调。不能从此推断持续泄漏，也不能声称所有对象即时释放；保留旧有边界，本批不扩大共享 helper 重构。若后续要保证关闭即释放，需先测 observer 活跃数／detached 节点，再评估兼容返回值的清理接口。 |
+
+- 对报告补充边界一并回应：真实宿主版本、抽屉外部点击逻辑、输入法与堆内存均仍待验；报告未独立重算哈希不是代码问题，写手本次已核对固定包。B 的“无阻断”不关闭上述意见与证据争议，不触发提交、合入、推送或发布。
+
+### 审查者 A 的 B03 R1 逐条回应与 R2 范围（2026-11-27）
+- A 原文 `本轮材料/反馈/审查者A-B03-R1.txt` 已完整读取，SHA-256 `866854ccbde3103487cda841ca0653b783283a9523bc0654bb74e64deffdb888`；保留原文。两份 R1 均已返回，本批继续原授权的关闭清理，不因“无阻断”关闭 B03 或失败项。
+
+| 编号 | 回应 | 依据与证据缺口 |
+| --- | --- | --- |
+| A-R1-01 | 待验证 | 其他 grouped select 的 closePopover 属于不同使用流程，本批未改；记录为后续独立清理候选。源码缺显式 blur／取消搜索可静态确认，真实键盘残留与迟到搜索影响需该流程复现，不直接复制补丁。 |
+| A-R1-02 | 待验证 | 无安卓／iOS 真机键盘时序，不能保证 blur 后系统最终何时收键盘。本批保留局部 blur；拒绝无证据添加延迟 readOnly 或移出可见区，避免干扰合成和焦点。 |
+| A-R1-03 | 拒绝本批整洁性扩改 | WeakMap 没有 size，建议的验证不可执行；弱键并不证明整个闭包可回收，游离节点持有引用时仍可 dispatchEvent。未找到持续泄漏或新增回退证据，不为整洁扩改 bubble guard；资源完整释放仍待堆证据。 |
+| A-R1-M01 | 待验证 | 真实键盘、visualViewport 位移／缩放缺真机数据，尺寸模拟不替代。 |
+| A-R1-M02 | 待验证 | R2 补 CDP IME 与同步 compositionend 的合成中关闭测试；仍缺真实输入法。 |
+| A-R1-M03 | 待验证 | flush 先清 dirty，applyAll 有 _isApplying 防重入；R2 补收藏变更后外部移除／重开及触发器被重算移除的路径，不能以局部防重入代替完整链证据。 |
+| A-R1-M04 | 待验证 | pills 的 disconnect 依赖后续 ResizeObserver 回调，不能把 remove 当作已证明即时释放；与 B-R1-06 一起保留堆证据缺口，本批不重构共享 helper。 |
+| A-R1-M05 | 待验证 | 增强手机普通入口尚无有效夹具；本批不修改增强行为，R2 如能建立可见入口再补验，不能借其他选择器通过替代。 |
+| A-R1-M06 | 已核对，运行待验证 | stop 对 Set 使用 spread 快照后遍历，允许 closer 删除自身；既有 20 次循环及 stop 已通过，但 R2 新快照仍需复核。 |
+| A-R1-E01 | 拒绝触摸超时已归因环境／与本批无关的结论 | 旧 HEAD 对照是诊断副本 :137，候选是正式测试 :131；尚无相同封装和两侧触摸计数，不能据同名超时归因。按 B-R1-02 补等价重复对照，保留失败；这属于证据争议，不以审查人数投票关闭。 |
+| A-R1-R0-09/10/11 | 待验证 | 保持诊断独立、原视频根因未解；局部关闭清理已获自动化证据，不代表现场误关或真实键盘验收。 |
+
+- R2 仅处理 B-R1-03 的 stale closer 清理，并补无 pointerdown 重开、精确指针自愈、合成关闭、抽屉 observer 和触摸证据；相邻超时用相同测试封装的 HEAD／候选各三次对照。先证实失败再最小修正，不改视口阈值，不加常驻诊断，不混入其他需求。R1 冻结包保持原字节，R2 为最后一次常规复核；两位仍分别写自己的新报告。
+
+### B03 R2 实施、证据与 R1 意见最新回应（2026-11-27）
+- 唯一写手先用 R1 产品复现：外部 remove 后 direct click／真实键盘 Enter 重开，监听从 5 变为 10、抽屉 observer 从 1 变为 2；收藏 dirty flush 移除触发器后仍残留新浮层。补丁仅在正常 toggle 分支之后、syncEditorBeforeOpen 之前清旧 closer 并检查触发器连接。未改正常 toggle、视口、CSS、标题或设置。
+- 新测试由唯一写手增加并运行。修前有效四项中三红一绿见 `本轮材料/B03-关闭清理-R2/stale-closer-red-valid.log`；最终同版 22 项：HEAD 12/22，R1 19/22，R2 22/22（候选专项包含在 browser-adjacent-r2.log）。HEAD 的10项失败及R1的3项失败均为产品断言，未把早期启动／夹具错误计入红测。触摸追踪最初误计了测试自己的 pointerdown 监听，后移至 overlay；原始失败日志仍留本地。未放宽产品断言，也未为凑全红修改邻接保护。
+- 最终相邻六文件整轮共56项，54通过／2失败：①native-global-drawer手机连续触摸 CDP 12000ms 超时；②native-popover-sweep 的 stopping observers 在 resetServer 的 fetch 报 bad port、未执行产品断言。②不改产品／夹具／断言的单项复验1/1，原整轮仍按54/56记。245/245单测及修改文件语法、清单、diff空白检查通过；全部带内存和串行参数，输出、TEMP/TMP、浏览器profile均在项目。
+- 等价触摸对照：同一测试、夹具、采样封装，交替 HEAD／候选各3次，仅替换 native-filter 响应。6次均在 touchStart 超时；全部触摸事件序号 HEAD为43/35/41，候选为41/31/41（含touchEnd，详见comparison-summary.json）；超时后页面在1–2ms回应，未观测到对话框／crash协议事件。采样改变时序，不能把序号直接等同旧日志或推断累计泄漏；没有足够证据确定成因或豁免。原正式测试最终也仍超时，不反复运行至绿。
+
+| 编号 | 最新回应 | 修正或验证证据与仍缺内容 |
+| --- | --- | --- |
+| B-R1-01 | 待验证 | B03保持部分关闭清理，原现场误关未解。R2补完整index.js，init门控及普通刷新不重启observers的静态依据可复核；仍缺现场关闭来源、设备和宿主版本。不自动加入产品诊断设置。 |
+| B-R1-02／A-R1-E01 | 待验证 | 已补HEAD／候选各3次同封装对照、每次触摸计数、停止步骤、监听采样、200ms响应探针和协议事件记录；6次失败如上。旧对照不等价的问题已补证，超时成因及“与本批无关”仍不下结论；交R2独立复核，不投票关闭争议。 |
+| B-R1-03 | 已修复＋红绿证据 | direct click及真实键盘Enter修前监听10/observer2，候选5/1；新浮层唯一，随后内部pointerdown保留is-open。另补dirty flush移除触发器修前仍建浮层、候选不再建，三项R1红→R2绿。 |
+| B-R1-04.1 | 已补验证 | 精确外部remove后指针点击trigger重开，HEAD失败、R1及R2通过；断言单浮层、5监听、1抽屉observer及内部pointerdown后的is-open，补足旧body dismiss修前已通过的覆盖缺口。 |
+| B-R1-04.2／A-R1-M02 | 已修复并补验证，真机待验 | 同步compositionend及CDP imeSetComposition两项HEAD失败、R1/R2通过；关闭时及关闭后合成/输入均不再写游离列表，局部焦点释放且无运行时错误。真实输入法时序不等于CDP IME。 |
+| B-R1-04.3 | 已补验证 | 测试局部包装#WorldInfo MutationObserver，开窗1，关窗0；之后改抽屉class无迟到回调。该项HEAD也通过，是邻接保护，不代表所有observer或堆释放。 |
+| B-R1-04.4／A-R1-M05 | 待验证 | 增强普通手机路径仍缺可见真实入口夹具；本批没有修改其行为，保留明确缺口，不以增强全局测试替代。 |
+| B-R1-04.5 | 已补验证 | overlay及trigger两项受信touch路径HEAD/R1/R2均通过；trigger受信touch后浏览器只生成一次trigger click、没有重开，650ms后新触摸可再开。overlay空白可能关闭宿主抽屉，测试用真实抽屉按钮返回后再开；不把CDP受信事件当真机键盘。 |
+| B-R1-04.6 | 拒绝全新增项必须HEAD红，依据保持 | 最终日志逐项列明HEAD12/22与R1 19/22；抽屉observer、触摸、焦点等保护可修前绿，不扭曲测试。 |
+| B-R1-05／A-R1-02／A-R1-M01 | 待验证 | 仍缺安卓／iOS键盘闪动、收键盘时机及visualViewport平移录屏，不改关闭时机、不加readOnly或移出输入框。 |
+| B-R1-06／A-R1-M04 | 待验证 | pills observer未加dispose，五监听与抽屉observer归零不当完整堆释放。A关于remove后必然自动disconnect的结论无运行证据；仍需堆及回调时序。 |
+| A-R1-01 | 待验证 | 其他grouped select的关闭另成完整流程；本批不复制补丁，需先复现。 |
+| A-R1-03 | 拒绝本批整洁扩改，依据保持 | WeakMap无size；尚无持续泄漏证据，不扩改bubble guard。游离节点仍可能被引用并派发事件，未将GC推断当已测。 |
+| A-R1-M03 | 已补局部验证，完整链仍待复核 | 收藏dirty→旧浮层remove→重开→flush切平铺，候选不建游离浮层，覆盖完整实际调用而非只测close幂等。R2提供完整native/core/host/index供静态复核，不宣称逐行调用链或所有设置组合均已验。 |
+| A-R1-M06 | 已补验证 | 新候选20次开关与stop均归零，Set快照遍历源码随包；不据此替代所有增强路径。 |
+| A-R1-R0-09/10/11 | 待验证 | 维持诊断独立、原自动消失未解、局部清理有红绿证据的结论；不把自动化标成真实宿主验收。 |
+
+- R2冻结候选：`v2.35.16+B03-R2.927171045875`。89文件源码／测试清单SHA-256 `92717104587567c905e878fdcda962b35e9834dc8322993358808d68024bccb6`；完整产品＋新增测试diff `2a2528d2ef40bdb2d8e0ee188c792d7bbd5808ebcdbf92fc17fefe588560e634`；39文件包清单SHA-256 `e572a21bbdbf2f90f3c04641a746f0a56970c362acfa608fe1ca079a9f8a18e9`。R1包16文件逐项哈希复核一致。R2含HEAD→候选完整差异、R1→R2差异、必要完整源码、最终测试、helper、对照快照与日志；不含原始素材、参考脚本正文、两人报告或写手回应。
+- 下一关：用户分别转交两个R2入口给原A／B；仅各自新报告文件可写，不能读另一位报告／本文件回应，不跑测试。本窗口不擅自接通其他模型。本轮不再继续产品修改直至新版复核返回；重大争议独立新会话仲裁，所有真机与证据缺口保持开放。无提交、推送、发布或driver-accepted。
+
+### 审查者 A 的 B03 R2 接收与逐项回应（2026-11-27，B尚未返回）
+- 原文 `本轮材料/反馈/审查者A-B03-R2.txt` 已完整读取并保留，SHA-256 `120167b25a8f373bd807dde086b9ef27481d54f8ef3bcf680cfe5837e36f7a3c`，对应 `v2.35.16+B03-R2.927171045875`。本次重新核对包清单39文件全部一致；工作区native-filter及专项测试仍分别为 `bfa4a480f0f3e8025257efabf9b9d4acf10e6bf0bdd67c4f82e6a37178fe5839`、`37e90bd4621cfb2b3145e874c7bcdb7dac7b4aa1343543e5454814f9125487be`，未更换快照。
+
+| 编号 | 回应 | 静态核对、已有证据与缺少内容 |
+| --- | --- | --- |
+| A-R2-01 | 待验证 | flush:84先清dirty再调用apply，apply:2415在_isApplying时返回，静态顺序成立。但普通开窗唯一调用点为trigger click:1758，未找到apply同步链实际激活trigger的来源，不能把该假设当已证实丢更新。未应用保留dirty的建议；缺真实同步重入调用方、可运行复现，以及收藏顺序／随后重算前后对照。该共享flush行为早于R2，B返回前不扩改。 |
+| A-R2-02 | 待验证 | pills observer仍依赖ResizeObserver回调检测脱离，sync的isConnected守卫只证明不写游离DOM；不能保证“最多短期”内存存活。与B-R1-06及A-R1-M04保持同一缺口，未加共享dispose；缺20次开关的堆快照及回调／回收证据，不能据抽屉observer归零关闭此项。 |
+| A-R2-M01 | 待验证 | 对应验收缺口1：原视频输入时下拉自行消失的根因仍未定位。模式切换清理缺陷已修，但外部remove是测试注入，不代表找到实际宿主移除来源；缺现场关闭调用链／DOM与几何记录，B03不关闭。 |
+| A-R2-M02 | 待验证 | 对应缺口2：真实安卓及iOS键盘、blur收键盘、visualViewport位移／缩放和触摸外部输入的键盘闪动均无真机记录；CDP合成和尺寸模拟不能替代。 |
+| A-R2-M03 | 待验证 | 对应缺口3：6次等价对照均失败、超时后页面可响应，不足以确定连续触摸超时的成因或豁免。保留正式整轮54/56及所有对照失败，不将“两侧分布没有可区分差异”当统计无差异结论；样本各3次且有采样时序影响。 |
+| A-R2-M04 | 待验证 | 对应缺口4：增强普通手机路径缺有效真实脚本入口夹具，增强全局通过不替代；未新增假定通过记录。 |
+| A-R2-M05 | 待验证 | 对应缺口5：pills observer、bubble guard、闭包和整个堆回收未测；WeakMap无size。仍缺堆及外部强引用证据，既不宣称泄漏已证实，也不宣称完整释放。 |
+| A-R2-M06 | 待验证 | 对应缺口6：真实读屏器事件序列未测；真实键盘Enter及direct click的R1红→R2绿仅覆盖这些输入路径，不能代表读屏器验收。 |
+| A-R2-C01 | 已修复＋证据；接收A的R1改判 | A明确撤回本人R1“无已证实问题／放行”结论，承认遗漏stale closer重开。该问题已由R1三项失败→R2三项通过证明修正；报告原文保持不改，历史放行不得再作为证据。R1五监听分项应为document pointerdown、window resize/orientationchange、vv resize/scroll；disable仅在browser-adjacent测试，初始lifecycle-green八项不含disable。均按A本次更正登记，不扩大R2通过范围。 |
+| A-R2-E01 | 拒绝候选源码与“上一条”测试哈希一致的字面表述 | 报告材料核对段称comparison candidate与上一条一致，上一条是测试；实测candidate hash为bfa4a480…，与native-filter源码一致；测试hash为37e90bd4…。视为报告指代错误，记录澄清，不改A原文；包内快照及声明无此混淆。 |
+| A-R2-E02 | 待验证；保留证据分层 | 接收A对bad port为夹具启动失败的判断：错误在resetServer、未进产品断言，原样单项复验1/1。原相邻整轮仍54/56，不能改称55/56或整轮全绿。A本新快照“代码不阻断”仅为A的独立意见，不替代B复核、真实宿主验收或发布授权。 |
+
+- 本次只做只读核对及NEXT登记，未应用建议diff、未改产品／正式测试／冻结材料、未运行新测试。保持R2版本与两审查者独立性；等待B自己的R2文件，不向其提前提供A报告／写手回应，也不增加第三名常规审查者。重大争议在两轮后按既定规则交独立新会话仲裁；未提交、推送、发布或设置driver-accepted。
+
+### 审查者 B 的 B03 R2 接收与逐项回应（2026-11-27）
+- B报告已完整读取，SHA-256 `45c6c443c99ff325e982084aaa8b9075f0bbbdf1ce9aa68103f94976a58b6698`；用户转述B已完成，并自行说明前轮未产出，不据此猜测其他窗口／工具／权限导致中断。对应候选仍为 `v2.35.16+B03-R2.927171045875`，唯一写手核对39个冻结包文件全部一致，当前源码和专项测试仍为 `bfa4a480…5839`、`37e90bd4…87be`。
+- 本批范围仅为“隔离测试环境→连续触摸→记录超时／恢复→核对证据”；源码、正式测试、R1/R2包、两人原报告均不修改。新材料放 `本轮材料/B03-R2-补充验证/`，补验标识 `B03-R2-S1-extensions-disabled`，不是新产品版本或第三轮常规审查。产品仍对HEAD +20/-3，保留原整轮54/56。
+
+| 编号 | 回应 | 核对依据、处理及证据缺口 |
+| --- | --- | --- |
+| B-R2-01 | 待验证（补验已完成；具体成因仍缺） | 复制的同一诊断helper仅添加 `--disable-extensions`，其他动作／断言／12000ms超时／HEAD与candidate响应替换不变，交替各3次全部通过，每次30个touchStart＋30个touchEnd。随后正式helper副本仅添加同一参数，原六文件56/56通过。证据见下方S1记录，原失败保留。支持启动环境干扰方向，不指认具体扩展；因6次均无超时，不触发200ms touchCancel恢复实验。原正式helper与冻结材料不覆盖，隔离参数落实于新副本。 |
+| B-R2-01-E01 | 拒绝超出采样的推论；争议不作关闭 | 超时后1–2ms响应只证明探针当刻可响应，不能证明之前12秒主线程始终空闲；protocolEvents为空仅代表已订阅事件未观测到。采样监听数稳定仅支持“检查点未见监听增长”，不能排除所有累积／堆问题。各3次重叠分布支持未观测出差异，不能证明统计上“不加重”。保留B报告原结论供有分歧时仲裁，不以此豁免失败。 |
+| B-R2-01-E02 | 拒绝包外读取扩大权限；已登记边界 | B自行披露列出R2父目录并读取tmp浏览器资料，超出提供审查包的授权范围。本窗口未继续读取或转发这些资料，不采信具体扩展信息为已证实成因；关闭扩展仅作为独立可检验假设。后续只提供显式文件清单，浏览器profile／tmp不入补充证据包，原报告不改写。 |
+| B-R2-02 | 待验证 | 模拟宿主触摸外部关闭时可连带收起未固定抽屉，HEAD已有，不能当本轮引入或视频自动消失的同一根因。登记为下方B03-D01后续必须修复候选；本批不应用500ms拦截或改共享传播规则。缺真实ST未固定抽屉、搜索未聚焦／已聚焦各5次，以及同一隔离红断言前后对照。 |
+| B-R2-02-E01 | 已修复＋静态核对证据（回应中的行号更正） | B报告引用专项测试132–136为新增抽屉注释，实际注释在当前冻结测试281–282行；132–136属于“保留外部输入焦点”测试。仅更正本回应的引用，不覆盖B原报告。 |
+| B-R2-03 | 拒绝按listen(0)假设修改正式HTTP端口；材料差异已核实，端口成因待验证 | R0 mock-server:330–348与诊断版:334–352的HTTP启动块逐字相同，均为20000＋floor(random×20000)，不使用listen(0)；CDP调试端口才用listen(0)，不是fetch的HTTP端口。server仅新增native响应替换，cdp-base仅新增协议事件／Inspector.enable，cdp包装器增加触摸计数、监听采样和超时探针；fixture/assert/mock-host哈希相同，证据写verification-inputs.json。不做无依据的端口同步或据此整轮重跑；原bad port失败与原样单项1/1同时保留，尚缺当次端口记录，不能认定具体端口成因。 |
+| B-R2-C01 | 已修复＋既有红绿证据；接收B撤回R1监听累积推测 | 同等helper对照已补，六次检查点未见window/document/vv监听逐轮增长；B明确撤回“较晚失败更像监听累积”的推测。对应R1材料不等价缺口已由R2诊断转换与哈希补齐，但不扩大为资源累积全排除。 |
+| B-R2-C02 | 拒绝普通设置刷新会重启observer的候选；接收B自行撤回 | index.js:676仅init调用，593–594有初始化守卫；设置走scheduleRefresh→recomputeAndRender。显式外部restart会close仍为静态事实，缺现场调用链；原视频根因仍待验证。 |
+| B-R2-C03 | 待验证 | 接收B对R1键盘闪动／pills observer的保留：与A-R2-M02、A-R2-02/M05同一缺口。尚缺真机外部输入焦点切换和堆回收证据，不能把抽屉observer归零当整体释放。 |
+| B-R2-M01 | 待验证 | 真安卓／iOS键盘、输入法、visualViewport位移缩放、触摸合成click目标和真实读屏器仍缺证据；与A-R2-M02/M06对应。 |
+| B-R2-M02 | 待验证 | 增强启用的普通手机编辑路径缺有效夹具；增强全局测试不替代，沿用A-R2-M04缺口。 |
+| B-R2-M03 | 待验证 | 真实ST抽屉的外部收起逻辑缺现场观察，见B03-D01；模拟宿主结果不直接当真宿主验收。 |
+| B-R2-M04 | 待验证 | 整体堆、游离子树、胶囊observer、WeakMap及外部强引用未验证，保留A-R2-M05缺口。 |
+| B-R2-M05 | 待验证 | 触摸超时成因未定，见B-R2-01；不按HEAD也失败作豁免。 |
+| B-R2-M06 | 已修复＋helper静态差异证据 | R0与diagnostic helper差异已按B-R2-03核实并记录；HTTP端口逻辑相同，fixture/assert/mock-host字节哈希一致。此项解决材料可比性，不解决bad port／touch超时。 |
+| B-R2-M07 | 已修复＋完整核验证据 | B只抽验7文件；本窗口收尾核验R2包39文件、R1包16文件与89文件源码／测试全部原字节一致，git跟踪路径集合加新增专项也与冻结清单相同。见S1 final-integrity.json；未把B抽验当全清单验证。 |
+| B-R2-D01 | 待验证；补验条件已满足，真实宿主验收继续保留 | 接收B“关闭清理部分代码无阻断”的独立意见；原B03开放、原54/56如实保留、关闭扩展3＋3及正式56项补验均已完成。报告所称可合入不构成本轮提交／推送／发布授权。常规两轮已用完，不扩展第三轮；严重实质争议需独立新会话仲裁。 |
+
+### B03 R2 S1 隔离补验证据（2026-11-27，未改产品）
+- 标识 `B03-R2-S1-extensions-disabled`，产品仍 `v2.35.16+B03-R2.927171045875`；新增材料全部在项目内。仅新增 `--disable-extensions`，没有添加第二个启动参数、读取profile、修改真实Edge配置或宿主数据；正式R0 helper及R2诊断helper原件保留。
+- `extensions-disabled-{head,candidate}-{1..3}.log`：交替6次全部exit=0，每次1/1、30次touchStart与30次touchEnd；断言与12000ms超时不变。`extensions-disabled-summary.json`逐次登记原始日志哈希；包清单记录脱敏副本哈希。原R2六次失败仍单列，不根据新结果抹去。
+- `browser-adjacent-isolated.log`：相同正式六文件56/56、fail=0、cancelled=0、进程exit=0，耗时194783ms；包含本候选专项22项及此前失败的连续触摸／stopping observers。正式helper副本无诊断包装器或native响应替换，只有相同启动参数变化。原整轮54/56、bad port原样单项1/1、R2既有单测245/245分别保留；本次源码不变，不重复跑单测。
+- 端口块相同，拒绝按listen(0)假设修改HTTP夹具的决定不变；本次没有bad port也不证明原失败具体原因。新结果支持环境启动条件相关，不等于定位某个扩展，不证明真实用户会／不会遇到触摸无响应，也不替代原视频自动消失的根因。
+- 新脚本语法检查及git diff --check通过；`final-integrity.json`核验89文件、R1包16项、R2包39项全部一致，清单仍 `92717104587567c905e878fdcda962b35e9834dc8322993358808d68024bccb6`，产品差异仍 `2a2528d2ef40bdb2d8e0ee188c792d7bbd5808ebcdbf92fc17fefe588560e634`。
+- 补充证据包22文件：`本轮材料/B03-R2-补充验证/补充证据包/`，入口README，含JSON、两种helper的单行差异、正式helper前后文件、六次对照及整轮日志；清单SHA-256 `7c09923e19c5836285e267ef9abf1dcd6f93d6db8c8de84e8d6343da38f05911`。不含profile、tmp、私人反馈、原始参考脚本、报告或写手回应；只转交此显式目录，不转交父目录。不请求第三轮常规产品审查，既有未验边界和重大争议仲裁规则继续有效。
+- 下一关：原视频现场关闭调用链及真实安卓／iOS软键盘、增强普通选书、外部输入切换、未固定宿主抽屉、读屏器与整体堆证据；自动化不得设driver-accepted。没有提交、推送、发布、安装或进入其他功能／CSS／条目分组。
+
+### B03-D01 外部关闭连带收宿主抽屉（2026-11-27，必须修复候选）
+- 来源B-R2-02，模拟宿主已观察、真实ST影响待验证；与原视频自动消失分开登记。后续单一流程“未固定抽屉→打开普通选书→未聚焦／聚焦搜索→触摸外部关闭→继续操作抽屉”，两种状态各5次；同时核对本来有意点宿主外部仍可正常收抽屉。先补HEAD红断言及真实宿主证据，再确定最小修复和新版本双审；本补验批不实施。
+
+### B09 全局世界书批量开关（2026-11-27，新登记）
+- B09【已有功能优化／候选】：用户询问是否需要一键批量开启／关闭。静态核对已有组合窗口“关闭所有全局”（panel-quick.js:436、829）及快捷中心全关（1336），两处均经 executeGlobalBooksSwitch，已有“撤回切换”；组合支持保存当前、自由勾选和应用／追加。先评估入口可发现性，不新增重复全关按钮。
+- B09【新增功能／待确认范围】：尚未找到直接“开启全库”的入口；建议优先按选定书或指定分组批量开启／关闭，先列影响数量，保留当前集合、组合、撤回记录和未保存编辑。全库全开可能将互斥用途的书同时启用，不作为默认主操作；这是候选产品判断，用户询问不等于授权立即实现。
+- 后续单批流程候选：“选择范围→预览开启／关闭变化→应用→撤回→重开核对”。验收需含隐藏分组、已开项、无变更、失效书名与权威索引、普通选书身份不变，以及撤回恢复原集合；当前 B03 不实现。依赖当前反馈修复和审查完成，再确定小批次范围及新版本双审。
+
+### B06 普通选书角色名失效专项追溯（2026-11-27）
+- B06【必须修复／已隔离复现，未实施】：用户明确位置为「普通选书下拉」。本次只诊断和登记，不将新修复夹入 B03 关闭清理；尚未确认现场对应下列哪一条件。中性夹具、临时探针及完整失败日志在项目内 `本轮材料/角色名诊断-B06/`，无私人素材或实际宿主写入。
+- 基础对照：桌面普通 Select2 与手机普通分组选择器均按 char_only 显示角色名。有效夹具最终 5 项中 2 通过／3 预期失败；初轮因当前角色书裸显导致只剩一组，2 项缺少手机触发器属于夹具错误，保留 `baseline.log`，不作产品失败证据；关闭该夹具的当前角色置顶后，`baseline-valid.log` 确认三项真实显示断言失败。
+- B06-01【已复现／历史遗漏】：手机退回原生系统 select（showNativeOptgroups=false，或有效分组不足两组）时，保留真实 option.textContent，且不启用自定义手机触发器；原生选项仍显示文件名。当前复现值为 nativeVisible=true、picker=false、optionText=角色书文件名。源码顶层明确要求不改真实 option 文本以保护宿主映射，不能直接把 option.textContent 改成角色名作为补丁。手机自定义选择器从 v2.22.0／1f7bb96（2026-11-25，Git +09:00）起即仅覆盖多分组；此为覆盖遗漏，未证明是最近回退。
+- B06-02【已复现／最早提交即存在】：已绑定角色书手动移入自定义分组后，core.classifyWorldbooks 仅在 isInCharGroup 时套用角色名；isCharBound=true 仍输出文件名。以四份历史 core 模块运行相同中性分类，v1.0.0／8cfd23b（2026-11-24 19:54:07 +09:00）、v2.35.4、v2.35.15、v2.35.16 均一致，`history-core.log` 5/5（含快照准备项）；手机可见分组行亦在 `baseline-valid.log` 复现。该行为可能涉及原有「仅角色分组」的设置语义，需审查明确修复范围，不能静默扩张别名优先级或改分组。
+- B06-03【已复现／v2.35.4 起的标题刷新遗漏】：增强普通下拉保留同一容器和行时，先按 original 展示，后改 char_only 并重算／再次开窗，分类 primaryTitle 已为角色名，但行仍显示文件名。enhanceCustomDropdownPopover 的 ready/pin 快速返回未比较标题／设置签名，容器变化检查也未识别标题设置变化。分别只替换历史 native-filter 模块、其余夹具保持相同，在 941f865／v2.35.4、2fa918d／v2.35.15、0893235／v2.35.16 三个隔离浏览器中均为同一可见标题断言失败；见 history-941f865.log、history-2fa918d.log、history-0893235.log。增强普通下拉套角色名的函数由 941f865（2026-11-26 10:25:54 +09:00）首次加入，复用旧列表的刷新遗漏自此已存在；本对照不是三个版本的完整宿主验收。
+- 来源界限：v2.35.16 相对 v2.35.15 的 native-filter 差异仅收藏触摸事件隔离；本轮产品差异仅 B03 关闭清理，未改标题生成、组归属或增强标题刷新。没有证据把 B06 归因于这两次变化。尚未核实用户宿主实际安装版本、是否增强、是否原生单组回落或手动分组，不能断言现场唯一根因或声称已修复。
+- 候选独立批次为「普通选书显示设置→打开／重开→搜索选择→保留真实书名身份」，优先级提高；先给两名既有审查者同一新快照及最小方案，分别核对标题更新、别名优先级、单组原生回落、组选中／书名映射与停用还原，再按确认范围修改。B01/B02/B04/B05、CSS 和条目分组不自动并入。无需新增常规第三窗口；如出现严重争议再独立仲裁。
+
+### B07 iPad 竖屏适配需求（2026-11-27，新登记）
+- B07【已有功能优化／未实施】：用户要求适配 iPad 竖屏。先核对触控设备与宽度断点、原生／增强普通选书、全局入口、主面板及子窗的现有行为，不能只把 iPad 当桌面或把全部平板强制套用手机全屏。
+- 本项先登记，不随消息立即修改。依赖当前反馈修复及 B06 普通选书标题问题稳定；按完整流程拆批，首批候选为「iPad 竖屏打开普通选书→进入分组→搜索与选择→关闭返回」，其他主面板／组合／管理窗口另按现场证据安排。CSS 结构拆分独立，不借适配混入重构。
+- 验收：覆盖常见 iPad 竖屏尺寸及触控指针；下拉和输入不越界、出现软键盘后输入与焦点保留、中部可滚、底部按钮可点、切换横竖屏不丢选中／编辑；具体机型／系统／浏览器、真实软键盘与分屏场景仍待证据。新批次提供独立快照及两名审查者新复核，自动化尺寸模拟不当真机通过。
+
+### B08 排除分组标识语义（2026-11-27，新登记）
+- B08【已有功能优化／方案待确认，未实施】：用户指出打勾通常理解为选中启用，询问是否以划去表示排除更自然。建议可见／保留显示为勾选，已排除为不勾选＋划去组名，并有简短可读状态，不能只靠颜色或删除线传达。
+- 后续按「打开排除分组→识别当前状态→排除／恢复→返回并重开核对」单一流程整理；先核对普通与全局两个入口、全选／全不选等现有文案和键盘／触控状态。可视选中语义与底层 hiddenGroupIds 通过明确映射对应，现有保存配置不倒置，不改变保护中的当前编辑／已选例外，也不改分组数据。
+- 本条为用户提出的设计问题及写手建议登记，尚未把具体交互方案当已确认实施范围；本批 B03 和 B06 诊断不夹带改动。验收需含旧设置载入状态、点击前后排除集合、恢复、跨重开记忆、普通／全局互不污染和读屏可识别。
+- B04【已有功能优化／目标顺序已确认】：用户已明确确认「左侧确认、右侧取消」。本次仅确认和登记，未检查全部对话框、未改按钮或事件。后续按「打开对话框→确认或取消→回到原流程」单独成批，说明适用范围后核查手机/桌面视觉顺序、键盘焦点顺序和原动作语义；不更改数据保护、未保存编辑或撤销行为，不并入 CSS 拆分。
+- 产物位置约束：本轮及后续材料、报告、日志、预览和测试临时输出均放在对应项目内，可另建文件夹；本项目统一使用 `本轮材料/`，不再把交付或诊断文件输出到 C 盘。该目录加入仓库忽略规则，私人诊断材料不入库；原始反馈继续留在原位置。
+- 本次仅登记新需求、迁移本轮材料并增加忽略规则；产品及测试源码未改，原有未提交内容保留。当前仍等待 R0 两份独立审查，不改变已冻结审查包的产品范围。
 
 ### 0.1 本版范围
 #### v2.35.16 全局收藏触摸纠错（2026-11-27）

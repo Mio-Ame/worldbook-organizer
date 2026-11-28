@@ -32,10 +32,17 @@ import {
     orderSectionsForExternalDropdown,
     togglePinnedBook,
 } from './core.js';
-import { getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, saveSettings } from './host.js';
+import { getActiveGlobalWorldSet, getCharLoreEntries, getCurrentCharacterAvatar, getCurrentEditorWorldName, getHostContext, getPowerUserSettings, getWorldNames, isTauriTavern, saveSettings } from './host.js';
 import { restoreContentAnchor, scrollContentToItem, scrollNativeWorldEntry } from './content-scroll.js';
 import { revealNativeEntryGroup } from './entry-groups/native-entry-point.js';
 import { closeGroupVisibilityPopover } from './panel-window.js';
+
+/** Group id for the "mounted global worldbooks" block; matches the manager's section id. */
+const ACTIVE_GLOBAL_SECTION_ID = '__active_globals__';
+/** Group id for the editor dropdown's mounted-globals block (shown once 3+ globals are mounted). */
+const EDITOR_GLOBALS_GROUP_ID = '__globals__';
+/** Temporary block holding search hits that live outside the opened group. */
+const SEARCH_MATCHES_GROUP_ID = '__search_matches__';
 
 /** @type {WeakMap<HTMLElement, () => void>} */
 const _bubbleGuardCleanupMap = new WeakMap();
@@ -75,6 +82,35 @@ function unbindDrawerSafeBubbleGuard(rootEl) {
     delete rootEl.dataset.wboBubbleGuarded;
 }
 
+/** Tall touch screens in portrait (e.g. iPad); phones and desktops keep their original sizing. */
+function isTallTouchPortraitViewport() {
+    const vw = globalThis.innerWidth || document.documentElement?.clientWidth || 0;
+    const vh = globalThis.innerHeight || document.documentElement?.clientHeight || 0;
+    const coarse = typeof globalThis.matchMedia === 'function' && globalThis.matchMedia('(pointer: coarse)').matches;
+    return coarse && vw > 680 && vh > vw && vh >= 900;
+}
+
+/** @type {{ x: number, y: number, at: number } | null} */
+let _pickerDismissTap = null;
+
+/** Remember the tap that closed a backdrop picker so its trailing click doesn't close the host drawer. */
+function markPickerDismissTap(ev) {
+    _pickerDismissTap = Number.isFinite(ev?.clientX) && Number.isFinite(ev?.clientY)
+        ? { x: ev.clientX, y: ev.clientY, at: Date.now() }
+        : null;
+}
+
+function consumePickerDismissClick(ev) {
+    const tap = _pickerDismissTap;
+    if (!tap) return false;
+    _pickerDismissTap = null;
+    if (!ev?.isTrusted || Date.now() - tap.at > 800) return false;
+    const t = ev.target instanceof Element ? ev.target : null;
+    // A tap on a real control under the old backdrop is its own action, not a stray dismiss click.
+    if (t?.closest?.('button, a, input, select, textarea, label, [role="button"], .gr-option, .select2-container')) return false;
+    return Math.hypot((ev.clientX ?? tap.x) - tap.x, (ev.clientY ?? tap.y) - tap.y) <= 24;
+}
+
 let _pinDirtyOnClose = false;
 /** @type {Set<() => void>} */
 const _openCustomPickerClosers = new Set();
@@ -95,6 +131,13 @@ function flushPinDirtyOnClose() {
  * @param {{ except?: 'global' | 'editor' | null }} [opts]
  */
 export function closeAllOpenWorldDropdowns({ except = null } = {}) {
+    // Our search panel floats above the popover, so it has to go with it.
+    document.querySelectorAll('.wbo-enhanced-search-panel').forEach((el) => el.remove());
+    // Release the drawer guards installed by every enhanced popover that was opened.
+    document.querySelectorAll('[data-wbo-popover-role]').forEach((el) => {
+        el._wboDrawerGuard?.dispose?.();
+        el._wboDrawerGuard = null;
+    });
     const $ = globalThis.jQuery;
     if ($ && except !== 'editor') {
         try {
@@ -250,6 +293,7 @@ function ensureSelect2RowsHavePinBtn(resultsList) {
     resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)').forEach((li) => {
         if (!(li instanceof HTMLElement)) return;
         if (li.classList.contains('select2-results__message')) return;
+        if (li.classList.contains('wbo-dd-global-mirror')) return;
         if (li.querySelector('.wbo-s2-pin-btn')) return;
         const rawText = (li.textContent || '').trim();
         if (!rawText || rawText.startsWith('---')) return;
@@ -310,6 +354,186 @@ export function hasCompatibleDropdownScript() {
         }
     } catch { /* Older hosts can only detect the running script. */ }
     return Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR));
+}
+
+/**
+ * Which signals actually matched, so the settings page can explain the verdict instead of
+ * silently hiding the adaptation card.
+ * @returns {{ scriptTree: boolean, styleMarker: boolean, runtimeDom: boolean }}
+ */
+export function detectEnhancedScriptSignals() {
+    if (typeof document === 'undefined') return { scriptTree: false, styleMarker: false, runtimeDom: false };
+    let scriptTree = false;
+    try {
+        const scripts = globalThis.TavernHelper?.getScriptTrees?.({ type: 'global' });
+        if (Array.isArray(scripts)) {
+            scriptTree = scripts.flatMap((item) => item?.type === 'folder' ? (item.scripts || []) : [item]).some((item) => {
+                const code = item?.content;
+                // A disabled script must not count as "in use"; its leftovers get cleaned up.
+                return item?.enabled !== false && typeof code === 'string'
+                    && code.includes('gr-global-dropdown-container')
+                    && code.includes('gr-select2-display');
+            });
+        }
+    } catch { /* ignore */ }
+    return {
+        scriptTree,
+        styleMarker: Boolean(document.querySelector(ENHANCED_STYLE_SELECTOR)),
+        runtimeDom: Boolean(document.querySelector('.gr-container-enhanced, #gr-global-dropdown-container, .gr-select2-display')),
+    };
+}
+
+/**
+ * Effective answer to "is the dropdown-beautify script in use?", honouring the user's
+ * `enhancedScriptMode` override (auto / on / off).
+ * @returns {boolean}
+ */
+export function isEnhancedScriptActive() {
+    const mode = _latestSettings?.enhancedScriptMode || 'auto';
+    if (mode === 'on') {
+        trackDiagEnvironment({ enhancedActive: true });
+        return true;
+    }
+    if (mode === 'off') {
+        trackDiagEnvironment({ enhancedActive: false });
+        return false;
+    }
+    const signals = detectEnhancedScriptSignals();
+    const active = Boolean(signals.scriptTree || signals.styleMarker || signals.runtimeDom);
+    trackDiagEnvironment({ enhancedActive: active });
+    return active;
+}
+
+/**
+ * Did the user disable the script in TavernHelper while its injected markup/styles still sit in
+ * the page? Disabling does not unload an already-injected script until the page is reloaded.
+ * @returns {'enabled' | 'disabled' | 'unknown'}
+ */
+function compatScriptEnabledState() {
+    try {
+        const scripts = globalThis.TavernHelper?.getScriptTrees?.({ type: 'global' });
+        if (!Array.isArray(scripts)) return 'unknown';
+        const flat = scripts.flatMap((item) => (item?.type === 'folder' ? (item.scripts || []) : [item]));
+        const matching = flat.filter((item) => typeof item?.content === 'string'
+            && item.content.includes('gr-global-dropdown-container')
+            && item.content.includes('gr-select2-display'));
+        if (matching.length === 0) return 'unknown';
+        return matching.some((item) => item.enabled !== false) ? 'enabled' : 'disabled';
+    } catch {
+        return 'unknown';
+    }
+}
+
+/**
+ * Remove the beautify script's leftovers (style tag, dropdown shells, triggers) once it has been
+ * disabled, otherwise its rules keep overriding ours until the page is reloaded.
+ * @returns {boolean} true when something was cleaned
+ */
+export function cleanupStaleEnhancedArtifacts() {
+    if (typeof document === 'undefined') return false;
+    // Legacy markers from earlier plugin versions can survive a soft update (no reload): they
+    // showed stale group badges / a leftover search head on rows that no longer match.
+    document.querySelectorAll('[data-wbo-search-head]').forEach((el) => el.removeAttribute('data-wbo-search-head'));
+    document.querySelectorAll('.wbo-enhanced-search-hidden').forEach((el) => el.classList.remove('wbo-enhanced-search-hidden'));
+    document.querySelectorAll('.wbo-enhanced-section-hidden').forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
+    document.querySelectorAll('.wbo-s2-badge.is-enhanced-search').forEach((el) => el.remove());
+    if (compatScriptEnabledState() !== 'disabled') return false;
+    // Foreign DOM is never touched: a second copy of the script may still be running, and
+    // deleting its trigger broke the global worldbook drawer.
+    if (document.querySelector('.gr-select2-display, .gr-container-enhanced, #gr-global-dropdown-container')) return false;
+    let cleaned = false;
+    document.querySelectorAll('style[data-gr-dropdown-style]').forEach((el) => {
+        el.remove();
+        cleaned = true;
+    });
+    return cleaned;
+}
+
+/**
+ * Find the classification entry for a book by real name, known prefix, or display title.
+ * Options whose `textContent` was rewritten to the friendly title would otherwise lose their
+ * metadata (which is how a bound character book fell back to its file name).
+ * @param {string} candidate
+ * @returns {any}
+ */
+function findMetaByAnyName(candidate) {
+    const byName = _latestClassification?.byName;
+    const text = String(candidate || '').trim();
+    if (!byName || !text) return null;
+    const direct = byName.get(text);
+    if (direct) return direct;
+    const prefixed = matchKnownWorldName(text);
+    if (prefixed) return byName.get(prefixed) || null;
+    for (const meta of byName.values()) {
+        if (meta?.primaryTitle === text) return meta;
+    }
+    return null;
+}
+
+/**
+ * Resolve the classification entry of an enhanced-popover row even when the host script rebuilt
+ * it (its text then carries badges, or only the display title).
+ * @param {HTMLElement} row
+ * @returns {any}
+ */
+function resolveEnhancedRowMeta(row) {
+    const byName = _latestClassification?.byName;
+    if (!byName || !(row instanceof HTMLElement)) return null;
+    const candidates = [];
+    const stored = row.dataset?.wboEnhancedWorld;
+    if (stored) candidates.push(stored);
+    const titleEl = row.querySelector('.wbo-gr-world-title');
+    if (titleEl instanceof HTMLElement && titleEl.title) candidates.push(titleEl.title);
+    const raw = (row.textContent || '').trim();
+    if (raw) candidates.push(raw);
+    for (const candidate of candidates) {
+        const meta = findMetaByAnyName(candidate);
+        if (meta) return meta;
+    }
+    // Last resort: map the row back to its `<option>` through `data-value` / `data-index`. The
+    // host script can build rows before any text exists, and those rows carry no name at all.
+    const select = document.getElementById('world_editor_select');
+    if (select) {
+        const value = row.dataset?.value;
+        let option = value !== undefined ? [...select.options].find((item) => item.value === value) : null;
+        if (!option) {
+            const index = Number(row.dataset?.index);
+            if (Number.isInteger(index) && index >= 0) option = select.options[index] || null;
+        }
+        const name = (option?.dataset?.wboRealName || option?.textContent || '').trim();
+        if (name) {
+            const meta = findMetaByAnyName(name);
+            if (meta) return meta;
+        }
+    }
+    return null;
+}
+
+/** Live character name for a book, from the loaded cards and `charLore` extras. */
+function liveCharNameForBook(bookName) {
+    const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+    for (const ch of characters) {
+        const name = String(ch?.name || ch?.data?.name || '').trim();
+        const world = typeof ch?.data?.extensions?.world === 'string' ? ch.data.extensions.world.trim() : '';
+        if (world && world === bookName && name) return name;
+    }
+    for (const entry of (getCharLoreEntries?.() || [])) {
+        if (!Array.isArray(entry?.extraBooks) || !entry.extraBooks.includes(bookName)) continue;
+        const key = String(entry.name || '').trim();
+        const stem = key.replace(/\.[a-z0-9]+$/i, '');
+        const owner = characters.find((ch) => String(ch?.avatar || '') === key || String(ch?.name || '') === key || String(ch?.name || '') === stem);
+        const charName = String(owner?.name || stem).trim();
+        if (charName) return charName;
+    }
+    return '';
+}
+
+/** Name of the character the chat is currently running as, if any. */
+function currentChatCharName() {
+    const ctx = getHostContext?.() || null;
+    const avatar = getCurrentCharacterAvatar?.();
+    const current = (ctx?.characters || []).find((ch) => String(ch?.avatar || '') === avatar);
+    return String(current?.name || ctx?.name2 || '').trim();
 }
 
 function syncEnhancedHostTheme(element, eligible = true) {
@@ -601,22 +825,50 @@ function syncEnhancedPinButton(button, pinned) {
 }
 
 function syncEnhancedWorldOptionTitle(row, meta) {
-    if (!meta || (!meta.isCharBound && !meta.isInCharGroup && meta.primaryTitle === meta.realName)) return;
+    if (!meta) return;
+    if (!meta.isCharBound && !meta.isInCharGroup && meta.primaryTitle === meta.realName) {
+        // Back to the plain file name: drop our title and give the original text back.
+        row.querySelector(':scope > .wbo-gr-world-title')?.remove();
+        const holder = row.querySelector(':scope > .wbo-orig-text');
+        if (holder) holder.replaceWith(...holder.childNodes);
+        return;
+    }
     row.dataset.wboEnhancedWorld = meta.realName;
+    // A character-group book must never fall back to its file name, even when the map lacks an
+    // owner (include_in_char, shallow cards). Same fallback as the ordinary dropdown.
+    let displayTitle = meta.primaryTitle || meta.realName;
+    let displaySubtitle = meta.subtitle;
+    const titleMode = _latestSettings?.charBookTitleMode;
+    if (displayTitle === meta.realName && titleMode !== 'original'
+        && (meta.groupId === SPECIAL_GROUPS.CHARACTER || meta.isCharBound)) {
+        const ownerName = liveCharNameForBook(meta.realName) || currentChatCharName();
+        if (ownerName) {
+            displayTitle = ownerName;
+            if (titleMode === 'char_with_sub') displaySubtitle = meta.realName;
+        }
+    }
     let label = row.querySelector(':scope > .wbo-gr-world-title');
     if (!label) {
-        const originalText = [...row.childNodes].filter((node) => node.nodeType === 3);
-        _borrowedRowText.set(row, originalText);
-        for (const node of originalText) node.remove();
+        // Keep the original text nodes in the DOM (just visually hidden): the host script may
+        // search by `row.textContent`, and deleting them made its search return nothing.
+        const originalText = [...row.childNodes].filter((node) => node.nodeType === 3 && (node.textContent || '').trim());
+        if (originalText.length > 0 && !row.querySelector(':scope > .wbo-orig-text')) {
+            const holder = document.createElement('span');
+            holder.className = 'wbo-orig-text';
+            holder.hidden = true;
+            holder.setAttribute('aria-hidden', 'true');
+            for (const node of originalText) holder.appendChild(node);
+            row.appendChild(holder);
+        }
         label = document.createElement('span');
         label.className = 'wbo-gr-world-title';
         row.prepend(label);
     }
-    label.textContent = meta.primaryTitle || meta.realName;
+    label.textContent = displayTitle;
     label.title = meta.realName;
-    if (meta.subtitle) {
+    if (displaySubtitle) {
         const subtitle = document.createElement('small');
-        subtitle.textContent = meta.subtitle;
+        subtitle.textContent = displaySubtitle;
         label.appendChild(subtitle);
     }
 }
@@ -810,7 +1062,8 @@ function syncOpenEditingBadges() {
     const select = document.getElementById('world_editor_select');
     const dropdown = $ && select ? $(select).data('select2')?.$dropdown?.[0] : null;
     dropdown?.querySelectorAll('.wbo-s2-item[data-wbo-world]').forEach((row) => {
-        updateBadge(row.querySelector('.wbo-s2-right'), row.getAttribute('data-wbo-world') === active);
+        const isMirror = Boolean(row.closest('li.wbo-dd-global-mirror'));
+        updateBadge(row.querySelector('.wbo-s2-right'), !isMirror && row.getAttribute('data-wbo-world') === active);
     });
     document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.querySelectorAll('.wbo-mp-row').forEach((row) => {
         const current = row.querySelector('[data-mp-world]')?.getAttribute('data-mp-world') === active;
@@ -866,7 +1119,446 @@ function matchesGlobalDropdownGroup(meta, groupId) {
     return meta?.groupId === groupId;
 }
 
+/**
+ * Host-rendered rows can carry a star or badges next to the book name; pick the longest known
+ * world name that the row text starts with, so decorations never defeat the lookup.
+ * @param {string} raw
+ * @returns {string}
+ */
+function matchKnownWorldName(raw) {
+    const byName = _latestClassification?.byName;
+    const text = String(raw || '').trim();
+    if (!byName || !text) return '';
+    if (byName.has(text)) return text;
+    let best = '';
+    for (const key of byName.keys()) {
+        if (key.length > best.length && text.startsWith(key)) best = key;
+    }
+    return best;
+}
+
+/** Bumped together with manifest.json by the release script. */
+export const PLUGIN_VERSION = '2.35.94';
+
+/**
+ * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
+ * sanitized short messages — never a book, character or group name.
+ */
+const _diag = {
+    /** @type {Array<{ at: number, label: string }>} */
+    actions: [],
+    /** @type {string[]} */
+    errors: [],
+    /** Rare, short breadcrumbs of the render pipeline (never user text). @type {string[]} */
+    trace: [],
+    /** Last UI interactions, sanitized to tag/id/class/role plus a short hash. @type {string[]} */
+    ui: [],
+    /** IME / soft-keyboard signals (the "search box closes while typing, keyboard stays" bug). */
+    ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
+    /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
+    scriptFlips: [],
+    /** Theme switches, as `+12.3s <hash>`. */
+    themeFlips: [],
+    /** @type {boolean | null} */
+    lastEnhancedActive: null,
+    /** @type {string} */
+    lastTheme: '',
+    foreignRowsUpgraded: 0,
+    lastRenderPath: '',
+    searchLayoutRuns: 0,
+    decorateRuns: 0,
+};
+
+/**
+ * Short stable hash so a diagnostic can correlate elements without exposing names.
+ * @param {string} text
+ * @returns {string}
+ */
+function hashDiagLabel(text) {
+    let h = 5381;
+    for (const ch of String(text || '')) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+    return h.toString(16).padStart(8, '0').slice(0, 6);
+}
+
+/**
+ * Describe an element for the UI log without leaking any book / character name.
+ * @param {Element | null} el
+ * @returns {string}
+ */
+function describeDiagTarget(el) {
+    if (!(el instanceof Element)) return 'unknown';
+    try {
+        const tag = el.tagName.toLowerCase();
+        const id = el.id ? `#${el.id}` : '';
+        let classes = '';
+        try {
+            classes = [...Array.from(el.classList || [])].slice(0, 3).map((cls) => `.${cls}`).join('');
+        } catch { /* mock DOM without iterable classList */ }
+        const world = el.closest?.('[data-wbo-world]')?.getAttribute('data-wbo-world');
+        const role = el.closest?.('[data-wbo-popover-role]')?.getAttribute('data-wbo-popover-role');
+        const insideDrawer = el.closest?.('#WorldInfo') ? ' inDrawer' : '';
+        return `${tag}${id}${classes}${world ? ` w=${hashDiagLabel(world)}` : ''}${role ? ` role=${role}` : ''}${insideDrawer}`;
+    } catch {
+        return 'element';
+    }
+}
+
+/**
+ * Track the two environmental flips that make bug reports hard to compare: the compatible
+ * dropdown script being toggled, and the SillyTavern theme being switched mid-session.
+ * @param {{ enhancedActive?: boolean, theme?: string }} state
+ */
+function trackDiagEnvironment(state) {
+    const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
+    if (typeof state.enhancedActive === 'boolean') {
+        if (_diag.lastEnhancedActive !== null && _diag.lastEnhancedActive !== state.enhancedActive) {
+            _diag.scriptFlips.push(`+${seconds}s ${state.enhancedActive ? 'on' : 'off'}`);
+            if (_diag.scriptFlips.length > 10) _diag.scriptFlips.shift();
+        }
+        _diag.lastEnhancedActive = state.enhancedActive;
+    }
+    if (typeof state.theme === 'string' && state.theme) {
+        if (_diag.lastTheme && _diag.lastTheme !== state.theme) {
+            _diag.themeFlips.push(`+${seconds}s ${hashDiagLabel(state.theme)}`);
+            if (_diag.themeFlips.length > 10) _diag.themeFlips.shift();
+        }
+        _diag.lastTheme = state.theme;
+    }
+}
+
+function pushDiagUi(kind, target) {
+    try {
+        // Timestamp every interaction so a report can be read as a timeline ("what happened in
+        // the last 10 seconds").
+        const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
+        _diag.ui.push(`+${seconds}s ${kind}:${describeDiagTarget(target)}`);
+        if (_diag.ui.length > 40) _diag.ui.shift();
+    } catch { /* logging must never break the UI */ }
+}
+
+/**
+ * DEV ONLY: a floating button that exports the detailed diagnostic in one tap, so a report does
+ * not require opening the settings panel. Flip to false before merging into main.
+ */
+const DEV_QUICK_DIAG_BALL = true;
+
+function installQuickDiagBall() {
+    if (!DEV_QUICK_DIAG_BALL || typeof document === 'undefined') return;
+    if (document.getElementById('wbo-quick-diag')) return;
+    const btn = document.createElement('button');
+    btn.id = 'wbo-quick-diag';
+    btn.type = 'button';
+    btn.title = '导出世界书插件诊断（单击=详细，双击=简短）';
+    btn.textContent = '🩺';
+    Object.assign(btn.style, {
+        position: 'fixed',
+        right: '14px',
+        bottom: '110px',
+        width: '44px',
+        height: '44px',
+        borderRadius: '50%',
+        border: '1px solid rgba(128, 128, 128, 0.45)',
+        background: 'rgba(32, 34, 40, 0.86)',
+        color: '#fff',
+        fontSize: '20px',
+        lineHeight: '1',
+        zIndex: '100095',
+        cursor: 'pointer',
+        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+    });
+    let lastTap = 0;
+    btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        const now = Date.now();
+        const mode = now - lastTap < 600 ? 'short' : 'dev';
+        lastTap = now;
+        try {
+            const report = buildDiagnosticReport(mode);
+            const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `wbo-diagnostic-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+            document.body.append(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        } catch { /* never break the UI for a diagnostic export */ }
+    });
+    document.body.append(btn);
+}
+
+/**
+ * The host closes an unpinned drawer on any document click, which fires while the opening click
+ * of a worldbook dropdown is still settling — the drawer then disappears on the very first click.
+ * Re-open it once per opening, but only when the pointer was actually inside the drawer.
+ * @returns {{ dispose: () => void }}
+ */
+function installDrawerOpenGuard() {
+    const drawer = typeof document === 'undefined' ? null : document.getElementById('WorldInfo');
+    const timers = [];
+    let observer = null;
+    let kept = false;
+    let pointerInside = false;
+    const onPointer = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        pointerInside = Boolean(target && drawer && drawer.contains(target));
+    };
+    const isClosed = () => Boolean(drawer) && (drawer.classList.contains('closedDrawer')
+        || !drawer.classList.contains('openDrawer'));
+    const restore = (stage) => {
+        if (kept || !drawer || !drawer.isConnected || !isClosed()) return;
+        if (!pointerInside && stage !== 'open') return;
+        kept = true;
+        drawer.classList.add('openDrawer');
+        drawer.classList.remove('closedDrawer');
+        pushDiagTrace(`drawer:kept-open@${stage}`);
+    };
+    if (drawer) {
+        document.addEventListener('pointerdown', onPointer, true);
+        observer = new MutationObserver(() => restore('mutation'));
+        observer.observe(drawer, { attributes: true, attributeFilter: ['class'] });
+        for (const delay of [30, 120, 260]) timers.push(setTimeout(() => restore(String(delay)), delay));
+    }
+    return {
+        dispose: () => {
+            observer?.disconnect();
+            for (const timer of timers.splice(0)) clearTimeout(timer);
+            if (typeof document !== 'undefined') document.removeEventListener('pointerdown', onPointer, true);
+        },
+    };
+}
+
+/**
+ * Record one breadcrumb for the detailed diagnostic (label only, never user text).
+ * @param {string} label
+ */
+function pushDiagTrace(label) {
+    _diag.trace.push(String(label).slice(0, 80));
+    if (_diag.trace.length > 24) _diag.trace.shift();
+}
+
+/**
+ * Record one user-visible action for the diagnostic report (label only).
+ * @param {string} label
+ */
+function pushDiagAction(label) {
+    _diag.actions.push({ at: Date.now(), label });
+    if (_diag.actions.length > 12) _diag.actions.shift();
+}
+
+/**
+ * Replace every known book / character / group name inside a free-form string.
+ * @param {string} text
+ * @returns {string}
+ */
+function sanitizeDiagText(text) {
+    let out = String(text ?? '');
+    const byName = _latestClassification?.byName;
+    for (const [name, meta] of (byName || [])) {
+        if (name) out = out.split(name).join('<book>');
+        for (const owner of meta?.charOwners || []) {
+            if (owner?.charName) out = out.split(owner.charName).join('<char>');
+        }
+    }
+    for (const section of (_latestClassification?.orderedSections || [])) {
+        if (section?.name) out = out.split(section.name).join('<group>');
+    }
+    return out.length > 240 ? `${out.slice(0, 240)}…` : out;
+}
+
+/**
+ * Report the runtime facts that decide which rendering path the plugin takes. Deliberately
+ * name-free so a user can paste it anywhere.
+ * @returns {Record<string, any>}
+ */
+function detectDiagnosticEnv() {
+    const ua = String(globalThis.navigator?.userAgent || '');
+    const browser = /Edg\//.test(ua) ? 'Edge'
+        : /Quark\//i.test(ua) ? 'Quark'
+            : /Firefox\//.test(ua) ? 'Firefox'
+                : /Chrome\//.test(ua) ? 'Chrome'
+                    : /Safari\//.test(ua) ? 'Safari'
+                        : 'unknown';
+    const os = /Windows NT/.test(ua) ? 'Windows'
+        : /Android/.test(ua) ? 'Android'
+            : /iPhone|iPad|iPod/.test(ua) ? 'iOS'
+                : /Mac OS X/.test(ua) ? 'macOS'
+                    : /Linux/.test(ua) ? 'Linux'
+                        : 'unknown';
+    const width = Math.round(globalThis.innerWidth || 0);
+    const height = Math.round(globalThis.innerHeight || 0);
+    const ctx = getHostContext?.() || null;
+    return {
+        pluginVersion: PLUGIN_VERSION,
+        host: isTauriTavern?.() ? 'TauriTavern' : 'SillyTavern',
+        // SillyTavern often leaves `ctx.version` empty; fall back to the visible badge and DOM hints.
+        stVersion: String(
+            ctx?.version
+            || ctx?.versionName
+            || globalThis.SillyTavern?.version
+            || document.querySelector('#version_display, #versionDisplay')?.textContent?.trim()
+            || document.querySelector('.versionDisplay')?.textContent?.trim()
+            || 'unknown',
+        ),
+        tauriVersion: String(globalThis.__TAURITAVERN__?.version || globalThis.__TAURITAVERN_VERSION__ || ''),
+        browser,
+        os,
+        viewport: `${width}×${height}@${globalThis.devicePixelRatio || 1}x`,
+        mobileViewport: Boolean(width <= 680),
+        renderPath: (() => {
+            if (typeof document === 'undefined') return _diag.lastRenderPath || 'none';
+            if (document.querySelector('[data-wbo-popover-role="editor"], [data-wbo-popover-role="global"]')) return 'enhanced-script';
+            if (document.querySelector('.select2-dropdown')) return 'select2';
+            if (document.querySelector('#gr-global-dropdown-container, .gr-container-enhanced')) return 'enhanced-shell-idle';
+            return _diag.lastRenderPath || 'none-open';
+        })(),
+        compatDropdownScript: Boolean(hasCompatibleDropdownScript?.()),
+        theme: (() => {
+            const theme = String(getPowerUserSettings?.()?.theme || '');
+            trackDiagEnvironment({ theme });
+            return theme;
+        })(),
+        extensionSettingsKeys: Object.keys(ctx?.extensionSettings || {}).length,
+    };
+}
+
+/**
+ * Snapshot of the DOM the dropdown currently uses — counts only, no text.
+ * @returns {Record<string, number>}
+ */
+function diagDomSnapshot() {
+    if (typeof document === 'undefined') return {};
+    const count = (selector) => document.querySelectorAll(selector).length;
+    const visible = (selector) => [...document.querySelectorAll(selector)]
+        .filter((el) => el instanceof HTMLElement && el.getClientRects().length > 0).length;
+    return {
+        select2Dropdown: count('.select2-dropdown'),
+        enhancedContainers: count('#gr-global-dropdown-container, .gr-container-enhanced'),
+        enhancedEditorRole: count('[data-wbo-popover-role="editor"]'),
+        grOptions: count('.gr-option'),
+        grOptionsVisible: visible('.gr-option'),
+        s2Options: count('li.select2-results__option'),
+        s2OptionsVisible: visible('li.select2-results__option'),
+        wboS2Items: count('.wbo-s2-item'),
+        grWorldTitles: count('.wbo-gr-world-title'),
+        origTextHolders: count('.wbo-orig-text'),
+        searchHead: count('[data-wbo-search-head]'),
+        pluginHiddenRows: count('.wbo-enhanced-search-hidden'),
+        hiddenGroups: count('.wbo-dd-group-hidden'),
+        collapsedGroups: count('.wbo-dd-collapsed'),
+        dupHiddenRows: count('li.wbo-dd-dupe-hidden'),
+        filterBars: count('.wbo-dd-filter-bar'),
+        // Geometry / scroll: the class of bug where the page itself got scrolled, or a list is
+        // present but collapsed to zero height.
+        pageScrollTop: Math.round(document.scrollingElement?.scrollTop || 0),
+        bodyScrollTop: Math.round(document.body?.scrollTop || 0),
+        popoverH: Math.round(document.querySelector('[data-wbo-popover-role]')?.getBoundingClientRect?.().height || 0),
+        listHostH: Math.round(document.querySelector('.gr-options, .gr-options-container')?.getBoundingClientRect?.().height || 0),
+        searchPanelH: Math.round(document.querySelector('.wbo-enhanced-search-panel')?.getBoundingClientRect?.().height || 0),
+        hiddenRowsInline: [...document.querySelectorAll('.gr-option')]
+            .filter((el) => el instanceof HTMLElement && el.style.display === 'none').length,
+        sectionHidden: count('.wbo-enhanced-section-hidden'),
+    };
+}
+
+/**
+ * Build the diagnostic payload.
+ * @param {'short' | 'dev'} mode
+ * @returns {string} short mode returns ready-to-paste text, dev mode returns JSON
+ */
+function buildDiagnosticReport(mode = 'short') {
+    const env = detectDiagnosticEnv();
+    const settings = _latestSettings || {};
+    const cls = _latestClassification;
+    const mounted = getActiveGlobalWorldSet?.() || new Set();
+    const enhancedSignals = detectEnhancedScriptSignals();
+    const enhancedActive = isEnhancedScriptActive();
+    let charBooks = 0;
+    let charWithoutOwner = 0;
+    let charTitleIsFileName = 0;
+    let charWithSubtitle = 0;
+    let ungrouped = 0;
+    for (const meta of (cls?.byName?.values?.() || [])) {
+        if (meta?.groupId === SPECIAL_GROUPS.UNGROUPED) ungrouped += 1;
+        if (meta?.groupId !== SPECIAL_GROUPS.CHARACTER) continue;
+        charBooks += 1;
+        if ((meta.charOwners || []).length === 0) charWithoutOwner += 1;
+        if (meta.primaryTitle === meta.realName) charTitleIsFileName += 1;
+        if (meta.subtitle) charWithSubtitle += 1;
+    }
+    const counts = {
+        books: cls?.byName?.size || 0,
+        groups: (settings.groups || []).length,
+        pinned: (settings.pinnedBooks || []).length,
+        mounted: mounted.size,
+        charBooks,
+        ungrouped,
+        collapsedMemory: Object.keys(settings.dropdownCollapsed || {}).length,
+        hiddenDupeRows: typeof document !== 'undefined' ? document.querySelectorAll('li.wbo-dd-dupe-hidden').length : 0,
+        searchBlocks: typeof document !== 'undefined' ? document.querySelectorAll('li[data-wbo-dd-group="__search_matches__"], .wbo-bind-dd-bar, [data-wbo-search-head]').length : 0,
+        foreignRowsUpgraded: _diag.foreignRowsUpgraded,
+    };
+    const titleStats = { mode: settings.charBookTitleMode, charWithoutOwner, charTitleIsFileName, charWithSubtitle };
+    const dom = diagDomSnapshot();
+    const actions = _diag.actions.map((a) => a.label);
+    const errors = _diag.errors.map((t) => sanitizeDiagText(t));
+    if (mode === 'dev') {
+        return JSON.stringify({
+            env,
+            counts,
+            titleStats,
+            flags: {
+                showCharBooks: Boolean(settings.showCharBooks),
+                hideCharBooksByDefault: Boolean(settings.hideCharBooksByDefault),
+                showNativeOptgroups: Boolean(settings.showNativeOptgroups),
+                adaptCharBindPopup: settings.adaptCharBindPopup !== false,
+                aliasTitleMode: settings.aliasTitleMode,
+            },
+            actions,
+            errors,
+            ui: _diag.ui,
+            ime: _diag.ime,
+            scriptFlips: _diag.scriptFlips,
+            themeFlips: _diag.themeFlips,
+            dom: diagDomSnapshot(),
+            trace: _diag.trace,
+            runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
+            enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
+            ua: String(globalThis.navigator?.userAgent || ''),
+        }, null, 2);
+    }
+    return [
+        `世界书分组 WBO v${env.pluginVersion}`,
+        `宿主 ${env.host} | ST ${env.stVersion}`,
+        `环境 ${env.browser} / ${env.os} / ${env.viewport} / ${env.mobileViewport ? 'mobile' : 'desktop'}`,
+        `渲染 ${env.renderPath} | 外来行升级 ${counts.foreignRowsUpgraded}`,
+        `美化脚本 ${enhancedActive ? '有' : '无'}(${settings.enhancedScriptMode || 'auto'}) | 原生分组 ${settings.showNativeOptgroups ? 'true' : 'false'}`,
+        `数据 书${counts.books} 组${counts.groups} 收藏${counts.pinned} 挂载${counts.mounted} 角色书${counts.charBooks} 未分组${counts.ungrouped}`,
+        `标题 ${titleStats.mode} | 缺归属${charWithoutOwner} 原名${charTitleIsFileName} 副标题${charWithSubtitle}`,
+        `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
+        `渲染计数 s2行${dom.s2Options ?? 0}/${dom.s2OptionsVisible ?? 0} gr行${dom.grOptions ?? 0}/${dom.grOptionsVisible ?? 0} 搜索头${dom.searchHead ?? 0} 装饰${_diag.decorateRuns}`,
+        `输入法 组合${_diag.ime.compositionStart}/${_diag.ime.compositionEnd} 失焦${_diag.ime.blur}(打字中${_diag.ime.blurDuringComposition})` + (env.tauriVersion ? ` | Tauri ${env.tauriVersion}` : ''),
+        // Quick checks: what a support reply needs first — does the title pipeline work, does the
+        // globals block exist, and did the script/theme flip mid-session.
+        `快检 角色书名${titleStats.charTitleIsFileName === 0 ? '正常' : '异常' + titleStats.charTitleIsFileName}`
+            + ` 全局块${([..._diag.trace].reverse().find((line) => line.startsWith('enh-globals:block')) || 'enh-globals:block=?').replace('enh-globals:block=', '=')}`
+            + ` 脚本${_diag.scriptFlips.length ? _diag.scriptFlips.join('→') : '稳定'}`
+            + ` 主题切换${_diag.themeFlips.length}`,
+        `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
+        `错误 ${errors.length}`,
+    ].join('\n');
+}
+
 function globalSelect2Matcher(params, data) {
+    // Searching must look across every group, not only inside the active pill: the hits are
+    // regrouped afterwards into 「搜索匹配到的世界书」.
+    const term = String(params?.term ?? '').trim();
+    if (term) return customSelect2Matcher(params, data);
     const meta = _latestClassification?.byName?.get(String(data.text ?? '').trim());
     return matchesGlobalDropdownGroup(meta, _activeGlobalPillId) ? customSelect2Matcher(params, data) : null;
 }
@@ -887,9 +1579,15 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
     if (!$) return state.text;
 
     const hasCustomGroups = (_latestClassification?.customGroups?.length || 0) > 0;
-    const isEditing = showEditingBadge && realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
+    // Mirror rows never carry the 当前编辑 badge, even if Select2 re-renders them.
+    const isMirrorRow = Boolean(state.element?.closest?.('li.wbo-dd-global-mirror'));
+    const isEditing = !isMirrorRow && showEditingBadge && realName === (getCurrentEditorWorldName() || _currentlyEditingWorld);
     const editingBadge = isEditing
         ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>'
+        : '';
+    // The ordinary editor dropdown marks books that are already mounted as globals.
+    const globalBadge = showEditingBadge && getActiveGlobalWorldSet().has(realName)
+        ? '<span class="wbo-s2-badge is-global" data-wbo-ui="1" data-wbo-global-badge="1">已全局</span>'
         : '';
     const groupBadge = showGroupPill && (hasCustomGroups || meta.isInCharGroup)
         ? `<span class="wbo-s2-badge${meta.isInCharGroup ? ' is-char' : ''}">${escHtml(meta.groupName)}</span>`
@@ -908,6 +1606,7 @@ function renderSelect2OptionResult(state, { showGroupPill, showEditingBadge = fa
             </span>
             <span class="wbo-s2-right">
                 ${editingBadge}
+                ${globalBadge}
                 ${groupBadge}
                 ${pinBtnHtml}
             </span>
@@ -1147,7 +1846,10 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         .sort(compareAsciiKey)
         .map(([k, v]) => `${k}=${v}`)
         .join('|');
-    const charSig = [...classification.characterBooks.map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)].join('|');
+    const charSig = [...classification.byName.values()]
+        .filter((b) => b.isCharBound || b.primaryTitle !== b.realName)
+        .map((b) => `${b.realName}:${b.primaryTitle}:${b.subtitle}`)
+        .join('|');
 
     const foreignOptgroupCount = mode === 'editor'
         ? selectEl.querySelectorAll('optgroup:not([data-wbo-group])').length
@@ -1164,6 +1866,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
     const currentChatAvatarSig = mode === 'editor' && settings.pinCurrentChatCharBookInEditor !== false
         ? (getCurrentCharacterAvatar() || '')
         : '';
+    const activeGlobalSig = mode === 'editor' ? [...getActiveGlobalWorldSet()].sort().join(',') : '';
 
     return JSON.stringify([
         mode,
@@ -1171,6 +1874,7 @@ function computeSelectSignature(selectEl, detachedMap, classification, settings,
         hiddenSig,
         pinnedSig,
         currentChatAvatarSig,
+        activeGlobalSig,
         Boolean(settings.showNativeOptgroups),
         settings.charBookTitleMode,
         settings.aliasTitleMode,
@@ -1273,14 +1977,8 @@ function applyGlobalWorldSelectFilter(classification, settings) {
 
     const $select = $ ? $(selectEl) : null;
     const hasSelect2 = Boolean($select && ($select.data('select2') || $select.hasClass('select2-hidden-accessible')));
-    // Keep a fallback ready even if an enhanced display temporarily owns visibility.
-    if (!hasSelect2) {
-        attachGroupedSelectControl(selectEl, {
-            multiple: true,
-            role: 'global',
-            placeholder: selectEl.getAttribute('data-placeholder') || '没有激活的世界书。点击这里选择。',
-        });
-    }
+    // The global drawer belongs to SillyTavern. Never inject a second trigger/chips row or an
+    // extra search field there — that produced duplicated rows and a stuck soft keyboard.
 
     const sig = computeSelectSignature(selectEl, _globalDetachedMap, classification, settings, 'global');
     if (sig === _lastGlobalSignature) return;
@@ -1357,6 +2055,39 @@ function applyGlobalWorldSelectFilter(classification, settings) {
     }
 }
 
+/** Groups the user folded again while viewing them alone; cleared when the pill selection changes. */
+const _isolatedFoldOverride = new Set();
+
+/**
+ * Entering a group via its pill shows it expanded without touching the saved fold state.
+ * @param {string} gid
+ * @param {boolean} isolated whether this group is the only one shown
+ */
+function isDropdownGroupCollapsed(gid, isolated) {
+    if (isolated) return _isolatedFoldOverride.has(gid);
+    return Boolean(_latestSettings?.dropdownCollapsed?.[gid]);
+}
+
+/** @returns {boolean} the new collapsed state */
+function toggleDropdownGroupCollapsed(gid, isolated) {
+    if (isolated) {
+        if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+        else _isolatedFoldOverride.add(gid);
+        return _isolatedFoldOverride.has(gid);
+    }
+    const next = !_latestSettings.dropdownCollapsed[gid];
+    _latestSettings.dropdownCollapsed[gid] = next;
+    saveSettings();
+    return next;
+}
+
+/** Top-of-list order in the ordinary picker: current chat book, active globals, then the edited hidden book. */
+function bareTopTier(meta) {
+    if (meta?.isCurrentChatCharBook) return 0;
+    if (meta?.isActiveGlobal) return 1;
+    return 2;
+}
+
 /**
  * Apply filtering and `<optgroup>` grouping to `#world_editor_select`.
  * Safe for both desktop Select2 and mobile native `<select>`.
@@ -1398,6 +2129,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     const currentChatAvatar = settings.pinCurrentChatCharBookInEditor !== false
         ? getCurrentCharacterAvatar()
         : null;
+    const activeGlobalSet = getActiveGlobalWorldSet();
 
     const bareMetaByOpt = new WeakMap();
 
@@ -1416,8 +2148,9 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
         );
+        const isActiveGlobal = activeGlobalSet.has(realName);
 
-        const visible = isBookVisibleInSelector({
+        const visible = isActiveGlobal || isBookVisibleInSelector({
             bookMeta: meta,
             activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
             showCharBooks: Boolean(settings.showCharBooks),
@@ -1432,8 +2165,8 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             else delete opt.dataset.wboEditing;
             const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
             const isFromHiddenGroup = Boolean(!settings.showCharBooks && editorHiddenSet.has(gid));
-            if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
-                bareMetaByOpt.set(opt, { isActiveEditing, isCurrentChatCharBook });
+            if (isCurrentChatCharBook || isActiveGlobal || (isEditing && isFromHiddenGroup)) {
+                bareMetaByOpt.set(opt, { isActiveEditing, isCurrentChatCharBook, isActiveGlobal });
                 bareTopOpts.push(opt);
             } else {
                 if (!visibleByGroup.has(gid)) visibleByGroup.set(gid, []);
@@ -1457,15 +2190,11 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
         bareTopOpts.sort((a, b) => {
             const na = (a.textContent || '').trim();
             const nb = (b.textContent || '').trim();
+            const tier = bareTopTier(bareMetaByOpt.get(a)) - bareTopTier(bareMetaByOpt.get(b));
+            if (tier !== 0) return tier;
             const pa = classification?.byName?.get(na)?.isPinned ? 1 : 0;
             const pb = classification?.byName?.get(nb)?.isPinned ? 1 : 0;
             if (pa !== pb) return pb - pa;
-            const ea = bareMetaByOpt.get(a)?.isActiveEditing ? 1 : 0;
-            const eb = bareMetaByOpt.get(b)?.isActiveEditing ? 1 : 0;
-            if (ea !== eb) return eb - ea;
-            const ca = bareMetaByOpt.get(a)?.isCurrentChatCharBook ? 1 : 0;
-            const cb = bareMetaByOpt.get(b)?.isCurrentChatCharBook ? 1 : 0;
-            if (ca !== cb) return cb - ca;
             const ra = rankMap.get(na);
             const rb = rankMap.get(nb);
             if (ra !== undefined && rb !== undefined && ra !== rb) return ra - rb;
@@ -1484,9 +2213,16 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
     }));
 
     const nonEmptySections = orderedSections.filter((sec) => (visibleByGroup.get(sec.id)?.length || 0) > 0);
+    // Hoisting active globals must not collapse the grouped view: count their home groups too.
+    const hoistedGlobalGroups = new Set();
+    for (const opt of bareTopOpts) {
+        if (!bareMetaByOpt.get(opt)?.isActiveGlobal) continue;
+        const gid = classification.byName.get((opt.textContent || '').trim())?.groupId;
+        if (gid && !visibleByGroup.has(gid)) hoistedGlobalGroups.add(gid);
+    }
     // Keep `#world_editor_select` 100% flat & native when only 1 section exists
     // (e.g., user only uses "hide character worldbooks" with 0 custom groups — zero visual intrusion!)
-    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length >= 2;
+    const useOptgroups = Boolean(settings.showNativeOptgroups) && nonEmptySections.length + hoistedGlobalGroups.size >= 2;
 
     for (const sec of nonEmptySections) {
         const opts = visibleByGroup.get(sec.id);
@@ -1597,7 +2333,14 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
 
     // On native mobile `<select>` (iOS Safari / iPadOS / TauriTavern iOS / Android where Select2 is skipped),
     // system menus cannot filter or collapse groups. Mount a sleek grouped picker trigger when >= 2 sections exist!
-    syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && useOptgroups));
+    // Option text must stay the real file name for host lookups, so titled books need our picker.
+    const needsTitledPicker = Array.from(selectEl.querySelectorAll('option')).some((opt) => {
+        if (opt.value === '') return false;
+        const realName = (opt.textContent || '').trim();
+        const title = classification.byName.get(realName)?.primaryTitle;
+        return Boolean(title && title !== realName);
+    });
+    syncMobileEditorTrigger(selectEl, Boolean(!hasSelect2 && (useOptgroups || needsTitledPicker)));
     syncMobileEditorTriggerLabel();
 }
 
@@ -1729,6 +2472,7 @@ function syncMobileEditorTrigger(selectEl, enabled) {
     if (!selectEl) return;
     const existing = document.getElementById(MOBILE_TRIGGER_ID);
     if (!enabled) {
+        _closeMobileEditorPicker?.();
         selectEl.classList.remove('wbo-mobile-select-hidden');
         existing?.remove();
         document.getElementById(MOBILE_PICKER_OVERLAY_ID)?.remove();
@@ -1804,6 +2548,7 @@ function detectMobilePickerThemeClass() {
  * Tapping outside dismisses it smoothly.
  */
 function openMobileEditorPickerSheet() {
+    _diag.lastRenderPath = 'mobile-picker';
     const selectEl = document.getElementById('world_editor_select');
     const triggerEl = document.getElementById(MOBILE_TRIGGER_ID);
     if (!(selectEl instanceof HTMLSelectElement) || !(triggerEl instanceof HTMLElement)) return;
@@ -1821,7 +2566,14 @@ function openMobileEditorPickerSheet() {
         return;
     }
 
+    // Release a picker removed externally before another can replace its closer.
+    if (_closeMobileEditorPicker) {
+        _closeMobileEditorPicker();
+        if (!triggerEl.isConnected) return;
+    }
+
     syncEditorBeforeOpen();
+    _isolatedFoldOverride.clear();
 
     if (!_latestSettings.dropdownCollapsed || typeof _latestSettings.dropdownCollapsed !== 'object') {
         _latestSettings.dropdownCollapsed = {};
@@ -1849,19 +2601,23 @@ function openMobileEditorPickerSheet() {
     const currentChatAvatar = _latestSettings.pinCurrentChatCharBookInEditor !== false
         ? getCurrentCharacterAvatar()
         : null;
+    const activeGlobalSet = getActiveGlobalWorldSet();
     const bareNames = new Set();
     const bareBooks = [];
+    const bareTierByName = new Map();
     for (const [realName] of optValueByRealName.entries()) {
         const meta = _latestClassification.byName?.get(realName);
         const isCurrentChatCharBook = Boolean(
             currentChatAvatar &&
             meta?.charOwners?.some((o) => o.avatar === currentChatAvatar),
         );
+        const isActiveGlobal = activeGlobalSet.has(realName);
         const isEditing = Boolean(activeEditName && realName === activeEditName);
         const gid = meta?.groupId || SPECIAL_GROUPS.UNGROUPED;
         const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
-        if (isCurrentChatCharBook || (isEditing && isFromHiddenGroup)) {
+        if (isCurrentChatCharBook || isActiveGlobal || (isEditing && isFromHiddenGroup)) {
             bareNames.add(realName);
+            bareTierByName.set(realName, bareTopTier({ isCurrentChatCharBook, isActiveGlobal }));
             bareBooks.push(meta || {
                 realName,
                 primaryTitle: realName,
@@ -1872,15 +2628,11 @@ function openMobileEditorPickerSheet() {
         }
     }
     bareBooks.sort((a, b) => {
+        const tier = (bareTierByName.get(a.realName) ?? 2) - (bareTierByName.get(b.realName) ?? 2);
+        if (tier !== 0) return tier;
         const pa = _latestClassification?.byName?.get(a.realName)?.isPinned ? 1 : 0;
         const pb = _latestClassification?.byName?.get(b.realName)?.isPinned ? 1 : 0;
         if (pa !== pb) return pb - pa;
-        const ea = activeEditName && a.realName === activeEditName ? 1 : 0;
-        const eb = activeEditName && b.realName === activeEditName ? 1 : 0;
-        if (ea !== eb) return eb - ea;
-        const ca = currentChatAvatar && a.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
-        const cb = currentChatAvatar && b.charOwners?.some((o) => o.avatar === currentChatAvatar) ? 1 : 0;
-        if (ca !== cb) return cb - ca;
         return compareZhCn(a.primaryTitle || a.realName, b.primaryTitle || b.realName);
     });
 
@@ -1941,6 +2693,8 @@ function openMobileEditorPickerSheet() {
 
     const scrollRestoreTimers = [];
     let restoringScroll = true;
+    let pickerClosed = false;
+    let searchTimer = null;
     const cancelScrollRestore = () => {
         restoringScroll = false;
         while (scrollRestoreTimers.length) clearTimeout(scrollRestoreTimers.pop());
@@ -1985,13 +2739,14 @@ function openMobileEditorPickerSheet() {
 
         const availTotal = Math.max(120, Math.floor(effectiveBottom - effectiveTop));
         const minClampH = Math.min(120, availTotal);
+        const capH = isTallTouchPortraitViewport() ? 640 : 420;
         if (openAbove) {
             const desiredEdgeFromTop = Math.max(
                 effectiveTop + minClampH,
                 Math.min(rect.top - 4, effectiveBottom - 6),
             );
             const availAbove = Math.max(120, Math.floor(desiredEdgeFromTop - effectiveTop));
-            const maxH = Math.max(120, Math.min(420, availAbove));
+            const maxH = Math.max(120, Math.min(capH, availAbove));
             popover.style.top = 'auto';
             popover.style.bottom = `${Math.round(layoutVh - desiredEdgeFromTop)}px`;
             popover.style.maxHeight = `${maxH}px`;
@@ -1999,7 +2754,7 @@ function openMobileEditorPickerSheet() {
             const maxTopAllowed = Math.max(effectiveTop, effectiveBottom - minClampH - 6);
             const topPx = Math.max(effectiveTop, Math.min(rect.bottom + 4, maxTopAllowed));
             const availBelow = Math.max(120, Math.floor(effectiveBottom - topPx - 6));
-            const maxH = Math.max(120, Math.min(420, availBelow));
+            const maxH = Math.max(120, Math.min(capH, availBelow));
             popover.style.bottom = 'auto';
             popover.style.top = `${Math.round(topPx)}px`;
             popover.style.maxHeight = `${maxH}px`;
@@ -2010,14 +2765,18 @@ function openMobileEditorPickerSheet() {
     /** @type {MutationObserver | null} */
     let wiDrawerObserver = null;
     const onGlobalDismiss = (ev) => {
+        if (!overlay.isConnected) { closePicker(); return; }
         const t = ev?.target instanceof Element ? ev.target : null;
         if (t && (popover.contains(t) || triggerEl.contains(t))) return;
         if (isPointInsideElementRect(ev, triggerEl)) {
             triggerEl.dataset.wboDismissedTapAt = String(Date.now());
         }
+        // The backdrop vanishes before this tap's click, which then lands on the page under it.
+        if (ev?.isTrusted && t && overlay.contains(t)) markPickerDismissTap(ev);
         closePicker();
     };
     const onViewportChange = (ev) => {
+        if (!overlay.isConnected) { closePicker(); return; }
         const curVw = globalThis.innerWidth || document.documentElement.clientWidth || initialVw;
         const activeEl = document.activeElement;
         const isInputFocused = Boolean(activeEl && popover.contains(activeEl));
@@ -2035,6 +2794,10 @@ function openMobileEditorPickerSheet() {
     };
 
     const closePicker = () => {
+        if (pickerClosed) return;
+        pickerClosed = true;
+        clearTimeout(searchTimer);
+        searchTimer = null;
         cancelScrollRestore();
         if (_closeMobileEditorPicker === closePicker) {
             _closeMobileEditorPicker = null;
@@ -2049,6 +2812,8 @@ function openMobileEditorPickerSheet() {
         globalThis.removeEventListener('orientationchange', onViewportChange);
         globalThis.visualViewport?.removeEventListener('resize', onViewportChange);
         globalThis.visualViewport?.removeEventListener('scroll', onViewportChange);
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement && overlay.contains(focused)) focused.blur();
         overlay.remove();
         triggerEl.classList.remove('is-open');
         flushPinDirtyOnClose();
@@ -2064,7 +2829,7 @@ function openMobileEditorPickerSheet() {
     const wiDrawer = document.getElementById('WorldInfo');
     if (wiDrawer) {
         wiDrawerObserver = new MutationObserver(() => {
-            if (wiDrawer.classList.contains('closedDrawer') || !triggerEl.isConnected) {
+            if (!overlay.isConnected || wiDrawer.classList.contains('closedDrawer') || !triggerEl.isConnected) {
                 closePicker();
             }
         });
@@ -2109,14 +2874,31 @@ function openMobileEditorPickerSheet() {
         return list;
     };
 
+    // Mounted globals get their own block (3+ of them), matching the desktop dropdown.
+    const getMobileGlobalBooks = () => {
+        const mounted = getActiveGlobalWorldSet();
+        const out = [];
+        const seen = new Set();
+        for (const book of [...bareBooks, ...sections.flatMap((sec) => sec.books)]) {
+            if (!mounted.has(book.realName) || seen.has(book.realName)) continue;
+            seen.add(book.realName);
+            out.push(book);
+        }
+        return out;
+    };
+
     const renderPills = () => {
         if (!pillsEl) return;
+        const mobileGlobals = getMobileGlobalBooks();
         const totalCount = bareBooks.length + sections.reduce((sum, s) => sum + s.books.length, 0);
         const pinnedCount = getPinnedBooks().length;
         const items = [
             { id: SPECIAL_GROUPS.ALL, label: '全部', count: totalCount, color: '' },
             ...(pinnedCount > 0 || activePillId === SPECIAL_GROUPS.PINNED
                 ? [{ id: SPECIAL_GROUPS.PINNED, label: '★ 已收藏', count: pinnedCount, color: '' }]
+                : []),
+            ...(mobileGlobals.length >= 3
+                ? [{ id: EDITOR_GLOBALS_GROUP_ID, label: '全局世界书', count: mobileGlobals.length, color: '' }]
                 : []),
             ...sections.map((s) => ({ id: s.id, label: s.name, count: s.books.length, color: s.color })),
         ];
@@ -2143,6 +2925,10 @@ function openMobileEditorPickerSheet() {
                     </span>
                 </button>
                 <div class="wbo-mp-row-actions">
+                    ${b.__searchMatch ? '<span class="wbo-s2-badge is-search-match">搜索匹配到的世界书</span>' : ''}
+                    ${b.__origin ? `<span class="wbo-s2-badge is-search-origin">${escHtml(b.__origin)}</span>` : ''}
+                    ${b.__currentChar ? '<span class="wbo-s2-badge is-current-char">当前角色</span>' : ''}
+                    ${getActiveGlobalWorldSet().has(b.realName) ? '<span class="wbo-s2-badge is-global" data-wbo-global-badge="1">已全局</span>' : ''}
                     ${isCurrent ? '<span class="wbo-s2-badge is-editing" data-wbo-ui="1" data-wbo-editing-badge="1">当前编辑</span>' : ''}
                     ${isCurrent ? '<i class="fa-solid fa-check wbo-mp-check"></i>' : ''}
                     <button type="button" class="wbo-mp-pin-btn${isPinned ? ' is-pinned' : ''}" data-mp-pin="${escHtml(b.realName)}" title="${isPinned ? '取消收藏' : '收藏世界书'}" aria-pressed="${isPinned ? 'true' : 'false'}">${isPinned ? '★' : '☆'}</button>
@@ -2151,24 +2937,122 @@ function openMobileEditorPickerSheet() {
         `;
     };
 
+    
+    // The chat character's own books stay pinned above every pill, like the desktop picker.
+    const getMobileCurrentCharBooks = () => {
+        const avatar = getCurrentCharacterAvatar();
+        if (!avatar) return [];
+        const pool = [...bareBooks, ...sections.flatMap((sec) => sec.books)];
+        const out = [];
+        const seen = new Set();
+        for (const meta of _latestClassification?.byName?.values?.() || []) {
+            if (!meta?.charOwners?.some((owner) => owner.avatar === avatar)) continue;
+            if (seen.has(meta.realName)) continue;
+            seen.add(meta.realName);
+            const found = pool.find((book) => book.realName === meta.realName);
+            out.push({ ...(found || { realName: meta.realName, primaryTitle: meta.primaryTitle, subtitle: "", isPinned: false }), __currentChar: true });
+        }
+        return out;
+    };
+
+    const pinCurrentCharRows = () => {
+        if (!listEl) return;
+        const currentBooks = getMobileCurrentCharBooks();
+        if (currentBooks.length === 0) return;
+        const leader = document.createElement('div');
+        leader.className = 'wbo-mp-sec wbo-mp-bare-sec wbo-mp-current-char';
+        leader.innerHTML = `<div class="wbo-mp-sec-body">${currentBooks.map(renderMpRowHtml).join('')}</div>`;
+        listEl.prepend(leader);
+        const names = new Set(currentBooks.map((book) => book.realName));
+        listEl.querySelectorAll('.wbo-mp-row').forEach((row) => {
+            if (leader.contains(row)) return;
+            const world = row.querySelector('[data-mp-world]')?.getAttribute('data-mp-world');
+            if (world && names.has(world)) row.remove();
+        });
+    };
+
     const renderList = () => {
         if (!listEl) return;
         const q = searchQuery.trim().toLowerCase();
         const tokens = q ? q.split(/\s+/).filter(Boolean) : [];
+        if (q) {
+            // Search across every group so favorites / globals pills never come up empty.
+            const matchesTokens = (book) => tokens.every((tok) => (book.searchableText || book.realName.toLowerCase()).includes(tok));
+            const originOf = (book) => _latestClassification?.byName?.get(book.realName)?.groupName || '未分组';
+            const pool = [...bareBooks, ...sections.flatMap((sec) => sec.books)];
+            const seen = new Set();
+            const matched = [];
+            for (const book of pool) {
+                if (seen.has(book.realName) || !matchesTokens(book)) continue;
+                seen.add(book.realName);
+                matched.push({ ...book, __origin: originOf(book) });
+            }
+            if (matched.length === 0) {
+                listEl.innerHTML = '<div class="wbo-empty-hint">无匹配世界书</div>';
+                return;
+            }
+            if (matched.length === 1) {
+                listEl.innerHTML = `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${renderMpRowHtml({ ...matched[0], __searchMatch: true })}</div></div>`;
+                return;
+            }
+            listEl.innerHTML = `
+                <div class="wbo-mp-sec">
+                    <button type="button" class="wbo-mp-sec-head is-static" aria-expanded="true">
+                        <span class="wbo-group-name">搜索匹配到的世界书</span>
+                        <span class="wbo-group-count">${matched.length}</span>
+                    </button>
+                    <div class="wbo-mp-sec-body">${matched.map(renderMpRowHtml).join('')}</div>
+                </div>
+            `;
+            return;
+        }
+
         if (!q && activePillId === SPECIAL_GROUPS.PINNED) {
             const pinned = getPinnedBooks();
-            const collapsed = Boolean(_latestSettings.dropdownCollapsed[SPECIAL_GROUPS.PINNED]);
+            const collapsed = isDropdownGroupCollapsed(SPECIAL_GROUPS.PINNED, true);
             listEl.innerHTML = pinned.length > 0
                 ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${SPECIAL_GROUPS.PINNED}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">★ 已收藏</span><span class="wbo-group-count">${pinned.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${pinned.map(renderMpRowHtml).join('')}</div>`}</div>`
                 : '<div class="wbo-empty-hint">暂无收藏世界书，点击行右侧 ☆ 可收藏</div>';
+            pinCurrentCharRows();
+            return;
+        }
+        if (!q && activePillId === EDITOR_GLOBALS_GROUP_ID) {
+            const globals = getMobileGlobalBooks();
+            const collapsed = isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, true);
+            listEl.innerHTML = globals.length > 0
+                ? `<div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}"><button type="button" class="wbo-mp-sec-head" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}"><i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i><span class="wbo-group-name">全局世界书</span><span class="wbo-group-count">${globals.length}</span></button>${collapsed ? '' : `<div class="wbo-mp-sec-body">${globals.map(renderMpRowHtml).join('')}</div>`}</div>`
+                : '<div class="wbo-empty-hint">暂无已开启的全局世界书</div>';
+            pinCurrentCharRows();
             return;
         }
         const isIsolated = !q && activePillId !== SPECIAL_GROUPS.ALL;
 
+        // Mounted globals get their own foldable section (3+), above the favorites and groups.
+        const mobileGlobalBooks = getMobileGlobalBooks();
+        const mobileGlobalNames = new Set(mobileGlobalBooks.map((book) => book.realName));
+        const hasMobileGlobalSection = mobileGlobalBooks.length >= 3;
+        const renderGlobalsSectionHtml = () => {
+            if (!hasMobileGlobalSection) return '';
+            const collapsed = !q && (isIsolated && activePillId !== EDITOR_GLOBALS_GROUP_ID
+                ? !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID)
+                : isDropdownGroupCollapsed(EDITOR_GLOBALS_GROUP_ID, false));
+            return `
+                <div class="wbo-mp-sec${collapsed ? ' is-collapsed' : ''}" data-mp-globals-sec="1">
+                    <button type="button" class="wbo-mp-sec-head${q ? ' is-static' : ''}" data-mp-toggle="${EDITOR_GLOBALS_GROUP_ID}" aria-expanded="${!collapsed}">
+                        ${q ? '<span class="wbo-mp-dot-ind">•</span>' : `<i class="fa-solid ${collapsed ? 'fa-chevron-right' : 'fa-chevron-down'} wbo-chevron"></i>`}
+                        <span class="wbo-group-name">全局世界书</span>
+                        <span class="wbo-group-count">${mobileGlobalBooks.length}</span>
+                    </button>
+                    ${collapsed ? '' : `<div class="wbo-mp-sec-body">${mobileGlobalBooks.map(renderMpRowHtml).join('')}</div>`}
+                </div>
+            `;
+        };
+        const globalsSecHtml = renderGlobalsSectionHtml();
+
         const matchingBare = !isIsolated
             ? (tokens.length > 0
                 ? bareBooks.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
-                : bareBooks)
+                : bareBooks).filter((b) => !hasMobileGlobalSection || !mobileGlobalNames.has(b.realName))
             : [];
         const bareHtml = matchingBare.length > 0
             ? `<div class="wbo-mp-sec wbo-mp-bare-sec"><div class="wbo-mp-sec-body">${matchingBare.map(renderMpRowHtml).join('')}</div></div>`
@@ -2180,7 +3064,7 @@ function openMobileEditorPickerSheet() {
                 ? sec.books.filter((b) => tokens.every((tok) => (b.searchableText || b.realName.toLowerCase()).includes(tok)))
                 : sec.books;
             if (books.length === 0) return '';
-            const collapsed = !q && Boolean(_latestSettings.dropdownCollapsed[sec.id]);
+            const collapsed = !q && isDropdownGroupCollapsed(sec.id, isIsolated);
             const rowsHtml = collapsed
                 ? ''
                 : books.map(renderMpRowHtml).join('');
@@ -2198,8 +3082,9 @@ function openMobileEditorPickerSheet() {
             `;
         }).filter(Boolean).join('');
 
-        const html = `${bareHtml}${secHtml}`;
+        const html = `${globalsSecHtml}${bareHtml}${secHtml}`;
         listEl.innerHTML = html || '<div class="wbo-empty-hint">无匹配世界书</div>';
+        pinCurrentCharRows();
     };
 
     const selectOptionValue = (val) => {
@@ -2227,6 +3112,7 @@ function openMobileEditorPickerSheet() {
         }
         const gid = btn.getAttribute('data-mp-pill') || SPECIAL_GROUPS.ALL;
         activePillId = (gid === activePillId && gid !== SPECIAL_GROUPS.ALL) ? SPECIAL_GROUPS.ALL : gid;
+        _isolatedFoldOverride.clear();
         _dropdownMemory.activePillGroupId = activePillId;
         renderPills();
         renderList();
@@ -2281,9 +3167,20 @@ function openMobileEditorPickerSheet() {
             if (searchQuery.trim()) return;
             const gid = toggleBtn.getAttribute('data-mp-toggle');
             if (!gid) return;
-            const willCollapse = !_latestSettings.dropdownCollapsed[gid];
-            _latestSettings.dropdownCollapsed[gid] = willCollapse;
-            saveSettings();
+            // Inside another group's pill the globals section is folded by default but must
+            // stay openable, so it keeps its own override instead of the saved state.
+            const globalsInGroupView = gid === EDITOR_GLOBALS_GROUP_ID
+                && activePillId !== SPECIAL_GROUPS.ALL
+                && activePillId !== SPECIAL_GROUPS.PINNED
+                && activePillId !== EDITOR_GLOBALS_GROUP_ID;
+            let willCollapse;
+            if (globalsInGroupView) {
+                if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+                else _isolatedFoldOverride.add(gid);
+                willCollapse = _isolatedFoldOverride.has(gid);
+            } else {
+                willCollapse = toggleDropdownGroupCollapsed(gid, activePillId === gid);
+            }
             const prevTop = listEl.scrollTop;
             renderList();
             if (willCollapse) {
@@ -2331,16 +3228,16 @@ function openMobileEditorPickerSheet() {
 
     if (searchInput instanceof HTMLInputElement) {
         let composing = false;
-        let searchTimer = null;
         searchInput.addEventListener('compositionstart', () => { composing = true; });
         searchInput.addEventListener('compositionend', () => {
+            if (pickerClosed) return;
             composing = false;
             clearTimeout(searchTimer);
             searchQuery = searchInput.value;
             renderList();
         });
         searchInput.addEventListener('input', () => {
-            if (composing) return;
+            if (pickerClosed || composing) return;
             searchQuery = searchInput.value;
             clearTimeout(searchTimer);
             searchTimer = setTimeout(() => { renderList(); }, 80);
@@ -2425,6 +3322,18 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
                 _isApplying = false;
             }
         }, 60);
+    }
+}
+
+/** Re-sort only `#world_editor_select` (e.g. after a global toggle) without touching `#world_info`. */
+export function refreshEditorWorldSelect() {
+    if (_isApplying || !_latestClassification || !_latestSettings) return;
+    _isApplying = true;
+    try {
+        applyEditorWorldSelectFilter(_latestClassification, _latestSettings);
+    } finally {
+        _editorSelectObserver?.takeRecords();
+        _isApplying = false;
     }
 }
 
@@ -3094,6 +4003,34 @@ export function attachGroupedSelectControl(
         });
 
         let lockedOpenAbove = null;
+
+        /** Host dialogs can offset fixed boxes; nudge the panel back inside the viewport. */
+        const clampPopoverIntoViewport = () => {
+            const r = popover.getBoundingClientRect();
+            const vw = globalThis.innerWidth || document.documentElement.clientWidth || 0;
+            const vh = globalThis.innerHeight || document.documentElement.clientHeight || 0;
+            if (!vw || !vh) return;
+            const margin = 8;
+            let dx = 0;
+            if (r.left < margin) dx = margin - r.left;
+            else if (r.right > vw - margin) dx = vw - margin - r.right;
+            if (dx) {
+                const left = Number.parseFloat(popover.style.left) || 0;
+                popover.style.left = `${Math.round(left + dx)}px`;
+            }
+            let dy = 0;
+            if (r.top < margin) dy = margin - r.top;
+            else if (r.bottom > vh - margin) dy = vh - margin - r.bottom;
+            if (dy) {
+                if (popover.style.bottom && popover.style.bottom !== 'auto') {
+                    const bottom = Number.parseFloat(popover.style.bottom) || 0;
+                    popover.style.bottom = `${Math.round(bottom - dy)}px`;
+                } else {
+                    const top = Number.parseFloat(popover.style.top) || 0;
+                    popover.style.top = `${Math.round(top + dy)}px`;
+                }
+            }
+        };
         const positionPopover = ({ preserveDirection = false } = {}) => {
             const rect = trigger.getBoundingClientRect();
             const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
@@ -3149,6 +4086,7 @@ export function attachGroupedSelectControl(
                 popover.style.top = `${Math.round(topPx)}px`;
                 popover.style.maxHeight = `${maxH}px`;
             }
+            clampPopoverIntoViewport();
         };
         positionPopover();
 
@@ -3781,6 +4719,203 @@ function enhanceDesktopExtrasSelect2(extrasSelect, currentAvatar) {
  *   and an in-place multi-select grouped+searchable dropdown on mobile!
  * @param {HTMLElement} charWorldEl
  */
+/**
+ * Group a desktop single-select worldbook `<select>` in place (no custom popover), so the host's
+ * own Select2 keeps opening right under the select box.
+ * @param {HTMLSelectElement} selectEl
+ * @param {string | null} currentAvatar
+ */
+function groupDesktopSingleWorldSelect(selectEl, currentAvatar) {
+    if (!(selectEl instanceof HTMLSelectElement) || selectEl.dataset.wboSingleGrouped === '1') return;
+    const $jq = globalThis.jQuery;
+    if (!$jq || !_latestClassification) return;
+    const { bareBooks, sections } = buildPopupGroupedSections(selectEl, {
+        currentAvatar,
+        prioritizeCharGroup: true,
+    });
+    if (sections.length === 0 && bareBooks.length === 0) return;
+    const optMap = new Map();
+    for (const opt of Array.from(selectEl.querySelectorAll('option'))) {
+        if (opt.value !== '') optMap.set(opt.value, opt);
+    }
+    const existingGroups = Array.from(selectEl.querySelectorAll('optgroup'));
+    if (existingGroups.length > 0) {
+        const unwrap = document.createDocumentFragment();
+        for (const group of existingGroups) {
+            while (group.firstChild) unwrap.appendChild(group.firstChild);
+            group.remove();
+        }
+        selectEl.appendChild(unwrap);
+    }
+    const build = document.createDocumentFragment();
+    for (const book of bareBooks) {
+        const opt = optMap.get(book.value);
+        if (opt) build.appendChild(opt);
+    }
+    for (const section of sections) {
+        const group = document.createElement('optgroup');
+        group.label = `${section.name} (${section.books.length})`;
+        group.setAttribute('data-wbo-group', section.id);
+        for (const book of section.books) {
+            const opt = optMap.get(book.value);
+            if (opt) group.appendChild(opt);
+        }
+        if (group.childElementCount > 0) build.appendChild(group);
+    }
+    selectEl.appendChild(build);
+    selectEl.dataset.wboSingleGrouped = '1';
+    $jq(selectEl).trigger('change.select2');
+}
+
+/**
+ * Render one option of a single-select worldbook dropdown with the plugin's friendly title.
+ * @param {any} state
+ */
+function renderSingleWorldResult(state) {
+    if (!state.id) return state.text;
+    const realName = String(state.element?.dataset?.wboRealName || state.text || '').trim();
+    const meta = _latestClassification?.byName?.get(realName);
+    if (!meta) return state.text;
+    const $jq = globalThis.jQuery;
+    if (!$jq) return state.text;
+    return $jq(`<span class="wbo-s2-item" data-wbo-world="${escHtml(meta.realName)}">
+        <span class="wbo-s2-main">
+            <span class="wbo-s2-title">${escHtml(meta.primaryTitle)}</span>
+            ${meta.subtitle ? `<span class="wbo-s2-sub">${escHtml(meta.subtitle)}</span>` : ''}
+        </span>
+    </span>`);
+}
+
+/**
+ * @param {any} state
+ */
+function renderSingleWorldSelection(state) {
+    if (!state.id) return state.text;
+    const meta = _latestClassification?.byName?.get(String(state.element?.dataset?.wboRealName || state.text || '').trim());
+    return meta?.primaryTitle || state.text;
+}
+
+/**
+ * Give the bind-popup primary worldbook dropdown the same group pills as the ordinary picker:
+ * the optgroups already carry `data-wbo-group`, so a pill simply shows one of them (U2).
+ * @param {HTMLSelectElement} selectEl
+ */
+function attachBindWorldGroupPills(selectEl) {
+    const $jq = globalThis.jQuery;
+    if (!$jq || !(selectEl instanceof HTMLSelectElement)) return;
+    if (selectEl.dataset.wboBindPills === '1') return;
+    selectEl.dataset.wboBindPills = '1';
+
+    let detachCurrent = null;
+    const onOpen = () => {
+        detachCurrent?.();
+        detachCurrent = null;
+        const inst = $jq(selectEl).data('select2');
+        const dropdownEl = inst?.$dropdown?.[0];
+        if (!(dropdownEl instanceof HTMLElement)) return;
+        const results = dropdownEl.querySelector('.select2-results__options');
+        if (!(results instanceof HTMLElement) || !results.parentElement) return;
+        const groups = [...selectEl.querySelectorAll('optgroup[data-wbo-group]')].map((og) => ({
+            id: og.getAttribute('data-wbo-group'),
+            label: (og.label || '').replace(/\s*\(\d+\)\s*$/, '').trim() || og.label || '',
+            rawLabel: og.label || '',
+        }));
+        if (groups.length === 0) return;
+
+        let activeId = SPECIAL_GROUPS.ALL;
+        const built = createDropdownFilterBar(
+            // 全部 is rendered by the shared filter bar itself.
+            groups.map((group) => ({ id: group.id, label: group.label })),
+            activeId,
+        );
+        const barEl = built.barEl;
+        barEl.classList.add('wbo-bind-dd-bar');
+        const byLabel = new Map();
+        for (const group of groups) {
+            byLabel.set(group.rawLabel, group.id);
+            byLabel.set(group.label, group.id);
+        }
+        const applyFilter = () => {
+            results.querySelectorAll(':scope > li').forEach((li) => {
+                if (!(li instanceof HTMLElement)) return;
+                if (li.classList.contains('select2-results__option--group')) {
+                    const label = li.getAttribute('aria-label')
+                        || li.querySelector('.select2-results__group')?.textContent?.trim()
+                        || '';
+                    const gid = byLabel.get(label) || byLabel.get(label.replace(/\s*\(\d+\)\s*$/, '').trim());
+                    li.style.display = activeId === SPECIAL_GROUPS.ALL || gid === activeId ? '' : 'none';
+                    return;
+                }
+                if (li.classList.contains('select2-results__message')) return;
+                // Bare (ungrouped) rows only belong to 全部.
+                li.style.display = activeId === SPECIAL_GROUPS.ALL ? '' : 'none';
+            });
+        };
+        barEl.addEventListener('mousedown', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+        });
+        barEl.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            const btn = ev.target instanceof Element ? ev.target.closest('.wbo-dd-pill') : null;
+            if (!btn) return;
+            ev.preventDefault();
+            activeId = btn.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
+            barEl.querySelectorAll('.wbo-dd-pill').forEach((pill) => {
+                pill.classList.toggle('is-active', pill.getAttribute('data-wbo-pill') === activeId);
+            });
+            applyFilter();
+        });
+        results.parentElement.insertBefore(barEl, results);
+        const observer = new MutationObserver(applyFilter);
+        observer.observe(results, { childList: true });
+        applyFilter();
+        detachCurrent = () => {
+            observer.disconnect();
+            barEl.remove();
+            detachCurrent = null;
+        };
+    };
+    $jq(selectEl)
+        .off('select2:open.wboBindPills select2:close.wboBindPills')
+        .on('select2:open.wboBindPills', onOpen)
+        .on('select2:close.wboBindPills', () => {
+            detachCurrent?.();
+        });
+}
+
+/**
+ * Give a desktop single worldbook select the same in-place experience as the extras select:
+ * searchable, grouped optgroups, friendly titles, and a dropdown anchored under the select.
+ * @param {HTMLSelectElement} selectEl
+ * @param {string | null} currentAvatar
+ * @param {HTMLElement | null} hostEl
+ */
+function enhanceDesktopSingleWorldSelect2(selectEl, currentAvatar, hostEl) {
+    const $jq = globalThis.jQuery;
+    if (!$jq || !(selectEl instanceof HTMLSelectElement)) return;
+    if (selectEl.dataset.wboSingleEnhanced === '1') {
+        groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+        attachBindWorldGroupPills(selectEl);
+        return;
+    }
+    const config = {
+        width: '100%',
+        minimumResultsForSearch: 0,
+        templateResult: renderSingleWorldResult,
+        templateSelection: renderSingleWorldSelection,
+    };
+    if (hostEl instanceof HTMLElement) config.dropdownParent = $jq(hostEl);
+    if ($jq(selectEl).data('select2')) {
+        $jq(selectEl).select2(config);
+    } else {
+        $jq(selectEl).select2({ ...config, placeholder: '--- 无主世界书 ---', allowClear: true });
+    }
+    groupDesktopSingleWorldSelect(selectEl, currentAvatar);
+    attachBindWorldGroupPills(selectEl);
+    selectEl.dataset.wboSingleEnhanced = '1';
+}
+
 function enhanceCharBindPopup(charWorldEl) {
     if (!charWorldEl || charWorldEl.dataset.wboEnhanced === '1') return;
     if (!_latestClassification || !_latestSettings) return;
@@ -3794,16 +4929,39 @@ function enhanceCharBindPopup(charWorldEl) {
     const currentAvatar = getCurrentCharacterAvatar();
     const collapseChar = Boolean(_latestSettings.autoHideInCharBindPopup);
 
-    // Primary worldbook: always plain `<select>` in ST -> upgrade directly to grouped+searchable dropdown!
-    // Pin `当前角色` at top and keep `角色世界书` immediately available via pill/expand/search.
+    // Primary worldbook: on desktop stay with the host's own Select2 (it opens right under the
+    // select and never drifts); only rebuild its optgroups so the list is grouped. On mobile the
+    // host has no Select2, so keep the plugin's grouped control.
     if (primarySelect instanceof HTMLSelectElement) {
-        attachGroupedSelectControl(primarySelect, {
-            multiple: false,
-            currentAvatar,
-            collapseCharByDefault: collapseChar,
-            prioritizeCharGroup: true,
-            placeholder: '--- 无主世界书 ---',
-        });
+        if (isNativeMobileSelectMode()) {
+            attachGroupedSelectControl(primarySelect, {
+                multiple: false,
+                currentAvatar,
+                collapseCharByDefault: false,
+                prioritizeCharGroup: true,
+                placeholder: '--- 无主世界书 ---',
+            });
+        } else {
+            let primaryAttempts = 0;
+            const waitPrimarySelect2 = () => {
+                if (!_observersActive || !primarySelect.isConnected) return;
+                const $jq = globalThis.jQuery;
+                const hasS2 = Boolean($jq && ($jq(primarySelect).data('select2') || $jq(primarySelect).hasClass('select2-hidden-accessible')));
+                if (hasS2) {
+                    enhanceDesktopSingleWorldSelect2(primarySelect, currentAvatar, charWorldEl);
+                    return;
+                }
+                if (primaryAttempts < 0) {
+                    primaryAttempts += 1;
+                    setTimeout(waitPrimarySelect2, 60);
+                    return;
+                }
+                // The host never initialized Select2 here: do it ourselves so the list is
+                // searchable, grouped and anchored under the select.
+                enhanceDesktopSingleWorldSelect2(primarySelect, currentAvatar, charWorldEl);
+            };
+            waitPrimarySelect2();
+        }
     }
 
     // Extra worldbooks:
@@ -3817,7 +4975,7 @@ function enhanceCharBindPopup(charWorldEl) {
             attachGroupedSelectControl(extrasSelect, {
                 multiple: true,
                 currentAvatar,
-                collapseCharByDefault: collapseChar,
+                collapseCharByDefault: false,
                 prioritizeCharGroup: false,
                 placeholder: '未选择附加世界书，点击选择...',
             });
@@ -3900,12 +5058,31 @@ let _lastWorldSelectMouseDownAt = 0;
  */
 const _dropdownMemory = {
     activePillGroupId: SPECIAL_GROUPS.ALL,
+    /** The global dropdown keeps its own choice (module-level, survives container rebuilds). */
+    globalPillGroupId: null,
+    globalPillMemorySet: false,
     pillBarScrollLeft: 0,
     pillsExpanded: false,
     /** @type {Record<string, number>} */
     scrollTopByGroup: {},
     editorAnchor: null,
 };
+
+/**
+ * Persist the pill the user picked, independently of which click handler ran.
+ * @param {'global' | 'editor'} role
+ * @param {string} gid
+ */
+function rememberDropdownPill(role, gid) {
+    if (!gid) return;
+    if (role === 'global') {
+        _dropdownMemory.globalPillGroupId = gid;
+        _dropdownMemory.globalPillMemorySet = true;
+    } else {
+        _dropdownMemory.activePillGroupId = gid;
+    }
+    pushDiagTrace(`enh-pill:remember=${gid},role=${role}`);
+}
 
 function rememberEditorListAnchor(name, row, host, groupId) {
     if (!name || !row || !host.clientHeight) return;
@@ -3981,6 +5158,18 @@ function findScrollableListEl(startEl, boundaryEl) {
 function createDropdownFilterBar(groupItems, activePillGroupId, extraClass = '') {
     const barEl = document.createElement('div');
     barEl.className = `wbo-dd-filter-bar${extraClass ? ` ${extraClass}` : ''}`;
+    // Mobile/iOS: tapping a pill blurs the search box, and the host closes the popover on that
+    // blur — the panel vanished right as the user picked a group. Keep the focus where it is.
+    barEl.addEventListener('pointerdown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest('.wbo-dd-pill')) return;
+        event.preventDefault();
+    }, true);
+    barEl.addEventListener('mousedown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target?.closest('.wbo-dd-pill')) return;
+        event.preventDefault();
+    }, true);
 
     const allBtn = document.createElement('button');
     allBtn.type = 'button';
@@ -4091,7 +5280,12 @@ function cleanupOpenEditorDropdown() {
  *    ever leaving it!
  */
 function enhanceOpenEditorDropdown() {
+    pushDiagAction('open-editor-dropdown');
+    _diag.lastRenderPath = 'select2-editor';
+    // Re-check on every open: a script disabled mid-session must not keep overriding our styles.
+    cleanupStaleEnhancedArtifacts();
     cleanupOpenEditorDropdown();
+    _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
     const selectEl = document.getElementById('world_editor_select');
     if (!$ || !selectEl || !_latestSettings) return;
@@ -4108,7 +5302,16 @@ function enhanceOpenEditorDropdown() {
         const s2Item = li.querySelector('.wbo-s2-item');
         const fromAttr = s2Item?.getAttribute('data-wbo-world') || li.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world');
         if (fromAttr) return fromAttr;
-        return (li.textContent || '').trim();
+        // Host-rendered rows: Select2 keeps the source option/data on the row itself.
+        const $jq = globalThis.jQuery;
+        const data = $jq ? $jq(li).data?.('data') : null;
+        const option = data?.element instanceof HTMLOptionElement ? data.element : null;
+        const fromOption = (option?.dataset?.wboRealName || option?.textContent || '').trim();
+        if (fromOption) return fromOption;
+        const fromData = String(data?.text ?? '').trim();
+        if (fromData) return fromData;
+        const raw = (li.textContent || '').trim();
+        return matchKnownWorldName(raw) || raw;
     };
 
     const getPinnedCountInSelect = () => {
@@ -4127,6 +5330,29 @@ function enhanceOpenEditorDropdown() {
         const shortName = fullLabel.replace(/\s*\(\d+\)\s*$/, '').trim() || fullLabel;
         return { id, fullLabel, shortName, count: og.querySelectorAll('option').length };
     });
+
+    // Three or more mounted globals get their own foldable block, right below the pinned row.
+    const editorGlobalNames = [...getActiveGlobalWorldSet()].filter((name) => _latestClassification?.byName?.has(name));
+    const editorGlobalNameSet = new Set(editorGlobalNames);
+    const pinnedEditorNames = [...(_latestClassification?.byName?.values?.() || [])]
+        .filter((meta) => meta?.isPinned)
+        .map((meta) => meta.realName)
+        .filter((name) => Boolean(name && [...selectEl.options].some((opt) => (opt.textContent || '').trim() === name)));
+    /** Favorites that are mounted as globals as well; they live in the global area, not in 已收藏. */
+    const mountedPinnedNames = pinnedEditorNames.filter((name) => editorGlobalNameSet.has(name));
+    // The Select2 path keeps its ≥3 rule on purpose: with fewer globals it never creates the pill,
+    // so there is nothing whose selection could be forgotten.
+    const hasEditorGlobalBlock = editorGlobalNames.length >= 3;
+    if (hasEditorGlobalBlock) {
+        const entry = {
+            id: EDITOR_GLOBALS_GROUP_ID,
+            fullLabel: '全局世界书',
+            shortName: '全局',
+            count: editorGlobalNames.length,
+        };
+        const charIdx = groups.findIndex((group) => group.id === SPECIAL_GROUPS.CHARACTER);
+        groups.splice(charIdx >= 0 ? charIdx : 0, 0, entry);
+    }
 
     const groupByLabel = new Map(groups.map((g) => [g.fullLabel, g]));
     const validGroupIds = new Set(groups.map((g) => g.id));
@@ -4151,10 +5377,378 @@ function enhanceOpenEditorDropdown() {
         searchInput instanceof HTMLInputElement && searchInput.value.trim().length > 0;
 
     /**
+     * Build a mirror block (globals / favorites): mirrors select the real option when pressed.
+     * The real row of every book that a block lists is parked with `wbo-dd-dupe-hidden`, so a
+     * book is never visible twice (U1: 分组块 + 裸行 + 已收藏三遍重复).
+     * @param {string} gid
+     * @param {string} label
+     * @param {string[]} names
+     * @param {{ allowEmpty?: boolean, countOverride?: number, note?: string }} opts
+     */
+    const buildEditorMirrorBlock = (gid, label, names, opts = {}) => {
+        const { allowEmpty = false, countOverride = 0, note = '' } = opts;
+        const existing = resultsList.querySelector(`li[data-wbo-dd-group="${gid}"]`);
+        if (names.length === 0 && !allowEmpty) {
+            if (existing) {
+                existing.remove();
+                return true;
+            }
+            return false;
+        }
+        // The head keeps counting every book of the block, including the ones listed under
+        // "全局世界书" instead (see the "X 本已全局，位于全局分组" note).
+        const total = Math.max(countOverride || 0, names.length);
+        const sig = `${names.join('|')}::${total}::${note}`;
+        if (existing
+            && existing.getAttribute('data-wbo-mirror-sig') === sig
+            && existing.querySelectorAll('li.wbo-dd-global-mirror').length === names.length) {
+            return false;
+        }
+        existing?.remove();
+        const allRows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+            .filter((row) => !row.closest(`li[data-wbo-dd-group="${gid}"]`));
+        const mirrors = [];
+        for (const name of names) {
+            const source = allRows.find((row) => getDropdownOptionWorldName(row) === name);
+            if (!source) continue;
+            const clone = source.cloneNode(true);
+            clone.classList.add('wbo-dd-global-mirror');
+            clone.setAttribute('data-wbo-mirror-of', name);
+            clone.classList.remove('wbo-dd-current-char', 'wbo-dd-pin-hidden');
+            // Mirrors are pure pickers: drop the star button and every dynamic badge so the row
+            // never duplicates 当前编辑 / 已全局 markers.
+            clone.querySelectorAll('[data-wbo-editing-badge]').forEach((el) => el.remove());
+            mirrors.push(clone);
+        }
+        if (mirrors.length === 0 && !allowEmpty) return false;
+        const groupLi = document.createElement('li');
+        groupLi.className = 'select2-results__option select2-results__option--group';
+        groupLi.setAttribute('data-wbo-dd-group', gid);
+        groupLi.setAttribute('data-wbo-mirror-sig', sig);
+        groupLi.setAttribute('aria-label', label);
+        const head = document.createElement('span');
+        head.className = 'select2-results__group';
+        head.textContent = `${label} (${total})`;
+        if (note) {
+            const noteEl = document.createElement('span');
+            noteEl.className = 'wbo-dd-group-note';
+            noteEl.textContent = note;
+            head.appendChild(noteEl);
+        }
+        const nested = document.createElement('ul');
+        nested.className = 'select2-results__options select2-results__options--nested';
+        for (const mirror of mirrors) nested.appendChild(mirror);
+        groupLi.append(head, nested);
+        resultsList.prepend(groupLi);
+        return true;
+    };
+
+    const layoutEditorGlobalBlock = () => {
+        // While searching, hits are regrouped; mirror blocks would only duplicate them.
+        if (searchInput instanceof HTMLInputElement && searchInput.value.trim()) {
+            resultsList.querySelectorAll(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"], li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`).forEach((el) => el.remove());
+            return false;
+        }
+        let rebuilt = buildEditorMirrorBlock(EDITOR_GLOBALS_GROUP_ID, '全局世界书', hasEditorGlobalBlock ? editorGlobalNames : []);
+        // Favorites only get their own block in the "all" view; the pill itself already filters.
+        if (activePillGroupId === SPECIAL_GROUPS.ALL && pinnedEditorNames.length > 0) {
+            // A book that is both favorited and mounted belongs to the global area only, so it
+            // never shows up twice; the head keeps counting it and points at the global rows.
+            const favoriteNames = pinnedEditorNames.filter((name) => !editorGlobalNameSet.has(name));
+            let note = '';
+            if (mountedPinnedNames.length > 0) {
+                note = hasEditorGlobalBlock
+                    ? `${mountedPinnedNames.length} 本已全局，位于全局分组`
+                    : `${mountedPinnedNames.length} 本已全局，显示在上方`;
+            }
+            rebuilt = buildEditorMirrorBlock(SPECIAL_GROUPS.PINNED, '已收藏', favoriteNames, {
+                // With a globals block the favorites head stays as a counter. Below the block
+                // threshold the head only appears when something is actually listed in it.
+                allowEmpty: hasEditorGlobalBlock && mountedPinnedNames.length > 0 && favoriteNames.length === 0,
+                countOverride: pinnedEditorNames.length,
+                note,
+            }) || rebuilt;
+        } else {
+            resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`)?.remove();
+        }
+        // Same order as the global drawer: 全局世界书 first, 已收藏 right below it.
+        if (orderEditorBlocks()) rebuilt = true;
+        return rebuilt;
+    };
+
+    /**
+     * Keep 全局世界书 above 已收藏 no matter which block was rebuilt last.
+     * @returns {boolean} true when the DOM order had to change
+     */
+    const orderEditorBlocks = () => {
+        const globalsBlock = resultsList.querySelector(`li[data-wbo-dd-group="${EDITOR_GLOBALS_GROUP_ID}"]`);
+        const pinnedBlock = resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`);
+        if (!globalsBlock || !pinnedBlock) return false;
+        const alreadyOrdered = Boolean(pinnedBlock.compareDocumentPosition(globalsBlock) & Node.DOCUMENT_POSITION_PRECEDING);
+        if (alreadyOrdered) return false;
+        globalsBlock.after(pinnedBlock);
+        return true;
+    };
+
+    /**
+     * Hide the real row of every book the "全局世界书" block already lists, so a mounted global
+     * is visible exactly once (U1). Below the block threshold the globals stay as untitled top
+     * rows instead — that is the "当前角色"-style display the user asked for.
+     * @param {HTMLElement | null} currentRow
+     */
+    const syncEditorDupeRows = (currentRow) => {
+        resultsList.querySelectorAll('li.wbo-dd-dupe-hidden').forEach((row) => row.classList.remove('wbo-dd-dupe-hidden'));
+        if (isSearching() || !hasEditorGlobalBlock) return;
+        const wanted = new Set(editorGlobalNames);
+        if (wanted.size === 0) return;
+        const currentName = currentRow ? getDropdownOptionWorldName(currentRow) : '';
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const name = getDropdownOptionWorldName(row);
+                if (!wanted.has(name)) return;
+                const isMirror = row.classList.contains('wbo-dd-global-mirror');
+                // The chat character's own book keeps its untitled top row; its block copy is
+                // the one that steps aside instead.
+                if (!isMirror && row === currentRow) return;
+                if (isMirror && name !== currentName) return;
+                row.classList.add('wbo-dd-dupe-hidden');
+            });
+    };
+
+    /**
+     * A favorited book also stays in its own group (v2.35.24); inside that group it now sits
+     * on top so the favorite shortcut and the real list agree (user request 2026-11-28).
+     * @param {boolean} searching
+     */
+    const hoistPinnedRowsInsideGroups = (searching) => {
+        if (searching) return;
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((groupLi) => {
+            if (!(groupLi instanceof HTMLElement)) return;
+            const gid = groupLi.getAttribute('data-wbo-dd-group');
+            if (gid === EDITOR_GLOBALS_GROUP_ID || gid === SPECIAL_GROUPS.PINNED || gid === SEARCH_MATCHES_GROUP_ID) return;
+            const nested = groupLi.querySelector(':scope > ul.select2-results__options--nested');
+            if (!(nested instanceof HTMLElement)) return;
+            const rows = [...nested.children].filter((row) => row.classList.contains('select2-results__option'));
+            if (rows.length < 2) return;
+            const isPinnedRow = (row) => Boolean(_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.isPinned);
+            const pinnedRows = rows.filter((row) => isPinnedRow(row));
+            if (pinnedRows.length === 0) return;
+            const ordered = [...pinnedRows, ...rows.filter((row) => !isPinnedRow(row))];
+            // Only re-append when the order is actually wrong, so repeated decorate passes settle.
+            if (ordered.every((row, index) => row === rows[index])) return;
+            ordered.forEach((row) => nested.appendChild(row));
+        });
+    };
+
+    /**
+     * Keep the 已全局 marker in sync with the live mount state. Select2 only renders a row once,
+     * so a book mounted while the dropdown is open (or a row rendered before the refresh) would
+     * otherwise lose its badge — the user asked for the badge on the 1-2 global bare rows too.
+     */
+    const syncGlobalBadges = () => {
+        const mounted = getActiveGlobalWorldSet();
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const right = row.querySelector('.wbo-s2-right');
+                if (!(right instanceof HTMLElement)) return;
+                const badge = right.querySelector('[data-wbo-global-badge]');
+                const wanted = mounted.has(getDropdownOptionWorldName(row));
+                if (wanted && !badge) {
+                    const el = document.createElement('span');
+                    el.className = 'wbo-s2-badge is-global';
+                    el.setAttribute('data-wbo-ui', '1');
+                    el.setAttribute('data-wbo-global-badge', '1');
+                    el.textContent = '已全局';
+                    const editing = right.querySelector('[data-wbo-editing-badge]');
+                    if (editing) editing.after(el); else right.prepend(el);
+                } else if (!wanted && badge) {
+                    badge.remove();
+                }
+            });
+    };
+
+    /**
+     * Below the globals-block threshold the mounted globals are untitled top rows; they must sit
+     * right under the current character row and above the favorites block (user request
+     * 2026-11-28: 两本全局裸显示在「已收藏」上方).
+     * @param {HTMLElement | null} currentRow
+     */
+    const hoistBareGlobalsAboveFavorites = (currentRow) => {
+        if (isSearching() || hasEditorGlobalBlock) return;
+        const pinnedBlock = resultsList.querySelector(`li[data-wbo-dd-group="${SPECIAL_GROUPS.PINNED}"]`);
+        if (!pinnedBlock) return;
+        const rows = [...resultsList.querySelectorAll(':scope > li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')]
+            .filter((row) => row !== currentRow && editorGlobalNameSet.has(getDropdownOptionWorldName(row)));
+        for (const row of rows) {
+            if (row.nextElementSibling === pinnedBlock) continue;
+            resultsList.insertBefore(row, pinnedBlock);
+        }
+    };
+
+    /**
      * Synchronize collapsible state, chevrons, pinned filter, and active pill filter onto every
      * `<li class="select2-results__option--group">` inside the open dropdown.
      */
+    /**
+     * Live character-name index: a book that sits in 角色世界书 must always read as its owner's
+     * name, even when the classification had no binding for it (stale cache / include_in_char /
+     * shallow characters). Built once per dropdown opening.
+     * @type {Map<string, string> | null}
+     */
+    let charNameByBook = null;
+    const getCharNameByBook = () => {
+        if (charNameByBook) return charNameByBook;
+        charNameByBook = new Map();
+        const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+        for (const ch of characters) {
+            const name = String(ch?.name || ch?.data?.name || '').trim();
+            const world = typeof ch?.data?.extensions?.world === 'string' ? ch.data.extensions.world.trim() : '';
+            if (world && name) charNameByBook.set(world, name);
+        }
+        for (const entry of (getCharLoreEntries?.() || [])) {
+            const key = String(entry?.name || '').trim();
+            if (!key) continue;
+            const stem = key.replace(/\.[a-z0-9]+$/i, '');
+            const owner = characters.find((ch) => {
+                const avatar = String(ch?.avatar || '');
+                const name = String(ch?.name || '').trim();
+                return avatar === key || name === key || name === stem || avatar.replace(/\.[a-z0-9]+$/i, '') === stem;
+            });
+            const charName = String(owner?.name || stem).trim();
+            for (const book of (entry?.extraBooks || [])) {
+                const clean = String(book || '').trim();
+                if (clean && charName && !charNameByBook.has(clean)) charNameByBook.set(clean, charName);
+            }
+        }
+        return charNameByBook;
+    };
+
+    /**
+     * Select2 only asks `templateResult` once per row, so a row rendered before the character
+     * bindings were classified (or before the title mode changed) keeps the raw file name.
+     * Re-read the live metadata and correct the title of every row on each decorate pass.
+     */
+    const syncRowTitles = () => {
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
+                if (!meta) return;
+                // A character-group book must never fall back to its file name.
+                const mode = _latestSettings?.charBookTitleMode;
+                let wantedTitle = meta.primaryTitle;
+                let wantedSubtitle = meta.subtitle;
+                if (wantedTitle === meta.realName && mode !== 'original' && meta.groupId === SPECIAL_GROUPS.CHARACTER) {
+                    let ownerName = getCharNameByBook().get(meta.realName);
+                    if (!ownerName) {
+                        // Forced into 角色世界书 (`include_in_char`) or a shallow card whose binding
+                        // is not cached: fall back to the character the chat is running as.
+                        const ctx = getHostContext?.();
+                        const avatar = getCurrentCharacterAvatar?.();
+                        const current = (ctx?.characters || []).find((ch) => String(ch?.avatar || '') === avatar);
+                        ownerName = String(current?.name || ctx?.name2 || '').trim();
+                    }
+                    if (ownerName) {
+                        wantedTitle = ownerName;
+                        if (mode === 'char_with_sub') wantedSubtitle = meta.realName;
+                    }
+                }
+                const titleEl = row.querySelector('.wbo-s2-title');
+                if (titleEl instanceof HTMLElement && wantedTitle && titleEl.textContent !== wantedTitle) {
+                    titleEl.textContent = wantedTitle;
+                }
+                const main = row.querySelector('.wbo-s2-main');
+                const subEl = row.querySelector('.wbo-s2-sub');
+                if (wantedSubtitle) {
+                    if (subEl instanceof HTMLElement) {
+                        if (subEl.textContent !== wantedSubtitle) subEl.textContent = wantedSubtitle;
+                    } else if (main instanceof HTMLElement) {
+                        const el = document.createElement('span');
+                        el.className = 'wbo-s2-sub';
+                        el.title = meta.realName;
+                        el.textContent = wantedSubtitle;
+                        main.appendChild(el);
+                    }
+                } else if (subEl) {
+                    subEl.remove();
+                }
+            });
+    };
+
+    /**
+     * Resolve a result row's world name even when the host rendered the row itself: Select2
+     * keeps the source data on the row, so prefer that over scraping `textContent` (which may
+     * carry a star, badges or other decorations and then never matches a book).
+     * @param {HTMLElement} row
+     * @returns {string}
+     */
+    const resolveRowWorldName = (row) => {
+        const $jq = globalThis.jQuery;
+        const data = $jq ? $jq(row).data('data') : null;
+        const option = data?.element instanceof HTMLOptionElement ? data.element : null;
+        const candidates = [];
+        if (option) {
+            if (option.dataset?.wboRealName) candidates.push(option.dataset.wboRealName);
+            if (option.textContent) candidates.push(option.textContent);
+        }
+        if (data?.text) candidates.push(data.text);
+        if (row.textContent) candidates.push(row.textContent);
+        for (const candidate of candidates) {
+            const meta = findMetaByAnyName(candidate);
+            if (meta) return meta.realName;
+        }
+        const raw = (row.textContent || '').trim();
+        return matchKnownWorldName(raw) || raw;
+    };
+
+    /**
+     * The host (or a compatible style script) can render result rows with its own markup, in
+     * which case the raw file name is shown and no title/badge fix has anywhere to land.
+     * Upgrade such rows to our own structure so titles, badges and pin stars work (U6).
+     */
+    const ensureEditorRowMarkup = () => {
+        resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__option--message)')
+            .forEach((row) => {
+                if (!(row instanceof HTMLElement)) return;
+                if (row.querySelector('.wbo-s2-item')) return;
+                const meta = _latestClassification?.byName?.get(resolveRowWorldName(row));
+                if (!meta) return;
+                _diag.foreignRowsUpgraded += 1;
+                row.textContent = '';
+                const item = document.createElement('span');
+                item.className = 'wbo-s2-item';
+                item.setAttribute('data-wbo-world', meta.realName);
+                item.title = meta.realName;
+                const main = document.createElement('span');
+                main.className = 'wbo-s2-main';
+                const title = document.createElement('span');
+                title.className = 'wbo-s2-title';
+                title.textContent = meta.primaryTitle || meta.realName;
+                main.appendChild(title);
+                if (meta.subtitle) {
+                    const sub = document.createElement('span');
+                    sub.className = 'wbo-s2-sub';
+                    sub.title = meta.realName;
+                    sub.textContent = meta.subtitle;
+                    main.appendChild(sub);
+                }
+                const right = document.createElement('span');
+                right.className = 'wbo-s2-right';
+                right.setAttribute('data-wbo-ui', '1');
+                item.append(main, right);
+                row.appendChild(item);
+            });
+    };
+
     const decorateGroupItems = () => {
+        _diag.decorateRuns += 1;
+        ensureEditorRowMarkup();
+        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
+        // Titles first: mirror rows are cloned afterwards and must carry the corrected name.
+        syncRowTitles();
+        const globalsRebuilt = layoutEditorGlobalBlock();
         const searching = isSearching();
         const isPinFilter = !searching && activePillGroupId === SPECIAL_GROUPS.PINNED;
         const isGroupIsolated = !searching && activePillGroupId !== SPECIAL_GROUPS.ALL && !isPinFilter;
@@ -4176,7 +5770,7 @@ function enhanceOpenEditorDropdown() {
             if (!(li instanceof HTMLElement)) return;
             const label = li.getAttribute('aria-label') || li.querySelector(':scope > .select2-results__group')?.textContent?.trim() || '';
             const desc = groupByLabel.get(label);
-            const gid = desc?.id || label;
+            const gid = li.getAttribute('data-wbo-dd-group') || desc?.id || label;
             li.setAttribute('data-wbo-dd-group', gid);
 
             const head = li.querySelector(':scope > .select2-results__group');
@@ -4193,14 +5787,84 @@ function enhanceOpenEditorDropdown() {
                 li.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
                 li.classList.toggle('wbo-dd-collapsed', !searching && Boolean(_latestSettings.dropdownCollapsed[gid]));
             } else {
-                const hiddenByPill = isGroupIsolated && gid !== activePillGroupId;
+                // The globals block stays visible above whatever group the user opened,
+                // but it starts folded there instead of eating the whole list — unless the
+                // user opened the globals group itself, which must open expanded and stay
+                // clickable (2026-11-28 feedback).
+                const globalsIsActivePill = activePillGroupId === EDITOR_GLOBALS_GROUP_ID;
+                const hiddenByPill = isGroupIsolated && gid !== activePillGroupId && gid !== EDITOR_GLOBALS_GROUP_ID;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const isCollapsed = !searching && Boolean(_latestSettings.dropdownCollapsed[gid]);
+                const forceFold = gid === EDITOR_GLOBALS_GROUP_ID && isGroupIsolated && !globalsIsActivePill;
+                // Folded by default inside another group's pill, but the head click expands it.
+                const foldedGlobalsInGroupView = forceFold && !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID);
+                const isCollapsed = !searching && (foldedGlobalsInGroupView || isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId));
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
         });
-    };
 
+        // Favorites also sit on top of their own group.
+        hoistPinnedRowsInsideGroups(searching);
+        // The chat character's own worldbook sits above every group, in any pill view.
+        resultsList.querySelectorAll('li.wbo-dd-current-char').forEach((row) => row.classList.remove('wbo-dd-current-char'));
+        let currentRow = null;
+        if (!searching) {
+            const avatar = getCurrentCharacterAvatar();
+            if (avatar) {
+                for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
+                    if (!(row instanceof HTMLElement)) continue;
+                    // Never pick a mirror row: the real row must keep the 当前角色 spot.
+                    if (row.classList.contains('wbo-dd-global-mirror')) continue;
+                    const meta = _latestClassification?.byName?.get(getDropdownOptionWorldName(row));
+                    if (meta?.charOwners?.some((owner) => owner.avatar === avatar)) {
+                        currentRow = row;
+                        break;
+                    }
+                }
+            }
+            if (currentRow) {
+                currentRow.classList.add('wbo-dd-current-char');
+                // Keep the friendly title (character name / alias) instead of the raw file name.
+                const rowMeta = _latestClassification?.byName?.get(getDropdownOptionWorldName(currentRow));
+                const titleEl = currentRow.querySelector('.wbo-s2-title');
+                if (rowMeta?.primaryTitle && titleEl && titleEl.textContent !== rowMeta.primaryTitle) {
+                    titleEl.textContent = rowMeta.primaryTitle;
+                }
+                currentRow.classList.remove('wbo-dd-pin-hidden');
+                if (resultsList.firstElementChild !== currentRow) resultsList.prepend(currentRow);
+            }
+        }
+        // Every mirror block owns its books: park the duplicated real rows (U1).
+        syncEditorDupeRows(currentRow);
+        hoistBareGlobalsAboveFavorites(currentRow);
+        syncGlobalBadges();
+        layoutEditorSearchMatches();
+        // Mirror rows never carry the 当前编辑 badge.
+        resultsList.querySelectorAll('li.wbo-dd-global-mirror [data-wbo-editing-badge]').forEach((el) => el.remove());
+        // Guarantee the search badges survive Select2 re-renders.
+        const liveSearch = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        if (liveSearch) {
+            const matchRows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+                .filter((row) => !row.classList.contains('wbo-dd-global-mirror'));
+            for (const row of matchRows) {
+                const right = row.querySelector('.wbo-s2-right');
+                if (!right) continue;
+                if (!right.querySelector('.is-search-origin')) {
+                    const originBadge = document.createElement("span");
+                    originBadge.className = "wbo-s2-badge is-search-origin";
+                    originBadge.textContent = _latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组';
+                    right.prepend(originBadge);
+                }
+                if (matchRows.length === 1 && !right.querySelector('.is-search-match')) {
+                    const badge = document.createElement("span");
+                    badge.className = "wbo-s2-badge is-search-match";
+                    badge.setAttribute("data-wbo-search-badge", "1");
+                    badge.textContent = "搜索匹配到的世界书";
+                    right.prepend(badge);
+                }
+            }
+        }
+        if (globalsRebuilt) _openDropdownResultsObserver?.takeRecords();
+    };;
     // Keep folding in the current group filter and leave search results visible.
     const onResultsMouseDown = (ev) => {
         const head = ev.target instanceof Element ? ev.target.closest('.wbo-dd-group-head') : null;
@@ -4210,8 +5874,20 @@ function enhanceOpenEditorDropdown() {
         if (head.classList.contains('is-isolated')) return;
         const gid = head.getAttribute('data-wbo-dd-group');
         if (!gid) return;
-        _latestSettings.dropdownCollapsed[gid] = !_latestSettings.dropdownCollapsed[gid];
-        saveSettings();
+        // Inside another group's pill the globals block starts folded; a click on its head must
+        // still expand it, so that view keeps its own override instead of forcing it shut.
+        const globalsInGroupView = !isSearching()
+            && gid === EDITOR_GLOBALS_GROUP_ID
+            && activePillGroupId !== SPECIAL_GROUPS.ALL
+            && activePillGroupId !== SPECIAL_GROUPS.PINNED
+            && activePillGroupId !== EDITOR_GLOBALS_GROUP_ID;
+        if (globalsInGroupView) {
+            if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+            else _isolatedFoldOverride.add(gid);
+        } else {
+            const isolated = !isSearching() && activePillGroupId === gid && gid !== SPECIAL_GROUPS.PINNED && gid !== SPECIAL_GROUPS.ALL;
+            toggleDropdownGroupCollapsed(gid, isolated);
+        }
         decorateGroupItems();
     };
     const onResultsClick = (ev) => {
@@ -4223,6 +5899,26 @@ function enhanceOpenEditorDropdown() {
 
     resultsList.addEventListener('mousedown', onResultsMouseDown, true);
     resultsList.addEventListener('click', onResultsClick, true);
+
+    // Mirrored rows in the globals block select the real option.
+    resultsList.addEventListener('mousedown', (ev) => {
+        const row = ev.target instanceof Element ? ev.target.closest('li.wbo-dd-global-mirror') : null;
+        if (!row) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const name = row.getAttribute('data-wbo-mirror-of');
+        if (!name) return;
+        const option = [...selectEl.querySelectorAll('option')].find((opt) => (opt.textContent || '').trim() === name);
+        if (!option) return;
+        const $jq = globalThis.jQuery;
+        if ($jq) {
+            $jq(selectEl).val(option.value).trigger('change');
+            $jq(selectEl).select2('close');
+        } else {
+            selectEl.value = option.value;
+            selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }, true);
 
     // Optional compact 1-line group filter bar inside the dropdown when 2+ groups exist
     let filterBar = null;
@@ -4236,6 +5932,97 @@ function enhanceOpenEditorDropdown() {
     };
 
     const getScrollHost = () => findScrollableListEl(resultsList, dropdownEl);
+
+    /**
+     * Searching inside a concrete group must not dump other groups' books into it.
+     * One hit becomes a single row with a badge; several hits get their own block above.
+     */
+    let _lastSearchMatchSig = '';
+    const clearEditorSearchMatches = () => {
+        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin').forEach((el) => el.remove());
+        const group = resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`);
+        if (group) {
+            [...group.querySelectorAll('li.select2-results__option:not(.select2-results__option--group)')]
+                .forEach((row) => resultsList.append(row));
+            group.remove();
+        }
+        resultsList.querySelectorAll('li.wbo-dd-search-row').forEach((row) => row.classList.remove('wbo-dd-search-row'));
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((group) => {
+            if (group instanceof HTMLElement) group.style.display = '';
+        });
+    };
+
+    const layoutEditorSearchMatches = () => {
+        const skip = !isSearching();
+        if (skip) {
+            if (_lastSearchMatchSig !== '') {
+                clearEditorSearchMatches();
+                _lastSearchMatchSig = '';
+            }
+            return;
+        }
+        const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')]
+            .filter((row) => !row.classList.contains('wbo-dd-global-mirror'));
+        _diag.searchLayoutRuns += 1;
+        pushDiagTrace(`editor-search:rows=${rows.length},pill=${activePillGroupId},mirror=${resultsList.querySelectorAll('li.wbo-dd-global-mirror').length}`);
+        if (rows.length === 0) return;
+        const sig = `${activePillGroupId}|${rows.length}|${rows.map(getDropdownOptionWorldName).join('|')}`;
+        const alreadyShown = Boolean(
+            resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`)
+            || resultsList.querySelector('li.wbo-dd-search-row'),
+        );
+        if (sig === _lastSearchMatchSig && alreadyShown) return;
+        clearEditorSearchMatches();
+        _lastSearchMatchSig = sig;
+        resultsList.querySelectorAll(':scope > li.select2-results__option--group').forEach((group) => {
+            if (group.getAttribute('data-wbo-dd-group') !== SEARCH_MATCHES_GROUP_ID) group.style.display = 'none';
+        });
+        if (rows.length === 1) {
+            const row = rows[0];
+            row.classList.add('wbo-dd-search-row');
+            const right = row.querySelector('.wbo-s2-right');
+            if (right) {
+                // Idempotent: repeated decorate passes must never stack banners (one pill switch
+                // used to add another group badge).
+                if (!right.querySelector('.is-search-match')) {
+                    const badge = document.createElement('span');
+                    badge.className = 'wbo-s2-badge is-search-match';
+                    badge.setAttribute('data-wbo-search-badge', '1');
+                    badge.textContent = '搜索匹配到的世界书';
+                    right.prepend(badge);
+                }
+                if (!right.querySelector('.is-search-origin')) {
+                    const originBadge = document.createElement('span');
+                    originBadge.className = 'wbo-s2-badge is-search-origin';
+                    originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                    right.prepend(originBadge);
+                }
+            }
+            resultsList.prepend(row);
+            return;
+        }
+        const groupLi = document.createElement('li');
+        groupLi.className = 'select2-results__option select2-results__option--group';
+        groupLi.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        const head = document.createElement('span');
+        head.className = 'select2-results__group wbo-dd-group-head is-isolated';
+        head.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        head.textContent = `搜索匹配到的世界书 (${rows.length})`;
+        const nested = document.createElement('ul');
+        nested.className = 'select2-results__options select2-results__options--nested';
+        for (const row of rows) {
+            const right = row.querySelector('.wbo-s2-right');
+            if (right && !right.querySelector('.is-search-origin')) {
+                const originBadge = document.createElement('span');
+                originBadge.className = 'wbo-s2-badge is-search-origin';
+                originBadge.textContent = `${_latestClassification?.byName?.get(getDropdownOptionWorldName(row))?.groupName || '未分组'}`;
+                right.prepend(originBadge);
+            }
+            nested.appendChild(row);
+        }
+        groupLi.append(head, nested);
+        resultsList.prepend(groupLi);
+    };
 
     const syncPinnedPillBtn = () => {
         if (!filterBar) return;
@@ -4289,6 +6076,7 @@ function enhanceOpenEditorDropdown() {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
+            _isolatedFoldOverride.clear();
             _dropdownMemory.activePillGroupId = activePillGroupId;
             syncPillButtons();
             decorateGroupItems();
@@ -4372,6 +6160,7 @@ function enhanceOpenEditorDropdown() {
         });
     };
     if (searchInput instanceof HTMLInputElement) {
+        searchInput.addEventListener('input', () => pushDiagAction('search-editor'));
         searchInput.addEventListener('input', onSearchInput);
     }
 
@@ -4437,6 +6226,8 @@ function enhanceOpenEditorDropdown() {
 let _openGlobalDropdownCleanup = null;
 /** @type {string} */
 let _activeGlobalPillId = SPECIAL_GROUPS.ALL;
+/** Pill the user last picked in this page session; the dropdown reopens there. */
+let _sessionGlobalPillId = null;
 
 function cleanupOpenGlobalDropdown() {
     if (_openGlobalDropdownCleanup) {
@@ -4450,7 +6241,9 @@ function cleanupOpenGlobalDropdown() {
  * Decorate the open global Select2 dropdown without changing its options or search field.
  */
 function enhanceOpenGlobalDropdown() {
+    _diag.lastRenderPath = 'select2-global';
     cleanupOpenGlobalDropdown();
+    _isolatedFoldOverride.clear();
     const $ = globalThis.jQuery;
     const globalSel = document.getElementById('world_info');
     if (!$ || !globalSel || !_latestClassification) return;
@@ -4463,8 +6256,14 @@ function enhanceOpenGlobalDropdown() {
     if (!(resultsList instanceof HTMLElement) || !resultsWrap?.parentElement) return;
     bindDrawerSafeBubbleGuard(dropdownEl);
 
-    const searchField = dropdownEl.querySelector('.select2-search__field')
+    // Reuse whatever search field the host already has; never inject another one.
+    let searchField = dropdownEl.querySelector('.select2-search__field')
         || globalSel.parentElement?.querySelector('.select2-search__field');
+    /** Always read the live field: Select2 may recreate its search input between opens. */
+    const liveSearchField = () => (dropdownEl.querySelector('.select2-search__field')
+        || globalSel.parentElement?.querySelector('.select2-search__field')
+        || searchField);
+    const isGlobalSearching = () => Boolean((liveSearchField()?.value || '').trim());
     const readGroups = () => {
         const counts = new Map();
         let favorites = 0;
@@ -4480,38 +6279,186 @@ function enhanceOpenGlobalDropdown() {
         if (favorites) groups.unshift({ id: SPECIAL_GROUPS.PINNED, label: `已收藏 ${favorites}` });
         return groups;
     };
-    _activeGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
+    const defaultGlobalPillId = readGroups()[0]?.id === SPECIAL_GROUPS.PINNED ? SPECIAL_GROUPS.PINNED : SPECIAL_GROUPS.ALL;
+    const rememberedPillId = _sessionGlobalPillId
+        && (_sessionGlobalPillId === SPECIAL_GROUPS.ALL || readGroups().some((group) => group.id === _sessionGlobalPillId))
+        ? _sessionGlobalPillId
+        : defaultGlobalPillId;
+    _activeGlobalPillId = rememberedPillId;
 
-    const header = document.createElement('li');
-    header.className = 'wbo-global-favorites-heading wbo-dd-group-head is-isolated';
-    header.setAttribute('role', 'presentation');
-    header.textContent = '已收藏';
     const groupHeading = document.createElement('button');
     groupHeading.type = 'button';
     groupHeading.className = 'select2-results__group wbo-dd-group-head wbo-global-group-heading';
     groupHeading.hidden = true;
     resultsList.parentElement.insertBefore(groupHeading, resultsList);
+
+    const rowWorldName = (row) => row.querySelector('.wbo-s2-item')?.getAttribute('data-wbo-world')
+        || row.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
+        || (row.textContent || '').trim();
+
+    /**
+     * Build foldable group headings above the rows while the "all" pill is active, matching the
+     * ordinary picker's group heads. The global dropdown renders one flat list, so the headings
+     * are rebuilt next to the rows and folding hides the rows of that group.
+     * Mounted global books float to the very top; pinned books join the favorites group (mounted
+     * ones first) and are never repeated outside it.
+     * @param {HTMLElement[]} rows
+     */
+    /**
+     * While searching, every rendered row is a hit: collect them into one
+     * 「搜索匹配到的世界书」 block (or a single badged row) instead of leaving them flat.
+     * Mirrors the ordinary editor dropdown (U5).
+     */
+    let _lastGlobalSearchSig = '';
+    const clearGlobalSearchMatches = () => {
+        resultsList.querySelectorAll('.wbo-s2-badge.is-search-match, .wbo-s2-badge.is-search-origin').forEach((el) => el.remove());
+        resultsList.querySelectorAll(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`).forEach((el) => el.remove());
+        _lastGlobalSearchSig = '';
+    };
+    const layoutGlobalSearchMatches = (rows) => {
+        const sig = `${_activeGlobalPillId}|${rows.length}|${rows.map(rowWorldName).join('|')}`;
+        // Select2 rebuilds the result rows on every keystroke, which wipes our head and badges:
+        // only trust the signature while the DOM still carries them.
+        const headPresent = Boolean(resultsList.querySelector(`li[data-wbo-dd-group="${SEARCH_MATCHES_GROUP_ID}"]`));
+        const badgePresent = Boolean(resultsList.querySelector('[data-wbo-search-badge]'));
+        const domIntact = rows.length === 1 ? badgePresent : headPresent;
+        if (sig === _lastGlobalSearchSig && domIntact) return false;
+        clearGlobalSearchMatches();
+        _lastGlobalSearchSig = sig;
+        if (rows.length === 0) return false;
+        for (const row of rows) {
+            const right = row.querySelector('.wbo-s2-right');
+            if (!(right instanceof HTMLElement)) continue;
+            const groupName = _latestClassification?.byName?.get(rowWorldName(row))?.groupName || '未分组';
+            // The template already prints the group name in some views; never double it.
+            const shown = [...right.querySelectorAll('.wbo-s2-badge')].map((badge) => badge.textContent.trim());
+            if (!shown.includes(groupName) && !right.querySelector('.is-search-origin')) {
+                const origin = document.createElement('span');
+                origin.className = 'wbo-s2-badge is-search-origin';
+                origin.textContent = groupName;
+                right.prepend(origin);
+            }
+        }
+        if (rows.length === 1) {
+            const right = rows[0].querySelector('.wbo-s2-right');
+            if (right && !right.querySelector('.is-search-match')) {
+                const badge = document.createElement('span');
+                badge.className = 'wbo-s2-badge is-search-match';
+                badge.setAttribute('data-wbo-search-badge', '1');
+                badge.textContent = '搜索匹配到的世界书';
+                right.prepend(badge);
+            }
+            return true;
+        }
+        // Two or more hits: one block title on top, and no per-row 搜索匹配到的世界书 badge.
+        for (const row of rows) row.querySelector('.wbo-s2-right > .is-search-match')?.remove();
+        const head = document.createElement('li');
+        head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head wbo-search-matches-head';
+        head.setAttribute('role', 'presentation');
+        head.setAttribute('data-wbo-dd-group', SEARCH_MATCHES_GROUP_ID);
+        head.textContent = `搜索匹配到的世界书 (${rows.length})`;
+        resultsList.insertBefore(head, resultsList.firstChild);
+        return true;
+    };
+
+    const layoutGlobalGroupRows = (rows) => {
+        resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
+        for (const row of rows) row.classList.remove('wbo-global-group-collapsed');
+        const searching = isGlobalSearching();
+        if (searching) {
+            layoutGlobalSearchMatches(rows);
+            return;
+        }
+        if (_lastGlobalSearchSig !== '') clearGlobalSearchMatches();
+        if (_activeGlobalPillId !== SPECIAL_GROUPS.ALL) return;
+
+        const sections = _latestClassification.orderedSections || [];
+        const mountedNames = getActiveGlobalWorldSet();
+        const buckets = new Map();
+        const pinnedRows = [];
+        const mountedRows = [];
+        let mountedPinnedCount = 0;
+        for (const row of rows) {
+            const name = rowWorldName(row);
+            const meta = _latestClassification.byName.get(name);
+            if (!meta) continue;
+            const isMounted = mountedNames.has(name);
+            // A book that is both pinned and mounted shows up once, in the globals block only,
+            // while the favorites header keeps counting it.
+            if (meta.isPinned && isMounted) {
+                mountedRows.push(row);
+                mountedPinnedCount += 1;
+                continue;
+            }
+            if (meta.isPinned) {
+                pinnedRows.push(row);
+                continue;
+            }
+            if (isMounted) {
+                mountedRows.push(row);
+                continue;
+            }
+            const gid = meta.groupId || SPECIAL_GROUPS.UNGROUPED;
+            const bucket = buckets.get(gid);
+            if (bucket) bucket.push(row);
+            else buckets.set(gid, [row]);
+        }
+        const orderedIds = sections.map((section) => section.id).filter((id) => buckets.has(id));
+        for (const gid of buckets.keys()) {
+            if (!orderedIds.includes(gid)) orderedIds.push(gid);
+        }
+        const sectionName = (gid) => sections.find((section) => section.id === gid)?.name
+            || (gid === SPECIAL_GROUPS.UNGROUPED ? '未分组' : gid);
+        const appendGroup = (gid, label, groupRows, { openByDefault = false, count = groupRows.length, note = '', allowEmpty = false } = {}) => {
+            if (groupRows.length === 0 && !allowEmpty) return;
+            const collapsed = isDropdownGroupCollapsed(gid, openByDefault);
+            const head = document.createElement('li');
+            head.className = 'select2-results__group wbo-dd-group-head wbo-global-group-head';
+            head.setAttribute('role', 'presentation');
+            head.setAttribute('data-wbo-dd-group', gid);
+            head.setAttribute('title', '点击展开或折叠该分组');
+            head.textContent = `${label} (${count})`;
+            if (note) {
+                const noteEl = document.createElement('span');
+                noteEl.className = 'wbo-dd-group-note';
+                noteEl.textContent = note;
+                head.appendChild(noteEl);
+            }
+            head.classList.toggle('is-collapsed', collapsed);
+            head.setAttribute('aria-expanded', String(!collapsed));
+            resultsList.append(head);
+            for (const row of groupRows) {
+                row.classList.toggle('wbo-global-group-collapsed', collapsed);
+                resultsList.append(row);
+            }
+        };
+        if (mountedRows.length > 0) appendGroup(ACTIVE_GLOBAL_SECTION_ID, '已开启的全局世界书', mountedRows);
+        // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
+        const pinnedTotal = pinnedRows.length + mountedPinnedCount;
+        if (pinnedTotal > 0) {
+            appendGroup(SPECIAL_GROUPS.PINNED, '已收藏', pinnedRows, {
+                count: pinnedTotal,
+                note: mountedPinnedCount > 0 ? `${mountedPinnedCount} 本已全局，位于全局分组` : '',
+                allowEmpty: true,
+            });
+        }
+        for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
+    };
+
     const syncResults = () => {
         ensureSelect2RowsHavePinBtn(resultsList);
-        const favorites = [];
-        for (const row of resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')) {
-            const name = row.querySelector('.wbo-s2-item')?.getAttribute('data-wbo-world')
-                || row.querySelector('.wbo-s2-pin-btn')?.getAttribute('data-pin-world')
-                || (row.textContent || '').trim();
-            const meta = _latestClassification.byName.get(name);
-            row.classList.toggle('wbo-dd-pin-hidden', !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
-            if (meta?.isPinned) favorites.push(row);
+        const rows = [...resultsList.querySelectorAll('li.select2-results__option:not(.select2-results__option--group):not(.select2-results__message)')];
+        const searchingNow = isGlobalSearching();
+        for (const row of rows) {
+            const meta = _latestClassification.byName.get(rowWorldName(row));
+            row.classList.toggle('wbo-dd-pin-hidden', !searchingNow && !matchesGlobalDropdownGroup(meta, _activeGlobalPillId));
         }
-        if (_activeGlobalPillId === SPECIAL_GROUPS.ALL && favorites.length) {
-            resultsList.prepend(header, ...favorites);
-        } else {
-            header.remove();
-        }
+        layoutGlobalGroupRows(rows);
         const group = _activeGlobalPillId === SPECIAL_GROUPS.PINNED
             ? { id: SPECIAL_GROUPS.PINNED, name: '已收藏' }
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
-        const searching = Boolean(searchField?.value?.trim());
-        const collapsed = Boolean(group && !searching && _latestSettings.dropdownCollapsed?.[group.id]);
+        const searching = isGlobalSearching();
+        const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, true));
         groupHeading.hidden = !group || searching;
         groupHeading.textContent = group?.name || '';
         groupHeading.setAttribute('aria-expanded', String(!collapsed));
@@ -4525,10 +6472,30 @@ function enhanceOpenGlobalDropdown() {
     groupHeading.addEventListener('click', (event) => {
         event.stopPropagation();
         _latestSettings.dropdownCollapsed ??= {};
-        _latestSettings.dropdownCollapsed[_activeGlobalPillId] = !_latestSettings.dropdownCollapsed[_activeGlobalPillId];
-        saveSettings();
+        toggleDropdownGroupCollapsed(_activeGlobalPillId, true);
         syncResults();
     });
+
+    const onGroupHeadDown = (event) => {
+        const head = event.target instanceof Element ? event.target.closest('li.wbo-global-group-head') : null;
+        if (!head) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const gid = head.getAttribute('data-wbo-dd-group');
+        if (!gid) return;
+        _latestSettings.dropdownCollapsed ??= {};
+        // Folds here follow the saved state, so a manual fold survives pill switches.
+        toggleDropdownGroupCollapsed(gid, false);
+        syncResults();
+    };
+    const onGroupHeadClick = (event) => {
+        if (!(event.target instanceof Element) || !event.target.closest('li.wbo-global-group-head')) return;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+    resultsList.addEventListener('mousedown', onGroupHeadDown, true);
+    resultsList.addEventListener('click', onGroupHeadClick, true);
+
     const refreshResults = () => {
         if (searchField) searchField.dispatchEvent(new Event('input', { bubbles: true }));
         else inst.trigger?.('query', { term: '' });
@@ -4557,6 +6524,8 @@ function enhanceOpenGlobalDropdown() {
             ev.preventDefault();
             const id = button.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL;
             _activeGlobalPillId = id === _activeGlobalPillId ? SPECIAL_GROUPS.ALL : id;
+            _sessionGlobalPillId = _activeGlobalPillId;
+            _isolatedFoldOverride.clear();
             barEl.querySelectorAll('[data-wbo-pill]').forEach((pill) => {
                 const active = pill.getAttribute('data-wbo-pill') === _activeGlobalPillId;
                 pill.classList.toggle('is-active', active);
@@ -4570,6 +6539,25 @@ function enhanceOpenGlobalDropdown() {
 
     const observer = new MutationObserver(syncResults);
     observer.observe(resultsList, { childList: true });
+    // Mounting/unmounting a book while the dropdown is open must re-bucket right away; otherwise
+    // the freshly mounted books keep sitting under 已收藏 / their old group until a reopen.
+    let mountSyncFrame = null;
+    const scheduleMountSync = () => {
+        if (mountSyncFrame !== null) cancelAnimationFrame(mountSyncFrame);
+        mountSyncFrame = requestAnimationFrame(() => {
+            mountSyncFrame = null;
+            try { refreshResults(); } catch { /* ignore */ }
+            syncResults();
+        });
+    };
+    globalSel.addEventListener('change', scheduleMountSync);
+    const onResultsOptionClick = (ev) => {
+        const row = ev.target instanceof Element
+            ? ev.target.closest('li.select2-results__option:not(.select2-results__option--group)')
+            : null;
+        if (row) scheduleMountSync();
+    };
+    dropdownEl.addEventListener('click', onResultsOptionClick, true);
     const unbindPin = bindSelect2PinHandlers(resultsList, () => {
         renderBar();
         refreshResults();
@@ -4577,10 +6565,64 @@ function enhanceOpenGlobalDropdown() {
     renderBar();
     refreshResults();
 
+    // While this dropdown is open, a click inside the drawer (创建/删除/其它控件) makes the host's
+    // unpinned-drawer closer fire and the whole drawer disappears — the first time only. Put the
+    // drawer back once, and only for clicks that landed inside the drawer itself.
+    const wiDrawer = document.getElementById('WorldInfo');
+    let pointerInsideDrawer = false;
+    let drawerKeptOpen = false;
+    const onDocPointerForDrawer = (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        pointerInsideDrawer = Boolean(target && wiDrawer && wiDrawer.contains(target));
+    };
+    let drawerGuard = null;
+    /** @type {Array<ReturnType<typeof setTimeout>>} */
+    const drawerRestoreTimers = [];
+    if (wiDrawer) {
+        document.addEventListener('pointerdown', onDocPointerForDrawer, true);
+        drawerGuard = new MutationObserver(() => {
+            if (drawerKeptOpen || !pointerInsideDrawer) return;
+            const closed = wiDrawer.classList.contains('closedDrawer')
+                || !wiDrawer.classList.contains('openDrawer');
+            if (!closed) return;
+            drawerKeptOpen = true;
+            wiDrawer.classList.add('openDrawer');
+            wiDrawer.classList.remove('closedDrawer');
+            pushDiagTrace('drawer:kept-open');
+        });
+        drawerGuard.observe(wiDrawer, { attributes: true, attributeFilter: ['class'] });
+        // The host's outside-click closer fires while the opening click is still settling, i.e.
+        // before the observer above is attached. Re-check shortly after opening.
+        const restoreIfClosed = (stage) => {
+            if (drawerKeptOpen || !wiDrawer.isConnected) return;
+            const closed = wiDrawer.classList.contains('closedDrawer')
+                || !wiDrawer.classList.contains('openDrawer');
+            if (!closed) return;
+            drawerKeptOpen = true;
+            wiDrawer.classList.add('openDrawer');
+            wiDrawer.classList.remove('closedDrawer');
+            pushDiagTrace(`drawer:kept-open@${stage}`);
+        };
+        drawerRestoreTimers.push(
+            setTimeout(() => restoreIfClosed('30'), 30),
+            setTimeout(() => restoreIfClosed('120'), 120),
+            setTimeout(() => restoreIfClosed('260'), 260),
+        );
+    }
+
     _openGlobalDropdownCleanup = () => {
+        drawerGuard?.disconnect();
+        for (const timer of drawerRestoreTimers.splice(0)) clearTimeout(timer);
+        document.removeEventListener('pointerdown', onDocPointerForDrawer, true);
         observer.disconnect();
         unbindPin();
-        header.remove();
+        if (mountSyncFrame !== null) cancelAnimationFrame(mountSyncFrame);
+        mountSyncFrame = null;
+        globalSel.removeEventListener('change', scheduleMountSync);
+        dropdownEl.removeEventListener('click', onResultsOptionClick, true);
+        resultsList.removeEventListener('mousedown', onGroupHeadDown, true);
+        resultsList.removeEventListener('click', onGroupHeadClick, true);
+        resultsList.querySelectorAll('li.wbo-global-group-head').forEach((head) => head.remove());
         groupHeading.remove();
         resultsList.classList.remove('wbo-global-results-collapsed');
         barEl?.remove();
@@ -4836,6 +6878,7 @@ function ensureEnhancedContainerObserver(containerEl) {
  * @param {HTMLElement} containerEl
  */
 function enhanceCustomDropdownPopover(containerEl) {
+    _diag.lastRenderPath = 'enhanced-script';
     if (!containerEl || !containerEl.isConnected) return;
     if (containerEl.dataset.wboEnhancing === '1') return;
 
@@ -4861,6 +6904,8 @@ function enhanceCustomDropdownPopover(containerEl) {
         delete containerEl.dataset.wboPopoverReady;
         delete containerEl.dataset.wboEditingWorld;
         delete containerEl.dataset.wboChatAvatar;
+        delete containerEl.dataset.wboTitleSig;
+        delete containerEl.dataset.wboGlobalSig;
         delete containerEl.dataset.wboEnhancedStyle;
         containerEl.querySelectorAll('.wbo-pop-filter-bar').forEach((el) => el.remove());
         containerEl.querySelector('.wbo-enhanced-picker-clear')?.remove();
@@ -4873,9 +6918,24 @@ function enhanceCustomDropdownPopover(containerEl) {
         return;
     }
     bindDrawerSafeBubbleGuard(containerEl);
+    // Keep the search box focused when a popover control is tapped: on iOS the resulting blur
+    // closes the host popover ("panel disappears right after searching").
+    containerEl.addEventListener('pointerdown', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        if (!target || target.closest('input, textarea')) return;
+        if (target.closest('.wbo-dd-pill, .wbo-dd-group-head, .wbo-s2-pin')) event.preventDefault();
+    }, true);
     containerEl.dataset.wboPopoverRole = detectedRole;
     const isGlobalPopover = detectedRole === 'global';
     const isGlobalOpening = isGlobalPopover && !containerEl.hidden && containerEl.style.display !== 'none' && !containerEl.dataset.wboGlobalOpen;
+
+    // The host's unpinned-drawer closer fires while the opening click is still settling, which
+    // closes the whole worldbook drawer on the very first click of the global field. Restore it
+    // once per opening (this path is separate from the Select2 global dropdown).
+    if (isGlobalPopover) {
+        containerEl._wboDrawerGuard?.dispose?.();
+        containerEl._wboDrawerGuard = installDrawerOpenGuard(containerEl);
+    }
 
     if (!_latestClassification || !_latestSettings || _latestClassification.byName.size === 0) {
         return;
@@ -5000,10 +7060,19 @@ function enhanceCustomDropdownPopover(containerEl) {
     });
     if (realOptionNodes.length === 0) return;
     const alreadyHasPins = realOptionNodes.every((optEl) => Boolean(optEl.querySelector('.wbo-gr-pin-btn')));
+    const titleSig = `${_latestSettings.charBookTitleMode}|${_latestSettings.aliasTitleMode}|${realOptionNodes
+        .map((optEl) => {
+            const meta = _latestClassification.byName.get(getOptionText(optEl));
+            return meta ? `${meta.primaryTitle}:${meta.subtitle}` : '';
+        })
+        .join(',')}`;
+    const editorGlobalSig = isGlobalPopover ? '' : [...getActiveGlobalWorldSet()].sort().join(',');
     const stateChanged =
-        !isGlobalPopover &&
-        ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
-            (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || ''));
+        (containerEl.dataset.wboTitleSig || '') !== titleSig ||
+        (containerEl.dataset.wboGlobalSig || '') !== editorGlobalSig ||
+        (!isGlobalPopover &&
+            ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
+                (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || '')));
     const hasGlobalControls = !isGlobalPopover || (
         containerEl.querySelector('.wbo-pop-filter-bar') &&
         containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector)
@@ -5011,6 +7080,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (alreadyHasPins && containerEl.dataset.wboPopoverReady === '1' && !stateChanged && hasGlobalControls && !isGlobalOpening) return;
 
     containerEl.dataset.wboPopoverReady = '1';
+    containerEl.dataset.wboTitleSig = titleSig;
+    containerEl.dataset.wboGlobalSig = editorGlobalSig;
     if (isGlobalOpening) containerEl.dataset.wboGlobalOpen = '1';
     containerEl.dataset.wboEditingWorld = activeEditName;
     containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
@@ -5036,10 +7107,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     }
 
-    // Inject right-aligned `[当前编辑] [☆ / ★]` controls into EVERY real `.gr-option` row!
+    // Inject right-aligned `[当前编辑] [已全局] [☆ / ★]` controls into EVERY real `.gr-option` row!
+    const mountedGlobalSet = isGlobalPopover ? new Set() : getActiveGlobalWorldSet();
     for (const optEl of realOptionNodes) {
         const text = getOptionText(optEl);
-        const meta = _latestClassification.byName.get(text);
+        // Rows the host script rebuilt may carry badges/only the display title; resolve by data.
+        const meta = resolveEnhancedRowMeta(optEl) || _latestClassification.byName.get(text);
         const worldName = meta?.realName || text;
         const isPinned = Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName));
         const isEditingRow = Boolean(!isGlobalPopover && activeEditName && worldName === activeEditName);
@@ -5074,6 +7147,14 @@ function enhanceCustomDropdownPopover(containerEl) {
             badge.textContent = '当前编辑';
             rightWrap.appendChild(badge);
         }
+        if (!isGlobalPopover && mountedGlobalSet.has(worldName) && !rightWrap.querySelector('[data-wbo-global-badge]')) {
+            const globalBadge = document.createElement('span');
+            globalBadge.className = 'wbo-s2-badge is-global';
+            globalBadge.setAttribute('data-wbo-ui', '1');
+            globalBadge.setAttribute('data-wbo-global-badge', '1');
+            globalBadge.textContent = '已全局';
+            rightWrap.appendChild(globalBadge);
+        }
         rightWrap.appendChild(pinBtn);
     }
 
@@ -5084,6 +7165,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     const placeholders = [];
     const bareEditorItems = [];
     const bareEditorMeta = new WeakMap();
+    const editorActiveGlobals = isGlobalPopover ? new Set() : getActiveGlobalWorldSet();
     /** @type {Map<string, HTMLElement[]>} */
     const bucketByGroup = new Map();
 
@@ -5113,11 +7195,13 @@ function enhanceCustomDropdownPopover(containerEl) {
                 (currentChatAvatar && meta?.charOwners?.some((o) => o.avatar === currentChatAvatar)),
             );
             const isFromHiddenGroup = Boolean(!_latestSettings.showCharBooks && editorHiddenSet.has(gid));
-            if (isCurrentChatCharBook || (isEditingRow && isFromHiddenGroup)) {
+            const isActiveGlobal = editorActiveGlobals.has(worldName);
+            if (isCurrentChatCharBook || isActiveGlobal || (isEditingRow && isFromHiddenGroup)) {
                 bareEditorMeta.set(optEl, {
                     isPinned: Boolean(meta?.isPinned ?? _latestSettings?.pinnedBooks?.includes?.(worldName)),
                     isEditing: isEditingRow,
                     isCurrentChatCharBook,
+                    isActiveGlobal,
                     groupId: gid,
                 });
                 bareEditorItems.push(optEl);
@@ -5161,15 +7245,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         bareEditorItems.sort((a, b) => {
             const ma = bareEditorMeta.get(a);
             const mb = bareEditorMeta.get(b);
+            const tier = bareTopTier(ma) - bareTopTier(mb);
+            if (tier !== 0) return tier;
             const pa = ma?.isPinned ? 1 : 0;
             const pb = mb?.isPinned ? 1 : 0;
             if (pa !== pb) return pb - pa;
-            const ea = ma?.isEditing ? 1 : 0;
-            const eb = mb?.isEditing ? 1 : 0;
-            if (ea !== eb) return eb - ea;
-            const ca = ma?.isCurrentChatCharBook ? 1 : 0;
-            const cb = mb?.isCurrentChatCharBook ? 1 : 0;
-            if (ca !== cb) return cb - ca;
             const ta = _latestClassification.byName.get(getOptionText(a))?.primaryTitle || getOptionText(a);
             const tb = _latestClassification.byName.get(getOptionText(b))?.primaryTitle || getOptionText(b);
             return compareZhCn(ta, tb);
@@ -5213,6 +7293,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     for (const ph of placeholders) {
         optionsHost.appendChild(ph);
     }
+    // The "选择以编辑" line must stay at the very top; remember where our blocks go.
+    const topAnchor = placeholders.length > 0 ? placeholders[placeholders.length - 1].nextSibling : optionsHost.firstChild;
     for (const optEl of bareEditorItems) {
         optionsHost.appendChild(optEl);
     }
@@ -5221,11 +7303,38 @@ function enhanceCustomDropdownPopover(containerEl) {
     if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
-    const previousGroup = isGlobalPopover
-        ? (isGlobalOpening ? SPECIAL_GROUPS.PINNED : containerEl._wboPopState?.getActivePillId())
+    // Register the globals pill for BOTH dropdowns whenever mounted books exist: the global list
+    // renders that block (and its pill) too, so a remembered choice on it must stay valid.
+    const activeGlobalCount = isGlobalPopover ? getActiveGlobalWorldSet().size : editorActiveGlobals.size;
+    if (activeGlobalCount >= 1) {
+        validGroupIds.add(EDITOR_GLOBALS_GROUP_ID);
+    }
+    // Each dropdown keeps its own memory: a 已收藏 choice in the global list must not leak into
+    // the editor list (and vice versa).
+    const remembered = isGlobalPopover
+        ? (_dropdownMemory.globalPillGroupId ?? _dropdownMemory.activePillGroupId)
         : _dropdownMemory.activePillGroupId;
+    const hasMemory = isGlobalPopover
+        ? _dropdownMemory.globalPillMemorySet === true
+        : true;
+    // A saved choice wins over the container's stale runtime state: a reused container keeps
+    // reporting the pill it was created with (已收藏), which made every reopen snap back to it.
+    const previousGroup = isGlobalPopover
+        ? ((hasMemory && validGroupIds.has(remembered)) ? remembered
+            : (containerEl._wboPopState?.getActivePillId() || (isGlobalOpening ? SPECIAL_GROUPS.PINNED : null)))
+        : remembered;
     let activePillGroupId = validGroupIds.has(previousGroup) ? previousGroup : SPECIAL_GROUPS.ALL;
-    if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
+    const rememberPill = (gid) => rememberDropdownPill(isGlobalPopover ? 'global' : 'editor', gid);
+    // Do not let the first render overwrite a real user choice with the default.
+    if (!hasMemory) rememberPill(activePillGroupId);
+    pushDiagTrace(`enh-pill:open=${activePillGroupId},hasMemory=${hasMemory ? 1 : 0},remembered=${remembered || '-'},role=${isGlobalPopover ? 'global' : 'editor'}`);
+    // Safety net: persist the pick straight from the DOM, whatever handler the host script runs.
+    containerEl.addEventListener('click', (event) => {
+        const target = event.target instanceof Element ? event.target : null;
+        const pill = target?.closest('.wbo-dd-pill');
+        if (!pill || !containerEl.contains(pill)) return;
+        rememberPill(pill.getAttribute('data-wbo-pill') || SPECIAL_GROUPS.ALL);
+    }, true);
 
     let isRestoringScroll = true;
     let searchInput = containerEl.querySelector(ENHANCED_POPOVER_SELECTORS.searchInputSelector);
@@ -5328,6 +7437,265 @@ function enhanceCustomDropdownPopover(containerEl) {
         sectionEls.push(secEl);
     }
 
+    // Mounted globals get their own block here too (iOS / compatible-script dropdown), and the
+    // favorites pill becomes one flat list with an origin badge instead of per-group sections.
+    /** @type {HTMLElement | null} */
+    let globalsSectionEl = null;
+    /** @type {HTMLElement | null} */
+    let favoritesSectionEl = null;
+    /** Options that live in the flat favorites list while its pill is active. */
+    const favoriteOptionHomes = new WeakMap();
+    const favoriteOptions = [];
+    const mountedGlobalOptions = [];
+    /** Whether a book is currently active globally (the global dropdown itself is that list). */
+    const isActiveGlobalName = (realName) => {
+        if (editorActiveGlobals.has(realName)) return true;
+        try {
+            const select = document.getElementById('world_info');
+            const options = select?.options;
+            if (!options) return false;
+            const option = [...options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+            return Boolean(option?.selected);
+        } catch {
+            return false;
+        }
+    };
+    // The 「已开启的全局世界书」 block applies to BOTH dropdowns: native SillyTavern pins those books
+    // to the top of the list, and the scripted dropdown has to do the same.
+    const mountedAndPinned = [];
+    for (const optEl of realOptionNodes) {
+        const name = getOptionText(optEl);
+        const meta = _latestClassification?.byName?.get(name);
+        const realName = meta?.realName || name;
+        const isMounted = isActiveGlobalName(realName);
+        if (isMounted) {
+            mountedGlobalOptions.push(optEl);
+            if (meta?.isPinned) mountedAndPinned.push(optEl);
+        }
+        if (!isGlobalPopover) {
+            // 已收藏 lists the pinned books that are NOT mounted; mounted ones stay in the block
+            // above (except inside the ★已收藏 pill, where they are appended so they can be
+            // switched off).
+            if (meta?.isPinned && !isMounted) {
+                favoriteOptions.push(optEl);
+                favoriteOptionHomes.set(optEl, optEl.closest('.wbo-pop-section')?.querySelector('.wbo-pop-group-body') || optionsHost);
+            }
+        }
+    }
+    if (mountedGlobalOptions.length >= 1) {
+        globalsSectionEl = document.createElement('div');
+        globalsSectionEl.className = 'wbo-pop-section';
+        globalsSectionEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        const headEl = document.createElement('div');
+        headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+        headEl.setAttribute('data-wbo-dd-group', EDITOR_GLOBALS_GROUP_ID);
+        headEl.textContent = `已开启的全局世界书 (${mountedGlobalOptions.length})`;
+        headEl.title = '点击展开或折叠该分组';
+        if (mountedAndPinned.length > 0) {
+            const noteEl = document.createElement('span');
+            noteEl.className = 'wbo-dd-group-note';
+            noteEl.textContent = `其中 ${mountedAndPinned.length} 本同时也是已收藏`;
+            headEl.append(noteEl);
+        }
+        const bodyEl = document.createElement('div');
+        bodyEl.className = 'wbo-pop-group-body';
+        for (const optEl of mountedGlobalOptions) bodyEl.appendChild(optEl);
+        globalsSectionEl.append(headEl, bodyEl);
+        // After the 「选择以编辑」 line, above every other section (native keeps that line first).
+        optionsHost.insertBefore(globalsSectionEl, topAnchor && topAnchor.parentElement === optionsHost ? topAnchor : optionsHost.firstChild);
+        pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`
+            + `,pinnedMounted=${mountedAndPinned.length}`);
+    } else {
+        pushDiagTrace(`enh-globals:block=0,count=0,role=${isGlobalPopover ? 'global' : 'editor'}`);
+    }
+    if (!isGlobalPopover && (favoriteOptions.length > 0 || mountedAndPinned.length > 0)) {
+            favoritesSectionEl = document.createElement('div');
+            favoritesSectionEl.className = 'wbo-pop-section';
+            favoritesSectionEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+            const headEl = document.createElement('div');
+            headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
+            headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
+            headEl.textContent = `★ 已收藏 (${favoriteOptions.length + mountedAndPinned.length})`;
+            headEl.title = '点击展开或折叠该分组';
+            // The note native ST shows, inline with the head on wide screens.
+            if (mountedAndPinned.length > 0) {
+                const noteEl = document.createElement('span');
+                noteEl.className = 'wbo-dd-group-note';
+                noteEl.textContent = `其中 ${mountedAndPinned.length} 本已全局，显示在上方`;
+                headEl.append(noteEl);
+            }
+            const bodyEl = document.createElement('div');
+            bodyEl.className = 'wbo-pop-group-body';
+            favoritesSectionEl.append(headEl, bodyEl);
+            optionsHost.insertBefore(favoritesSectionEl, globalsSectionEl ? globalsSectionEl.nextElementSibling : optionsHost.firstChild);
+            for (const optEl of favoriteOptions) {
+                const right = optEl.querySelector('.wbo-s2-right');
+                if (right && !right.querySelector('.is-origin')) {
+                    const origin = document.createElement('span');
+                    origin.className = 'wbo-s2-badge is-search-origin is-origin';
+                    origin.textContent = _latestClassification?.byName?.get(getOptionText(optEl))?.groupName || '未分组';
+                    right.prepend(origin);
+                }
+            }
+    }
+    // The 「选择以编辑」 row has to lead the whole list, above every block we insert.
+    for (const ph of [...placeholders].reverse()) {
+        optionsHost.insertBefore(ph, optionsHost.firstChild);
+    }
+    if (!isGlobalPopover) {
+        const select = document.getElementById('world_editor_select');
+        const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
+        const editedName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
+        // The book bound to the current chat character is what native ST pins above everything.
+        // Read it straight from the host context first (the classification can lag or lack owners).
+        let charBookName = '';
+        const chatName = currentChatCharName?.();
+        const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+        const chatEntry = chatName
+            ? characters.find((entry) => String(entry?.name || entry?.data?.name || '').trim() === chatName)
+            : null;
+        const boundWorld = typeof chatEntry?.data?.extensions?.world === 'string'
+            ? chatEntry.data.extensions.world.trim()
+            : '';
+        if (boundWorld) charBookName = boundWorld;
+        if (!charBookName && chatName) {
+            for (const meta of _latestClassification?.byName?.values?.() || []) {
+                if ((meta.charOwners || []).includes(chatName)) {
+                    charBookName = meta.realName;
+                    break;
+                }
+            }
+        }
+        const rowFor = (name) => {
+            if (!name) return null;
+            const meta = findMetaByAnyName(name);
+            const target = meta?.realName || name;
+            // Match through the <option> value first: the row text may already be rewritten.
+            const option = select
+                ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent || '').trim() === target
+                    || (item.textContent || '').trim() === target)
+                : null;
+            const byValue = option
+                ? realOptionNodes.find((row) => row.dataset?.value && row.dataset.value === option.value)
+                : null;
+            if (byValue) return byValue;
+            return realOptionNodes.find((row) => {
+                const rowName = resolveEnhancedRowMeta(row)?.realName || getOptionText(row);
+                return rowName && (rowName === target || matchKnownWorldName(rowName) === target);
+            }) || null;
+        };
+        const placeAtTop = (row) => {
+            const anchor = optionsHost.children?.[placeholders.length] || null;
+            if (anchor && anchor !== row) optionsHost.insertBefore(row, anchor);
+            else if (!anchor && optionsHost.lastElementChild !== row) optionsHost.appendChild(row);
+        };
+        const charRow = rowFor(charBookName);
+        if (charRow) {
+            placeAtTop(charRow);
+            pushDiagTrace('enh-globals:char-book-pinned=1');
+        } else {
+            pushDiagTrace('enh-globals:char-book-pinned=0');
+        }
+        // Order fingerprint: lets a report show what actually leads the list.
+        const orderTokens = [...(optionsHost.children || [])].slice(0, 8).map((node) => {
+            if (node === charRow) return 'charBook';
+            const group = node.getAttribute?.('data-wbo-dd-group');
+            if (group) return group === EDITOR_GLOBALS_GROUP_ID ? 'globals' : group === SPECIAL_GROUPS.PINNED ? 'pinned' : 'group';
+            if (placeholders.includes(node)) return 'ph';
+            return node.classList?.contains('gr-option') ? 'row' : 'other';
+        });
+        pushDiagTrace('enh-order:' + orderTokens.join('>'));
+        // If another book is being edited, bring it into view instead of moving it out of its group.
+        const editedRow = editedName && editedName !== charBookName ? rowFor(editedName) : null;
+        if (editedRow && editedRow !== charRow) {
+            // Never use scrollIntoView here: it also scrolls the page, which pushed the whole
+            // SillyTavern layout (top bar included) out of the viewport.
+            requestAnimationFrame(() => {
+                try {
+                    const host = findScrollableListEl(optionsHost, containerEl);
+                    if (!(host instanceof HTMLElement)) return;
+                    const rowRect = editedRow.getBoundingClientRect();
+                    const hostRect = host.getBoundingClientRect();
+                    if (rowRect.top >= hostRect.top && rowRect.bottom <= hostRect.bottom) return;
+                    const delta = rowRect.top - hostRect.top - (hostRect.height - rowRect.height) / 2;
+                    host.scrollTop += delta;
+                } catch { /* ignore */ }
+            });
+            pushDiagTrace('enh-globals:edited-revealed=1');
+        }
+        if (editedName) {
+            const meta = findMetaByAnyName(editedName);
+            for (const ph of placeholders) {
+                const title = meta?.primaryTitle || editedName;
+                if ((ph.textContent || '').includes(title)) continue;
+                ph.textContent = title;
+            }
+            pushDiagTrace('enh-globals:placeholder-titled=1');
+        }
+    }
+
+    /**
+     * Show/hide the two special sections of the enhanced editor popover.
+     * @param {{ searching: boolean, isPinFilter: boolean, isIsolated: boolean }} flags
+     */
+    const syncSpecialSections = ({ searching, isPinFilter, isIsolated }) => {
+        for (const sectionEl of [globalsSectionEl, favoritesSectionEl]) {
+            if (!sectionEl) continue;
+            const gid = sectionEl.getAttribute('data-wbo-dd-group') || '';
+            const bodyEl = sectionEl.querySelector('.wbo-pop-group-body');
+            const headEl = sectionEl.querySelector('.wbo-dd-group-head');
+            if (!(bodyEl instanceof HTMLElement) || !(headEl instanceof HTMLElement)) continue;
+            if (searching) {
+                // Search regroups rows; keep them visible and drop the block chrome.
+                sectionEl.classList.remove('wbo-dd-group-hidden', 'wbo-dd-collapsed');
+                headEl.classList.add('is-isolated');
+                headEl.style.display = 'none';
+                continue;
+            }
+            headEl.style.display = '';
+            headEl.classList.remove('is-isolated');
+            const entered = isIsolated && activePillGroupId === gid;
+            let collapsed = isDropdownGroupCollapsed(gid, isPinFilter || entered);
+            if (gid === EDITOR_GLOBALS_GROUP_ID && isIsolated && !entered) {
+                // Folded above another group, but the user can still open it by hand.
+                collapsed = !_isolatedFoldOverride.has(gid);
+            }
+            sectionEl.classList.remove('wbo-dd-group-hidden');
+            sectionEl.classList.toggle('wbo-dd-collapsed', collapsed);
+            headEl.setAttribute('aria-expanded', String(!collapsed));
+        }
+        // The favorites pill is one flat list (origin shown as a badge), so its per-group
+        // sections and the globals block stay hidden while it is active.
+        if (isPinFilter && !isGlobalPopover) {
+            for (const secEl of sectionEls) secEl.classList.add('wbo-dd-group-hidden');
+            globalsSectionEl?.classList.add('wbo-dd-group-hidden');
+            if (favoritesSectionEl) {
+                const bodyEl = favoritesSectionEl.querySelector('.wbo-pop-group-body');
+                // Mounted + favorited books are listed here too, so their global switch can be
+                // turned off from the favorites view (they were unreachable before).
+                for (const optEl of [...favoriteOptions, ...mountedAndPinned]) bodyEl?.appendChild(optEl);
+                favoritesSectionEl.classList.remove('wbo-dd-group-hidden');
+            }
+        } else if (favoritesSectionEl) {
+            for (const optEl of favoriteOptions) {
+                // Home by group id: a captured node reference could point at the flat host list,
+                // which left the 已收藏 section empty after expanding it.
+                const gid = _latestClassification?.byName?.get(getOptionText(optEl))?.groupId;
+                const target = (gid && optionsHost.querySelector(`.wbo-pop-section[data-wbo-dd-group="${gid}"] .wbo-pop-group-body`))
+                    || favoriteOptionHomes.get(optEl);
+                if (target && optEl.parentElement !== target) target.appendChild(optEl);
+            }
+            const globalsBody = globalsSectionEl?.querySelector('.wbo-pop-group-body');
+            for (const optEl of mountedAndPinned) {
+                if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
+            }
+        }
+        // The origin badge only belongs to the flat favorites list.
+        for (const optEl of favoriteOptions) {
+            optEl.querySelector(':scope > .wbo-s2-right > .is-origin')?.classList.toggle('wbo-origin-hidden', !isPinFilter);
+        }
+    };
+
     let filterBar = null;
     let pillScrollEl = null;
     const syncPillButtons = () => {
@@ -5369,11 +7737,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         for (const secEl of sectionEls) {
             const gid = secEl.getAttribute('data-wbo-dd-group') || '';
             const headEl = secEl.querySelector(':scope > .wbo-dd-group-head');
+            const enteredGroup = isIsolated && gid === activePillGroupId && gid !== SPECIAL_GROUPS.PINNED;
             if (headEl instanceof HTMLElement) {
                 const canCollapse = !searching;
                 headEl.classList.toggle('is-isolated', !canCollapse);
                 headEl.title = canCollapse ? '点击展开或折叠该分组' : '';
-                headEl.setAttribute('aria-expanded', String(searching || !_latestSettings.dropdownCollapsed[gid]));
+                headEl.setAttribute('aria-expanded', String(searching || !isDropdownGroupCollapsed(gid, enteredGroup)));
             }
             const optsInSec = Array.from(secEl.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector));
             for (const o of optsInSec) {
@@ -5398,12 +7767,19 @@ function enhanceCustomDropdownPopover(containerEl) {
                         !o.classList.contains('wbo-pop-search-hidden') && !o.classList.contains('wbo-dd-pin-hidden'),
                 );
                 const hiddenByPill = isIsolated && gid !== activePillGroupId && gid !== SPECIAL_GROUPS.PINNED;
-                secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild || hiddenByPill);
+                if (isGlobalPopover) {
+                    secEl.classList.toggle('wbo-dd-group-hidden', !hasVisibleChild || hiddenByPill);
+                } else {
+                    // The host script filters its own rows while searching; hiding whole sections
+                    // here left an empty list that only reopened by clicking a pill.
+                    secEl.classList.remove('wbo-dd-group-hidden');
+                }
                 secEl.classList.remove('wbo-dd-collapsed');
             } else if (isPinFilter) {
                 const hasPinnedChild = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasPinnedChild);
-                secEl.classList.toggle('wbo-dd-collapsed', Boolean(_latestSettings.dropdownCollapsed[gid]));
+                // Entering the favorites pill opens it expanded, like every other group.
+                secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, gid === SPECIAL_GROUPS.PINNED));
             } else if (isIsolated && gid === SPECIAL_GROUPS.PINNED) {
                 const hasOrigMatch = optsInSec.some((o) => !o.classList.contains('wbo-dd-pin-hidden'));
                 secEl.classList.toggle('wbo-dd-group-hidden', !hasOrigMatch);
@@ -5411,11 +7787,364 @@ function enhanceCustomDropdownPopover(containerEl) {
             } else {
                 const hiddenByPill = isIsolated && gid !== activePillGroupId;
                 secEl.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
-                const collapsed = Boolean(_latestSettings.dropdownCollapsed[gid]);
-                secEl.classList.toggle('wbo-dd-collapsed', collapsed);
+                secEl.classList.toggle('wbo-dd-collapsed', isDropdownGroupCollapsed(gid, enteredGroup));
             }
         }
+        syncSpecialSections({ searching, isPinFilter, isIsolated });
+        // Rows the host script (re)created after our pass have no title markup yet: fill them in,
+        // otherwise that book keeps showing its plain file name.
+        if (!isGlobalPopover) {
+            let titled = 0;
+            let fileNameLeft = 0;
+            let charFileLeft = 0;
+            for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+                if (!(row instanceof HTMLElement) || row.querySelector('.wbo-gr-world-title')) continue;
+                const meta = resolveEnhancedRowMeta(row);
+                if (meta) syncEnhancedWorldOptionTitle(row, meta);
+            }
+            // Audit: how many rows still render a plain file name, and how many of those are bound
+            // to a character (that is the 「当前角色世界书显示原名」 case).
+            for (const row of optionsHost.querySelectorAll(ENHANCED_POPOVER_SELECTORS.optionSelector)) {
+                if (!(row instanceof HTMLElement)) continue;
+                const label = row.querySelector('.wbo-gr-world-title');
+                const meta = resolveEnhancedRowMeta(row);
+                if (label) titled += 1;
+                else {
+                    fileNameLeft += 1;
+                    if (meta && (meta.groupId === SPECIAL_GROUPS.CHARACTER || meta.isCharBound)) charFileLeft += 1;
+                }
+            }
+            pushDiagTrace(`enh-titles:titled=${titled},fileOnly=${fileNameLeft},charFileOnly=${charFileLeft}`);
+        }
+        syncEnhancedSearchBlock(searching);
     };
+
+    /**
+     * Searching in the enhanced popover: draw our OWN result panel over the host list. The host
+     * script re-renders rows, pins heights and hides things at will, which defeated every
+     * DOM-level attempt — owning the panel removes all of that from the equation.
+     * The panel is a per-container singleton, mounted on <body> (the popover clips and may
+     * create a containing block), and it only lists books that actually exist in the select.
+     */
+    /** @type {Array<{ target: EventTarget, event: string, handler: any, options?: any }>} */
+    const searchPanelListeners = [];
+    const listenPanel = (target, event, handler, options) => {
+        target.addEventListener(event, handler, options);
+        searchPanelListeners.push({ target, event, handler, options });
+    };
+    const getSearchPanel = () => {
+        const existing = containerEl._wboSearchPanel;
+        return existing instanceof HTMLElement && existing.isConnected ? existing : null;
+    };
+    const removeEnhancedSearchPanel = () => {
+        const panel = containerEl._wboSearchPanel;
+        if (panel instanceof HTMLElement) {
+            unbindDrawerSafeBubbleGuard?.(panel);
+            panel.remove();
+        }
+        const listHost = containerEl._wboSearchPanelListHost;
+        if (listHost instanceof HTMLElement) listHost.style.removeProperty('display');
+        containerEl._wboSearchPanelListHost = null;
+        containerEl._wboSearchPanel = null;
+        containerEl._wboSearchPanelMount = null;
+        containerEl.classList.remove('wbo-enhanced-searching');
+        // A whitespace-only term made the host hide rows itself; clear every hiding artifact so the
+        // list comes back instead of showing a few blank lines.
+        optionsHost.querySelectorAll('.wbo-enhanced-search-hidden, .wbo-pop-search-hidden, .gr-option-hidden')
+            .forEach((el) => {
+                el.classList.remove('wbo-enhanced-search-hidden', 'wbo-pop-search-hidden', 'gr-option-hidden');
+                if (el instanceof HTMLElement && el.style.display === 'none') el.style.removeProperty('display');
+                if (el instanceof HTMLElement && el.hidden) el.hidden = false;
+            });
+        optionsHost.querySelectorAll('.wbo-enhanced-section-hidden, .wbo-pop-section.wbo-dd-group-hidden')
+            .forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
+        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
+        containerEl._wboSearchPanelWatcher?.disconnect?.();
+        containerEl._wboSearchPanelWatcher = null;
+        for (const entry of searchPanelListeners.splice(0)) {
+            entry.target.removeEventListener(entry.event, entry.handler, entry.options);
+        }
+    };
+    const positionEnhancedSearchPanel = () => {
+        const panel = getSearchPanel();
+        if (!panel) return;
+        // In-flow mode: the panel sits where the list was, so geometry must stay untouched.
+        // (Applying the fixed overlay styles here used to lift it over the pill bar.)
+        if (panel.classList.contains('is-in-flow')) {
+            for (const prop of ['position', 'left', 'top', 'width', 'maxHeight', 'zIndex', 'visibility', 'opacity', 'display']) {
+                panel.style.removeProperty(prop);
+            }
+            pushDiagTrace('enh-panel:box=in-flow,' + Math.round(panel.getBoundingClientRect().height));
+            return;
+        }
+        const rect = containerEl.getBoundingClientRect();
+        const viewportH = globalThis.visualViewport?.height || globalThis.innerHeight || 768;
+        const viewportW = globalThis.visualViewport?.width || globalThis.innerWidth || 1024;
+        const viewportTop = globalThis.visualViewport?.offsetTop || 0;
+        const searchRect = searchInput instanceof HTMLElement ? searchInput.getBoundingClientRect() : null;
+        // If the popover reports a degenerate/off-screen box the panel would land outside the
+        // viewport; fall back to a centred overlay instead of an invisible panel.
+        const rectUsable = rect.width >= 160 && rect.height >= 80
+            && rect.bottom > viewportTop && rect.top < viewportTop + viewportH;
+        const width = rectUsable ? Math.min(Math.max(rect.width - 8, 240), viewportW - 12) : Math.min(520, viewportW - 24);
+        const left = rectUsable
+            ? Math.min(Math.max(4, rect.left + 4), Math.max(4, viewportW - width - 8))
+            : Math.max(4, Math.round((viewportW - width) / 2));
+        const rawTop = (searchRect?.bottom ?? (rectUsable ? rect.top + 44 : viewportTop + 72)) + 2;
+        const top = Math.min(Math.max(viewportTop + 4, rawTop), viewportTop + viewportH - 160);
+        const available = Math.max(120, viewportTop + viewportH - top - 8);
+        panel.style.position = 'fixed';
+        panel.style.left = left + 'px';
+        panel.style.width = width + 'px';
+        panel.style.top = top + 'px';
+        panel.style.maxHeight = Math.min(available, Math.max(160, (rectUsable ? rect.height : viewportH) - 40)) + 'px';
+        panel.style.zIndex = '100090';
+        panel.style.visibility = 'visible';
+        panel.style.opacity = '1';
+        panel.style.display = 'flex';
+        pushDiagTrace('enh-panel:box=' + [left, top, width, panel.getBoundingClientRect().height]
+            .map((value) => Math.round(value)).join(',')
+            + ',rectOk=' + (rectUsable ? 1 : 0)
+            + ',searchBox=' + (searchInput instanceof HTMLElement ? 1 : 0));
+    };
+    /** Books that can actually be picked: the select may have detached hidden options. */
+    const searchSelectEl = () => document.getElementById(isGlobalPopover ? 'world_info' : 'world_editor_select');
+    const pickableNames = () => {
+        const select = searchSelectEl();
+        const names = new Set();
+        if (!select) return names;
+        for (const option of select.options) {
+            const name = (option.dataset?.wboRealName || option.textContent || '').trim();
+            if (name) names.add(name);
+        }
+        return names;
+    };
+    const isGloballySelected = (realName) => {
+        try {
+            const select = document.getElementById('world_info');
+            const options = select?.options;
+            if (!options) return false;
+            const option = [...options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName);
+            return Boolean(option?.selected);
+        } catch {
+            return false;
+        }
+    };
+    const pickEnhancedSearchRow = (realName) => {
+        const select = searchSelectEl();
+        const option = select
+            ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent.trim()) === realName)
+            : null;
+        if (!select || !option) {
+            // The book exists in the classification but not in this select (hidden group): keep the
+            // term and the panel so the user is not left with an empty search.
+            pushDiagTrace('enh-panel:missing-option');
+            return;
+        }
+        const $jq = globalThis.jQuery;
+        if (isGlobalPopover) {
+            // Global list: a pick toggles whether the book is active globally, and the panel stays
+            // open so several books can be toggled in a row.
+            option.selected = !option.selected;
+            if ($jq) $jq(select).trigger('change');
+            else select.dispatchEvent(new Event('change', { bubbles: true }));
+            pushDiagTrace('enh-panel:toggle');
+            _lastEnhancedSearchTerm = '';
+            renderEnhancedSearchPanel(searchInput instanceof HTMLInputElement
+                ? searchInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean)
+                : []);
+            return;
+        }
+        if ($jq) $jq(select).val(option.value).trigger('change');
+        else {
+            select.value = option.value;
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        if (searchInput instanceof HTMLInputElement && searchInput.value) {
+            searchInput.value = '';
+            searchInput.dispatchEvent(new Event('input', { bubbles: true }));
+        }
+        removeEnhancedSearchPanel();
+        containerEl._wboPopState?.syncSections?.();
+        pushDiagTrace('enh-panel:pick');
+    };
+    const ensureSearchPanel = () => {
+        const existing = getSearchPanel();
+        if (existing) return existing;
+        const panel = document.createElement('div');
+        panel.className = 'wbo-enhanced-search-panel is-in-flow';
+        panel.setAttribute('data-wbo-ui', '1');
+        panel.setAttribute('data-wbo-panel-owner', String(containerEl.dataset.wboSourceRole || 'editor'));
+        // Put the panel INSIDE the popover's own scroll area and hide the host list: no fixed
+        // positioning, no stacking-context gamble — it is in normal flow where the list used to be.
+        const listHost = containerEl.querySelector('.gr-options-container') || optionsHost;
+        const listParent = listHost?.parentElement || null;
+        if (listParent) {
+            listParent.insertBefore(panel, listHost);
+            listHost.style.display = 'none';
+            containerEl._wboSearchPanelListHost = listHost;
+            pushDiagTrace('enh-panel:mount=in-flow');
+        } else {
+            const mount = containerEl.closest('#WorldInfo, dialog, .drawer, [role="dialog"]') || document.body;
+            mount.appendChild(panel);
+            pushDiagTrace('enh-panel:mount=' + (mount.id || mount.tagName.toLowerCase()));
+        }
+        containerEl._wboSearchPanel = panel;
+        // Searching hides the host group heads: otherwise they linger over an empty list.
+        containerEl.classList.add('wbo-enhanced-searching');
+        bindDrawerSafeBubbleGuard(panel);
+        const anchor = containerEl.parentElement;
+        if (anchor) {
+            const watcher = new MutationObserver(() => {
+                if (containerEl.isConnected) return;
+                watcher.disconnect();
+                containerEl._wboSearchPanelWatcher = null;
+                removeEnhancedSearchPanel();
+            });
+            watcher.observe(anchor, { childList: true });
+            containerEl._wboSearchPanelWatcher = watcher;
+        }
+        listenPanel(panel, 'pointerdown', (ev) => {
+            // Keep the search box focused: otherwise the host's blur handler closes the popover
+            // before our click/pointerup ever fires.
+            ev.preventDefault();
+            ev.stopPropagation();
+        }, true);
+        const handlePick = (ev) => {
+            ev.stopPropagation();
+            const btn = ev.target instanceof Element ? ev.target.closest('[data-wbo-esp]') : null;
+            if (btn) pickEnhancedSearchRow(btn.getAttribute('data-wbo-esp'));
+        };
+        listenPanel(panel, 'pointerup', handlePick, true);
+        listenPanel(panel, 'click', handlePick, true);
+        listenPanel(globalThis, 'resize', positionEnhancedSearchPanel);
+        globalThis.visualViewport?.addEventListener?.('resize', positionEnhancedSearchPanel);
+        globalThis.visualViewport?.addEventListener?.('scroll', positionEnhancedSearchPanel);
+        searchPanelListeners.push({ target: globalThis.visualViewport, event: 'resize', handler: positionEnhancedSearchPanel });
+        searchPanelListeners.push({ target: globalThis.visualViewport, event: 'scroll', handler: positionEnhancedSearchPanel });
+        listenPanel(getScrollHost(), 'scroll', positionEnhancedSearchPanel, { passive: true });
+        return panel;
+    };
+    const renderEnhancedSearchPanel = (tokens) => {
+        const byName = _latestClassification?.byName;
+        if (!byName) {
+            removeEnhancedSearchPanel();
+            return;
+        }
+        const available = pickableNames();
+        const matches = [];
+        for (const meta of byName.values()) {
+            if (!meta?.realName) continue;
+            if (available.size > 0 && !available.has(meta.realName)) continue;
+            // Searching is global: the pill only filters the normal list, never the results.
+            const hay = String(meta.searchableText || meta.realName.toLowerCase());
+            if (tokens.every((token) => hay.includes(token))) matches.push(meta);
+        }
+        matches.sort((a, b) => String(a.primaryTitle || a.realName)
+            .localeCompare(String(b.primaryTitle || b.realName), 'zh-Hans-CN'));
+        const shown = matches.slice(0, 120);
+        const panel = ensureSearchPanel();
+        // In-flow mode simply inherits the popover's own colours (CSS) — copying the row colours
+        // turned it into dark-on-dark / black-on-blue in themed setups.
+        if (panel.classList.contains('is-in-flow')) {
+            for (const prop of ['background', 'color', 'fontSize', 'border', 'boxShadow']) {
+                panel.style.removeProperty(prop);
+            }
+        }
+        const keepScroll = panel.scrollTop;
+        if (matches.length === 0) {
+            panel.innerHTML = '<div class="wbo-esp-empty">没有匹配的世界书</div>';
+        } else {
+            const head = matches.length > shown.length
+                ? '搜索匹配到的世界书 (' + matches.length + '，显示前 ' + shown.length + ')'
+                : '搜索匹配到的世界书 (' + matches.length + ')';
+            const rowsHtml = shown.map((meta) => {
+                const on = isGlobalPopover && isGloballySelected(meta.realName);
+                return [
+                    '<button type="button" class="wbo-esp-row' + (on ? ' is-on' : '') + '" data-wbo-esp="' + escHtml(meta.realName) + '">',
+                    '    <span class="wbo-esp-main">',
+                    isGlobalPopover ? '        <span class="wbo-esp-check" aria-hidden="true">' + (on ? '✓' : '') + '</span>' : '',
+                    '        <span class="wbo-esp-title">' + escHtml(meta.primaryTitle || meta.realName) + '</span>',
+                    (meta.subtitle ? '        <span class="wbo-esp-sub">' + escHtml(meta.subtitle) + '</span>' : ''),
+                    '    </span>',
+                    '    <span class="wbo-esp-origin">' + escHtml(meta.groupName || '未分组') + '</span>',
+                    '</button>',
+                ].join('');
+            });
+            panel.innerHTML = '<div class="wbo-esp-head">' + head + '</div>' + rowsHtml.join('');
+        }
+        panel.scrollTop = keepScroll;
+        positionEnhancedSearchPanel();
+        pushDiagTrace('enh-panel:matches=' + matches.length + ',shown=' + shown.length);
+        // Geometry/visibility snapshot: catches "rows exist but are 0px / clipped" regressions.
+        try {
+            const host = findScrollableListEl(optionsHost, containerEl);
+            const rows = [...optionsHost.querySelectorAll('.gr-option')];
+            const visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+            pushDiagTrace('enh-metrics:rows=' + rows.length
+                + ',visible=' + visibleRows
+                + ',hostH=' + Math.round(host?.getBoundingClientRect?.().height || 0)
+                + ',panelH=' + Math.round(panel.getBoundingClientRect().height)
+                + ',pageScroll=' + Math.round(globalThis.document?.scrollingElement?.scrollTop || 0));
+        } catch { /* metrics must never break the render */ }
+    };
+    let _lastEnhancedSearchTerm = '';
+    const syncEnhancedSearchBlock = (searching) => {
+        const raw = searchInput instanceof HTMLInputElement ? searchInput.value : '';
+        const term = raw.trim();
+        const tokens = term.toLowerCase().split(/\s+/).filter(Boolean);
+        const whitespaceOnly = !term && raw.length > 0;
+        // Always record the input state: an accidental space used to be invisible in the report.
+        pushDiagTrace(`enh-search:raw=${raw.length},tokens=${tokens.length},ws=${whitespaceOnly ? 1 : 0}`
+            + `,role=${isGlobalPopover ? 'global' : 'editor'}`);
+        if (!searching || tokens.length === 0) {
+            // A lone space used to leave a few blank rows (the host filters on its own handler after
+            // us). We simply treat whitespace as "no search": the panel goes away and the host keeps
+            // whatever it renders — chasing its hiding strategy was not worth the risk.
+            removeEnhancedSearchPanel();
+            _lastEnhancedSearchTerm = '';
+            return;
+        }
+        if (term === _lastEnhancedSearchTerm && getSearchPanel()) {
+            positionEnhancedSearchPanel();
+            return;
+        }
+        _lastEnhancedSearchTerm = term;
+        pushDiagTrace('enh-search:searching=1,tokens=' + tokens.length + ',role=' + (isGlobalPopover ? 'global' : 'editor'));
+        renderEnhancedSearchPanel(tokens);
+    };
+    // Switching a pill while searching must refilter our own list too.
+    const refreshEnhancedSearchForPill = () => {
+        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        if (!term || !getSearchPanel()) return;
+        _lastEnhancedSearchTerm = '';
+        renderEnhancedSearchPanel(term.toLowerCase().split(/\s+/).filter(Boolean));
+    };    // Keyboard: while the panel is open, arrows/enter act on it instead of the hidden host list.
+    if (searchInput instanceof HTMLInputElement) {
+        listenPanel(searchInput, 'keydown', (ev) => {
+            const panel = getSearchPanel();
+            if (!panel) return;
+            const rows = [...panel.querySelectorAll('.wbo-esp-row')];
+            if (rows.length === 0) return;
+            const current = rows.findIndex((row) => row.classList.contains('is-active'));
+            if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                const next = ev.key === 'ArrowDown'
+                    ? Math.min(rows.length - 1, current + 1)
+                    : Math.max(0, current <= 0 ? 0 : current - 1);
+                rows.forEach((row, index) => row.classList.toggle('is-active', index === next));
+                rows[next]?.scrollIntoView?.({ block: 'nearest' });
+                return;
+            }
+            if (ev.key === 'Enter') {
+                ev.preventDefault();
+                const target = rows[current >= 0 ? current : 0];
+                if (target) pickEnhancedSearchRow(target.getAttribute('data-wbo-esp'));
+                return;
+            }
+            if (ev.key === 'Escape') removeEnhancedSearchPanel();
+        }, true);
+    }
 
     const popoverScrollHost = getScrollHost();
     const restoreTimers = [];
@@ -5472,9 +8201,21 @@ function enhanceCustomDropdownPopover(containerEl) {
             const gid = head.getAttribute('data-wbo-dd-group');
             if (!st || !gid || head.classList.contains('is-isolated')) return;
             st.cancelRestore();
-            const collapsed = !_latestSettings.dropdownCollapsed[gid];
-            _latestSettings.dropdownCollapsed[gid] = collapsed;
-            saveSettings();
+            const activePill = st.getActivePillId();
+            const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL;
+            // Inside another group's pill the globals block is folded by default but stays
+            // openable, so that click keeps its own override instead of the saved state.
+            const globalsInGroupView = gid === EDITOR_GLOBALS_GROUP_ID
+                && activePill !== SPECIAL_GROUPS.ALL
+                && activePill !== SPECIAL_GROUPS.PINNED
+                && activePill !== EDITOR_GLOBALS_GROUP_ID;
+            if (globalsInGroupView) {
+                if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
+                else _isolatedFoldOverride.add(gid);
+            } else {
+                toggleDropdownGroupCollapsed(gid, entered);
+            }
+            const collapsed = !globalsInGroupView && Boolean(_latestSettings.dropdownCollapsed[gid]);
             const scroller = findScrollableListEl(optionsHost, containerEl);
             st.syncSections();
             if (collapsed) {
@@ -5509,7 +8250,10 @@ function enhanceCustomDropdownPopover(containerEl) {
         const built = createDropdownFilterBar(
             [
                 ...(initialPopPinnedCount > 0 || activePillGroupId === SPECIAL_GROUPS.PINNED
-                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `${isGlobalPopover ? '已收藏' : '★ 已收藏'} ${initialPopPinnedCount}` }]
+                    ? [{ id: SPECIAL_GROUPS.PINNED, label: `${isGlobalPopover ? '已收藏' : '★ 已收藏'} ${isGlobalPopover ? initialPopPinnedCount : favoriteOptions.length}` }]
+                    : []),
+                ...(mountedGlobalOptions.length >= 3
+                    ? [{ id: EDITOR_GLOBALS_GROUP_ID, label: `全局世界书 ${mountedGlobalOptions.length}` }]
                     : []),
                 ...orderedSections.map((sec) => ({
                     id: sec.id,
@@ -5542,9 +8286,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             activePillGroupId = (gid === activePillGroupId && gid !== SPECIAL_GROUPS.ALL)
                 ? SPECIAL_GROUPS.ALL
                 : gid;
-            if (!isGlobalPopover) _dropdownMemory.activePillGroupId = activePillGroupId;
+            _isolatedFoldOverride.clear();
+            // Persist per dropdown so reopening restores the chosen group.
+            rememberPill(activePillGroupId);
             syncPillButtons();
             syncSections();
+            refreshEnhancedSearchForPill();
             scrollHost.scrollTop = _dropdownMemory.scrollTopByGroup[activePillGroupId] ?? 0;
         });
 
@@ -5681,6 +8428,120 @@ function enhanceCustomDropdownPopover(containerEl) {
 export function startNativeObservers(onUpstreamWorldListChanged) {
     stopNativeObservers();
     _observersActive = true;
+    // A script disabled without a reload leaves its <style>/dropdown shells behind, and those
+    // rules keep overriding ours: drop them as soon as we boot.
+    cleanupStaleEnhancedArtifacts();
+    // Console helpers: structure-only diagnostics for bug reports, plus a zero-console path
+    // through the settings panel (both never emit a book, character or group name).
+    if (typeof globalThis.window !== 'undefined') {
+        globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
+        installQuickDiagBall();
+        // Sanitized UI log: enough to replay a broken interaction, no names.
+        const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
+        const logKey = (event) => pushDiagUi(`key:${String(event.key || '').slice(0, 8)}`, event.target instanceof Element ? event.target : null);
+        document.addEventListener('pointerdown', logDown, true);
+        document.addEventListener('keydown', logKey, true);
+        // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
+        // report can only be proven with composition + blur counters.
+        let composing = false;
+        document.addEventListener('compositionstart', (event) => {
+            composing = true;
+            _diag.ime.compositionStart += 1;
+            pushDiagUi('ime-start', event.target instanceof Element ? event.target : null);
+        }, true);
+        document.addEventListener('compositionend', (event) => {
+            composing = false;
+            _diag.ime.compositionEnd += 1;
+            pushDiagUi('ime-end', event.target instanceof Element ? event.target : null);
+        }, true);
+        document.addEventListener('focusin', (event) => {
+            const target = event.target;
+            if (target instanceof Element && target.closest('.gr-search-input, .gr-search-box, .wbo-enhanced-search-panel')) {
+                _diag.ime.focus += 1;
+            }
+        }, true);
+        document.addEventListener('focusout', (event) => {
+            const target = event.target;
+            if (!(target instanceof Element)) return;
+            if (!target.closest('.gr-search-input, .gr-search-box')) return;
+            _diag.ime.blur += 1;
+            if (composing) _diag.ime.blurDuringComposition += 1;
+            pushDiagUi('search-blur', target);
+        }, true);
+        globalThis.window.addEventListener?.('error', (event) => {
+            const message = String(event?.message || event?.error?.message || 'error');
+            _diag.errors.push(sanitizeDiagText(message));
+            if (_diag.errors.length > 6) _diag.errors.shift();
+        });
+        globalThis.window.wboTitleReport = () => {
+            const cls = _latestClassification;
+            if (!cls) return { error: 'no classification yet' };
+            const hash = (text) => {
+                let h = 5381;
+                for (const ch of String(text)) h = ((h * 33) ^ ch.codePointAt(0)) >>> 0;
+                return h.toString(16).padStart(8, '0').slice(0, 6);
+            };
+            const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+            const charLore = getCharLoreEntries?.() || [];
+            let charGroupBooks = 0;
+            let charBookWithoutOwner = 0;
+            let charBookTitleIsFileName = 0;
+            let charBookWithSubtitle = 0;
+            let ungroupedBooks = 0;
+            const rows = [];
+            for (const [name, meta] of cls.byName) {
+                if (meta?.groupId === SPECIAL_GROUPS.UNGROUPED) ungroupedBooks += 1;
+                if (meta?.groupId !== SPECIAL_GROUPS.CHARACTER) continue;
+                charGroupBooks += 1;
+                const owners = meta.charOwners || [];
+                const titleIsFileName = meta.primaryTitle === meta.realName;
+                if (owners.length === 0) charBookWithoutOwner += 1;
+                if (titleIsFileName) charBookTitleIsFileName += 1;
+                if (meta.subtitle) charBookWithSubtitle += 1;
+                rows.push({
+                    id: hash(name),
+                    owners: owners.length,
+                    orphanOnly: owners.length > 0 && owners.every((owner) => owner.orphan),
+                    sources: [...new Set(owners.map((owner) => owner.source))].join('+'),
+                    titleIsFileName,
+                    hasSubtitle: Boolean(meta.subtitle),
+                });
+            }
+            const overrides = Object.values(_latestSettings?.charBookOverrides || {});
+            return {
+                plugin: 'worldbook-organizer',
+                titleMode: _latestSettings?.charBookTitleMode,
+                aliasMode: _latestSettings?.aliasTitleMode,
+                flags: {
+                    showCharBooks: Boolean(_latestSettings?.showCharBooks),
+                    hideCharBooksByDefault: Boolean(_latestSettings?.hideCharBooksByDefault),
+                    adaptCharBindPopup: _latestSettings?.adaptCharBindPopup !== false,
+                },
+                characters: {
+                    total: characters.length,
+                    shallow: characters.filter((ch) => ch?.shallow).length,
+                    withPrimary: characters.filter((ch) => typeof ch?.data?.extensions?.world === 'string' && ch.data.extensions.world.trim()).length,
+                },
+                charLore: {
+                    entries: charLore.length,
+                    extraBooks: charLore.reduce((sum, entry) => sum + (entry?.extraBooks?.length || 0), 0),
+                },
+                overrides: {
+                    includeInChar: overrides.filter((value) => value === 'include_in_char').length,
+                    excludeFromChar: overrides.filter((value) => value === 'exclude_from_char').length,
+                },
+                classification: {
+                    books: cls.byName.size,
+                    charGroupBooks,
+                    charBookWithoutOwner,
+                    charBookTitleIsFileName,
+                    charBookWithSubtitle,
+                    ungroupedBooks,
+                },
+                rows,
+            };
+        };
+    }
 
     // Keep the browser default action for panel selects without reaching document-level overrides.
     const selectEvents = ['mousedown', 'touchend', 'keydown'];
@@ -6024,7 +8885,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         const isRecentOrphanClick =
             Date.now() - _lastWorldSelectMouseDownAt < 500 &&
             (t === document.body || t === document.documentElement || !t.isConnected);
-        if (inDropdownOverlay || inWorldTriggerPath || isRecentOrphanClick) {
+        if (inDropdownOverlay || inWorldTriggerPath || isRecentOrphanClick || consumePickerDismissClick(ev)) {
             ev.stopPropagation();
         }
     };

@@ -11,8 +11,12 @@ import {
     createSubModal,
     detectHostThemeClass,
     esc,
+    excludeChipAttrs,
+    excludeChipInnerHtml,
+    excludeCountText,
     isDesktopAutoFocusAllowed,
     MANAGER_OVERLAY_ID,
+    syncExcludeChip,
     UNDO_SVG,
     WAND_ENTRY_ID,
     WI_QUICK_ACTIONS_ID,
@@ -463,14 +467,16 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                         </button>
                         <span class="wbo-ai-subview-title" id="wbo-cmb-edit-heading">新建全局组合</span>
                         <span class="wbo-spacer"></span>
-                        <span class="wbo-tag" id="wbo-cmb-picked-badge">已选 0 本</span>
                     </div>
                     <div class="wbo-cmb-name-bar">
                         <input type="text" class="wbo-input" id="wbo-cmb-name-input" placeholder="输入组合名称，例如：现代日常套、古风通用套、跑团检定套" spellcheck="false">
                         <button type="button" class="wbo-btn" id="wbo-cmb-seed-active-btn">加入已开启的全局世界书</button>
                         <button type="button" class="wbo-btn" id="wbo-cmb-clear-pick-btn">清空勾选</button>
                     </div>
-                    <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-pills" role="group" aria-label="世界书分组"></div>
+                    <div class="wbo-cmb-pill-rows" id="wbo-cmb-pill-rows">
+                        <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-group-pills" role="group" aria-label="世界书分组"></div>
+                        <div class="wbo-gp-pills wbo-book-group-switcher" id="wbo-cmb-pills" role="group" aria-label="世界书范围"></div>
+                    </div>
                     <div class="wbo-gp-toolbar">
                         <input type="search" class="wbo-input wbo-group-pick-filter" id="wbo-cmb-book-filter" placeholder="搜索世界书名 / 显示名 / 分组..." autocomplete="off" spellcheck="false">
                         <button type="button" class="wbo-btn wbo-gp-quick-btn" id="wbo-cmb-toggle-visible-btn">全选当前可见</button>
@@ -481,13 +487,13 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                     <div class="wbo-ai-book-list wbo-cmb-pick-list" id="wbo-cmb-pick-list"></div>
                     <div class="wbo-ai-status" id="wbo-cmb-edit-status"></div>
                 </div>
-                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single">
+                <div class="wbo-modal-footer wbo-pinned-footer wbo-ai-footer wbo-ai-footer-single wbo-footer-confirm-first">
+                    <div class="wbo-ai-footer-right">
+                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-save-apply-btn">保存并立即启用</button>
+                        <button type="button" class="wbo-btn" id="wbo-cmb-save-only-btn">仅保存</button>
+                    </div>
                     <div class="wbo-ai-footer-left">
                         <button type="button" class="wbo-btn" id="wbo-cmb-cancel-edit-btn">取消</button>
-                    </div>
-                    <div class="wbo-ai-footer-right">
-                        <button type="button" class="wbo-btn" id="wbo-cmb-save-only-btn">仅保存</button>
-                        <button type="button" class="wbo-btn wbo-btn-primary" id="wbo-cmb-save-apply-btn">保存并立即启用</button>
                     </div>
                 </div>
             </div>
@@ -508,6 +514,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
     const nameInput = modal.querySelector('#wbo-cmb-name-input');
     const seedActiveBtn = modal.querySelector('#wbo-cmb-seed-active-btn');
     const pillsEl = modal.querySelector('#wbo-cmb-pills');
+    const pillRowsEl = modal.querySelector('#wbo-cmb-pill-rows');
+    const groupPillsEl = modal.querySelector('#wbo-cmb-group-pills');
     const filterInput = modal.querySelector('#wbo-cmb-book-filter');
     const toggleVisBtn = modal.querySelector('#wbo-cmb-toggle-visible-btn');
     const pickListEl = modal.querySelector('#wbo-cmb-pick-list');
@@ -620,7 +628,7 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
 
     const syncEditPickedBadge = () => {
         if (pickedBadgeEl) pickedBadgeEl.textContent = `已选 ${pickedSet.size} 本`;
-        const selPillCnt = pillsEl?.querySelector('#wbo-cmb-sel-pill-cnt');
+        const selPillCnt = pillsEl?.querySelector('[data-cmb-pill="__selected__"] .wbo-pill-count');
         if (selPillCnt) selPillCnt.textContent = String(pickedSet.size);
     };
 
@@ -642,9 +650,30 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         toggleVisBtn.textContent = allChecked ? '取消当前可见' : '全选当前可见';
     };
 
+    /** Scroll position per pill: each pill reopens exactly where it was left. */
+    const editPillScrollState = new Map();
+    const editScrollHost = () => {
+        if (!pickListEl) return null;
+        // The pick list itself scrolls once it is taller than its box; otherwise the step scrolls.
+        if (pickListEl.scrollHeight > pickListEl.clientHeight + 1) return pickListEl;
+        return pickListEl.closest('.wbo-step-scroll') || pickListEl;
+    };
+
+    const saveActivePillScroll = () => {
+        const host = editScrollHost();
+        if (!host) return;
+        editPillScrollState.set(activeEditPill, host.scrollTop);
+    };
+
+    const restorePillScroll = (pillId) => {
+        const host = editScrollHost();
+        if (!host) return;
+        host.scrollTop = Math.max(0, Number(editPillScrollState.get(pillId)) || 0);
+    };
+
     const applyEditFilters = () => {
         if (!pickListEl) return;
-        pickListEl.classList.toggle('wbo-cmb-single-group', !['__nonchar__', '__selected__', '__all__'].includes(activeEditPill));
+        pickListEl.classList.toggle('wbo-cmb-single-group', !['__nonchar__', '__selected__', '__all__', '__global__', '__pinned__'].includes(activeEditPill));
         const q = filterInput instanceof HTMLInputElement ? filterInput.value.trim().toLowerCase() : '';
         let visibleCount = 0;
 
@@ -652,6 +681,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             if (!(row instanceof HTMLElement)) return;
             const gid = row.getAttribute('data-cmb-gid') || '';
             const isChar = row.getAttribute('data-cmb-char') === '1';
+            const isGlobalBook = row.getAttribute('data-cmb-global') === '1';
+            const isPinned = row.getAttribute('data-cmb-pinned') === '1';
             const cb = row.querySelector('.wbo-cmb-book-check');
             const bookName = cb instanceof HTMLInputElement ? cb.value : '';
             const hay = row.getAttribute('data-pick-search') || '';
@@ -663,8 +694,14 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                 matchPill = Boolean(bookName && pickedSet.has(bookName));
             } else if (activeEditPill === '__all__') {
                 matchPill = true;
+            } else if (activeEditPill === '__global__') {
+                matchPill = isGlobalBook;
+            } else if (activeEditPill === '__pinned__') {
+                matchPill = isPinned;
             } else {
-                matchPill = gid === activeEditPill;
+                // Inside one concrete group, the already-mounted globals stay out of the way;
+                // character books are never filtered by that rule.
+                matchPill = gid === activeEditPill && (!isGlobalBook || isChar);
             }
 
             const matchSearch = !q || hay.includes(q);
@@ -673,12 +710,20 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             if (show) visibleCount += 1;
         });
 
+        const foldable = activeEditPill === '__all__' || activeEditPill === '__nonchar__';
         pickListEl.querySelectorAll('.wbo-gp-sec').forEach((sec) => {
             if (!(sec instanceof HTMLElement)) return;
             const hasVis = Array.from(sec.querySelectorAll('.wbo-cmb-pick-row')).some(
                 (r) => r instanceof HTMLElement && !r.hidden,
             );
             sec.hidden = !hasVis;
+            const gid = sec.getAttribute('data-cmb-sec') || '';
+            const folded = foldable && Boolean(settings.comboGroupCollapsed?.[gid]);
+            sec.classList.toggle('is-folded', folded);
+            // Only the all / non-character views are foldable; others keep a static heading.
+            sec.classList.toggle('is-static', !foldable);
+            const head = sec.querySelector('[data-cmb-fold]');
+            if (head instanceof HTMLElement) head.setAttribute('aria-expanded', String(!folded));
         });
 
         const emptyEl = pickListEl.querySelector('#wbo-cmb-pick-empty');
@@ -711,34 +756,44 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
             filterInput.value = '';
         }
         activeEditPill = '__nonchar__';
+        editPillScrollState.clear();
         setEditStatus('');
         setPickFeedback('');
 
         const orderedSections = classification.orderedSections || [];
+        const pinnedBooks = classification.pinnedBooks || [];
+        const customSections = orderedSections.filter((section) => section.kind === 'custom' && (section.books?.length || 0) > 0);
+        const charSection = orderedSections.find((section) => section.kind === 'character' && (section.books?.length || 0) > 0);
+        const ungroupedSection = orderedSections.find((section) => section.kind === 'ungrouped' && (section.books?.length || 0) > 0);
+        const activeGlobalCount = [...activeGlobals].filter((name) => classification.byName.has(name)).length;
+
+        const pillHtml = (id, label, count, { dot = '', emphasis = false, active = false } = {}) => `
+            <button type="button" class="wbo-pill${emphasis ? ' is-emphasis' : ''}${active ? ' is-active' : ''}" data-cmb-pill="${esc(id)}" aria-pressed="${active ? 'true' : 'false'}">
+                ${dot}<span>${esc(label)}</span><span class="wbo-pill-count">${count}</span>
+            </button>
+        `;
+
+        // First row: the groups themselves — favorites, the user's own groups, then the leftovers.
+        // Character books live in the second row's own switch, never as a group pill here.
+        if (groupPillsEl) {
+            groupPillsEl.innerHTML = [
+                pinnedBooks.length > 0 ? pillHtml(SPECIAL_GROUPS.PINNED, '★ 已收藏', pinnedBooks.length) : '',
+                ...customSections.map((section) => pillHtml(section.id, section.name, section.books.length, {
+                    dot: `<span class="wbo-pill-dot" style="background:${esc(section.color)}"></span>`,
+                })),
+                ungroupedSection ? pillHtml(ungroupedSection.id, '未分组', ungroupedSection.books.length) : '',
+            ].join('');
+        }
+
+        // Second row: scopes. Picked stays emphasized so it never reads like a group.
         if (pillsEl) {
-            const sectionPills = orderedSections
-                .filter((s) => s.books?.length)
-                .map((s) => `
-                    <button type="button" class="wbo-pill" data-cmb-pill="${esc(s.id)}" aria-pressed="false">
-                        ${s.kind === 'custom' ? `<span class="wbo-pill-dot" style="background:${esc(s.color)}"></span>` : ''}
-                        <span>${esc(s.name)}</span>
-                        <span class="wbo-pill-count">${s.books.length}</span>
-                    </button>
-                `).join('');
-            pillsEl.innerHTML = `
-                <button type="button" class="wbo-pill is-active" data-cmb-pill="__nonchar__" aria-pressed="true">
-                    <span>非角色书</span><span class="wbo-pill-count">${classification.nonCharCount}</span>
-                </button>
-                <button type="button" class="wbo-pill" data-cmb-pill="__selected__" aria-pressed="false">
-                    <span>已选</span><span class="wbo-pill-count" id="wbo-cmb-sel-pill-cnt">${pickedSet.size}</span>
-                </button>
-                ${sectionPills}
-                ${classification.charCount > 0 ? `
-                    <button type="button" class="wbo-pill" data-cmb-pill="__all__" aria-pressed="false">
-                        <span>全部</span><span class="wbo-pill-count">${classification.totalCount}</span>
-                    </button>
-                ` : ''}
-            `;
+            pillsEl.innerHTML = [
+                pillHtml('__selected__', '已选', pickedSet.size, { emphasis: true }),
+                pillHtml('__all__', '全部', classification.totalCount),
+                activeGlobalCount > 0 ? pillHtml('__global__', '全局', activeGlobalCount) : '',
+                pillHtml('__nonchar__', '非角色书', classification.nonCharCount, { active: true }),
+                charSection ? pillHtml(charSection.id, '角色书', charSection.books.length) : '',
+            ].join('');
         }
 
         if (pickListEl) {
@@ -752,6 +807,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                             <label class="wbo-ai-pick-row wbo-cmb-pick-row"
                                 data-cmb-gid="${esc(sec.id)}"
                                 data-cmb-char="${sec.kind === 'character' ? '1' : '0'}"
+                                data-cmb-global="${isLiveGlobal ? '1' : '0'}"
+                                data-cmb-pinned="${b.isPinned ? '1' : '0'}"
                                 data-pick-search="${esc(b.searchableText || b.realName.toLowerCase())}">
                                 <input type="checkbox" class="wbo-cmb-book-check" value="${esc(b.realName)}"${checked}>
                                 <span class="wbo-ai-pick-name" title="${esc(b.realName)}">${esc(b.primaryTitle)}${b.subtitle ? ` <small>${esc(b.subtitle)}</small>` : ''}</span>
@@ -760,11 +817,13 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
                             </label>
                         `;
                     }).join('');
+                    const folded = Boolean(settings.comboGroupCollapsed?.[sec.id]);
                     return `
-                        <div class="wbo-gp-sec" data-cmb-sec="${esc(sec.id)}">
-                            <div class="wbo-gp-sec-head">
+                        <div class="wbo-gp-sec${folded ? ' is-folded' : ''}" data-cmb-sec="${esc(sec.id)}">
+                            <button type="button" class="wbo-gp-sec-toggle wbo-cmb-sec-toggle" data-cmb-fold="${esc(sec.id)}" aria-expanded="${folded ? 'false' : 'true'}">
+                                <i class="fa-solid fa-chevron-down wbo-gp-chev" aria-hidden="true"></i>
                                 <span>${esc(sec.name)} <small>(${sec.books.length})</small></span>
-                            </div>
+                            </button>
                             <div class="wbo-gp-sec-body">${rows}</div>
                         </div>
                     `;
@@ -774,7 +833,8 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
 
         syncEditPickedBadge();
         applyEditFilters();
-
+        const initialScrollHost = editScrollHost();
+        if (initialScrollHost) initialScrollHost.scrollTop = 0;
         if (stepList instanceof HTMLElement) stepList.hidden = true;
         if (stepEdit instanceof HTMLElement) stepEdit.hidden = false;
         if (nameInput instanceof HTMLInputElement && isDesktopAutoFocusAllowed()) {
@@ -933,18 +993,33 @@ function openGlobalCombosModal({ editPresetId = null, initialMode = null, seedCu
         syncEditPickedBadge();
         applyEditFilters();
     });
-    pillsEl?.addEventListener('click', (ev) => {
+    pillRowsEl?.addEventListener('click', (ev) => {
         const btn = ev.target instanceof Element ? ev.target.closest('[data-cmb-pill]') : null;
         if (!btn) return;
-        activeEditPill = btn.getAttribute('data-cmb-pill') || '__nonchar__';
-        pillsEl.querySelectorAll('[data-cmb-pill]').forEach((b) => {
+        const nextPill = btn.getAttribute('data-cmb-pill') || '__nonchar__';
+        if (nextPill === activeEditPill) return;
+        saveActivePillScroll();
+        activeEditPill = nextPill;
+        pillRowsEl.querySelectorAll('[data-cmb-pill]').forEach((b) => {
             const selected = b.getAttribute('data-cmb-pill') === activeEditPill;
             b.classList.toggle('is-active', selected);
             b.setAttribute('aria-pressed', String(selected));
         });
         applyEditFilters();
-        const scroll = pickListEl?.closest('.wbo-step-scroll');
-        if (scroll) scroll.scrollTop = 0;
+        restorePillScroll(activeEditPill);
+    });
+    pickListEl?.addEventListener('click', async (ev) => {
+        const head = ev.target instanceof Element ? ev.target.closest('[data-cmb-fold]') : null;
+        if (!head) return;
+        ev.preventDefault();
+        if (activeEditPill !== '__all__' && activeEditPill !== '__nonchar__') return;
+        const gid = head.getAttribute('data-cmb-fold');
+        if (!gid) return;
+        const next = { ...(settings.comboGroupCollapsed || {}) };
+        next[gid] = !next[gid];
+        settings.comboGroupCollapsed = next;
+        await _callbacks.onMutation({ save: true, uiOnly: true });
+        applyEditFilters();
     });
     pickListEl?.addEventListener('change', (ev) => {
         const cb = ev.target;
@@ -1036,22 +1111,15 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
         ...(settings.groups || []).map((g) => ({ id: g.id, name: g.name, color: g.color || '#5b8def' })),
         { id: SPECIAL_GROUPS.UNGROUPED, name: '未分组', color: '#8c99a6' },
     ];
-    const renderChips = (targetKey, selectedIds) => {
-        const set = new Set(Array.isArray(selectedIds) ? selectedIds : []);
-        return sectionOptions.map((sec) => {
-            const active = set.has(sec.id);
-            return `
-                <button type="button"
-                    class="wbo-local-cat-btn${active ? ' is-selected' : ''}"
+    const renderChips = (targetKey, hiddenIds) => {
+        const set = new Set(Array.isArray(hiddenIds) ? hiddenIds : []);
+        return sectionOptions.map((sec) => `
+                <button type="button" ${excludeChipAttrs(sec, set.has(sec.id))}
                     data-qe-target="${esc(targetKey)}"
-                    data-qe-gid="${esc(sec.id)}"
-                    aria-pressed="${active ? 'true' : 'false'}">
-                    <span class="wbo-local-cat-mark">${active ? '<i class="fa-solid fa-check"></i>' : ''}</span>
-                    <span class="wbo-pill-dot" style="background:${esc(sec.color)}"></span>
-                    <span>${esc(sec.name)}</span>
+                    data-qe-gid="${esc(sec.id)}">
+                    ${excludeChipInnerHtml(sec, set.has(sec.id))}
                 </button>
-            `;
-        }).join('');
+            `).join('');
     };
 
     const backdrop = document.createElement('div');
@@ -1106,17 +1174,17 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             </div>
 
             <div class="wbo-qhub-pane" data-qhub-pane="exclude"${activeHubTab === 'exclude' ? '' : ' hidden'}>
-                <div class="wbo-exclude-tip">勾选下方分组即在对应下拉框中隐藏（默认排除角色世界书）</div>
+                <div class="wbo-exclude-tip">打勾的分组会显示，划掉的分组已排除。点击分组可切换。</div>
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
                         <span class="wbo-exclude-title">全局激活框</span>
-                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                        <span class="wbo-exclude-count" data-qe-count="globalHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.globalHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                     </div>
                     <div class="wbo-exclude-quick-row">
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds" title="恢复默认：仅排除角色世界书">默认(仅角色书)</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="globalHiddenGroupIds" title="恢复默认：只排除角色世界书">默认(仅排除角色书)</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">全部显示</button>
                         <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="globalHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="globalHiddenGroupIds">清空</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="globalHiddenGroupIds">全部排除</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('globalHiddenGroupIds', settings.globalHiddenGroupIds)}</div>
                 </div>
@@ -1124,14 +1192,14 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
                 <div class="wbo-exclude-block">
                     <div class="wbo-exclude-head">
                         <span class="wbo-exclude-title">编辑下拉框</span>
-                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">已排除 ${sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length} / ${sectionOptions.length} 组</span>
+                        <span class="wbo-exclude-count" data-qe-count="editorHiddenGroupIds">${excludeCountText(sectionOptions.filter((s) => (settings.editorHiddenGroupIds || []).includes(s.id)).length, sectionOptions.length)}</span>
                     </div>
                     <div class="wbo-exclude-quick-row">
                         <button type="button" class="wbo-link-btn" data-qe-preset="copy-global" data-qe-scope="editorHiddenGroupIds">同全局</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅角色书</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全选</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="char-only" data-qe-scope="editorHiddenGroupIds">仅排除角色书</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">全部显示</button>
                         <button type="button" class="wbo-link-btn" data-qe-preset="invert" data-qe-scope="editorHiddenGroupIds">反选</button>
-                        <button type="button" class="wbo-link-btn" data-qe-preset="clear" data-qe-scope="editorHiddenGroupIds">清空</button>
+                        <button type="button" class="wbo-link-btn" data-qe-preset="select-all" data-qe-scope="editorHiddenGroupIds">全部排除</button>
                     </div>
                     <div class="wbo-local-cats">${renderChips('editorHiddenGroupIds', settings.editorHiddenGroupIds)}</div>
                 </div>
@@ -1258,15 +1326,12 @@ function openQuickHubPopover(anchorEl, { forceTab = null } = {}) {
             const set = new Set(Array.isArray(cur[key]) ? cur[key] : []);
             pop.querySelectorAll(`[data-qe-target="${key}"]`).forEach((btn) => {
                 const gid = btn.getAttribute('data-qe-gid') || '';
-                const active = set.has(gid);
-                btn.classList.toggle('is-selected', active);
-                btn.setAttribute('aria-pressed', active ? 'true' : 'false');
-                const mark = btn.querySelector('.wbo-local-cat-mark');
-                if (mark) mark.innerHTML = active ? '<i class="fa-solid fa-check"></i>' : '';
+                const sec = sectionOptions.find((s) => s.id === gid);
+                if (sec) syncExcludeChip(btn, sec, set.has(gid));
             });
             const hiddenCnt = sectionOptions.filter((s) => set.has(s.id)).length;
             const cntEl = pop.querySelector(`[data-qe-count="${key}"]`);
-            if (cntEl) cntEl.textContent = `已排除 ${hiddenCnt} / ${sectionOptions.length} 组`;
+            if (cntEl) cntEl.textContent = excludeCountText(hiddenCnt, sectionOptions.length);
         }
     };
 
@@ -1506,7 +1571,17 @@ function openQuickExcludePopover(anchorEl) {
  * @param {string} groupId
  * @param {string} groupName
  */
+let _visPopoverJustClosedGid = '';
+let _visPopoverClosedAt = 0;
+
 function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
+    // Pressing the same eye again closes its own popover, whatever the event order was.
+    const currentBackdrop = document.getElementById('wbo-vis-popover-backdrop');
+    if (currentBackdrop && currentBackdrop.dataset.wboGid === groupId) {
+        closeGroupVisibilityPopover();
+        return;
+    }
+    _visPopoverJustClosedGid = '';
     closeGroupVisibilityPopover();
     if (!_callbacks) return;
     const { settings } = _callbacks.getState();
@@ -1524,19 +1599,33 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
     pop.innerHTML = `
         <div class="wbo-vis-title">${esc(groupName)}</div>
         <label class="wbo-check-line">
-            <input type="checkbox" data-vis-scope="globalHiddenGroupIds"${gHidden ? ' checked' : ''}>
-            <span>全局激活框隐藏</span>
+            <input type="checkbox" data-vis-scope="globalHiddenGroupIds"${gHidden ? '' : ' checked'}>
+            <span>在全局激活框显示</span>
         </label>
         <label class="wbo-check-line">
-            <input type="checkbox" data-vis-scope="editorHiddenGroupIds"${eHidden ? ' checked' : ''}>
-            <span>编辑下拉框隐藏</span>
+            <input type="checkbox" data-vis-scope="editorHiddenGroupIds"${eHidden ? '' : ' checked'}>
+            <span>在编辑下拉框显示</span>
         </label>
     `;
 
     backdrop.appendChild(pop);
+    backdrop.dataset.wboGid = groupId;
     document.body.appendChild(backdrop);
     bindDrawerSafeBubbleGuard(backdrop);
     bindDrawerSafeBubbleGuard(pop);
+
+    // Close on any outside press (the shared bubble guard stops normal bubbling, so listen in capture).
+    // Taps on the eye itself are left to the click handler, which closes it as a second press.
+    const onOutsidePress = (ev) => {
+        if (!backdrop.isConnected) {
+            document.removeEventListener('pointerdown', onOutsidePress, true);
+            return;
+        }
+        const target = ev.target instanceof Element ? ev.target : null;
+        if (target && (pop.contains(target) || anchorBtn.contains(target))) return;
+        closeGroupVisibilityPopover();
+    };
+    document.addEventListener('pointerdown', onOutsidePress, true);
 
     const rect = anchorBtn.getBoundingClientRect();
     const vw = globalThis.innerWidth || document.documentElement.clientWidth || 390;
@@ -1566,7 +1655,7 @@ function openGroupVisibilityPopover(anchorBtn, groupId, groupName) {
             if (!scopeKey) return;
             const cur = _callbacks.getState().settings;
             const set = new Set(Array.isArray(cur[scopeKey]) ? cur[scopeKey] : []);
-            if (cb.checked) {
+            if (!cb.checked) {
                 set.add(groupId);
                 if (cur.showCharBooks) cur.showCharBooks = false;
             } else {

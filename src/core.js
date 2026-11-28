@@ -164,6 +164,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
     adaptMoveEntryPopup: true,
     adaptEnhancedPresetGroups: false,
     overrideEnhancedDropdownStyle: false,
+    // How to decide whether the compatible dropdown-beautify script is in use:
+    // 'auto' = detect it, 'on' = user forces it, 'off' = ignore it.
+    enhancedScriptMode: 'auto',
     showNativeOptgroups: true,
     pinCurrentChatCharBookInEditor: true,
     showNativeCharToggleBtn: true,
@@ -202,7 +205,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
     syncEntryOrderOnDrag: false,
     groupPanelExpanded: false,
     charGroupCollapsed: true,
+    currentCharGroupCollapsed: false,
+    activeGlobalGroupCollapsed: false,
     ungroupedCollapsed: false,
+    comboGroupCollapsed: {},
     dropdownCollapsed: {},
     activeFilterGroupId: SPECIAL_GROUPS.DEFAULT,
     sectionOrder: [SPECIAL_GROUPS.CHARACTER, SPECIAL_GROUPS.UNGROUPED],
@@ -268,6 +274,10 @@ export function normalizeSettings(raw) {
         }));
 
     merged.importOrganize = normalizeImportOrganize(merged.importOrganize, merged.groups);
+
+    if (!['auto', 'on', 'off'].includes(merged.enhancedScriptMode)) {
+        merged.enhancedScriptMode = 'auto';
+    }
 
     for (const dictKey of ['assignments', 'aliases', 'notes', 'charBookOverrides', 'cachedCharBindings', 'dropdownCollapsed', 'bookOrders']) {
         if (!merged[dictKey] || typeof merged[dictKey] !== 'object' || Array.isArray(merged[dictKey])) {
@@ -1830,7 +1840,7 @@ export function classifyWorldbooks({
             if (cfg.aliasTitleMode === 'alias_with_sub' && alias !== realName) {
                 subtitle = realName;
             }
-        } else if (isInCharGroup && cfg.charBookTitleMode !== 'original') {
+        } else if ((isInCharGroup || (isCharBound && !isExcludedFromChar)) && cfg.charBookTitleMode !== 'original') {
             const charTitle = formatCharacterDisplayTitle(realName, charOwners, perCharBooks);
             primaryTitle = charTitle;
             if (cfg.charBookTitleMode === 'char_with_sub' && charTitle !== realName) {
@@ -3044,11 +3054,13 @@ export function analyzeSensitiveOrganizeState({
 
     for (const b of allBooks || []) {
         if (!b?.realName) continue;
-        if (isPotentiallySensitiveTitle(b.realName)) {
+        // Books living in the character group are never sensitive candidates: their titles often
+        // carry in-world wording ("肉", "敏感"…) that would otherwise pull them into an NSFW group.
+        // Books explicitly excluded from the character group keep the normal treatment.
+        const isCharacterBook = Boolean(b.isInCharGroup);
+        if (!isCharacterBook && isPotentiallySensitiveTitle(b.realName)) {
             sensitiveBooks.push(b);
-            if (b.isInCharGroup) {
-                charSensitive.push(b);
-            } else if (b.groupId === SPECIAL_GROUPS.UNGROUPED) {
+            if (b.groupId === SPECIAL_GROUPS.UNGROUPED) {
                 ungroupedSensitive.push(b);
             } else {
                 groupedSensitive.push(b);
