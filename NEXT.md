@@ -1,3 +1,11 @@
+### 置顶标记落到行上、__all__ 永远合法（2026-11-28 · v2.35.107，待验证）
+- 用户报告（v2.35.106）：置顶书仍在全局分组下；点置顶跳到「★已收藏」。
+- 诊断证据：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:script-pinned-bare=3`（裸行移动**执行过**），但紧接着 `enh-globals:block=1,count=1,role=global,pinnedMounted=1` —— 说明**重渲染**又把它收进了全局块；`enh-pill:open=__pinned__,hasMemory=1,remembered=__all__` 说明保存的 `__all__` 被判为非法，回落到已收藏。
+- 修复（`src/native-filter.js`）：
+  - 置顶状态**写到行元素上** `data-wbo-script-pinned="1"`，并在收集与回填两处都以该属性为准；重渲染不会再把它当普通挂载行拖回全局块。`pinProbe` 追加 `dataset` 形态。
+  - `validGroupIds` 永远包含 `__all__`：此前某次渲染没有显式分组时会丢弃它，导致“记住全部却开在已收藏”。
+- **未验证**：仅通过单测 245/245 与 `native-picker-window` 36/36；真机行为待确认。
+
 ### 置顶在全局下拉也生效、点置顶不再跳收藏、↻ 改为从 GitHub 更新插件（2026-11-28 · v2.35.106，待验证）
 - 用户澄清三点：① ↻ 要做的是**从 GitHub 更新插件**（不是页面刷新）；② 「全部 → 关闭 → 重开仍是全部」是他想要的行为，不要再改；③ 置顶书仍在全局分组里，且点置顶会跳到「★已收藏」。
 - 诊断证据（v2.35.105 报告）：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:block=1,count=3,pinnedMounted=3`（3 本置顶书全在全局块里）。

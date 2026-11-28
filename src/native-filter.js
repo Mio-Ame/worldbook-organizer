@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.106';
+export const PLUGIN_VERSION = '2.35.107';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7547,6 +7547,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     }
 
     const validGroupIds = new Set(orderedSections.map((sec) => sec.id));
+    // 「全部」 must always be valid: `__all__` was rejected whenever a render produced no explicit
+    // sections, so reopening ignored the saved pill and fell back to 已收藏.
+    validGroupIds.add(SPECIAL_GROUPS.ALL);
     if (initialPopPinned > 0 || (!isGlobalPopover && _dropdownMemory.activePillGroupId === SPECIAL_GROUPS.PINNED)) {
         validGroupIds.add(SPECIAL_GROUPS.PINNED);
     }
@@ -7748,8 +7751,11 @@ function enhanceCustomDropdownPopover(containerEl) {
             el.getAttribute('aria-pressed') === 'true' ? 'aria:true' : '',
             el.dataset?.pinned === '1' ? 'data:1' : '',
         ]).filter(Boolean);
-        const scriptPinned = pinState.length > 0;
-        if (scriptPinned && _diag.pinProbe.length < 6) _diag.pinProbe.push(pinState.join('+'));
+        // The flag is persisted on the row itself: a later re-render must not lose the fact that the
+        // script pinned this book (that is what kept dragging it back into the globals block).
+        if (pinState.length > 0) optEl.dataset.wboScriptPinned = '1';
+        const scriptPinned = optEl.dataset?.wboScriptPinned === '1' || pinState.length > 0;
+        if (scriptPinned && _diag.pinProbe.length < 6) _diag.pinProbe.push(pinState.join('+') || 'dataset');
         const isMounted = isActiveGlobalName(realName);
         // Script pin wins over "mounted": the user pinned it to keep it on top, so it belongs in the
         // bare rows above the globals block, never inside it.
@@ -8018,7 +8024,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             for (const optEl of mountedAndPinned) {
                 // Script-pinned rows must never be pulled back into the globals block by a later
                 // syncSections() — that refill defeated the pin-priority ordering.
-                if (barePinnedOptions.includes(optEl)) continue;
+                if (barePinnedOptions.includes(optEl) || optEl.dataset?.wboScriptPinned === '1') continue;
                 if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
             }
             // The 已收藏 block belongs to 「全部」 and its own pill only. Deriving this from the pill id
