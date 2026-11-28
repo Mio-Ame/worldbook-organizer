@@ -55,7 +55,7 @@ test('diagnostic report is short, name-free and parseable in dev mode', async t 
             };
         }, realName);
         t.diagnostic(JSON.stringify(result));
-        assert.ok(result.lines >= 6 && result.lines <= 12, `got ${result.lines} lines`);
+        assert.ok(result.lines >= 6 && result.lines <= 14, `got ${result.lines} lines`);
         assert.equal(result.hasHeader, true);
         assert.equal(result.hasRenderPath, true);
         assert.equal(result.hasTitleStats, true);

@@ -390,10 +390,18 @@ export function detectEnhancedScriptSignals() {
  */
 export function isEnhancedScriptActive() {
     const mode = _latestSettings?.enhancedScriptMode || 'auto';
-    if (mode === 'on') return true;
-    if (mode === 'off') return false;
+    if (mode === 'on') {
+        trackDiagEnvironment({ enhancedActive: true });
+        return true;
+    }
+    if (mode === 'off') {
+        trackDiagEnvironment({ enhancedActive: false });
+        return false;
+    }
     const signals = detectEnhancedScriptSignals();
-    return Boolean(signals.scriptTree || signals.styleMarker || signals.runtimeDom);
+    const active = Boolean(signals.scriptTree || signals.styleMarker || signals.runtimeDom);
+    trackDiagEnvironment({ enhancedActive: active });
+    return active;
 }
 
 /**
@@ -1130,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.89';
+export const PLUGIN_VERSION = '2.35.90';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1147,6 +1155,14 @@ const _diag = {
     ui: [],
     /** IME / soft-keyboard signals (the "search box closes while typing, keyboard stays" bug). */
     ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
+    /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
+    scriptFlips: [],
+    /** Theme switches, as `+12.3s <hash>`. */
+    themeFlips: [],
+    /** @type {boolean | null} */
+    lastEnhancedActive: null,
+    /** @type {string} */
+    lastTheme: '',
     foreignRowsUpgraded: 0,
     lastRenderPath: '',
     searchLayoutRuns: 0,
@@ -1188,10 +1204,28 @@ function describeDiagTarget(el) {
 }
 
 /**
- * Record one UI interaction (sanitized) for the detailed diagnostic.
- * @param {string} kind
- * @param {Element | null} target
+ * Track the two environmental flips that make bug reports hard to compare: the compatible
+ * dropdown script being toggled, and the SillyTavern theme being switched mid-session.
+ * @param {{ enhancedActive?: boolean, theme?: string }} state
  */
+function trackDiagEnvironment(state) {
+    const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
+    if (typeof state.enhancedActive === 'boolean') {
+        if (_diag.lastEnhancedActive !== null && _diag.lastEnhancedActive !== state.enhancedActive) {
+            _diag.scriptFlips.push(`+${seconds}s ${state.enhancedActive ? 'on' : 'off'}`);
+            if (_diag.scriptFlips.length > 10) _diag.scriptFlips.shift();
+        }
+        _diag.lastEnhancedActive = state.enhancedActive;
+    }
+    if (typeof state.theme === 'string' && state.theme) {
+        if (_diag.lastTheme && _diag.lastTheme !== state.theme) {
+            _diag.themeFlips.push(`+${seconds}s ${hashDiagLabel(state.theme)}`);
+            if (_diag.themeFlips.length > 10) _diag.themeFlips.shift();
+        }
+        _diag.lastTheme = state.theme;
+    }
+}
+
 function pushDiagUi(kind, target) {
     try {
         // Timestamp every interaction so a report can be read as a timeline ("what happened in
@@ -1384,7 +1418,11 @@ function detectDiagnosticEnv() {
             return _diag.lastRenderPath || 'none-open';
         })(),
         compatDropdownScript: Boolean(hasCompatibleDropdownScript?.()),
-        theme: String(getPowerUserSettings?.()?.theme || ''),
+        theme: (() => {
+            const theme = String(getPowerUserSettings?.()?.theme || '');
+            trackDiagEnvironment({ theme });
+            return theme;
+        })(),
         extensionSettingsKeys: Object.keys(ctx?.extensionSettings || {}).length,
     };
 }
@@ -1475,6 +1513,8 @@ function buildDiagnosticReport(mode = 'short') {
             errors,
             ui: _diag.ui,
             ime: _diag.ime,
+            scriptFlips: _diag.scriptFlips,
+            themeFlips: _diag.themeFlips,
             dom: diagDomSnapshot(),
             trace: _diag.trace,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
@@ -1493,6 +1533,12 @@ function buildDiagnosticReport(mode = 'short') {
         `下拉 折叠记忆${counts.collapsedMemory} 隐藏重复${counts.hiddenDupeRows} 搜索/胶囊${counts.searchBlocks}`,
         `渲染计数 s2行${dom.s2Options ?? 0}/${dom.s2OptionsVisible ?? 0} gr行${dom.grOptions ?? 0}/${dom.grOptionsVisible ?? 0} 搜索头${dom.searchHead ?? 0} 装饰${_diag.decorateRuns}`,
         `输入法 组合${_diag.ime.compositionStart}/${_diag.ime.compositionEnd} 失焦${_diag.ime.blur}(打字中${_diag.ime.blurDuringComposition})` + (env.tauriVersion ? ` | Tauri ${env.tauriVersion}` : ''),
+        // Quick checks: what a support reply needs first — does the title pipeline work, does the
+        // globals block exist, and did the script/theme flip mid-session.
+        `快检 角色书名${titleStats.charTitleIsFileName === 0 ? '正常' : '异常' + titleStats.charTitleIsFileName}`
+            + ` 全局块${([..._diag.trace].reverse().find((line) => line.startsWith('enh-globals:block')) || 'enh-globals:block=?').replace('enh-globals:block=', '=')}`
+            + ` 脚本${_diag.scriptFlips.length ? _diag.scriptFlips.join('→') : '稳定'}`
+            + ` 主题切换${_diag.themeFlips.length}`,
         `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
         `错误 ${errors.length}`,
     ].join('\n');
@@ -7525,8 +7571,18 @@ function enhanceCustomDropdownPopover(containerEl) {
         // If another book is being edited, bring it into view instead of moving it out of its group.
         const editedRow = editedName && editedName !== charBookName ? rowFor(editedName) : null;
         if (editedRow && editedRow !== charRow) {
+            // Never use scrollIntoView here: it also scrolls the page, which pushed the whole
+            // SillyTavern layout (top bar included) out of the viewport.
             requestAnimationFrame(() => {
-                try { editedRow.scrollIntoView?.({ block: 'center' }); } catch { /* ignore */ }
+                try {
+                    const host = findScrollableListEl(optionsHost, containerEl);
+                    if (!(host instanceof HTMLElement)) return;
+                    const rowRect = editedRow.getBoundingClientRect();
+                    const hostRect = host.getBoundingClientRect();
+                    if (rowRect.top >= hostRect.top && rowRect.bottom <= hostRect.bottom) return;
+                    const delta = rowRect.top - hostRect.top - (hostRect.height - rowRect.height) / 2;
+                    host.scrollTop += delta;
+                } catch { /* ignore */ }
             });
             pushDiagTrace('enh-globals:edited-revealed=1');
         }
