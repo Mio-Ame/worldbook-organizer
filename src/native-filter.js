@@ -3102,6 +3102,8 @@ function buildDiagnosticReport(mode = 'short') {
                 ctxWorlds: native.ctxWorlds,
                 ctxSource: native.ctxWorldsSource,
                 rowIds: native.rowIds,
+                // Rendered head order (the field that pinpoints 「文风 → 全局块」 style complaints).
+                groupOrder: native.groupOrder,
                 partial: native.partial,
                 errors: native.errors,
             },
@@ -8140,10 +8142,19 @@ function enhanceOpenGlobalDropdown() {
         if (mountedRows.length > 0) appendGroup(ACTIVE_GLOBAL_SECTION_ID, '已开启的全局世界书', mountedRows);
         if (_activeGlobalPillId !== SPECIAL_GROUPS.ALL) {
             // Mounted books stay available even while another pill is filtered or folded.
-            for (const row of rows) if (!mountedRows.includes(row)) resultsList.append(row);
+            for (const row of rows) {
+                if (mountedRows.includes(row)) {
+                    row.removeAttribute('data-wbo-pill-row');
+                    continue;
+                }
+                // Marks the entered group's rows: the group title is parked right above them.
+                row.setAttribute('data-wbo-pill-row', '1');
+                resultsList.append(row);
+            }
             enforceSelect2GroupOrder(resultsList);
             return;
         }
+        for (const row of rows) row.removeAttribute('data-wbo-pill-row');
         // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
         const pinnedTotal = pinnedRows.length + mountedPinnedCount;
         if (pinnedTotal > 0) {
@@ -8180,14 +8191,27 @@ function enhanceOpenGlobalDropdown() {
         const headingHost = resultsList.parentElement;
         const globalsHead = resultsList.querySelector(`li.select2-results__group[data-wbo-dd-group="${ACTIVE_GLOBAL_SECTION_ID}"]`);
         if (group && globalsHead && _activeGlobalPillId !== SPECIAL_GROUPS.ALL && !searching) {
-            let slot = headingHost.querySelector(':scope > .wbo-global-heading-slot');
+            let slot = headingHost.querySelector(':scope > .wbo-global-heading-slot')
+                || resultsList.querySelector(':scope > .wbo-global-heading-slot');
             if (!(slot instanceof HTMLElement)) {
                 slot = document.createElement('li');
                 slot.className = 'wbo-global-heading-slot';
                 slot.setAttribute('role', 'presentation');
             }
             if (!slot.contains(groupHeading)) slot.append(groupHeading);
-            resultsList.insertBefore(slot, globalsHead.nextElementSibling);
+            // Directly above the entered group's own rows (marked in the last rebuild). Inserting
+            // after the whole globals block put the title BELOW the globals rows but also below the
+            // group's rows; the anchor row keeps it between them.
+            const firstGroupRow = resultsList.querySelector('li[data-wbo-pill-row="1"]');
+            if (firstGroupRow) resultsList.insertBefore(slot, firstGroupRow);
+            else {
+                let anchor = globalsHead.nextElementSibling;
+                while (anchor && !(anchor instanceof HTMLElement && anchor.classList.contains('select2-results__group'))) {
+                    anchor = anchor.nextElementSibling;
+                }
+                if (anchor && anchor !== slot) resultsList.insertBefore(slot, anchor);
+                else resultsList.append(slot);
+            }
         } else if (groupHeading.parentElement !== headingHost) {
             headingHost.insertBefore(groupHeading, resultsList);
         }
