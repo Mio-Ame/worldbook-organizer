@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.128';
+export const PLUGIN_VERSION = '2.35.129';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -6740,6 +6740,12 @@ const _dropdownMemory = {
     pillsExpanded: false,
     /** @type {Record<string, number>} */
     scrollTopByGroup: {},
+    /**
+     * Per-pill fold memory of the 「已开启的全局世界书」 block: `{ [pillId]: expanded }`. Keeps
+     * 文风 › 全局世界书 open/closed across reopenings without a page refresh.
+     * @type {Record<string, boolean>}
+     */
+    isolatedFold: {},
     editorAnchor: null,
 };
 
@@ -7470,8 +7476,12 @@ function enhanceOpenEditorDropdown() {
                 const hiddenByPill = isGroupIsolated && gid !== activePillGroupId && gid !== EDITOR_GLOBALS_GROUP_ID;
                 li.classList.toggle('wbo-dd-group-hidden', hiddenByPill);
                 const forceFold = gid === EDITOR_GLOBALS_GROUP_ID && isGroupIsolated && !globalsIsActivePill;
-                // Folded by default inside another group's pill, but the head click expands it.
-                const foldedGlobalsInGroupView = forceFold && !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID);
+                // Folded by default inside another group's pill, but the head click expands it —
+                // and that choice is remembered per pill across reopening (session memory).
+                const rememberedExpanded = Boolean(_dropdownMemory.isolatedFold[activePillGroupId]);
+                const foldedGlobalsInGroupView = forceFold
+                    && !rememberedExpanded
+                    && !_isolatedFoldOverride.has(EDITOR_GLOBALS_GROUP_ID);
                 const isCollapsed = !searching && (foldedGlobalsInGroupView || isDropdownGroupCollapsed(gid, isGroupIsolated && gid === activePillGroupId));
                 li.classList.toggle('wbo-dd-collapsed', isCollapsed);
             }
@@ -7559,6 +7569,9 @@ function enhanceOpenEditorDropdown() {
         if (globalsInGroupView) {
             if (_isolatedFoldOverride.has(gid)) _isolatedFoldOverride.delete(gid);
             else _isolatedFoldOverride.add(gid);
+            // Remember the choice for this pill, so reopening the dropdown (without refreshing the
+            // page) keeps 文风 › 已开启的全局世界书 expanded exactly as the user left it.
+            _dropdownMemory.isolatedFold[activePillGroupId] = _isolatedFoldOverride.has(gid);
         } else {
             const isolated = !isSearching() && activePillGroupId === gid && gid !== SPECIAL_GROUPS.PINNED && gid !== SPECIAL_GROUPS.ALL;
             toggleDropdownGroupCollapsed(gid, isolated);
@@ -7732,8 +7745,12 @@ function enhanceOpenEditorDropdown() {
         );
         filterBar = built.barEl;
         pillScrollEl = built.scrollEl;
-
-        // Keep dropdown open and NEVER let clicks bubble to `document` (which closes unpinned `#WorldInfo`!)
+        // Keep the horizontal pill position as the user scrolls (not only on close): the pill row is
+        // rebuilt on some syncs, and a missing save reset it to the far left on reopen.
+        pillScrollEl?.addEventListener('scroll', () => {
+            if (!pillScrollEl || pillScrollEl.clientWidth === 0) return;
+            _dropdownMemory.pillBarScrollLeft = pillScrollEl.scrollLeft;
+        }, { passive: true });
         filterBar.addEventListener('mousedown', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -7863,6 +7880,13 @@ function enhanceOpenEditorDropdown() {
             applySavedScrollPositions();
             isRestoringScroll = false;
         }, 180),
+        // Late pass: Select2 sometimes rebuilds the pill row after the first frames, which would
+        // otherwise leave the bar scrolled back to the far left.
+        setTimeout(() => {
+            if (pillScrollEl && pillScrollEl.isConnected && pillScrollEl.clientWidth > 0) {
+                pillScrollEl.scrollLeft = _dropdownMemory.pillBarScrollLeft;
+            }
+        }, 320),
     );
 
     const cleanup = () => {
