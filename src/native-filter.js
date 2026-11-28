@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.98';
+export const PLUGIN_VERSION = '2.35.99';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7494,18 +7494,22 @@ function enhanceCustomDropdownPopover(containerEl) {
     // The 「已开启的全局世界书」 block applies to BOTH dropdowns: native SillyTavern pins those books
     // to the top of the list, and the scripted dropdown has to do the same.
     const mountedAndPinned = [];
+    const barePinnedOptions = [];
     for (const optEl of realOptionNodes) {
         const name = getOptionText(optEl);
         const meta = _latestClassification?.byName?.get(name);
         const realName = meta?.realName || name;
-        // The compatible script has its own 「置顶」: those rows stay where the script put them,
-        // otherwise a pinned book also being global showed up inside 已开启的全局世界书.
+        // The compatible script has its own 「置顶」: those rows are NOT part of the mounted block.
         const scriptPinned = Boolean(optEl.classList?.contains('has-pin')
             && optEl.querySelector('.gr-option-pin.pinned, .gr-option-pin.is-active, .gr-option-pin.pin-active'));
-        const isMounted = isActiveGlobalName(realName) && !scriptPinned;
+        const isMounted = isActiveGlobalName(realName);
         if (isMounted) {
             mountedGlobalOptions.push(optEl);
             if (meta?.isPinned) mountedAndPinned.push(optEl);
+        } else if (scriptPinned && !isGlobalPopover) {
+            // Pinned by the script but not global: show it as a bare row above the globals block,
+            // exactly like the current character's book.
+            barePinnedOptions.push(optEl);
         }
         if (!isGlobalPopover) {
             // 已收藏 lists the pinned books that are NOT mounted; mounted ones stay in the block
@@ -7632,6 +7636,16 @@ function enhanceCustomDropdownPopover(containerEl) {
         } else {
             pushDiagTrace('enh-globals:char-book-pinned=0');
         }
+        // Rows the script pinned but which are not global: bare rows above the globals block.
+        if (barePinnedOptions.length > 0) {
+            const anchorSection = globalsSectionEl || null;
+            for (const row of barePinnedOptions) {
+                if (row === charRow) continue;
+                if (anchorSection) optionsHost.insertBefore(row, anchorSection);
+                else optionsHost.appendChild(row);
+            }
+            pushDiagTrace('enh-globals:script-pinned-bare=' + barePinnedOptions.length);
+        }
         // Order fingerprint: lets a report show what actually leads the list.
         const orderTokens = [...(optionsHost.children || [])].slice(0, 8).map((node) => {
             if (node === charRow) return 'charBook';
@@ -7725,9 +7739,12 @@ function enhanceCustomDropdownPopover(containerEl) {
             for (const optEl of mountedAndPinned) {
                 if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
             }
-            // The 已收藏 block belongs to 「全部」 and its own pill only; inside a single group pill
-            // it used to show up as a stray empty block in every group.
-            favoritesSectionEl.classList.toggle('wbo-dd-group-hidden', isIsolated);
+            // The 已收藏 block belongs to 「全部」 and its own pill only. Deriving this from the pill id
+            // (not from `isIsolated`) keeps it out of every group view, which is what native does:
+            // a favourited book stays pinned inside its own group instead of creating a block.
+            const showFavoritesBlock = activePillGroupId === SPECIAL_GROUPS.ALL
+                || activePillGroupId === SPECIAL_GROUPS.PINNED;
+            favoritesSectionEl.classList.toggle('wbo-dd-group-hidden', !showFavoritesBlock);
         }
         // The origin badge only belongs to the flat favorites list.
         for (const optEl of favoriteOptions) {

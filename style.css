@@ -3314,6 +3314,26 @@ li.wbo-dd-group-hidden,
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
+/* The recommended action: the detailed download clearly reads as the primary choice. */
+.wbo-diag-menu button.is-primary {
+    border-color: color-mix(in srgb, var(--wbo-accent, #6c8cff) 62%, transparent);
+    background: color-mix(in srgb, var(--wbo-accent, #6c8cff) 16%, transparent);
+    font-weight: 600;
+}
+
+.wbo-diag-menu button.is-primary:hover {
+    background: color-mix(in srgb, var(--wbo-accent, #6c8cff) 26%, transparent);
+}
+
+.wbo-diag-menu button.is-primary span {
+    font-weight: 400;
+    opacity: 0.85;
+}
+
+.wbo-diag-menu-note b {
+    font-weight: 600;
+}
+
 .wbo-diag-menu button {
     display: flex;
     flex-direction: column;

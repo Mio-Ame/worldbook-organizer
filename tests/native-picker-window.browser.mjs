@@ -675,8 +675,11 @@ test('preset group switching is offered only when the compatible script is detec
         // Diagnostics open a two-choice sheet on tap (no hover needed on touch devices).
         await cdp.clickSelector('#wbo-modal-diag-btn');
         await waitForCondition(cdp, () => Boolean(document.getElementById('wbo-diag-menu')));
+        // The detailed download is listed first and marked as the recommended action.
         assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#wbo-diag-menu [data-diag]')]
-            .map((btn) => btn.getAttribute('data-diag'))), ['short', 'dev']);
+            .map((btn) => btn.getAttribute('data-diag'))), ['dev', 'short']);
+        assert.equal(await cdp.evalFn(() => document.querySelector('#wbo-diag-menu [data-diag="dev"]')?.classList.contains('is-primary')), true);
+        assert.match(await cdp.evalFn(() => document.querySelector('#wbo-diag-menu .wbo-diag-menu-note')?.textContent || ''), /discord|niviskitten/i);
         // Text must stay readable: never the same colour as the panel background.
         assert.equal(await cdp.evalFn(() => {
             const menu = document.getElementById('wbo-diag-menu');

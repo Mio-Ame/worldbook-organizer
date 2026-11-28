@@ -716,9 +716,9 @@ function openSettingsModal() {
         menu.id = 'wbo-diag-menu';
         menu.className = 'wbo-diag-menu';
         menu.innerHTML = `
-            <button type="button" data-diag="short"><i class="fa-solid fa-clipboard"></i> 复制简要诊断<span>约 10 行，可直接贴 Discord</span></button>
-            <button type="button" data-diag="dev"><i class="fa-solid fa-file-arrow-down"></i> 下载详细诊断<span>生成 .txt，含运行环境与报错</span></button>
-            <div class="wbo-diag-menu-note">都不含任何书名 / 角色名</div>
+            <button type="button" data-diag="dev" class="is-primary"><i class="fa-solid fa-file-arrow-down"></i> 下载详细诊断<span>推荐：生成 .txt，含完整运行环境与操作记录</span></button>
+            <button type="button" data-diag="short"><i class="fa-solid fa-clipboard"></i> 复制简要诊断<span>约 10 行，可直接贴到 Discord</span></button>
+            <div class="wbo-diag-menu-note">反馈请发到 Discord 帖子，或私聊 <b>niviskitten</b>；诊断不含任何书名 / 角色名</div>
         `;
         const maxLeft = Math.max(8, (globalThis.innerWidth || 1024) - 260);
         menu.style.left = `${Math.min(Math.max(8, rect.left), maxLeft)}px`;
