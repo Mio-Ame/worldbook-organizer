@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.94';
+export const PLUGIN_VERSION = '2.35.96';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1240,7 +1240,7 @@ function pushDiagUi(kind, target) {
  * DEV ONLY: a floating button that exports the detailed diagnostic in one tap, so a report does
  * not require opening the settings panel. Flip to false before merging into main.
  */
-const DEV_QUICK_DIAG_BALL = true;
+const DEV_QUICK_DIAG_BALL = false;
 
 function installQuickDiagBall() {
     if (!DEV_QUICK_DIAG_BALL || typeof document === 'undefined') return;
