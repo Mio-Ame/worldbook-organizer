@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.87';
+export const PLUGIN_VERSION = '2.35.88';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7504,9 +7504,25 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }
         if (currentName) {
+            const meta = findMetaByAnyName(currentName);
+            const targetName = meta?.realName || currentName;
+            // Move the row of the edited book to the very top instead of copying it, and let the
+            // placeholder line carry its title (the script does the same natively).
+            const currentRow = realOptionNodes.find((row) => {
+                const rowName = resolveEnhancedRowMeta(row)?.realName || getOptionText(row);
+                return rowName && (rowName === targetName || matchKnownWorldName(rowName) === targetName);
+            });
+            if (currentRow) {
+                const anchor = optionsHost.children?.[placeholders.length] || null;
+                if (anchor && anchor !== currentRow) optionsHost.insertBefore(currentRow, anchor);
+                else if (!anchor && optionsHost.lastElementChild !== currentRow) optionsHost.appendChild(currentRow);
+                pushDiagTrace('enh-globals:current-moved=1');
+            } else {
+                pushDiagTrace('enh-globals:current-moved=0');
+            }
             for (const ph of placeholders) {
-                if ((ph.textContent || '').includes(currentName)) continue;
-                ph.textContent = currentName;
+                if ((ph.textContent || '').includes(meta?.primaryTitle || currentName)) continue;
+                ph.textContent = meta?.primaryTitle || currentName;
             }
             pushDiagTrace('enh-globals:placeholder-titled=1');
         }

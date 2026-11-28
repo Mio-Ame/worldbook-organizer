@@ -1,3 +1,12 @@
+### 当前书「移动」到最顶（不是复制）+ 更宽松的行匹配（2026-11-28 · v2.35.88）
+- 用户 v2.35.87 反馈：当前角色世界书仍在「已收藏」下方，且「选择以编辑」没被替换。诊断里 `enh-globals:placeholder-titled=1` 说明我们改的是**另一行**占位，不是脚本显示的那行。
+- 修复（`src/native-filter.js`）：
+  - 找行改用 `resolveEnhancedRowMeta(row)?.realName || getOptionText(row)`，再用 `matchKnownWorldName()` 兜底前缀匹配，避免「名字对不上 → 什么都没动」。
+  - 行为改为**移动**该行到 `children[placeholders.length]`（提示行正下方、所有块之上），不再另建行；trace 分 `enh-globals:current-moved=1|0`。
+  - 占位行文案继续同步为 `meta.primaryTitle`。
+  - `insertBefore` 的锚点为空时改用 `appendChild`（mock DOM 下 undefined 锚点会抛错）。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 占位行承担当前书名、诊断时间戳、dev 悬浮球（2026-11-28 · v2.35.87）
 - 用户反馈：① 当前角色世界书又出现在「已收藏」下方，按脚本逻辑应当**替换**「选择以编辑」这一行而不是另起一行；② 希望 dev 版加一个悬浮球直接导出诊断（main 不需要）；③ 诊断里的操作要不要带时间。
 - 修复（`src/native-filter.js`）：
