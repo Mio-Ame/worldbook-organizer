@@ -1,3 +1,11 @@
+### 世界书抽屉全程监控 + 孤儿面板自动清理（2026-11-28 · v2.35.97）
+- 用户反馈（v2.35.93 报告）：点全局位置 → 抽屉被关，但插件下拉**残留**在那里；并问诊断有没有监控抽屉。答：之前只在「打开下拉时」临时装了守卫，**没有全程监控**。
+- 修复（`src/native-filter.js`）：
+  - 新增 `installDrawerWatcher()`，启动时对 `#WorldInfo` 的 class 做**整会话**观察：每次开/关都写 `drawer:open@+12.3s` / `drawer:closed@+45.6s`；
+  - 抽屉从「开」变「关」后延迟 80ms 复查（避开「点开→宿主关→立刻重开」的瞬时抖动），若仍关闭且存在 `.gr-container-enhanced.open` / `#gr-global-dropdown-container.open`，记 `drawer:popover-orphan=1` 并 `closeAllOpenWorldDropdowns()` 清掉残留面板；
+  - `startNativeObservers()` 启动时安装一次（幂等，`drawer._wboDrawerWatcher` 去重）。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
 ### 已收藏视图的计数/内容/说明三处错位修正（2026-11-28 · v2.35.96）
 - 用户反馈（v2.35.95）：① 胶囊标 3 本、「已收藏」分组内却有 5 本；② 在「全部」里展开已收藏分组看不到任何书；③ 说明写「其中 2 本已全局，显示在上方」，但那 2 本实际仍显示在已收藏里。
 - 根因：上一版为了让「已收藏」里也能关闭全局书，把 `mountedAndPinned` 追加进了已收藏列表，同时把计数改成 `favoriteOptions + mountedAndPinned`，但胶囊计数仍取非全局收藏数（3）；且已收藏分组体只在「已收藏」胶囊激活时填充，所以在「全部」里展开是空的。

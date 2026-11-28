@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.96';
+export const PLUGIN_VERSION = '2.35.97';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1234,6 +1234,39 @@ function pushDiagUi(kind, target) {
         _diag.ui.push(`+${seconds}s ${kind}:${describeDiagTarget(target)}`);
         if (_diag.ui.length > 40) _diag.ui.shift();
     } catch { /* logging must never break the UI */ }
+}
+
+/**
+ * Watch the worldbook drawer for the whole session: record every open/close with a timestamp, and
+ * close orphaned plugin popovers when the drawer goes away (they used to stay floating).
+ */
+function installDrawerWatcher() {
+    if (typeof document === 'undefined') return;
+    const drawer = document.getElementById('WorldInfo');
+    if (!drawer || drawer._wboDrawerWatcher) return;
+    _diag.lastDrawerOpen = drawer.classList.contains('openDrawer');
+    let wasOpen = _diag.lastDrawerOpen;
+    const observer = new MutationObserver(() => {
+        const open = drawer.classList.contains('openDrawer');
+        if (open === wasOpen) return;
+        const closedFromOpen = wasOpen && !open;
+        wasOpen = open;
+        _diag.lastDrawerOpen = open;
+        const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
+        pushDiagTrace(`drawer:${open ? 'open' : 'closed'}@+${seconds}s`);
+        if (!closedFromOpen) return;
+        // Defer: an opening click often closes then immediately reopens the drawer, and closing the
+        // popover in the same task killed the one the user just opened.
+        setTimeout(() => {
+            if (drawer.classList.contains('openDrawer')) return;
+            const orphan = document.querySelector('.gr-container-enhanced.open, #gr-global-dropdown-container.open');
+            if (!orphan) return;
+            pushDiagTrace('drawer:popover-orphan=1');
+            try { closeAllOpenWorldDropdowns(); } catch { /* ignore */ }
+        }, 80);
+    });
+    observer.observe(drawer, { attributes: true, attributeFilter: ['class'] });
+    drawer._wboDrawerWatcher = observer;
 }
 
 /**
@@ -8448,6 +8481,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     if (typeof globalThis.window !== 'undefined') {
         globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
         installQuickDiagBall();
+        installDrawerWatcher();
         // Sanitized UI log: enough to replay a broken interaction, no names.
         const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
         const logKey = (event) => pushDiagUi(`key:${String(event.key || '').slice(0, 8)}`, event.target instanceof Element ? event.target : null);
