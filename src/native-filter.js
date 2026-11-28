@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.118';
+export const PLUGIN_VERSION = '2.35.119';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1327,152 +1327,7 @@ function installDrawerWatcher() {
     drawer._wboDrawerWatcher = observer;
 }
 
-/**
- * DEV ONLY: a floating button that exports the detailed diagnostic in one tap, so a report does
- * not require opening the settings panel. Flip to false before merging into main.
- */
-const DEV_QUICK_DIAG_BALL = true;
 
-function installQuickDiagBall() {
-    if (!DEV_QUICK_DIAG_BALL || typeof document === 'undefined') return;
-    if (document.getElementById('wbo-quick-diag')) return;
-    const btn = document.createElement('button');
-    btn.id = 'wbo-quick-diag';
-    btn.type = 'button';
-    btn.title = '导出世界书插件诊断（单击=详细，双击=简短）';
-    btn.textContent = '🩺';
-    Object.assign(btn.style, {
-        position: 'fixed',
-        right: '14px',
-        bottom: '110px',
-        width: '44px',
-        height: '44px',
-        borderRadius: '50%',
-        border: '1px solid rgba(128, 128, 128, 0.45)',
-        background: 'rgba(32, 34, 40, 0.86)',
-        color: '#fff',
-        fontSize: '20px',
-        lineHeight: '1',
-        zIndex: '100095',
-        cursor: 'pointer',
-        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-    });
-    let lastTap = 0;
-    btn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        const now = Date.now();
-        const mode = now - lastTap < 600 ? 'short' : 'dev';
-        lastTap = now;
-        try {
-            const report = buildDiagnosticReport(mode);
-            const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
-            const url = URL.createObjectURL(blob);
-            const link = document.createElement('a');
-            link.href = url;
-            link.download = `wbo-diagnostic-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-            document.body.append(link);
-            link.click();
-            link.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 2000);
-        } catch { /* never break the UI for a diagnostic export */ }
-    });
-    document.body.append(btn);
-
-    // Second action: refresh the plugin without opening SillyTavern's own panel. Re-runs the
-    // observers and re-renders whatever popover is currently open.
-    const refresh = document.createElement('button');
-    refresh.id = 'wbo-quick-refresh';
-    refresh.type = 'button';
-    refresh.title = '重新扫描并刷新插件（无需打开酒馆设置）';
-    refresh.textContent = '↻';
-    Object.assign(refresh.style, {
-        position: 'fixed',
-        right: '16px',
-        bottom: '160px',
-        width: '38px',
-        height: '38px',
-        borderRadius: '50%',
-        border: '1px solid rgba(128, 128, 128, 0.45)',
-        background: 'rgba(32, 34, 40, 0.86)',
-        color: '#fff',
-        fontSize: '17px',
-        lineHeight: '1',
-        zIndex: '100095',
-        cursor: 'pointer',
-        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-    });
-    refresh.addEventListener('click', (event) => {
-        event.stopPropagation();
-        event.preventDefault();
-        pushDiagTrace('ball:update-plugin');
-        // Actually UPDATE the extension from GitHub through SillyTavern's own API, so the user does
-        // not have to open the Extensions panel and click "check for updates" by hand.
-        void (async () => {
-            const folder = (() => {
-                const script = [...document.querySelectorAll('script[src]')]
-                    .map((el) => el.getAttribute('src') || '')
-                    .find((src) => src.includes('worldbook-organizer'));
-                const match = script?.match(/(third-party\/[^/]+|scripts\/[^/]+|[^/]+)\/index\.js/);
-                return match ? match[1] : 'third-party/worldbook-organizer';
-            })();
-            try {
-                const response = await fetch('/api/extensions/update', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ extensionName: folder }),
-                });
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json().catch(() => ({}));
-                pushDiagTrace('ball:update-done,upToDate=' + (data?.isUpToDate ? 1 : 0));
-                if (data?.isUpToDate) {
-                    showInlineHint('已是最新版本');
-                } else {
-                    showInlineHint('更新已下载，正在重载…');
-                    setTimeout(() => globalThis.location?.reload?.(), 1200);
-                }
-            } catch (error) {
-                pushDiagTrace('ball:update-failed');
-                showInlineHint('更新失败：' + String(error?.message || error).slice(0, 40));
-            }
-        })();
-        refresh.animate?.([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 420 });
-    });
-    document.body.append(refresh);
-}
-
-/**
- * Small transient line near the buttons (no alert, no modal).
- * @param {string} text
- */
-function showInlineHint(text) {
-    try {
-        const hint = document.createElement('div');
-        hint.className = 'wbo-inline-hint';
-        hint.textContent = text;
-        Object.assign(hint.style, {
-            position: 'fixed',
-            right: '14px',
-            bottom: '206px',
-            maxWidth: '240px',
-            padding: '6px 10px',
-            borderRadius: '8px',
-            background: 'rgba(32, 34, 40, 0.92)',
-            color: '#fff',
-            fontSize: '12px',
-            zIndex: '100095',
-            pointerEvents: 'none',
-        });
-        document.body.append(hint);
-        setTimeout(() => hint.remove(), 2400);
-    } catch { /* ignore */ }
-}
 
 /**
  * The host closes an unpinned drawer on any document click, which fires while the opening click
@@ -1566,12 +1421,34 @@ function collectNativeEntryDiagnostics() {
             result.listClass = String(list.className || '').slice(0, 64);
             result.decoratedByGroups = /weg-/.test(String(list.className || ''));
             result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
-            const rows = [...list.querySelectorAll('.world_entry[uid]')];
+            // Row detection must not assume one ST layout: some rows carry `uid`, some are plain
+            // `.world_entry`, older builds use direct children of the list.
+            const rowCandidates = [
+                ...list.querySelectorAll('.world_entry[uid]'),
+                ...list.querySelectorAll('.world_entry'),
+                ...list.querySelectorAll(':scope > div'),
+            ];
+            const rows = [...new Set(rowCandidates)].filter((row) => row instanceof HTMLElement);
+            result.rowDetection = {
+                withUid: list.querySelectorAll('.world_entry[uid]').length,
+                worldEntry: list.querySelectorAll('.world_entry').length,
+                directChildren: list.querySelectorAll(':scope > div').length,
+                listChildTags: [...list.children].slice(0, 6)
+                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 24)}`),
+            };
             result.rows = rows.length;
             result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
-            const buttonSel = 'button, .menu_button, [class*="copy" i], [class*="move" i], [class*="transfer" i], [title*="复制"], [title*="转移"]';
+            const buttonSel = 'button, .menu_button, [data-action], [class*="copy" i], [class*="move" i], [class*="transfer" i], [class*="duplicate" i], i.fa-solid, i.fa-regular, [title]';
+            // Structural dump (tag/class only, never text) so an unknown ST version is still readable.
+            result.rowShape = rows.slice(0, 2).map((row) => ({
+                cls: String(row.className || '').slice(0, 48),
+                children: [...row.children].slice(0, 8)
+                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 26)}`),
+                buttons: [...row.querySelectorAll(buttonSel)].slice(0, 10)
+                    .map((btn) => `${btn.tagName.toLowerCase()}.${String(btn.className || '').slice(0, 26)}${btn.getAttribute('title') ? '[t]' : ''}`),
+            }));
             result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
-                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || btn.textContent || '').trim().slice(0, 8)}`));
+                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || '').trim().slice(0, 8)}`));
             const probeBtn = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat().find((btn) => btn.getClientRects().length > 0);
             if (probeBtn) {
                 const rect = probeBtn.getBoundingClientRect();
@@ -1948,6 +1825,7 @@ function buildDiagnosticReport(mode = 'short') {
             const lastAction = _diag.nativeActions[_diag.nativeActions.length - 1];
             return `原生条目 分组${native.entryGroupsEnabled ? '开' : '关'}`
                 + ` 列表${native.listPresent ? '有' : '无'}行${native.rows ?? 0}`
+                + (native.rowDetection ? `(uid${native.rowDetection.withUid}/entry${native.rowDetection.worldEntry}/child${native.rowDetection.directChildren})` : '')
                 + ` 行按钮${(native.rowButtons?.[0] || []).length}`
                 + ` 命中${native.hitOwnsButton === undefined ? '未测' : (native.hitOwnsButton ? '按钮' : native.hitClass || 'none')}`
                 + ` 已隐藏${native.detachedOptions ?? 0}`
@@ -8991,7 +8869,6 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     // through the settings panel (both never emit a book, character or group name).
     if (typeof globalThis.window !== 'undefined') {
         globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
-        installQuickDiagBall();
         installDrawerWatcher();
         // Sanitized UI log: enough to replay a broken interaction, no names.
         const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
