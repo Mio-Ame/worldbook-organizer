@@ -999,6 +999,30 @@ function escHtml(str) {
  * never loses track of hidden options if upstream modules aren't available).
  * @returns {string[]}
  */
+/**
+ * Put every option we hid back into its <select>.
+ * SillyTavern's native entry actions (移动 / 复制) build their target list from these selects, so a
+ * detached book made those actions fail silently.
+ */
+export function restoreAllDetachedOptions() {
+    let restored = false;
+    const putBack = (select, map) => {
+        if (!(select instanceof HTMLSelectElement)) return;
+        for (const [name, option] of [...map.entries()]) {
+            if (option instanceof HTMLOptionElement) select.appendChild(option);
+            map.delete(name);
+            restored = true;
+        }
+    };
+    putBack(document.getElementById('world_info'), _globalDetachedMap);
+    putBack(document.getElementById('world_editor_select'), _editorDetachedMap);
+    if (restored) {
+        _lastGlobalSignature = null;
+        _lastEditorSignature = null;
+    }
+    return restored;
+}
+
 export function getDetachedWorldNames() {
     return [...new Set([..._globalDetachedMap.keys(), ..._editorDetachedMap.keys()])];
 }
@@ -1139,7 +1163,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.108';
+export const PLUGIN_VERSION = '2.35.110';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -8836,6 +8860,18 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             pushDiagUi(`key:${navigation.includes(event.key) ? event.key : 'text'}`, event.target instanceof Element ? event.target : null);
         };
         document.addEventListener('pointerdown', logDown, true);
+            // Native entry actions (移动 / 复制) build their target list from the <select>s; put back
+            // any option we hid before the host's own handler runs.
+            if (!globalThis.window.__wboNativeEntryRestoreBound) {
+                globalThis.window.__wboNativeEntryRestoreBound = true;
+                document.addEventListener('pointerdown', (event) => {
+                    const target = event.target instanceof Element ? event.target : null;
+                    if (!target?.closest('#world_popup_entries_list')) return;
+                    try {
+                        if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored');
+                    } catch { /* never block the native click */ }
+                }, true);
+            }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
         // report can only be proven with composition + blur counters.
