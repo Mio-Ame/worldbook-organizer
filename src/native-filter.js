@@ -317,6 +317,9 @@ function ensureSelect2RowsHavePinBtn(resultsList) {
 const _globalDetachedMap = new Map();
 /** @type {Map<string, HTMLOptionElement>} */
 const _editorDetachedMap = new Map();
+/** Original index of each detached option, so a restore keeps the host's index↔world_names mapping. */
+const _globalDetachedIndex = new Map();
+const _editorDetachedIndex = new Map();
 /** @type {WeakMap<HTMLSelectElement, { vw: number, multiple: boolean, metrics: Record<string, string> }>} */
 const _nativeAppearanceCache = new WeakMap();
 
@@ -1006,16 +1009,26 @@ function escHtml(str) {
  */
 export function restoreAllDetachedOptions() {
     let restored = false;
-    const putBack = (select, map) => {
+    const putBack = (select, map, indexMap) => {
         if (!(select instanceof HTMLSelectElement)) return;
-        for (const [name, option] of [...map.entries()]) {
-            if (option instanceof HTMLOptionElement) select.appendChild(option);
+        // Reinsert by remembered index (ascending) so the host's index → world_names mapping survives.
+        const entries = [...map.entries()]
+            .map(([name, option]) => ({ name, option, index: indexMap.get(name) ?? Number.MAX_SAFE_INTEGER }))
+            .sort((a, b) => a.index - b.index);
+        for (const { name, option, index } of entries) {
+            if (option instanceof HTMLOptionElement) {
+                const anchor = select.options[Math.max(0, Math.min(index, select.options.length))] || null;
+                if (anchor && anchor !== option && anchor.parentElement === select) select.insertBefore(option, anchor);
+                else if (!anchor) select.appendChild(option);
+                else select.insertBefore(option, anchor);
+            }
             map.delete(name);
+            indexMap.delete(name);
             restored = true;
         }
     };
-    putBack(document.getElementById('world_info'), _globalDetachedMap);
-    putBack(document.getElementById('world_editor_select'), _editorDetachedMap);
+    putBack(document.getElementById('world_info'), _globalDetachedMap, _globalDetachedIndex);
+    putBack(document.getElementById('world_editor_select'), _editorDetachedMap, _editorDetachedIndex);
     if (restored) {
         _lastGlobalSignature = null;
         _lastEditorSignature = null;
@@ -1163,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.116';
+export const PLUGIN_VERSION = '2.35.117';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1551,6 +1564,37 @@ function collectNativeEntryDiagnostics() {
                 result.hitTag = hit ? hit.tagName.toLowerCase() : 'none';
                 result.hitClass = String(hit?.className || '').slice(0, 48);
                 result.hitOwnsButton = Boolean(hit && (hit === probeBtn || probeBtn.contains(hit)));
+                result.probePointerEvents = getComputedStyle(probeBtn).pointerEvents;
+                result.probeDisabled = Boolean(probeBtn).valueOf() && (probeBtn.disabled === true || probeBtn.getAttribute('aria-disabled') === 'true');
+                const chain = [];
+                let node = hit;
+                for (let depth = 0; depth < 3 && node instanceof Element; depth += 1) {
+                    chain.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 24)}`);
+                    node = node.parentElement;
+                }
+                result.hitChain = chain;
+            }
+            // Layout context: a sticky header or a zero-height scroller explains a blocked hit too.
+            result.listScrollTop = Math.round(list.scrollTop || 0);
+            result.listClientHeight = Math.round(list.clientHeight || 0);
+            result.listScrollHeight = Math.round(list.scrollHeight || 0);
+            const sticky = list.querySelector('.weg-native-list-sticky, .weg-native-sticky-group');
+            if (sticky instanceof HTMLElement) {
+                result.stickyPointerEvents = getComputedStyle(sticky).pointerEvents;
+                result.stickyZIndex = getComputedStyle(sticky).zIndex;
+            }
+            const rowHit = (() => {
+                const row = rows.find((item) => item.getClientRects().length > 0);
+                if (!row) return null;
+                const r = row.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + Math.min(24, r.width / 2), r.top + r.height / 2);
+                return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 20)}${row.contains(hit) ? ':row' : ':foreign'}` : 'none';
+            })();
+            result.rowCenterHit = rowHit;
+            if (popup) {
+                const pr = popup.getBoundingClientRect();
+                result.popupRect = [Math.round(pr.left), Math.round(pr.top), Math.round(pr.width), Math.round(pr.height)].join(',');
+                result.popupDisplay = getComputedStyle(popup).display;
             }
         }
         const editorSel = document.getElementById('world_editor_select');
@@ -2399,6 +2443,9 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         if (visible) {
             visibleOpts.push(opt);
         } else {
+            // Remember the original index: SillyTavern maps option index ↔ world_names, so restoring
+            // must put the option back where it was instead of appending it at the end.
+            _globalDetachedIndex.set(realName, [...selectEl.options].indexOf(opt));
             opt.remove();
             _globalDetachedMap.set(realName, opt);
         }
@@ -2558,6 +2605,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             }
         } else {
             delete opt.dataset.wboEditing;
+            _editorDetachedIndex.set(realName, [...selectEl.options].indexOf(opt));
             opt.remove();
             _editorDetachedMap.set(realName, opt);
         }

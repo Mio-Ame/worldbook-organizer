@@ -1,3 +1,15 @@
+### 方案A：按原索引恢复 + 诊断再补强（2026-11-28 · v2.35.117，dev 与 main 同步）
+- 方案A（顺序安全）：新增 `_globalDetachedIndex` / `_editorDetachedIndex`，detach 时记录 `<option>` 原索引；`restoreAllDetachedOptions()` 按索引**升序插回原位**（`insertBefore` 到 `select.options[index]`），不再 `appendChild` 到末尾。这样酒馆的「索引 ↔ world_names」映射不被打乱，风险与现状一致。
+- 诊断补强（一次性采齐，避免再打扰用户）：`collectNativeEntryDiagnostics()` 追加
+  - `probePointerEvents` / `probeDisabled`：探针按钮的 `pointer-events` 与禁用态；
+  - `hitChain`：命中元素起向上 3 层的 `tag.class`（定位“谁盖住了按钮”）；
+  - `listScrollTop / listClientHeight / listScrollHeight`：列表滚动与可视高度；
+  - `stickyPointerEvents / stickyZIndex`：条目分组吸顶栏的指针事件与层级；
+  - `rowCenterHit`：行中心点的命中元素，并标注是否属于该行（`:row` / `:foreign`）；
+  - `popupRect / popupDisplay`：原生条目弹窗的位置尺寸与显示状态。
+- 已有：`entryGroupsEnabled`、`decoratedByGroups`、`stickyHeadings`、`rowButtons`、`editorOptions/globalOptions/detachedOptions/ctxWorlds`、点击前后 `rows` 对比（`nativeActions`）。
+- 验证：单测 247/247；`native-editor-titles` 12/12。
+
 ### 诊断新增「原生条目动作」专章（2026-11-28 · dev v2.35.116）
 - 背景：用户反馈**原生世界书界面里，条目列表每行（不展开也有）的「复制 / 转移」点不动**。只给一次诊断日志机会，所以这版把相关证据一次性采齐。
 - 新增 `collectNativeEntryDiagnostics()`（详细 JSON 的 `nativeEntries`）：
