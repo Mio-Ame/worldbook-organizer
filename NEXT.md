@@ -1,3 +1,13 @@
+### 老版本用户的原生「移动 / 复制」失效：判定与免打扰修复（2026-11-28 · v2.35.112）
+- 背景：反馈者仍在用**旧 main（≈v2.35.16 及更早）**，且不希望被要求做诊断。
+- 代码核对（`git show 0893235:src/native-filter.js`）：老版本同样使用 `_globalDetachedMap` / `_editorDetachedMap` **把 `<option>` 从 select 里摘掉**来隐藏世界书；而酒馆原生「移动 / 复制」的目标书列表正是从这些 select 读取。**被隐藏的书不在列表里 → 目标选不到 → 按钮“点了没反应”**。这与反馈一致，且与用户机器无关，只与“隐藏了多少书”有关。
+- 修复（`src/native-filter.js`，v2.35.110 起，本版加强）：
+  - `restoreAllDetachedOptions()` 把隐藏的 option 全部放回；
+  - 触发时机从“点条目列表”扩展为：**原生条目面板（`#world_popup`）一打开**就恢复（`MutationObserver` 监听其 style/class），以及面板内任意 `pointerdown` 再兜一次；
+  - 恢复后下一次同步会按规则重新隐藏，插件视图不受影响；trace 记 `native-entry:options-restored@popup-open|pointerdown`。
+- 给运营/反馈者的口径（无需打扰用户）：**升级插件即可**，不需要跑诊断；临时规避办法是把「显示角色书」打开，被隐藏的书重新出现在候选里，移动/复制即可用。
+- 验证：单测 247/247。
+
 ### 关键事件不再被 trace 环形缓冲挤掉（2026-11-28 · v2.35.111）
 - 用户提问：让反馈者“先点复制/移动，再打开插件面板导出诊断”，还能不能记录到？
 - 结论：能，trace 常驻内存、插件随页面加载就开始记录；但原来 `trace` 只保留最近 24 条，用户中间多点几次就可能把 `native-entry:options-restored` 挤掉。

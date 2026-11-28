@@ -1163,7 +1163,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.111';
+export const PLUGIN_VERSION = '2.35.112';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -8870,18 +8870,33 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             pushDiagUi(`key:${navigation.includes(event.key) ? event.key : 'text'}`, event.target instanceof Element ? event.target : null);
         };
         document.addEventListener('pointerdown', logDown, true);
-            // Native entry actions (移动 / 复制) build their target list from the <select>s; put back
-            // any option we hid before the host's own handler runs.
-            if (!globalThis.window.__wboNativeEntryRestoreBound) {
-                globalThis.window.__wboNativeEntryRestoreBound = true;
-                document.addEventListener('pointerdown', (event) => {
-                    const target = event.target instanceof Element ? event.target : null;
-                    if (!target?.closest('#world_popup_entries_list')) return;
-                    try {
-                        if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored');
-                    } catch { /* never block the native click */ }
-                }, true);
-            }
+        // Native entry actions (移动 / 复制) build their target list from the <select>s. Restore hidden
+        // options as soon as the native entry panel opens, and again right before any click inside it,
+        // so the target list is complete without the user doing anything special.
+        if (!globalThis.window.__wboNativeEntryRestoreBound) {
+            globalThis.window.__wboNativeEntryRestoreBound = true;
+            const restoreForNative = (stage) => {
+                try {
+                    if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored@' + stage);
+                } catch { /* never block the native UI */ }
+            };
+            document.addEventListener('pointerdown', (event) => {
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target?.closest('#world_popup, #world_popup_entries_list')) return;
+                restoreForNative('pointerdown');
+            }, true);
+            const popupWatcher = new MutationObserver(() => {
+                const popup = document.getElementById('world_popup');
+                if (!popup || popup.style.display === 'none') return;
+                restoreForNative('popup-open');
+            });
+            const attachPopupWatcher = () => {
+                const popup = document.getElementById('world_popup');
+                if (popup) popupWatcher.observe(popup, { attributes: true, attributeFilter: ['style', 'class'] });
+            };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachPopupWatcher, { once: true });
+            else attachPopupWatcher();
+        }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
         // report can only be proven with composition + blur counters.
