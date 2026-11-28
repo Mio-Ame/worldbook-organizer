@@ -1163,7 +1163,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.115';
+export const PLUGIN_VERSION = '2.35.116';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1198,6 +1198,8 @@ const _diag = {
     pinProbe: [],
     /** Key breadcrumbs kept outside the ring buffer (native entry actions, drawer, ball, sync). */
     highlights: [],
+    /** Clicks on native entry controls and whether the count changed afterwards. */
+    nativeActions: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1516,6 +1518,57 @@ function pushDiagTrace(label) {
 }
 
 /**
+ * Snapshot of the NATIVE worldbook entry list: whether 条目分组 is on, how many rows exist, which
+ * buttons each row carries, and — the decisive part — which element actually receives a click at the
+ * centre of the first row's button. If that is not the button, something covers it.
+ * @returns {Record<string, any>}
+ */
+function collectNativeEntryDiagnostics() {
+    const result = { available: false };
+    try {
+        const settings = _latestSettings || {};
+        const popup = document.getElementById('world_popup');
+        const list = document.getElementById('world_popup_entries_list');
+        result.entryGroupsEnabled = settings.entryGroupsEnabled === true;
+        result.popupVisible = Boolean(popup && getComputedStyle(popup).display !== 'none');
+        result.listPresent = Boolean(list);
+        if (list) {
+            result.listClass = String(list.className || '').slice(0, 64);
+            result.decoratedByGroups = /weg-/.test(String(list.className || ''));
+            result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
+            const rows = [...list.querySelectorAll('.world_entry[uid]')];
+            result.rows = rows.length;
+            result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+            const buttonSel = 'button, .menu_button, [class*="copy" i], [class*="move" i], [class*="transfer" i], [title*="复制"], [title*="转移"]';
+            result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
+                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || btn.textContent || '').trim().slice(0, 8)}`));
+            const probeBtn = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat().find((btn) => btn.getClientRects().length > 0);
+            if (probeBtn) {
+                const rect = probeBtn.getBoundingClientRect();
+                const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                result.probeButton = String(probeBtn.className || '').slice(0, 32);
+                result.probeRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(',');
+                result.hitTag = hit ? hit.tagName.toLowerCase() : 'none';
+                result.hitClass = String(hit?.className || '').slice(0, 48);
+                result.hitOwnsButton = Boolean(hit && (hit === probeBtn || probeBtn.contains(hit)));
+            }
+        }
+        const editorSel = document.getElementById('world_editor_select');
+        const globalSel = document.getElementById('world_info');
+        result.editorOptions = editorSel instanceof HTMLSelectElement ? editorSel.options.length : -1;
+        result.globalOptions = globalSel instanceof HTMLSelectElement ? globalSel.options.length : -1;
+        result.detachedOptions = getDetachedWorldNames().length;
+        const ctx = getHostContext?.() || {};
+        result.ctxWorlds = Array.isArray(ctx.world_names) ? ctx.world_names.length : -1;
+        result.recentActions = _diag.nativeActions;
+        result.available = true;
+    } catch (error) {
+        result.error = String(error?.message || error).slice(0, 60);
+    }
+    return result;
+}
+
+/**
  * Cross-check the numbers a bug report usually disagrees with: pinned vs mounted, books vs rows,
  * groups vs rendered sections, remembered folds vs actual folds.
  * @param {any} cls
@@ -1803,6 +1856,7 @@ function buildDiagnosticReport(mode = 'short') {
             consistency: diagConsistencyCheck(cls, settings),
             pinProbe: _diag.pinProbe,
             highlights: _diag.highlights,
+            nativeEntries: collectNativeEntryDiagnostics(),
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -1827,6 +1881,16 @@ function buildDiagnosticReport(mode = 'short') {
             + ` 脚本${_diag.scriptFlips.length ? _diag.scriptFlips.join('→') : '稳定'}`
             + ` 主题切换${_diag.themeFlips.length}`,
         `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
+        (() => {
+            const native = collectNativeEntryDiagnostics();
+            const lastAction = _diag.nativeActions[_diag.nativeActions.length - 1];
+            return `原生条目 分组${native.entryGroupsEnabled ? '开' : '关'}`
+                + ` 列表${native.listPresent ? '有' : '无'}行${native.rows ?? 0}`
+                + ` 行按钮${(native.rowButtons?.[0] || []).length}`
+                + ` 命中${native.hitOwnsButton === undefined ? '未测' : (native.hitOwnsButton ? '按钮' : native.hitClass || 'none')}`
+                + ` 已隐藏${native.detachedOptions ?? 0}`
+                + (lastAction ? ` 最近动作${lastAction.label}(${lastAction.before}→${lastAction.after},${lastAction.changed ? '生效' : '无效'})` : '');
+        })(),
         `错误 ${errors.length}`,
     ].join('\n');
 }
@@ -8898,6 +8962,34 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
                 const cls = String(button?.className || '').slice(0, 32);
                 pushDiagTrace(`native-entry:click,cls=${cls},label=${label}`);
+                // Outcome: did the action actually change anything? 复制/转移 must change a row count.
+                const countRows = () => document.querySelectorAll('#world_popup_entries_list .world_entry[uid]').length;
+                const countOptions = () => (document.getElementById('world_editor_select')?.options.length ?? -1);
+                const before = { rows: countRows(), options: countOptions() };
+                const probeHit = (() => {
+                    try {
+                        const rect = button?.getBoundingClientRect?.();
+                        if (!rect) return 'none';
+                        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                        return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 24)}` : 'none';
+                    } catch { return 'none'; }
+                })();
+                setTimeout(() => {
+                    const after = { rows: countRows(), options: countOptions() };
+                    const entry = {
+                        label,
+                        cls,
+                        hit: probeHit,
+                        before: before.rows,
+                        after: after.rows,
+                        optionsBefore: before.options,
+                        optionsAfter: after.options,
+                        changed: before.rows !== after.rows || before.options !== after.options,
+                    };
+                    _diag.nativeActions.push(entry);
+                    if (_diag.nativeActions.length > 6) _diag.nativeActions.shift();
+                    pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`);
+                }, 500);
             }, true);
             const popupWatcher = new MutationObserver(() => {
                 const popup = document.getElementById('world_popup');

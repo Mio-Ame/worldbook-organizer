@@ -1,3 +1,15 @@
+### 诊断新增「原生条目动作」专章（2026-11-28 · dev v2.35.116）
+- 背景：用户反馈**原生世界书界面里，条目列表每行（不展开也有）的「复制 / 转移」点不动**。只给一次诊断日志机会，所以这版把相关证据一次性采齐。
+- 新增 `collectNativeEntryDiagnostics()`（详细 JSON 的 `nativeEntries`）：
+  - `entryGroupsEnabled`：**是否开启条目分组功能**；`decoratedByGroups`（列表是否被我们的 `weg-*` 装饰）、`stickyHeadings`（吸顶标题数量）；
+  - `popupVisible` / `listPresent` / `rows` / `visibleRows` / `listClass`；
+  - `rowButtons`：前 3 行各自的按钮清单（`class|标题文字`）——用来确认「复制/转移」按钮到底有没有渲染；
+  - **命中归属探针**：取第一个可见行内按钮的中心坐标做 `elementFromPoint`，记录 `hitTag` / `hitClass` / `hitOwnsButton`。**这是判定“按钮被别的东西盖住”的决定性字段**；
+  - `editorOptions` / `globalOptions` / `detachedOptions` / `ctxWorlds`：判断“目标书列表是否因被隐藏而缺失”。
+- 点击行为对比：在 `#world_popup` 内点击时，记录点击前/后 500ms 的条目行数与选项数，写入 `_diag.nativeActions` 与 trace `native-entry:action,label=复制,rows=12->12,changed=0` —— **直接回答“点了有没有生效”**。
+- 短报告新增一行 `原生条目 分组开/关 列表有/无行N 行按钮N 命中按钮|被X覆盖 已隐藏N 最近动作…`。
+- 仅诊断，不改变任何交互行为。验证：单测 247/247；`native-editor-titles` 12/12。
+
 ### 原生条目按钮「点了没反应」的判定探针（2026-11-28 · dev v2.35.114）
 - 用户提出另一种可能：不是“隐藏书导致目标缺失”，而是**点击本身没有反应**（事件没到宿主处理器）。
 - 代码审计结论：插件内所有 `stopImmediatePropagation` 都只作用于自绘星标按钮（`.wbo-gr-pin-btn` / `.wbo-s2-pin-btn`）且带 `closest()` 守卫；`bindDrawerSafeBubbleGuard()` 也只绑在插件自己的浮层容器上，**没有绑到 `#world_popup` / `#WorldInfo`**。所以“被我们全局拦截”在代码上缺乏依据。
