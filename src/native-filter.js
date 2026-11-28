@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.125';
+export const PLUGIN_VERSION = '2.35.126';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1343,12 +1343,43 @@ function diagPathLength(event) {
 }
 
 /**
+ * `left,top,widthxheight` of an element. Comparing the value taken on pointerdown with the one on
+ * pointerup tells whether the layout moved under the finger — on iOS/Tauri that alone cancels the
+ * synthesized click, so a "dead" button is really a moved one.
+ * @param {Element | null | undefined} el
+ * @returns {string}
+ */
+function rectText(el) {
+    try {
+        const rect = el?.getBoundingClientRect?.();
+        if (!rect) return '';
+        return `${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)}`;
+    } catch { return ''; }
+}
+
+/**
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} largest axis delta in px, or -1 when either rect is missing
+ */
+function rectDelta(a, b) {
+    try {
+        const parse = (text) => String(text || '').split(',').map((part) => Number(String(part).split('x')[0]));
+        const first = parse(a);
+        const second = parse(b);
+        if (first.length < 2 || second.length < 2 || !Number.isFinite(first[0]) || !Number.isFinite(second[0])) return -1;
+        return Math.max(Math.abs(first[0] - second[0]), Math.abs(first[1] - second[1]));
+    } catch { return -1; }
+}
+
+/**
  * Everything the plugin itself renders. An "obstruction" that belongs to this list is *our own*
  * panel, not a host bug — the report must not confuse the two.
  */
 const OWN_UI_SELECTOR = '.wbo-modal, .wbo-btn, .wbo-diag-menu, [data-wbo-ui], [data-wbo-popover-role],'
     + ' .gr-container-enhanced, .wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-mp-backdrop,'
-    + ' #wbo-mobile-picker-overlay, .wbo-pin-box';
+    + ' .wbo-mp-popover, .wbo-mp-row, .wbo-s2-item, #wbo-mobile-editor-trigger,'
+    + ' .wbo-popup-select-trigger, #wbo-mobile-picker-overlay, .wbo-pin-box';
 
 /**
  * @param {Element | null | undefined} el
@@ -1789,6 +1820,14 @@ function gestureSummary(record) {
             clickRow: record.click?.row ? `${record.click.row.uid}@${record.click.row.index}` : '-',
             selects: gestureSelectText(record),
             restores: (record.click?.restores ?? _diag.restoreRuns) - (record.down?.restores ?? 0),
+            // Did the two <select>s change size *inside* this gesture? That is the visible flicker
+            // of the global list, and on iOS it is also what eats the synthesized click.
+            selectsMoved: Boolean(record.down?.selects && record.click?.selects
+                && (record.down.selects.editor !== record.click.selects.editor
+                    || record.down.selects.global !== record.click.selects.global)),
+            // How far the pressed element moved between press and release. A few pixels is enough
+            // for iOS/Tauri to drop the synthesized click, which reads as "the button does nothing".
+            movedPx: rectDelta(record.down?.rect, record.up?.rect || record.click?.rect),
             dialog: record.down?.dialog || '',
             down: record.down
                 ? `${record.down.desc}|hit=${record.down.hit}|conn=${record.down.connected ? 1 : 0}`
@@ -1869,6 +1908,7 @@ function recordGestureUp(event) {
         record.up = {
             at: diagNow(),
             desc: elChainText(target, 3),
+            rect: rectText(target),
             sameAsDown: Boolean(target && target === _gestureDownEl),
             // The decisive check behind "the button vanished between press and release".
             downConnected: _gestureDownEl ? _gestureDownEl.isConnected !== false : false,
@@ -1990,6 +2030,7 @@ function noteNativeGestureDown(event) {
                 prevented: event?.defaultPrevented === true,
                 path: diagPathLength(event),
                 point: point ? `${Math.round(point.x)},${Math.round(point.y)}` : '-',
+                rect: rectText(target),
                 // `hit` is what the browser really delivered the press to; `beneath` is the worldbook
                 // element hidden under it (empty when the press landed on the UI itself).
                 hit: point ? describeHitAt(point.x, point.y, host ? target : beneathEl) : 'n/a',
@@ -2013,14 +2054,16 @@ function noteNativeGestureDown(event) {
         _gestureDownEl = target;
         try { _gestureDownList = document.getElementById('world_popup_entries_list'); } catch { _gestureDownList = null; }
         ensureGestureTailRecorders();
-        // A click that never comes is itself evidence (preventDefault, inert subtree, detached node).
-        try { if (_gestureWatchdog) clearTimeout(_gestureWatchdog); } catch { /* ignore */ }
-        _gestureWatchdog = setTimeout(() => {
+        // A click that never comes is itself evidence (preventDefault, inert subtree, detached node,
+        // or a layout shift that made the platform drop it). One timer PER record: a shared timer
+        // cleared by the next press would leave fast repeated taps with no verdict at all.
+        const watchdog = setTimeout(() => {
             try {
                 if (!record.click) record.miss = record.up ? 'no-click' : 'no-up-no-click';
             } catch { /* ignore */ }
         }, 1200);
-        if (typeof _gestureWatchdog?.unref === 'function') _gestureWatchdog.unref();
+        if (typeof watchdog?.unref === 'function') watchdog.unref();
+        _gestureWatchdog = watchdog;
         pushDiagTrace(`native-gesture:down,n=${record.n},conn=${record.down.connected ? 1 : 0}`
             + `,hit=${record.down.hit},covers=${record.down.covers ? 1 : 0}`
             + (record.down.covers ? `,beneath=${record.down.beneath}` : '')
@@ -9892,10 +9935,17 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                     if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored@' + stage);
                 } catch { /* never block the native UI */ }
             };
-            document.addEventListener('pointerdown', (event) => {
+            // Native entry actions (复制 / 移动 / 删除) build their target list from the <select>s.
+            // Restore the hidden options exactly when such an action is about to run — NOT on every
+            // press. Doing it on pointerdown reflowed the whole panel mid-gesture: the global book
+            // list visibly flickered (127 ⇄ 209 options) and on iOS/Tauri the synthesized click was
+            // dropped, so the editor dropdown looked dead and the panel needed several taps.
+            document.addEventListener('click', (event) => {
                 const target = event.target instanceof Element ? event.target : null;
                 if (!target?.closest('#world_popup, #world_popup_entries_list')) return;
-                restoreForNative('pointerdown');
+                if (isOwnUiElement(target)) return;
+                if (!nativeActionLike(resolveNativeActionTarget(target))) return;
+                restoreForNative('action-click');
             }, true);
             // Probe: proves whether a click on the native entry controls reaches the page at all. If
             // the line is missing from a report, something upstream swallowed it; if it is present,
