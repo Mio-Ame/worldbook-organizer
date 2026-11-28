@@ -1,3 +1,10 @@
+### 原生「移动 / 复制」失败的防御性修复（2026-11-28 · dev v2.35.110）
+- 用户转述他人反馈：原生世界书条目的「移动」「复制」用不了。维护者本人在 Edge 与 iOS TauriTavern 都无法复现。
+- 静态排查找到一条**真实可能**：本插件为了隐藏某些书（角色书默认不显示、去重行等）会把 `<option>` 从 `#world_info` / `#world_editor_select` 里 detach 并存进 `_globalDetachedMap` / `_editorDetachedMap`。而原生「移动 / 复制」的**目标世界书列表正是从这些 select 读取**，被隐藏的书就不在候选里，操作会“点了没反应”。
+- 修复（`src/native-filter.js`）：新增导出 `restoreAllDetachedOptions()`，在用户按下 `#world_popup_entries_list`（原生条目列表）内任意控件时**先**把所有 detached option 放回原位（capture 阶段，早于宿主自己的处理器），并 `pushDiagTrace("native-entry:options-restored")`；下一次同步会重新按规则隐藏，不影响插件视图。
+- 说明：这是**低成本、可自证**的防御性修复——只在原生条目区点击时触发，不改变插件面板行为；若那台机器上仍未恢复，说明另有原因（见 NEXT 里的其他假设：其它脚本冲突 / 版本过旧 / 书名特殊字符）。
+- 验证：单测 247/247。
+
 ### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
 - 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
 - `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。
