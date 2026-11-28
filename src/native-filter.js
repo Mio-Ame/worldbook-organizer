@@ -2714,6 +2714,29 @@ function collectNativeEntryDiagnostics() {
         // Row clicks we could not map to an action: a renamed host build shows up here.
         result.unresolved = _diag.nativeUnresolved.slice(-4);
     });
+    // Rendered order of every dropdown head, with whether it lives inside the scrollable results
+    // list or outside it. This is what pinpoints 「文风 → 已开启的全局世界书」 style complaints.
+    section('order', () => {
+        const dropdown = document.querySelector('.select2-dropdown, .wbo-mp-popover, .gr-container-enhanced.open, #gr-global-dropdown-container.open');
+        if (!(dropdown instanceof Element)) {
+            result.groupOrder = [];
+            return;
+        }
+        result.groupOrder = [...dropdown.querySelectorAll('.select2-results__group, .wbo-dd-group-head, .wbo-pop-section')]
+            // Hidden heads (e.g. the outside active-group title we now suppress) are not on screen.
+            .filter((el) => el instanceof HTMLElement && el.getClientRects().length > 0)
+            .slice(0, 18)
+            .map((el) => {
+                const section = el.classList.contains('wbo-pop-section') ? el : null;
+                const id = el.getAttribute('data-wbo-dd-group')
+                    || section?.getAttribute('data-wbo-dd-group')
+                    || el.querySelector('[data-wbo-dd-group]')?.getAttribute('data-wbo-dd-group')
+                    || '?';
+                const label = String(el.textContent || '').replace(/\s+/g, '').slice(0, 10);
+                const insideList = Boolean(el.closest('.select2-results__options, .gr-options-container, .wbo-mp-list'));
+                return `${id}:${label}${insideList ? '' : ':outside'}`;
+            });
+    });
     section('picker', () => { result.lastPickerWrite = _diag.lastPickerWrite; });
     result.partial = result.errors.length > 0;
     result.available = true;
@@ -8150,6 +8173,27 @@ function enhanceOpenGlobalDropdown() {
             : (_latestClassification.orderedSections || []).find((section) => section.id === _activeGlobalPillId);
         const searching = isGlobalSearching();
         const collapsed = Boolean(group && !searching && isDropdownGroupCollapsed(group.id, true));
+        // The entered group's title normally sits above the whole list. When the
+        // 「已开启的全局世界书」 block is present that reads as
+        // 「文风 → 已开启的全局世界书 → 全局那几本 → 文风那几本」, so the title is parked INSIDE the
+        // list, right under the globals block (it stays the same clickable fold control).
+        const headingHost = resultsList.parentElement;
+        const globalsHead = resultsList.querySelector(`li.select2-results__group[data-wbo-dd-group="${ACTIVE_GLOBAL_SECTION_ID}"]`);
+        if (group && globalsHead && _activeGlobalPillId !== SPECIAL_GROUPS.ALL && !searching) {
+            let slot = headingHost.querySelector(':scope > .wbo-global-heading-slot');
+            if (!(slot instanceof HTMLElement)) {
+                slot = document.createElement('li');
+                slot.className = 'wbo-global-heading-slot';
+                slot.setAttribute('role', 'presentation');
+            }
+            if (!slot.contains(groupHeading)) slot.append(groupHeading);
+            resultsList.insertBefore(slot, globalsHead.nextElementSibling);
+        } else if (groupHeading.parentElement !== headingHost) {
+            headingHost.insertBefore(groupHeading, resultsList);
+        }
+        // When the globals block is present the entered group's title is rendered inside the list
+        // (below the globals block), so the outside heading must not show — otherwise it visually
+        // reads as 「文风 → 已开启的全局世界书 → …」.
         groupHeading.hidden = !group || searching;
         groupHeading.textContent = group?.name || '';
         groupHeading.setAttribute('aria-expanded', String(!collapsed));
