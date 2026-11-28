@@ -1,3 +1,14 @@
+### 诊断收尾：分页认知、弹窗归属、按的是 Move 还是 Copy（2026-11-28 · v2.35.125）
+- 真机日志（v2.35.124，`移动/复制` 已修好：目标书 6→8 条、`lastPickerWrite.applied=ok`）暴露了三处读不懂：
+  1. **25 条的书点「重复」看起来没反应**——其实是宿主**分页 25 条/页**，第 26 条落在第 2 页。`rowSetChanged=true`（uid 集合 `0e625b→d39ff9`）已经能证明集合变了，但报告没写“这是第几页/每页几条”，仍会误导。
+     新增 `nativeEntries.pager{present,page,pageSize,pages,nextDisabled,rowsOnPage,atPageBoundary}`；`atPageBoundary=true` 表示“正好一页且还有下一页”，此时行数不变**不代表**没新增。短报告“原生条目”行在有分页器时追加 ` 页N/每页M`。
+  2. **弹窗跟进可能挂到上一个动作上**：同一动作下会出现两条 `native-entry:dialog`，其中一条的 `button` 是搜索框。
+     现在优先匹配 `openDialog.cls` 相同的动作条目，匹配不到才退回“最近一条未占用”。
+  3. **分不清你按的是 Move 还是 Copy**：两个按钮类名相同（`popup-button-custom`）。
+     新增 `dialog.buttonIndex / buttonCount / customCount`——宿主把 Move 放第 1 个、Copy 放第 2 个，配合 `rowsChanged` 即可判定（Move 会让源书行数 −1，Copy 不变）。trace 也带上 `i=1/2`。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44；探针确认 `pager` 在有/无分页器两种页面下都能读出正确值，`buttonIndex` 正确记录。
+- 判读补充：`rows 25→25` + `rowSetChanged=true` + `pager.atPageBoundary=true` → **正常，条目进了下一页**，别再当 bug 查。
+
 ### 修复：移动/复制条目到其他世界书时目标书收不到条目（2026-11-28 · v2.35.124）
 - 真机定位（ST 1.19.0，`world-info.js` 的 `move_entry_button` 处理器）：
   ```js
