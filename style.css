@@ -1997,6 +1997,41 @@
     padding: 10px 16px 12px !important;
     border-top: 1px solid var(--wbo-border) !important;
     background: var(--wbo-bg) !important;
+    /* Narrow phones: let the label wrap inside the button instead of spilling out of it. */
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.wbo-modal-footer.wbo-pinned-footer .wbo-btn {
+    min-width: 0;
+    max-width: 100%;
+    flex: 0 1 auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+    line-height: 1.25;
+}
+
+@media (max-width: 480px) {
+    .wbo-modal-footer.wbo-pinned-footer {
+        padding: 8px 10px 10px !important;
+    }
+
+    .wbo-modal-footer.wbo-pinned-footer .wbo-btn {
+        font-size: 0.86em;
+        padding-inline: 8px;
+    }
+
+    /* 「完成」 always keeps its own row and stays tappable. */
+    .wbo-modal-footer.wbo-pinned-footer .wbo-spacer {
+        display: none;
+    }
+
+    .wbo-modal-footer.wbo-pinned-footer .wbo-btn-primary {
+        flex: 1 1 100%;
+    }
 }
 
 .wbo-pinned-top {
