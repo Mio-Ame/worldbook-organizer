@@ -1163,7 +1163,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.110';
+export const PLUGIN_VERSION = '2.35.111';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1196,6 +1196,8 @@ const _diag = {
     ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
     /** Which pin marker the host script actually used (detection evidence, class names only). */
     pinProbe: [],
+    /** Key breadcrumbs kept outside the ring buffer (native entry actions, drawer, ball, sync). */
+    highlights: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1501,8 +1503,15 @@ function installDrawerOpenGuard() {
  * @param {string} label
  */
 function pushDiagTrace(label) {
-    _diag.trace.push(String(label).slice(0, 80));
+    const text = String(label).slice(0, 80);
+    _diag.trace.push(text);
     _diag.traceTotal += 1;
+    // Key events must survive the ring buffer: a user may click a native action first and only then
+    // open the panel to export, and ordinary breadcrumbs would have pushed it out.
+    if (/^(native-entry|drawer|ball|enh-sync):/.test(text)) {
+        _diag.highlights.push(text);
+        if (_diag.highlights.length > 12) _diag.highlights.shift();
+    }
     if (_diag.trace.length > 24) _diag.trace.shift();
 }
 
@@ -1793,6 +1802,7 @@ function buildDiagnosticReport(mode = 'short') {
             stages: _diag.stages,
             consistency: diagConsistencyCheck(cls, settings),
             pinProbe: _diag.pinProbe,
+            highlights: _diag.highlights,
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },

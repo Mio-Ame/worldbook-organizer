@@ -1,3 +1,9 @@
+### 关键事件不再被 trace 环形缓冲挤掉（2026-11-28 · v2.35.111）
+- 用户提问：让反馈者“先点复制/移动，再打开插件面板导出诊断”，还能不能记录到？
+- 结论：能，trace 常驻内存、插件随页面加载就开始记录；但原来 `trace` 只保留最近 24 条，用户中间多点几次就可能把 `native-entry:options-restored` 挤掉。
+- 修复（`src/native-filter.js`）：新增 `_diag.highlights`（最多 12 条，单独环形），凡 `native-entry:` / `drawer:` / `ball:` / `enh-sync:` 前缀的面包屑**同步写入**该列表，永不被普通 trace 挤出；详细 JSON 增加 `highlights` 字段。
+- 验证：单测 247/247。
+
 ### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
 - 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
 - `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。
