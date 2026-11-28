@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.93';
+export const PLUGIN_VERSION = '2.35.94';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -8098,25 +8098,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         pushDiagTrace(`enh-search:raw=${raw.length},tokens=${tokens.length},ws=${whitespaceOnly ? 1 : 0}`
             + `,role=${isGlobalPopover ? 'global' : 'editor'}`);
         if (!searching || tokens.length === 0) {
+            // A lone space used to leave a few blank rows (the host filters on its own handler after
+            // us). We simply treat whitespace as "no search": the panel goes away and the host keeps
+            // whatever it renders — chasing its hiding strategy was not worth the risk.
             removeEnhancedSearchPanel();
             _lastEnhancedSearchTerm = '';
-            if (whitespaceOnly) {
-                // The host filters on its own input handler, which runs after ours: clean up once the
-                // frame settles so a lone space cannot leave blank rows behind.
-                const restore = () => {
-                    optionsHost.querySelectorAll('.wbo-enhanced-search-hidden, .wbo-pop-search-hidden, .gr-option-hidden')
-                        .forEach((el) => {
-                            el.classList.remove('wbo-enhanced-search-hidden', 'wbo-pop-search-hidden', 'gr-option-hidden');
-                            if (el instanceof HTMLElement && el.style.display === 'none') el.style.removeProperty('display');
-                            if (el instanceof HTMLElement && el.hidden) el.hidden = false;
-                        });
-                    optionsHost.querySelectorAll('.wbo-enhanced-section-hidden')
-                        .forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
-                };
-                requestAnimationFrame(restore);
-                setTimeout(restore, 120);
-                pushDiagTrace('enh-search:whitespace-restore');
-            }
             return;
         }
         if (term === _lastEnhancedSearchTerm && getSearchPanel()) {

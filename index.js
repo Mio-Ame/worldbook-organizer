@@ -64,7 +64,7 @@ import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
 
-export const STYLE_ASSET_VERSION = '2.35.93';
+export const STYLE_ASSET_VERSION = '2.35.94';
 let _initialized = false;
 let _entryGroupingGate = null;
 let _disabled = false;
