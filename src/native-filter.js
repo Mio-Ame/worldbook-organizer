@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.94';
+export const PLUGIN_VERSION = '2.35.96';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7515,7 +7515,8 @@ function enhanceCustomDropdownPopover(containerEl) {
             const headEl = document.createElement('div');
             headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
             headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
-            headEl.textContent = `★ 已收藏 (${favoriteOptions.length + mountedAndPinned.length})`;
+            // Count must match what the section actually lists (mounted favorites live above).
+            headEl.textContent = `★ 已收藏 (${favoriteOptions.length})`;
             headEl.title = '点击展开或折叠该分组';
             // The note native ST shows, inline with the head on wide screens.
             if (mountedAndPinned.length > 0) {
@@ -7668,12 +7669,12 @@ function enhanceCustomDropdownPopover(containerEl) {
         // sections and the globals block stay hidden while it is active.
         if (isPinFilter && !isGlobalPopover) {
             for (const secEl of sectionEls) secEl.classList.add('wbo-dd-group-hidden');
-            globalsSectionEl?.classList.add('wbo-dd-group-hidden');
+            // The globals block stays visible on top: mounted favorites belong there, and that is
+            // where they are switched off (they used to be duplicated inside 已收藏).
+            globalsSectionEl?.classList.remove('wbo-dd-group-hidden');
             if (favoritesSectionEl) {
                 const bodyEl = favoritesSectionEl.querySelector('.wbo-pop-group-body');
-                // Mounted + favorited books are listed here too, so their global switch can be
-                // turned off from the favorites view (they were unreachable before).
-                for (const optEl of [...favoriteOptions, ...mountedAndPinned]) bodyEl?.appendChild(optEl);
+                for (const optEl of favoriteOptions) bodyEl?.appendChild(optEl);
                 favoritesSectionEl.classList.remove('wbo-dd-group-hidden');
             }
         } else if (favoritesSectionEl) {
@@ -8202,6 +8203,17 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!st || !gid || head.classList.contains('is-isolated')) return;
             st.cancelRestore();
             const activePill = st.getActivePillId();
+            // The 已收藏 block is a flat mirror that only exists inside its own pill: clicking its
+            // head from 全部 switches to that pill instead of expanding an empty body.
+            if (gid === SPECIAL_GROUPS.PINNED && activePill !== SPECIAL_GROUPS.PINNED) {
+                activePillGroupId = SPECIAL_GROUPS.PINNED;
+                rememberPill(activePillGroupId);
+                _latestSettings.dropdownCollapsed[gid] = false;
+                syncPillButtons();
+                st.syncSections();
+                pushDiagTrace('enh-favorites:head-enters-pill');
+                return;
+            }
             const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL;
             // Inside another group's pill the globals block is folded by default but stays
             // openable, so that click keeps its own override instead of the saved state.
