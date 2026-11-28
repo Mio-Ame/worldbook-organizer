@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.127';
+export const PLUGIN_VERSION = '2.35.128';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1329,6 +1329,162 @@ function elChainText(el, depth = 3) {
         node = node.parentElement;
     }
     return parts.join('<') || 'none';
+}
+
+/**
+ * SillyTavern's per-row actions read their target from attributes written when the row template was
+ * built: `data-uid` + `data-current-world` for 移动/复制, jQuery `.data('uid')` for 重复/删除.
+ * Any rebuild, re-parent or reuse of a row can leave those stale, and the host then bails silently:
+ *
+ *   const sourceWorldInfo = await loadWorldInfo(sourceWorld);
+ *   const sourceName = sourceWorldInfo.entries[sourceUid]?.comment;
+ *   if (sourceName === undefined) return;     // ← no dialog, no error, nothing happens
+ *
+ * Re-assert both against the row itself and the book that is open right now. Idempotent and cheap.
+ * @param {Element | null} [scope]
+ * @returns {number} how many attributes had to be repaired
+ */
+function repairNativeRowActionAttrs(scope = null) {
+    try {
+        const list = scope instanceof Element ? scope : document.getElementById('world_popup_entries_list');
+        if (!(list instanceof Element)) return 0;
+        const bookName = String(getCurrentEditorWorldName?.() || _currentlyEditingWorld || '');
+        const $ = globalThis.jQuery;
+        let repaired = 0;
+        for (const row of list.querySelectorAll('.world_entry')) {
+            const uid = String(row.getAttribute('uid') || '');
+            if (!uid) continue;
+            const move = row.querySelector('.move_entry_button');
+            if (move instanceof HTMLElement) {
+                if (move.getAttribute('data-uid') !== uid) {
+                    move.setAttribute('data-uid', uid);
+                    repaired += 1;
+                }
+                if (bookName && move.getAttribute('data-current-world') !== bookName) {
+                    move.setAttribute('data-current-world', bookName);
+                    repaired += 1;
+                }
+            }
+            for (const selector of ['.duplicate_entry_button', '.delete_entry_button']) {
+                const btn = row.querySelector(selector);
+                if (!(btn instanceof HTMLElement) || !$) continue;
+                if (String($(btn).data('uid') ?? '') !== uid) {
+                    $(btn).data('uid', uid);
+                    repaired += 1;
+                }
+            }
+        }
+        if (repaired > 0) pushDiagTrace(`native-entry:row-attrs-repaired=${repaired}`);
+        return repaired;
+    } catch { return 0; }
+}
+
+/**
+ * Desired order of the dropdown groups: 已开启的全局世界书 → 已收藏 → 用户设置里的分组顺序 → 未分组最后。
+ * Derived from the same classification the settings panel shows, so the dropdown cannot disagree
+ * with the panel ("diff 里顺序是对的，下拉里不是").
+ * @returns {string[]}
+ */
+function dropdownGroupOrder() {
+    const order = [ACTIVE_GLOBAL_SECTION_ID, EDITOR_GLOBALS_GROUP_ID, SPECIAL_GROUPS.PINNED];
+    try {
+        for (const sec of orderSectionsForExternalDropdown(_latestClassification?.orderedSections || [])) {
+            const id = typeof sec === 'string' ? sec : sec?.id;
+            if (id && !order.includes(id)) order.push(id);
+        }
+    } catch { /* ignore */ }
+    if (!order.includes(SPECIAL_GROUPS.UNGROUPED)) order.push(SPECIAL_GROUPS.UNGROUPED);
+    return order;
+}
+
+/**
+ * @param {string} id
+ * @param {string[]} order
+ * @returns {number}
+ */
+function groupOrderRank(id, order) {
+    const index = order.indexOf(String(id || ''));
+    return index >= 0 ? index : order.length + 1;
+}
+
+/**
+ * Re-assert the group order inside a Select2 results list. Handles both shapes: a bare
+ * `li.select2-results__group` head followed by its rows, and Select2's optgroup wrappers.
+ * @param {Element | null} list
+ * @returns {boolean} whether anything moved
+ */
+function enforceSelect2GroupOrder(list) {
+    try {
+        if (!(list instanceof Element)) return false;
+        const isGroupNode = (el) => el instanceof HTMLElement && (
+            el.classList.contains('select2-results__group')
+            || el.hasAttribute('data-wbo-dd-group')
+            || el.classList.contains('select2-results__option--group'));
+        const nodes = [...list.children].filter(isGroupNode);
+        if (nodes.length < 2) return false;
+        const order = dropdownGroupOrder();
+        const sectionNameToId = new Map();
+        for (const sec of orderSectionsForExternalDropdown(_latestClassification?.orderedSections || [])) {
+            const id = typeof sec === 'string' ? sec : sec?.id;
+            const name = typeof sec === 'string' ? sec : sec?.name;
+            if (id && name) sectionNameToId.set(String(name), id);
+        }
+        const idOf = (el) => {
+            const own = el.getAttribute('data-wbo-dd-group');
+            if (own) return own;
+            const head = el.querySelector('.select2-results__group');
+            const fromHead = head?.getAttribute('data-wbo-dd-group');
+            if (fromHead) return fromHead;
+            const label = String(head?.textContent || el.textContent || '')
+                .replace(/\s*\(\d+\)\s*$/, '').trim();
+            return sectionNameToId.get(label) || '';
+        };
+        const blocks = nodes.map((el) => {
+            if (el.classList.contains('select2-results__group')) {
+                const block = [el];
+                for (let next = el.nextElementSibling; next && !isGroupNode(next); next = next.nextElementSibling) {
+                    block.push(next);
+                }
+                return block;
+            }
+            return [el];
+        });
+        const ranked = blocks.map((block, index) => ({ block, index, rank: groupOrderRank(idOf(block[0]), order) }));
+        const sorted = [...ranked].sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank));
+        if (sorted.every((item, index) => item.index === index)) return false;
+        // Inserting every block (in order) before the first current block keeps them contiguous.
+        const marker = nodes[0];
+        for (const item of sorted) {
+            for (const el of item.block) list.insertBefore(el, marker);
+        }
+        pushDiagTrace(`enh-order:enforced=${sorted.map((item) => idOf(item.block[0]) || '?').join('>')}`);
+        return true;
+    } catch { return false; }
+}
+
+/**
+ * Same rule for the plugin's own dropdown shell (`.wbo-pop-section` children).
+ * @param {Element | null} optionsHost
+ * @returns {boolean}
+ */
+function enforceShellGroupOrder(optionsHost) {
+    try {
+        if (!(optionsHost instanceof Element)) return false;
+        const sections = [...optionsHost.children].filter((el) => el.classList.contains('wbo-pop-section'));
+        if (sections.length < 2) return false;
+        const order = dropdownGroupOrder();
+        const ranked = sections.map((el, index) => ({
+            el,
+            index,
+            rank: groupOrderRank(el.getAttribute('data-wbo-dd-group') || '', order),
+        }));
+        const sorted = [...ranked].sort((a, b) => (a.rank === b.rank ? a.index - b.index : a.rank - b.rank));
+        if (sorted.every((item, index) => item.index === index)) return false;
+        const marker = sections[0];
+        for (const item of sorted) optionsHost.insertBefore(item.el, marker);
+        pushDiagTrace(`enh-order:shell=${sorted.map((item) => item.el.getAttribute('data-wbo-dd-group') || '?').join('>')}`);
+        return true;
+    } catch { return false; }
 }
 
 /**
@@ -1551,6 +1707,21 @@ function diagRowCount() {
 function dialogOf(el) {
     try {
         return el instanceof Element ? el.closest('dialog.popup, dialog') : null;
+    } catch { return null; }
+}
+
+/**
+ * The LIVE element for the `<select>` our enhanced control wraps. A host dialog can be re-created
+ * while our control still points at the previous element; resolving by id guarantees the change
+ * event is dispatched on the element the host actually listens to.
+ * @param {HTMLSelectElement | null} selectEl
+ * @returns {HTMLSelectElement | null}
+ */
+function liveDialogSelectFor(selectEl) {
+    try {
+        if (!(selectEl instanceof HTMLSelectElement) || !selectEl.id) return null;
+        const byId = document.getElementById(selectEl.id);
+        return byId instanceof HTMLSelectElement && byId !== selectEl ? byId : null;
     } catch { return null; }
 }
 
@@ -2871,6 +3042,7 @@ function buildDiagnosticReport(mode = 'short') {
             add: String(action.domAdded || '').slice(0, 24),
             toast: action.toast,
             err: action.errorsGained,
+            attrs: action.attrsRepaired ?? 0,
             seq: action.gesture?.sequence || '',
             click: String(action.gesture?.click || '').split('|').slice(-3).join('|'),
             dlg: action.dialog ? {
@@ -4776,7 +4948,12 @@ export function applyAllNativeWorldFilters(classification, settings, { force = f
                 _globalSelectObserver?.takeRecords();
                 _isApplying = false;
             }
+            // Every filter pass can rebuild the entry list; re-assert the per-row action attributes
+            // afterwards so 复制 / 移动 / 删除 keep pointing at the right entry and book.
+            repairNativeRowActionAttrs();
         }, 60);
+    } else {
+        repairNativeRowActionAttrs();
     }
 }
 
@@ -5722,9 +5899,10 @@ export function attachGroupedSelectControl(
             // target in a closure (`selectedWorldIndex`) and then `return`s when it is still -1, so
             // the popup closes and nothing is moved. jQuery-bound handlers receive native events
             // too, so dispatching natively covers both cases without double-firing.
-            try {
-                selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-            } catch { /* ignore */ }
+            for (const target of [selectEl, liveDialogSelectFor(selectEl)]) {
+                if (!(target instanceof HTMLSelectElement)) continue;
+                try { target.dispatchEvent(new Event('change', { bubbles: true })); } catch { /* ignore */ }
+            }
             syncTriggerText();
         };
 
@@ -5848,6 +6026,8 @@ export function attachGroupedSelectControl(
                         searching: Boolean(searchQuery.trim()),
                     };
                 }
+                const liveSelect = liveDialogSelectFor(selectEl);
+                if (liveSelect) liveSelect.value = val;
                 selectEl.value = val;
                 fireSelectChange();
                 // Diagnostics only: a host dialog reads this value on confirm. If our write did not
@@ -5855,8 +6035,9 @@ export function attachGroupedSelectControl(
                 // together with whether the element we just wrote to is still in the document.
                 _diag.lastPickerWrite = {
                     at: diagNow(),
-                    applied: String(selectEl.value ?? '') === String(val) ? 'ok' : 'mismatch',
+                    applied: String((liveSelect || selectEl).value ?? '') === String(val) ? 'ok' : 'mismatch',
                     connected: selectEl.isConnected !== false,
+                    live: Boolean(liveSelect),
                     native: typeof Event === 'function',
                     target: elTagClass(selectEl, 20),
                 };
@@ -7871,7 +8052,9 @@ function enhanceOpenGlobalDropdown() {
         }
         if (_lastGlobalSearchSig !== '') clearGlobalSearchMatches();
 
-        const sections = _latestClassification.orderedSections || [];
+        // Same order the settings panel shows: 未分组 always last (this list used the raw
+        // classification order, which is why 未分组 kept appearing right under the globals block).
+        const sections = orderSectionsForExternalDropdown(_latestClassification.orderedSections || []);
         const mountedNames = getActiveGlobalWorldSet();
         const buckets = new Map();
         const pinnedRows = [];
@@ -7935,7 +8118,7 @@ function enhanceOpenGlobalDropdown() {
         if (_activeGlobalPillId !== SPECIAL_GROUPS.ALL) {
             // Mounted books stay available even while another pill is filtered or folded.
             for (const row of rows) if (!mountedRows.includes(row)) resultsList.append(row);
-            if (hoistSelect2GlobalsBlock(resultsList)) pushDiagTrace('enh-globals:hoisted=1,pill=1');
+            enforceSelect2GroupOrder(resultsList);
             return;
         }
         // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
@@ -7948,7 +8131,7 @@ function enhanceOpenGlobalDropdown() {
             });
         }
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
-        if (hoistSelect2GlobalsBlock(resultsList)) pushDiagTrace('enh-globals:hoisted=1');
+        enforceSelect2GroupOrder(resultsList);
     };
 
     const syncResults = () => {
@@ -7974,6 +8157,9 @@ function enhanceOpenGlobalDropdown() {
         for (const row of rows) {
             if (group && !mountedNames.has(rowWorldName(row))) row.classList.toggle('wbo-global-group-collapsed', collapsed);
         }
+        // Every sync is a chance for a group head to end up in the wrong place (this is the global
+        // dropdown that showed 「文风」 above 已开启的全局世界书 and 未分组 right under it).
+        enforceSelect2GroupOrder(resultsList);
         observer.takeRecords();
     };
     groupHeading.addEventListener('mousedown', (event) => {
@@ -9205,7 +9391,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     placeScriptPins();
     pushDiagTrace('enh-globals:script-pinned-bare=' + barePinnedOptions.length);
     // One more ordering guarantee: mounted globals always sit above the first normal section.
-    if (hoistEnhancedGlobalsBlock(optionsHost)) pushDiagTrace('enh-globals:hoisted=1,role=shell');
+    enforceShellGroupOrder(optionsHost);
 
     /**
      * Show/hide the two special sections of the enhanced editor popover.
@@ -9378,7 +9564,7 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
         syncSpecialSections({ searching, isPinFilter, isIsolated });
         // Pill switches re-parent rows; re-assert the documented order on every sync.
-        if (hoistEnhancedGlobalsBlock(optionsHost)) pushDiagTrace('enh-globals:hoisted=1,role=sync');
+        enforceShellGroupOrder(optionsHost);
         // A favorite can move from its special block after that block was filtered. Apply the
         // destination's visibility now so group switching cannot leave a stale hidden row.
         for (const row of favoriteOptions) row.classList.remove('wbo-dd-pin-hidden');
@@ -10091,7 +10277,11 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                     noteUnresolvedRowClick(target, gesture);
                     return;
                 }
-                pushDiagTrace(`native-entry:click,cls=${cls},label=${label},host=${host.id || String(host.className || '').slice(0, 16)}`);
+                // Our capture listener runs BEFORE the host's handler: make sure the row still tells
+                // the host which entry and which book it belongs to (stale attributes = silent bail).
+                const attrsRepaired = repairNativeRowActionAttrs();
+                pushDiagTrace(`native-entry:click,cls=${cls},label=${label},host=${host.id || String(host.className || '').slice(0, 16)}`
+                    + (attrsRepaired > 0 ? `,attrs=${attrsRepaired}` : ''));
                 // Outcome: did the action actually change anything? 复制/转移 must change a row count.
                 const countRows = () => diagRowCount();
                 const countOptions = () => (document.getElementById('world_editor_select')?.options.length ?? -1);
@@ -10214,6 +10404,9 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                         uidsBefore: before.uids.hash,
                         uidsAfter: rowSetFingerprint(document.getElementById('world_popup_entries_list')).hash,
                         rowSetChanged: before.uids.hash !== rowSetFingerprint(document.getElementById('world_popup_entries_list')).hash,
+                        // Row attributes had to be rewritten before the host handler ran: that is
+                        // exactly the "silent bail" case (no dialog, no error) this fix targets.
+                        attrsRepaired,
                         // The dialog the host opened for this action, as the host built it (target
                         // select included) — the baseline for "did our picker hand it a real value".
                         openDialog: describeOpenDialog(),

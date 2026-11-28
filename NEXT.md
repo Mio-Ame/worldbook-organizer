@@ -1,3 +1,38 @@
+- 真机日志 2（v2.35.127，`renderPath=select2-global`）进一步定位到两点：
+  1. 全局下拉的分组顺序用的是 **原始 classification 顺序**（`_latestClassification.orderedSections`），没有走设置面板用的 `orderSectionsForExternalDropdown` —— 而后者才会把「未分组」挪到最后。所以「未分组」紧跟在全局块下面，和设置面板（diff 正常）对不上。已改为同一口径：**下拉与设置面板共用同一个排序函数**。
+  2. 该日志里点击命中的 `beneath` 是一个**第三方脚本自己的全局世界书选择器**（class 前缀已脱敏）：这台机器上还有别的脚本也在渲染全局世界书下拉，两边会往同一个 `.select2-results__options` 里塞分组标题；谁后写谁就压在上面。因此除了顺序口径统一，还加了**每次同步后的顺序强制校正**（见下），无论谁重排，下一次 sync 都会把顺序拨回「全局块 → 分组（按设置）→ 未分组」。
+- 顺序校正实现（两个渲染器通用，幂等）：
+  - `dropdownGroupOrder()`：`已开启的全局世界书 → 已收藏 → orderSectionsForExternalDropdown(设置顺序) → 未分组`；
+  - `enforceSelect2GroupOrder(resultsList)`：按上述顺序重排 Select2 结果里的分组块（含「标题 + 其后的行」整流移动；也兼容 Select2 自己的 `--group` 包裹节点）；
+  - `enforceShellGroupOrder(optionsHost)`：同理重排 `.wbo-pop-section`。
+  - 调用点：全局结果重建、`syncResults`、外壳构建、`syncSections`。发生重排记 `enh-order:enforced=…` / `enh-order:shell=…`，报告里能看出这次是被谁打乱的。
+- 探针验证：人为把全局块整段搬到列表末尾 → 触发一次 sync → 顺序恢复为 `__active_globals__ → g-feng → __ungrouped__`；且修复前该列表顺序是 `__active_globals__ → __ungrouped__ → g-feng`（正是用户看到的“未分组跑到全局块后面”）。
+
+### 加强修复：行内动作的「目标书/条目」属性自愈 + 目标书下拉双写（2026-11-28 · v2.35.128，dev）
+- 背景：124 修好了「弹窗里选了目标书、确认后没落地」，但用户侧仍有「复制/转移点了没反应」。不再依赖用户再抓日志，直接从宿主源码把**其余静默失败路径**补齐：
+  ```js
+  headerTemplate.find('.move_entry_button').attr('data-uid', entry.uid).attr('data-current-world', name)
+  ...
+  const sourceWorldInfo = await loadWorldInfo(sourceWorld);
+  const sourceName = sourceWorldInfo.entries[sourceUid]?.comment;
+  if (sourceName === undefined) return;      // ← 没有弹窗、没有报错、什么都没发生
+  ```
+  行模板创建后若被重建 / 复用 / 重排，`data-current-world` 会指向**旧书**、`data-uid` 可能与行不符（重复/删除用的是 jQuery `.data('uid')`，克隆即丢失），宿主第一句 `loadWorldInfo` 就返回 → 用户看到的就是“点了没反应”。
+- 修复一（自愈）：新增 `repairNativeRowActionAttrs()`，把每一行的
+  - `.move_entry_button` 的 `data-uid` / `data-current-world`（= 当前正在编辑的书）重新对齐；
+  - `.duplicate_entry_button` / `.delete_entry_button` 的 jQuery `.data('uid')` 重新写入；
+  调用点三处、全部幂等：
+  1. **捕获阶段点击原生动作按钮时**（我们的监听先于宿主执行，保证宿主读到的是修好的值）；
+  2. 每次 `applyAllNativeWorldFilters` 之后（列表可能被重建）；
+  3. `deferGlobal` 的延迟分支结束后。
+  发生修正时记 `native-entry:row-attrs-repaired=N`，并在动作条目里记 `attrsRepaired`（精简诊断里是 `attrs`）。
+- 修复二（目标书下拉双写）：选择器写入时，除了自己包装的 `<select>`，还会按 id 找到**当前存活**的同名 `<select>`（`liveDialogSelectFor`）一并写值，并对两者各派发一次原生 `change`——宿主弹窗被重建、我们的控件仍指向旧元素时也能命中。
+- 探针验证（mock 宿主、按 ST 的读法模拟）：先把 `data-current-world` 人为改成不存在的「旧书」再点击 →
+  - 修复前等价情形：宿主读到 `旧书` → `loadWorldInfo` 失败 → 无弹窗；
+  - 修复后：`lastMove = { uid: "0", world: "探针书甲" }`，trace 里 `row-attrs-repaired=4`、`attrs=4`，动作条目 `attrsRepaired: 4`。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44。
+- 状态：**只推 dev**（main 仍停在 v2.35.126），按约定等你说才推 main。
+
 ### 修复：全局下拉「已开启的全局世界书」块被分组标题压住 + 手机可导出的精简诊断（2026-11-28 · v2.35.127，未推 main）
 - 现象（关掉下拉美化脚本时最明显）：全局下拉里点进「文风」后，顺序变成
   `文风 → 已开启的全局世界书 → 那几本全局书 → 文风那几本`；正确应为
