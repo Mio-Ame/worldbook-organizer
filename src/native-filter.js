@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.88';
+export const PLUGIN_VERSION = '2.35.89';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7486,43 +7486,56 @@ function enhanceCustomDropdownPopover(containerEl) {
     for (const ph of [...placeholders].reverse()) {
         optionsHost.insertBefore(ph, optionsHost.firstChild);
     }
-    // No extra hoisted row: the script replaces the 「选择以编辑」 line with the book being edited,
-    // so we only make sure that line shows the current title instead of duplicating the book.
-    if (!isGlobalPopover && placeholders.length > 0) {
+    if (!isGlobalPopover) {
         const select = document.getElementById('world_editor_select');
         const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
-        let currentName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
-        if (!currentName) {
-            const chatName = currentChatCharName?.();
-            if (chatName) {
-                for (const meta of _latestClassification?.byName?.values?.() || []) {
-                    if ((meta.charOwners || []).includes(chatName)) {
-                        currentName = meta.primaryTitle || meta.realName;
-                        break;
-                    }
+        const editedName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
+        // The book bound to the current chat character is what native ST pins above everything.
+        let charBookName = '';
+        const chatName = currentChatCharName?.();
+        if (chatName) {
+            for (const meta of _latestClassification?.byName?.values?.() || []) {
+                if ((meta.charOwners || []).includes(chatName)) {
+                    charBookName = meta.realName;
+                    break;
                 }
             }
         }
-        if (currentName) {
-            const meta = findMetaByAnyName(currentName);
-            const targetName = meta?.realName || currentName;
-            // Move the row of the edited book to the very top instead of copying it, and let the
-            // placeholder line carry its title (the script does the same natively).
-            const currentRow = realOptionNodes.find((row) => {
+        const rowFor = (name) => {
+            if (!name) return null;
+            const meta = findMetaByAnyName(name);
+            const target = meta?.realName || name;
+            return realOptionNodes.find((row) => {
                 const rowName = resolveEnhancedRowMeta(row)?.realName || getOptionText(row);
-                return rowName && (rowName === targetName || matchKnownWorldName(rowName) === targetName);
+                return rowName && (rowName === target || matchKnownWorldName(rowName) === target);
+            }) || null;
+        };
+        const placeAtTop = (row) => {
+            const anchor = optionsHost.children?.[placeholders.length] || null;
+            if (anchor && anchor !== row) optionsHost.insertBefore(row, anchor);
+            else if (!anchor && optionsHost.lastElementChild !== row) optionsHost.appendChild(row);
+        };
+        const charRow = rowFor(charBookName);
+        if (charRow) {
+            placeAtTop(charRow);
+            pushDiagTrace('enh-globals:char-book-pinned=1');
+        } else {
+            pushDiagTrace('enh-globals:char-book-pinned=0');
+        }
+        // If another book is being edited, bring it into view instead of moving it out of its group.
+        const editedRow = editedName && editedName !== charBookName ? rowFor(editedName) : null;
+        if (editedRow && editedRow !== charRow) {
+            requestAnimationFrame(() => {
+                try { editedRow.scrollIntoView?.({ block: 'center' }); } catch { /* ignore */ }
             });
-            if (currentRow) {
-                const anchor = optionsHost.children?.[placeholders.length] || null;
-                if (anchor && anchor !== currentRow) optionsHost.insertBefore(currentRow, anchor);
-                else if (!anchor && optionsHost.lastElementChild !== currentRow) optionsHost.appendChild(currentRow);
-                pushDiagTrace('enh-globals:current-moved=1');
-            } else {
-                pushDiagTrace('enh-globals:current-moved=0');
-            }
+            pushDiagTrace('enh-globals:edited-revealed=1');
+        }
+        if (editedName) {
+            const meta = findMetaByAnyName(editedName);
             for (const ph of placeholders) {
-                if ((ph.textContent || '').includes(meta?.primaryTitle || currentName)) continue;
-                ph.textContent = meta?.primaryTitle || currentName;
+                const title = meta?.primaryTitle || editedName;
+                if ((ph.textContent || '').includes(title)) continue;
+                ph.textContent = title;
             }
             pushDiagTrace('enh-globals:placeholder-titled=1');
         }

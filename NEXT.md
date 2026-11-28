@@ -1,3 +1,14 @@
+### 当前角色书置顶、编辑书滚动到视野、AGENT.md 通用约定（2026-11-28 · v2.35.89）
+- 用户澄清需求：①「当前角色世界书」应固定置顶（不是被编辑的那本）；② 选中另一本开始编辑时，希望**滚动到它**（保留在原分组原位，不搬走）；③ 询问无脚本路径是否有同样问题；④ 把「诊断 + 悬浮球 + 反复修不好就换 agent」写进所有插件的通用约定。
+- 诊断证据（v2.35.87/88）：`enh-globals:current-moved=1|0` 不稳定，且搬动的是「正在编辑的书」，与用户期望相反。
+- 修复（`src/native-filter.js`）：
+  - 拆成两件事：**当前角色书**（按 `currentChatCharName()` + `meta.charOwners` 定位）移到占位行下方置顶 → trace `enh-globals:char-book-pinned=1|0`；
+  - **正在编辑的书**不再搬离原分组，改为 `scrollIntoView({ block: "center" })` 让它出现在视野 → trace `enh-globals:edited-revealed=1`；
+  - 占位行文案仍同步为书名（`enh-globals:placeholder-titled=1`）。
+- 无脚本（Select2）路径：已有独立的 `__current_char_book__` 置顶块逻辑，不需要同样修补；本轮未改动该路径。
+- 新增 `F:\MyAiProject\01-酒馆-ST\插件与工具\AGENT.md` 并复制到本插件根目录：约定「诊断必须包含 env(含宿主版本)/counts/flags/actions/ui(带时间戳)/trace/errors/dom/runs」「必须内置 dev 悬浮球（单击详细、双击简短，main 关闭）」「同一现象 2 轮修不好立刻引入另一个 agent 只读审查」「回复必须给验证结果」。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 当前书「移动」到最顶（不是复制）+ 更宽松的行匹配（2026-11-28 · v2.35.88）
 - 用户 v2.35.87 反馈：当前角色世界书仍在「已收藏」下方，且「选择以编辑」没被替换。诊断里 `enh-globals:placeholder-titled=1` 说明我们改的是**另一行**占位，不是脚本显示的那行。
 - 修复（`src/native-filter.js`）：
