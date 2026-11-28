@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.97';
+export const PLUGIN_VERSION = '2.35.98';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1255,15 +1255,13 @@ function installDrawerWatcher() {
         const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
         pushDiagTrace(`drawer:${open ? 'open' : 'closed'}@+${seconds}s`);
         if (!closedFromOpen) return;
-        // Defer: an opening click often closes then immediately reopens the drawer, and closing the
-        // popover in the same task killed the one the user just opened.
+        // Observe only. Closing here killed the popover the user had just opened: the host drops
+        // `openDrawer` for a moment on every trigger click.
         setTimeout(() => {
             if (drawer.classList.contains('openDrawer')) return;
             const orphan = document.querySelector('.gr-container-enhanced.open, #gr-global-dropdown-container.open');
-            if (!orphan) return;
-            pushDiagTrace('drawer:popover-orphan=1');
-            try { closeAllOpenWorldDropdowns(); } catch { /* ignore */ }
-        }, 80);
+            if (orphan) pushDiagTrace('drawer:popover-orphan=1');
+        }, 250);
     });
     observer.observe(drawer, { attributes: true, attributeFilter: ['class'] });
     drawer._wboDrawerWatcher = observer;
@@ -7500,7 +7498,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         const name = getOptionText(optEl);
         const meta = _latestClassification?.byName?.get(name);
         const realName = meta?.realName || name;
-        const isMounted = isActiveGlobalName(realName);
+        // The compatible script has its own 「置顶」: those rows stay where the script put them,
+        // otherwise a pinned book also being global showed up inside 已开启的全局世界书.
+        const scriptPinned = Boolean(optEl.classList?.contains('has-pin')
+            && optEl.querySelector('.gr-option-pin.pinned, .gr-option-pin.is-active, .gr-option-pin.pin-active'));
+        const isMounted = isActiveGlobalName(realName) && !scriptPinned;
         if (isMounted) {
             mountedGlobalOptions.push(optEl);
             if (meta?.isPinned) mountedAndPinned.push(optEl);
@@ -7723,6 +7725,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             for (const optEl of mountedAndPinned) {
                 if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
             }
+            // The 已收藏 block belongs to 「全部」 and its own pill only; inside a single group pill
+            // it used to show up as a stray empty block in every group.
+            favoritesSectionEl.classList.toggle('wbo-dd-group-hidden', isIsolated);
         }
         // The origin badge only belongs to the flat favorites list.
         for (const optEl of favoriteOptions) {
