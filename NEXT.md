@@ -1,3 +1,13 @@
+### 原生条目诊断改成「现场快照」，长期使用后导出也不丢（2026-11-28 · v2.35.118）
+- 用户情况：反馈者可能在酒馆里用了很久才复现，且**点完复制/转移后关闭条目界面，再打开插件面板导出**。此时 `#world_popup` 已关闭，实时测量全是 0。
+- 修复（`src/native-filter.js`）：
+  - 新增 `snapshotNativeEntryState(stage)`：在**条目界面可见时**采集 `collectNativeEntryDiagnostics()`，保留最近 4 份（`_diag.nativeSnapshots`）。
+  - 触发点：`#world_popup` 一打开（`popup-open`）、以及每次点击动作结束后 500ms（`after-复制` / `after-转移`）。
+  - 报告新增 `nativeSnapshots` 数组；`nativeEntries` 仍是导出时的实时值，两者并排给结论用。
+  - `nativeActions` 环形从 6 提到 10，带 `changed` 判定。
+- 判读：即使导出时条目界面已关闭，也能从 `nativeSnapshots[].hitOwnsButton / rowButtons / hitChain / detachedOptions / recentActions` 看出当时是什么状况。
+- 验证：单测 247/247；`native-editor-titles` 12/12。
+
 ### 方案A：按原索引恢复 + 诊断再补强（2026-11-28 · v2.35.117，dev 与 main 同步）
 - 方案A（顺序安全）：新增 `_globalDetachedIndex` / `_editorDetachedIndex`，detach 时记录 `<option>` 原索引；`restoreAllDetachedOptions()` 按索引**升序插回原位**（`insertBefore` 到 `select.options[index]`），不再 `appendChild` 到末尾。这样酒馆的「索引 ↔ world_names」映射不被打乱，风险与现状一致。
 - 诊断补强（一次性采齐，避免再打扰用户）：`collectNativeEntryDiagnostics()` 追加

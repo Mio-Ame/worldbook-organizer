@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.117';
+export const PLUGIN_VERSION = '2.35.118';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1213,6 +1213,8 @@ const _diag = {
     highlights: [],
     /** Clicks on native entry controls and whether the count changed afterwards. */
     nativeActions: [],
+    /** Snapshots of the native entry list captured WHILE it was open. @type {any[]} */
+    nativeSnapshots: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1386,6 +1388,20 @@ function pushDiagTrace(label) {
 }
 
 /**
+ * Keep the last few measurements of the native entry list. The popup is normally closed by the time
+ * a report is exported, so a live read would show zeros; these snapshots carry the evidence.
+ * @param {string} stage
+ */
+function snapshotNativeEntryState(stage) {
+    try {
+        const snapshot = collectNativeEntryDiagnostics();
+        snapshot.stage = stage;
+        _diag.nativeSnapshots.push(snapshot);
+        if (_diag.nativeSnapshots.length > 4) _diag.nativeSnapshots.shift();
+    } catch { /* a snapshot must never break the UI */ }
+}
+
+/**
  * Snapshot of the NATIVE worldbook entry list: whether 条目分组 is on, how many rows exist, which
  * buttons each row carries, and — the decisive part — which element actually receives a click at the
  * centre of the first row's button. If that is not the button, something covers it.
@@ -1394,6 +1410,7 @@ function pushDiagTrace(label) {
 function collectNativeEntryDiagnostics() {
     const result = { available: false };
     try {
+        result.at = Math.round(globalThis.performance?.now?.() || 0);
         const settings = _latestSettings || {};
         const popup = document.getElementById('world_popup');
         const list = document.getElementById('world_popup_entries_list');
@@ -1756,6 +1773,7 @@ function buildDiagnosticReport(mode = 'short') {
             pinProbe: _diag.pinProbe,
             highlights: _diag.highlights,
             nativeEntries: collectNativeEntryDiagnostics(),
+            nativeSnapshots: _diag.nativeSnapshots,
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -8889,14 +8907,18 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                         changed: before.rows !== after.rows || before.options !== after.options,
                     };
                     _diag.nativeActions.push(entry);
-                    if (_diag.nativeActions.length > 6) _diag.nativeActions.shift();
+                    if (_diag.nativeActions.length > 10) _diag.nativeActions.shift();
                     pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`);
+                    snapshotNativeEntryState('after-' + (label || 'click'));
                 }, 500);
             }, true);
             const popupWatcher = new MutationObserver(() => {
                 const popup = document.getElementById('world_popup');
                 if (!popup || popup.style.display === 'none') return;
                 restoreForNative('popup-open');
+                // Snapshot while the editor is visible: by the time the report is exported the popup
+                // is usually closed and every measurement would read zero.
+                snapshotNativeEntryState('popup-open');
             });
             const attachPopupWatcher = () => {
                 const popup = document.getElementById('world_popup');
