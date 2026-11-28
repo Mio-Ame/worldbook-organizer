@@ -684,24 +684,57 @@ function openSettingsModal() {
             showToast('warning', '自动复制失败，已打印到控制台');
         }
     };
-    const downloadDetailedDiagnostics = () => {
+    const copyCompactDiagnostics = async () => {
         const text = (() => {
-            try { return globalThis.window?.wboBuildDiagnostic?.('dev') || ''; } catch { return ''; }
+            try { return globalThis.window?.wboBuildDiagnostic?.('compact') || ''; } catch { return ''; }
+        })();
+        if (!text) {
+            showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
+            return;
+        }
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('success', `已复制精简诊断（${Math.max(1, Math.round(text.length / 1024))} KB，手机可直接粘贴）`);
+        } catch {
+            console.log('[worldbook-organizer] 精简诊断\n' + text);
+            showToast('warning', '自动复制失败，已打印到控制台');
+        }
+    };
+    const downloadDetailedDiagnostics = () => {
+        // On a phone the full payload (~200 KB) usually cannot be exported at all; ship the compact
+        // one instead so the report actually leaves the device.
+        const mobile = Boolean(globalThis.matchMedia?.('(max-width: 680px)')?.matches)
+            || Number(globalThis.innerWidth || 0) <= 680;
+        const mode = mobile ? 'compact' : 'dev';
+        const text = (() => {
+            try { return globalThis.window?.wboBuildDiagnostic?.(mode) || ''; } catch { return ''; }
         })();
         if (!text) {
             showToast('warning', '诊断尚未就绪，请先打开一次世界书下拉再试');
             return;
         }
         const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        const name = `wbo-diagnostic-${mobile ? 'compact-' : ''}${stamp}.txt`;
+        const file = (() => {
+            try { return new File([text], name, { type: 'text/plain' }); } catch { return null; }
+        })();
+        // Phone webviews often ignore <a download>; offer the share sheet first, then the anchor.
+        if (mobile && file && typeof navigator.share === 'function' && navigator.canShare?.({ files: [file] })) {
+            navigator.share({ files: [file], title: name })
+                .then(() => showToast('success', '已分享精简诊断'))
+                .catch(() => { /* user cancelled or unsupported: fall through */ });
+            return;
+        }
         const blob = new Blob([text], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `wbo-diagnostic-${stamp}.txt`;
+        a.download = name;
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 2000);
-        showToast('success', '已生成详细诊断文件');
+        showToast('success', mobile ? '已生成精简诊断文件（手机版）' : '已生成详细诊断文件');
+        if (mobile) copyCompactDiagnostics();
     };
     modal.querySelector('#wbo-modal-diag-btn')?.addEventListener('click', (event) => {
         const existing = document.getElementById('wbo-diag-menu');
@@ -717,6 +750,7 @@ function openSettingsModal() {
         menu.className = 'wbo-diag-menu';
         menu.innerHTML = `
             <button type="button" data-diag="dev" class="is-primary"><i class="fa-solid fa-file-arrow-down"></i> 下载详细诊断<span>推荐：生成 .txt，含完整运行环境与操作记录</span></button>
+            <button type="button" data-diag="compact"><i class="fa-solid fa-mobile-screen-button"></i> 复制精简诊断<span>约 4 KB，手机/安卓导出失败时用这个</span></button>
             <button type="button" data-diag="short"><i class="fa-solid fa-clipboard"></i> 复制简要诊断<span>约 10 行，可直接贴到 Discord</span></button>
             <div class="wbo-diag-menu-note">反馈请发到 Discord 帖子，或私聊 <b>niviskitten</b>；诊断不含任何书名 / 角色名</div>
         `;
@@ -740,6 +774,7 @@ function openSettingsModal() {
             const kind = btn.getAttribute('data-diag');
             closeDiagMenu();
             if (kind === 'dev') downloadDetailedDiagnostics();
+            else if (kind === 'compact') copyCompactDiagnostics();
             else copyShortDiagnostics();
         });
         document.addEventListener('pointerdown', onDiagOutside, true);

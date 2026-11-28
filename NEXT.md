@@ -1,3 +1,18 @@
+### 修复：全局下拉「已开启的全局世界书」块被分组标题压住 + 手机可导出的精简诊断（2026-11-28 · v2.35.127，未推 main）
+- 现象（关掉下拉美化脚本时最明显）：全局下拉里点进「文风」后，顺序变成
+  `文风 → 已开启的全局世界书 → 那几本全局书 → 文风那几本`；正确应为
+  `已开启的全局世界书 → 那几本全局书 → 文风 → 文风那几本`。「角色世界书」同样。
+- 原因：全局块是靠一次性的 `insertBefore` 放到最前面的，但 Select2 每次重建结果列表、以及胶囊切换（`syncSections`）都会重排/重新挂载分组，块位置没人再校正。
+- 修复：新增两个幂等的顺序校正函数，在**每次重建和每次胶囊同步之后**执行：
+  - `hoistSelect2GlobalsBlock(resultsList)`：把 `data-wbo-dd-group="__active_globals__"` 的标题连同它下面的行整体提到列表最前（原生 `select2` 结果列表）；
+  - `hoistEnhancedGlobalsBlock(optionsHost)`：把 `.wbo-pop-section[data-wbo-dd-group="__globals__"]` 提到第一个普通分组之前（插件自己的下拉外壳）。
+  - 校正发生时记 `enh-globals:hoisted=1[,pill=1|role=sync|role=shell]`，报告里能看出是运行期被重排过。
+- 同版新增：**精简诊断** `wboBuildDiagnostic('compact')`，约 1.3 KB（真机完整版约 200 KB，手机/安卓常导不出来）。只保留与「行内复制/转移/删除 + 移动或复制到目标书」直接相关的字段：
+  `env / compat / flags / counts / native{rows,actionButtons,probeKind,obscuredBy,pager,editorOptions,globalOptions,detachedOptions,ctxWorlds,ctxSource,rowIds} / actions[最近3条,含 dialog{btn,i,rows,set,tgt,trig}] / gestures[最近3条] / picker / unresolved / trace[14] / errors[3]`。
+- 诊断菜单改为三项：`下载详细诊断`（手机自动改用精简版）、`复制精简诊断`（约 4 KB，手机可用）、`复制简要诊断`。手机上下载改为优先 `navigator.share`（分享文件），失败再走 `<a download>`，并同时复制到剪贴板，确保**一份报告一定能离开设备**。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44；探针确认（a）全局下拉进入「文风」胶囊后顺序仍为 globals→文风→未分组，（b）`compact` 输出 1.3 KB 且含 `actions/gestures/picker`。
+- 状态：**只提交在 dev，未推 main**（按用户要求继续测试）。
+
 ### 修复：iOS/TauriTavern 上「点不开」编辑世界书触发按钮（2026-11-28 · v2.35.126）
 - 真机日志（TauriTavern 2.4.0 / iOS / 440×860 / `renderPath=mobile-picker`）里，连续 8 次点击 `#wbo-mobile-editor-trigger`，**只有 1 次产生了 `click`**，其余都是 `down>up` + `NO-CLICK`；而且凡是 `restores=1`（这次按压里把 82 个隐藏 `<option>` 塞回下拉框）的那几次，点击全部消失：
   - 命中 `global 127`（还藏着 82 本）的那次 → 无 click；

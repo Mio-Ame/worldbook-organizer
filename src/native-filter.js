@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.126';
+export const PLUGIN_VERSION = '2.35.127';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1329,6 +1329,49 @@ function elChainText(el, depth = 3) {
         node = node.parentElement;
     }
     return parts.join('<') || 'none';
+}
+
+/**
+ * The 「已开启的全局世界书」 block must be the FIRST group of a dropdown: mounted books are pinned to
+ * the top by the host, so a normal section head above it reads as
+ * 「文风 → 已开启的全局世界书 → 全局那几本 → 文风那几本」. Select2 rebuilds and pill switches can
+ * re-insert a section head above it, so the order is enforced (idempotently) after every rebuild.
+ * @param {Element | null} resultsList
+ * @returns {boolean} whether anything had to move
+ */
+function hoistSelect2GlobalsBlock(resultsList) {
+    try {
+        if (!(resultsList instanceof Element)) return false;
+        const heads = [...resultsList.children].filter((el) => el.classList.contains('select2-results__group'));
+        const globalsHead = heads.find((el) => el.getAttribute('data-wbo-dd-group') === ACTIVE_GLOBAL_SECTION_ID);
+        if (!globalsHead || heads[0] === globalsHead) return false;
+        const block = [globalsHead];
+        for (let node = globalsHead.nextElementSibling;
+            node && !node.classList.contains('select2-results__group');
+            node = node.nextElementSibling) {
+            block.push(node);
+        }
+        const anchor = resultsList.firstElementChild;
+        for (const el of block) resultsList.insertBefore(el, anchor);
+        return true;
+    } catch { return false; }
+}
+
+/**
+ * Same rule for the plugin's own dropdown shell (`.wbo-pop-section` children).
+ * @param {Element | null} optionsHost
+ * @returns {boolean}
+ */
+function hoistEnhancedGlobalsBlock(optionsHost) {
+    try {
+        if (!(optionsHost instanceof Element)) return false;
+        const sections = [...optionsHost.children].filter((el) => el.classList.contains('wbo-pop-section'));
+        if (sections.length < 2) return false;
+        const globals = sections.find((el) => el.getAttribute('data-wbo-dd-group') === EDITOR_GLOBALS_GROUP_ID);
+        if (!globals || sections[0] === globals) return false;
+        optionsHost.insertBefore(globals, sections[0]);
+        return true;
+    } catch { return false; }
 }
 
 /**
@@ -2811,6 +2854,69 @@ function buildDiagnosticReport(mode = 'short') {
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
             ua: String(globalThis.navigator?.userAgent || ''),
         }, null, 2);
+    }
+    // Compact mode: ONE small payload with only what the 移动/复制 / 行内按钮 reports need, so a
+    // phone user can always copy or download it (the full dev JSON is ~200 KB and often cannot be
+    // exported on mobile at all).
+    if (mode === 'compact') {
+        const native = collectNativeEntryDiagnostics();
+        const pickAction = (action) => (action ? {
+            l: String(action.label || '').slice(0, 12),
+            ch: action.changed ? 1 : 0,
+            row: `${action.rowUid ?? '-'}@${action.rowIndex ?? -1}`,
+            set: action.rowSetChanged ? 1 : 0,
+            det: `${action.detachedBefore}->${action.detachedAfter}`,
+            opt: `${action.optionsBefore}->${action.optionsAfter}`,
+            gopt: `${action.globalOptionsBefore}->${action.globalOptionsAfter}`,
+            add: String(action.domAdded || '').slice(0, 24),
+            toast: action.toast,
+            err: action.errorsGained,
+            seq: action.gesture?.sequence || '',
+            click: String(action.gesture?.click || '').split('|').slice(-3).join('|'),
+            dlg: action.dialog ? {
+                btn: action.dialog.button,
+                i: `${action.dialog.buttonIndex}/${action.dialog.buttonCount}`,
+                rows: `${action.dialog.start?.rows}->${action.dialog.end?.rows}`,
+                set: action.dialog.rowSetChanged ? 1 : 0,
+                tgt: (action.dialog.start?.dialogSelects || [])
+                    .map((sel) => `${sel.value || 'EMPTY'}@${sel.index}/${sel.options}${sel.inRange === false ? '!' : ''}`)
+                    .join(' '),
+                trig: action.dialog.enhancedTrigger,
+            } : null,
+        } : null);
+        return JSON.stringify({
+            v: env.pluginVersion,
+            env: [env.host, env.stVersion, env.os, env.viewport, env.mobileViewport ? 'mobile' : 'desktop', env.renderPath].join('|'),
+            compat: env.compatDropdownScript,
+            flags: {
+                showCharBooks: Boolean(settings.showCharBooks),
+                hideCharBooksByDefault: Boolean(settings.hideCharBooksByDefault),
+                scriptMode: settings.enhancedScriptMode || 'auto',
+            },
+            counts: { books: counts.books, charBooks: counts.charBooks, groups: counts.groups },
+            native: {
+                rows: native.rows,
+                listPresent: native.listPresent,
+                actionButtons: native.actionButtons,
+                probeKind: native.probeKind,
+                obscuredBy: native.probeObscuredBy,
+                pager: native.pager,
+                editorOptions: native.editorOptions,
+                globalOptions: native.globalOptions,
+                detachedOptions: native.detachedOptions,
+                ctxWorlds: native.ctxWorlds,
+                ctxSource: native.ctxWorldsSource,
+                rowIds: native.rowIds,
+                partial: native.partial,
+                errors: native.errors,
+            },
+            actions: (_diag.nativeActions || []).slice(-3).map(pickAction),
+            gestures: (_diag.nativeGestures || []).slice(-3).map((record) => gestureSummary(record)),
+            picker: _diag.lastPickerWrite,
+            unresolved: (_diag.nativeUnresolved || []).slice(-2),
+            trace: _diag.trace.slice(-14),
+            errors: errors.slice(-3),
+        });
     }
     return [
         `世界书分组 WBO v${env.pluginVersion}`,
@@ -7829,6 +7935,7 @@ function enhanceOpenGlobalDropdown() {
         if (_activeGlobalPillId !== SPECIAL_GROUPS.ALL) {
             // Mounted books stay available even while another pill is filtered or folded.
             for (const row of rows) if (!mountedRows.includes(row)) resultsList.append(row);
+            if (hoistSelect2GlobalsBlock(resultsList)) pushDiagTrace('enh-globals:hoisted=1,pill=1');
             return;
         }
         // Favorites follow the saved fold state here; the header counts pinned+mounted books too.
@@ -7841,6 +7948,7 @@ function enhanceOpenGlobalDropdown() {
             });
         }
         for (const gid of orderedIds) appendGroup(gid, sectionName(gid), buckets.get(gid));
+        if (hoistSelect2GlobalsBlock(resultsList)) pushDiagTrace('enh-globals:hoisted=1');
     };
 
     const syncResults = () => {
@@ -9096,6 +9204,8 @@ function enhanceCustomDropdownPopover(containerEl) {
     };
     placeScriptPins();
     pushDiagTrace('enh-globals:script-pinned-bare=' + barePinnedOptions.length);
+    // One more ordering guarantee: mounted globals always sit above the first normal section.
+    if (hoistEnhancedGlobalsBlock(optionsHost)) pushDiagTrace('enh-globals:hoisted=1,role=shell');
 
     /**
      * Show/hide the two special sections of the enhanced editor popover.
@@ -9267,6 +9377,8 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
         }
         syncSpecialSections({ searching, isPinFilter, isIsolated });
+        // Pill switches re-parent rows; re-assert the documented order on every sync.
+        if (hoistEnhancedGlobalsBlock(optionsHost)) pushDiagTrace('enh-globals:hoisted=1,role=sync');
         // A favorite can move from its special block after that block was filtered. Apply the
         // destination's visibility now so group switching cannot leave a stale hidden row.
         for (const row of favoriteOptions) row.classList.remove('wbo-dd-pin-hidden');
