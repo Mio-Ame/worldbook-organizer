@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.104';
+export const PLUGIN_VERSION = '2.35.105';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1373,6 +1373,10 @@ function installQuickDiagBall() {
             document.querySelectorAll('[data-wbo-popover-role]').forEach((el) => {
                 try { enhanceCustomDropdownPopover(el); } catch { /* ignore */ }
             });
+            // A closed popover cannot be re-decorated, so also nudge the host to rebuild the list the
+            // next time it opens: re-apply the native-side decorations from scratch.
+            document.querySelectorAll('[data-wbo-popover-ready]').forEach((el) => delete el.dataset.wboPopoverReady);
+            pushDiagTrace('ball:rescan-done');
         } catch { /* refresh must never break the UI */ }
         refresh.animate?.([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 420 });
     });
@@ -7692,13 +7696,13 @@ function enhanceCustomDropdownPopover(containerEl) {
         const scriptPinned = pinState.length > 0;
         if (scriptPinned && _diag.pinProbe.length < 6) _diag.pinProbe.push(pinState.join('+'));
         const isMounted = isActiveGlobalName(realName);
-        if (isMounted) {
+        // Script pin wins over "mounted": the user pinned it to keep it on top, so it belongs in the
+        // bare rows above the globals block, never inside it.
+        if (scriptPinned && !isGlobalPopover) {
+            barePinnedOptions.push(optEl);
+        } else if (isMounted) {
             mountedGlobalOptions.push(optEl);
             if (meta?.isPinned) mountedAndPinned.push(optEl);
-        } else if (scriptPinned && !isGlobalPopover) {
-            // Pinned by the script but not global: show it as a bare row above the globals block,
-            // exactly like the current character's book.
-            barePinnedOptions.push(optEl);
         }
         if (!isGlobalPopover) {
             // 已收藏 lists the pinned books that are NOT mounted; mounted ones stay in the block
