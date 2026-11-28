@@ -7283,6 +7283,11 @@ body.dark-mode .gr-options > .wbo-enhanced-sticky {
     color: #546e7a;
     box-shadow: none;
     letter-spacing: normal;
+    min-height: 44px;
+    font-weight: 750;
+    line-height: 1.4;
+    border-block-end: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+    border-inline-start: 3px solid currentColor;
 }
 
 .gr-option.wbo-enhanced-clear-option {
@@ -7323,8 +7328,32 @@ body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
 :is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
     .gr-group-label.wbo-dd-group-head {
     color: var(--wbo-script-heading) !important;
-    font-size: var(--wbo-script-heading-size) !important;
+    font-size: max(15px, var(--wbo-script-heading-size, 12px)) !important;
     text-transform: none;
+}
+
+[data-wbo-enhanced-style][data-wbo-enhanced-host-theme] .gr-group-label.wbo-dd-group-head {
+    font-size: 15px !important;
+}
+
+[data-wbo-enhanced-style] .wbo-dd-group-note {
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.wbo-global-search {
+    display: block;
+    box-sizing: border-box;
+    width: calc(100% - 16px);
+    margin: 8px;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    color: inherit;
+    background: inherit;
+    font: inherit;
 }
 
 :is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])

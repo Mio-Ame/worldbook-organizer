@@ -1,3 +1,16 @@
+### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
+- 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
+- `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。
+- 两种美化下拉统一优先级：脚本置顶裸行 > 已挂载全局区域 > 未挂载收藏块 > 原分组。收藏与脚本置顶互不写对方状态；同步回填也不能收回裸行。没有全局块时同样保持裸行。
+- 数量规则：普通下拉 1–2 本挂载全局书裸显示、3 本起全局分组；全局下拉任何数量都进入全局分组。在全部、收藏、独立分组中均保留，折叠当前分组不隐藏全局区域。脚本置顶仍在全局区域上方。
+- 收藏集合、挂载集合、脚本置顶集合均参与重渲染判定；「全部」显示收藏块，隐藏角色收藏给数量提示。单分组路径不再跳过首次收藏更新。点收藏/置顶不主动换 pill，胶囊记忆只保存最终选择。
+- 用户后补授权：仅在「分开显示」中将全局搜索独立到下拉输入框，原挂载区 inline input 只读且不抢焦点，❌取消挂载后不唤起输入状态；切回模式/卸载会恢复属性。脚本下拉阻止自动聚焦，指针、触摸和 Tab 仍可明确进入搜索。
+- 样式：美化下拉分组标题至少 15px、加粗、44px 高度与侧边线；说明文字保持次要层级，继承宿主颜色。
+- 诊断：`enh-pin:rows/new/bare/store`、`enh-pin:misplaced=0`、`enh-pin:above=N,bare=N`、`enh-favorites:block/visible/visibleRows/collapsed`、`global-search:*`；global/editor 同步后均采阶段快照。键盘日志只记导航键或 `text`，不记录输入字符；折叠行按祖先统计。
+- 独立只读审查确认当前分组修复无新增阻断；另外发现既有搜索面板键盘组合输入缺口及监听清理问题，进入后续独立审计，不混入本轮提交。真实 ST、Tauri/iOS 输入法尚未验收，自动化不代表 driver-accepted。完整测试证据见本条末尾补录与 `本轮材料/本轮修复/`。
+
+- 提交前验证：node --test tests/*.test.mjs 247/247；formal-isolated-suite 下 native-picker-window 44、真实美化脚本 12、editor-titles 12、global-drawer 8，共 76/76 通过。日志 release-unit.log / release-browser.log；此前失败日志保留，最新全量通过。
+
 ### 置顶标记落到行上、__all__ 永远合法（2026-11-28 · v2.35.107，待验证）
 - 用户报告（v2.35.106）：置顶书仍在全局分组下；点置顶跳到「★已收藏」。
 - 诊断证据：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:script-pinned-bare=3`（裸行移动**执行过**），但紧接着 `enh-globals:block=1,count=1,role=global,pinnedMounted=1` —— 说明**重渲染**又把它收进了全局块；`enh-pill:open=__pinned__,hasMemory=1,remembered=__all__` 说明保存的 `__all__` 被判为非法，回落到已收藏。

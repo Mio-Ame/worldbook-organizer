@@ -29,6 +29,139 @@ const seed = (extraBooks = []) => createDefaultSeed({
     },
 });
 
+for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+test(`${viewport.name}: split global control opens without a keyboard, keeps chip removal independent, and searches only in its own field`, async () => {
+    const fixture = seed();
+    fixture.extension_settings.worldbook_organizer.nativeQuickActionsMode = 'split';
+    await withHost(viewport, async (cdp) => {
+        // The retained fixture omits Select2's inline search and chip removal. Supply those
+        // boundary events so this test can catch the real multi-select's refocus after removal.
+        await cdp.evalFn(() => {
+            if (!jQuery('#world_info').data('select2')) jQuery('#world_info').select2({ width: '100%', closeOnSelect: false });
+            const selection = document.querySelector('#WIMultiSelector .select2-selection');
+            const inline = document.createElement('input');
+            inline.className = 'select2-search__field';
+            selection.append(inline);
+            selection.addEventListener('mousedown', () => inline.focus());
+            const chip = selection.querySelector('.select2-selection__choice');
+            const remove = document.createElement('button');
+            remove.className = 'select2-selection__choice__remove';
+            remove.textContent = '×';
+            remove.addEventListener('click', (event) => {
+                event.stopPropagation();
+                for (const option of document.getElementById('world_info').options) option.selected = false;
+                window.jQuery('#world_info').trigger('change');
+                inline.focus();
+                setTimeout(() => inline.focus(), 0);
+            });
+            chip.append(remove);
+        });
+        await cdp.clickSelector('#WIMultiSelector .select2-selection');
+        await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar'));
+        assert.equal(await cdp.evalFn(() => document.activeElement?.matches('input,textarea')), false,
+            'opening the mounted-book control must not focus an input');
+        assert.equal(await cdp.evalFn(() => !!document.querySelector('.select2-dropdown .wbo-global-search')), true);
+        await cdp.typeInto('.select2-dropdown .wbo-global-search', '普通');
+        await waitForCondition(cdp, () => [...document.querySelectorAll('.select2-dropdown [data-wbo-world], .select2-dropdown [data-s2-text]')]
+            .filter((row) => row.getBoundingClientRect().height > 0).some((row) => (row.dataset.wboWorld || row.dataset.s2Text) === '普通测试书'));
+        assert.equal(await cdp.evalFn(() => document.activeElement?.classList.contains('wbo-global-search')), true);
+        await cdp.screenshot(`split-global-search-${viewport.name}`);
+        await cdp.evalFn(() => window.jQuery('#world_info').select2('close'));
+        await cdp.clickSelector('#WIMultiSelector .select2-selection__choice__remove');
+        await waitForCondition(cdp, () => !document.getElementById('world_info').selectedOptions.length);
+        assert.equal(await cdp.evalFn(() => document.activeElement?.matches('input,textarea')), false,
+            'removing a mounted chip must not invoke the keyboard');
+    }, [], fixture);
+});
+}
+
+for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+    test(`${viewport.name}: editor keeps a stored mounted pin bare without a globals block and explains hidden favorites`, async () => {
+        const fixture = seed();
+        fixture.extension_settings.worldbook_organizer.pinnedBooks = [globalBook, characterBook];
+        await withHost(viewport, async (cdp) => {
+            await cdp.evalFn((pinned, hidden) => {
+                localStorage.setItem('[酒馆]酒馆助手脚本-下拉选项框美化', JSON.stringify({ pinned: { world_editor_select: [`t\0${pinned}`] } }));
+                const select = document.getElementById('world_editor_select');
+                select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                const pop = document.createElement('div');
+                pop.id = 'gr-global-dropdown-container';
+                pop.className = 'gr-container-enhanced open';
+                pop.dataset.wboSourceRole = 'editor';
+                pop.style.cssText = 'position:fixed;top:140px;left:10px;width:340px;z-index:9000;background:white;color:black';
+                pop.innerHTML = '<div class="gr-options" style="max-height:420px;overflow:auto"><input type="search"><div class="gr-options-container"></div></div>';
+                for (const option of select.options) {
+                    // The host may omit a character favorite from the rendered rows.
+                    if (option.textContent === hidden) continue;
+                    const row = document.createElement('div');
+                    row.className = 'gr-option'; row.dataset.value = option.value; row.textContent = option.textContent;
+                    pop.querySelector('.gr-options-container').append(row);
+                }
+                document.body.append(pop);
+            }, globalBook, characterBook);
+            await waitForCondition(cdp, () => document.querySelector('[data-wbo-popover-role="editor"] .wbo-pop-filter-bar'));
+            for (const pill of ['__all__', '__pinned__', 'g-b', '__all__']) {
+                await cdp.evalFn((id) => document.querySelector(`[data-wbo-popover-role="editor"] [data-wbo-pill="${id}"]`).click(), pill);
+                assert.equal(await cdp.evalFn((name) => {
+                    const row = document.querySelector(`[data-wbo-popover-role="editor"] [data-pin-world="${name}"]`).closest('.gr-option');
+                    return row.parentElement.classList.contains('gr-options-container');
+                }, globalBook), true);
+                assert.equal(await cdp.evalFn(() => !!document.querySelector('[data-wbo-popover-role="editor"] .wbo-pop-section[data-wbo-dd-group="__globals__"]')), false);
+            }
+            const hint = await cdp.evalFn(() => document.querySelector('[data-wbo-popover-role="editor"] .wbo-favorites-hint')?.textContent);
+            assert.match(hint, /1 本.*隐藏/);
+            assert.match(await cdp.evalFn(() => document.querySelector('[data-wbo-popover-role="editor"] .wbo-pop-section[data-wbo-dd-group="__pinned__"]')?.textContent), /★ 已收藏 \(2\)/);
+        }, [], fixture);
+    });
+}
+
+for (const viewport of [VIEWPORTS.desktop, VIEWPORTS.mobile]) {
+for (const role of ['editor', 'global']) {
+test(`${viewport.name}: enhanced ${role} retains mounted globals in every pill with the correct block threshold`, async () => {
+    const names = ['挂载甲', '挂载乙', '挂载丙'];
+    const fixture = seed(names);
+    await withHost(viewport, async (cdp) => {
+        for (const count of [1, 2, 3]) {
+            await cdp.evalFn((role, names) => {
+                document.getElementById('gr-global-dropdown-container')?.remove();
+                const global = document.getElementById('world_info');
+                for (const option of global.options) option.selected = names.includes(option.textContent);
+                jQuery(global).trigger('change');
+                const select = document.getElementById(role === 'editor' ? 'world_editor_select' : 'world_info');
+                select.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                const pop = document.createElement('div');
+                pop.id = 'gr-global-dropdown-container'; pop.className = 'gr-container-enhanced open';
+                pop.dataset.wboSourceRole = role;
+                pop.style.cssText = 'position:fixed;top:140px;left:10px;width:340px;z-index:9000;background:white;color:black';
+                pop.innerHTML = '<div class="gr-options" style="max-height:420px;overflow:auto"><input type="search"><div class="gr-options-container"></div></div>';
+                for (const option of select.options) {
+                    const row = document.createElement('div');
+                    row.className = 'gr-option'; row.dataset.value = option.value; row.textContent = option.textContent;
+                    pop.querySelector('.gr-options-container').append(row);
+                }
+                document.body.append(pop);
+            }, role, names.slice(0, count));
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-ready="1"] .wbo-pop-filter-bar'));
+            for (const pill of ['__all__', '__pinned__', 'g-a', '__all__']) {
+                await cdp.evalFn((id) => {
+                    const pop = document.getElementById('gr-global-dropdown-container');
+                    const btn = pop.querySelector(`[data-wbo-pill="${id}"]`);
+                    if (!btn.classList.contains('is-active')) btn.click();
+                    const section = pop.querySelector('.wbo-pop-section[data-wbo-dd-group="__globals__"]');
+                    if (section?.classList.contains('wbo-dd-collapsed')) section.querySelector('.wbo-dd-group-head').click();
+                }, pill);
+                const result = await cdp.evalFn((names) => names.map((name) => {
+                    const rows = [...document.querySelectorAll('#gr-global-dropdown-container .gr-option')].filter((row) => row.querySelector('[data-pin-world]')?.dataset.pinWorld === name);
+                    return rows.map((row) => ({ visible: !!row.getClientRects().length, group: row.closest('.wbo-pop-section')?.dataset.wboDdGroup || null }));
+                }), names.slice(0, count));
+                assert.deepEqual(result, names.slice(0, count).map(() => [{ visible: true, group: role === 'global' || count >= 3 ? '__globals__' : null }]), `${role}/${count}/${pill}`);
+            }
+        }
+    }, names, fixture);
+});
+}
+}
+
 async function withHost(viewport, verify, extraBooks, fixture = seed(extraBooks)) {
     const server = createMockStServer();
     const baseUrl = await server.start();
@@ -67,8 +200,8 @@ test('desktop native global picker keeps its search, filters by group and opens 
         const groupBadges = () => cdp.evalFn(() => [...document.querySelectorAll('.select2-dropdown .wbo-s2-badge:not(.is-editing)')]
             .filter((badge) => badge.getBoundingClientRect().height > 0).map((badge) => badge.textContent.trim()));
         assert.equal(await activePill(), '已收藏 1');
-        assert.deepEqual(await visible(), [favorite]);
-        assert.deepEqual(await groupBadges(), ['测试分组甲']);
+        assert.deepEqual(await visible(), [globalBook, favorite]);
+        assert.deepEqual(await groupBadges(), ['测试分组乙', '测试分组甲']);
         await cdp.evalFn(() => { document.querySelector('.select2-dropdown').style.width = '640px'; });
         await waitForCondition(cdp, () => document.querySelector('.wbo-global-dd-bar .wbo-dd-expand-btn').hidden);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
@@ -97,7 +230,7 @@ test('desktop native global picker keeps its search, filters by group and opens 
         await foldHead('已收藏');
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__pinned__"]');
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-global-group-heading').getAttribute('aria-expanded')), 'true');
-        assert.deepEqual(await visible(), [favorite]);
+        assert.deepEqual(await visible(), [globalBook, favorite]);
         await cdp.clickSelector('.wbo-global-dd-bar [data-wbo-pill="__all__"]');
         // The manual fold is remembered instead of reopening expanded.
         assert.equal(await cdp.evalFn(() => [...document.querySelectorAll('li.wbo-global-group-head')].find((el) => el.textContent.includes('已收藏'))?.getAttribute('aria-expanded')), 'false');
@@ -105,7 +238,7 @@ test('desktop native global picker keeps its search, filters by group and opens 
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         assert.deepEqual(await groupBadges(), []);
         await cdp.clickSelector('.wbo-global-group-heading');
-        assert.deepEqual(await visible(), []);
+        assert.deepEqual(await visible(), [globalBook]);
         await cdp.clickSelector('.wbo-global-group-heading');
         assert.deepEqual((await visible()).sort(), [globalBook, other].sort());
         await cdp.typeInto('.select2-dropdown .select2-search__field', '普通');
@@ -780,14 +913,14 @@ test('mobile global dropdown handles direct option rows without native search', 
             .filter((row) => row.getBoundingClientRect().height > 0)
             .map((row) => row.querySelector('[data-pin-world]').getAttribute('data-pin-world')));
         assert.equal(await activePill(), '已收藏 1');
-        // v2.35.80: mounted books sit in their own block above everything, like native ST.
+        // Mounted globals stay above favorites even when they have not been favorited.
         assert.deepEqual(await visible(), [globalBook, favorite]);
         assert.equal(await cdp.evalFn(() => document.querySelector('.wbo-pop-search').getAttribute('spellcheck')), 'false');
         await cdp.clickSelector(`${bar} [data-wbo-pill="__all__"]`);
         // The globals block stays on top in every pill, so the first head is the globals one.
         assert.match(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-pop-section .wbo-dd-group-head').textContent), /已开启的全局世界书/);
         assert.equal((await visible())[0], globalBook);
-        await cdp.clickSelector(`${bar} [data-wbo-pill="g-b"]`);
+        await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container [data-wbo-pill="g-b"]').click());
         await cdp.typeInto(`${pop} .wbo-pop-search`, '普通');
         // v2.35.77: the global list also renders the plugin-owned panel instead of filtering rows.
         await waitForCondition(cdp, () => Boolean(document.querySelector('.wbo-enhanced-search-panel')));
@@ -807,7 +940,10 @@ test('mobile global dropdown handles direct option rows without native search', 
         });
         await waitForCondition(cdp, () => !document.querySelector('.wbo-pop-filter-bar .wbo-dd-expand-btn').hidden);
         await cdp.clickSelector(`${bar} .wbo-dd-expand-btn`);
-        await cdp.evalFn(() => { document.getElementById('gr-global-dropdown-container').style.width = '500px'; });
+        // Widen the viewport too: the global pill now adds another real item, and the
+        // mobile shell correctly stays clamped to the viewport regardless of its width.
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 900, height: 844, deviceScaleFactor: 1, mobile: false });
+        await cdp.evalFn(() => { document.getElementById('gr-global-dropdown-container').style.width = '850px'; });
         await waitForCondition(cdp, () => document.querySelector('.wbo-pop-filter-bar .wbo-dd-expand-btn').hidden);
     });
 });
