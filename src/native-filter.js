@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.121';
+export const PLUGIN_VERSION = '2.35.122';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1213,6 +1213,15 @@ const _diag = {
     highlights: [],
     /** Clicks on native entry controls and whether the count changed afterwards. */
     nativeActions: [],
+    /**
+     * Pointer → click sequences of the native entry rows (read-only). One record per pointerdown
+     * inside a worldbook container, so a report can tell "no click was ever dispatched" apart from
+     * "the click landed on something else" and from "the host received it and did nothing".
+     * @type {any[]}
+     */
+    nativeGestures: [],
+    /** Monotonic id shared with `nativeGestures[].n`, so a trace line can be matched to a record. */
+    gestureSeq: 0,
     /** Snapshots of the native entry list captured WHILE it was open. @type {any[]} */
     nativeSnapshots: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
@@ -1263,6 +1272,225 @@ function describeDiagTarget(el) {
     }
 }
 
+/** Every container the native worldbook entry UI has used across ST layouts. */
+const NATIVE_WB_AREA_SELECTOR = '#world_popup, #world_popup_entries_list, #WorldInfo, #world_info';
+
+/** Class fragments of the native row actions (复制 / 转移 / 删除). */
+const NATIVE_ACTION_HINT = /(copy|move|transfer|duplicate|trash|delete)/i;
+
+/** Visible labels of the same actions, for builds that only ship text. */
+const NATIVE_ACTION_TEXT = /复制|转移|删除|移动/;
+
+/** Monotonic clock for the diagnostics; never used for control flow. */
+function diagNow() {
+    return Math.round(globalThis.performance?.now?.() || Date.now());
+}
+
+/**
+ * `tag.class.class` — compressed, class names only, never text.
+ * @param {Element | null | undefined} el
+ * @param {number} [max]
+ * @returns {string}
+ */
+function elTagClass(el, max = 24) {
+    if (!(el instanceof Element)) return 'none';
+    // `getAttribute` also works for SVG icons, where `className` is an object.
+    const cls = String(el.getAttribute?.('class') ?? el.className ?? '').trim().replace(/\s+/g, '.');
+    return cls ? `${el.tagName.toLowerCase()}.${cls.slice(0, max)}` : el.tagName.toLowerCase();
+}
+
+/**
+ * `tag.class<^tag.class<^…` — the target plus up to `depth - 1` ancestors.
+ * @param {Element | null | undefined} el
+ * @param {number} [depth]
+ * @returns {string}
+ */
+function elChainText(el, depth = 3) {
+    const parts = [];
+    let node = el;
+    for (let level = 0; level < depth && node instanceof Element; level += 1) {
+        parts.push(elTagClass(node, 22));
+        node = node.parentElement;
+    }
+    return parts.join('<') || 'none';
+}
+
+/**
+ * Length of the event path (capture/target/bubble nodes). `-1` when the platform hides it.
+ * @param {any} event
+ * @returns {number}
+ */
+function diagPathLength(event) {
+    try {
+        return typeof event?.composedPath === 'function' ? event.composedPath().length : -1;
+    } catch { return -1; }
+}
+
+/**
+ * Who receives a pointer at (x, y), and whether that is the button we care about.
+ * @param {number} x
+ * @param {number} y
+ * @param {Element | null} owner
+ * @returns {string} `tag.class:own|:foreign|none|n/a|err`
+ */
+function describeHitAt(x, y, owner) {
+    try {
+        if (typeof document?.elementFromPoint !== 'function') return 'n/a';
+        const hit = document.elementFromPoint(x, y);
+        if (!hit) return 'none';
+        const owns = owner instanceof Element && (hit === owner || owner.contains(hit));
+        return `${elTagClass(hit, 20)}${owns ? ':own' : ':foreign'}`;
+    } catch { return 'err'; }
+}
+
+/**
+ * The worldbook element hiding under the topmost hit — i.e. what the user thought they clicked
+ * when a layer sits on top of it. Uses the full hit stack, not just the first element.
+ * @param {number} x
+ * @param {number} y
+ * @returns {Element | null}
+ */
+function findBeneathInArea(x, y) {
+    try {
+        if (typeof document?.elementsFromPoint !== 'function') return null;
+        for (const node of document.elementsFromPoint(x, y) || []) {
+            if (node instanceof Element && node.closest?.(NATIVE_WB_AREA_SELECTOR)) return node;
+        }
+        return null;
+    } catch { return null; }
+}
+
+/**
+ * Cheap geometric pre-check (two rect reads) so the hit stack is only queried when a press could
+ * plausibly belong to the worldbook UI.
+ * @param {number} x
+ * @param {number} y
+ * @returns {boolean}
+ */
+function pointInsideWorldbookArea(x, y) {
+    try {
+        for (const id of ['world_popup', 'WorldInfo']) {
+            const el = document.getElementById(id);
+            if (!el || el.getClientRects().length === 0) continue;
+            const rect = el.getBoundingClientRect();
+            if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return true;
+        }
+        return false;
+    } catch { return false; }
+}
+
+/**
+ * Does this element look like one of the native row actions? Text is capped so a whole row can
+ * never match through its title/body text.
+ * @param {Element | null | undefined} el
+ * @returns {boolean}
+ */
+function nativeActionLike(el) {
+    if (!(el instanceof Element)) return false;
+    try {
+        const cls = String(el.getAttribute?.('class') ?? el.className ?? '');
+        if (NATIVE_ACTION_HINT.test(cls)) return true;
+        const text = String(el.textContent || '').trim();
+        const label = `${text.length > 24 ? '' : text} ${el.getAttribute?.('title') || ''} ${el.getAttribute?.('aria-label') || ''}`;
+        return label.trim().length > 0 && NATIVE_ACTION_TEXT.test(label);
+    } catch { return false; }
+}
+
+/**
+ * Resolve the element that carries the action. SillyTavern builds without a `button`/`[title]`
+ * wrapper put the handler on a plain span or svg, so the raw target is checked too — but only
+ * inside a `.world_entry` row, which keeps ordinary row clicks out of the instrumentation.
+ * @param {Element | null} target
+ * @returns {Element | null}
+ */
+function resolveNativeActionTarget(target) {
+    if (!(target instanceof Element)) return null;
+    try {
+        const direct = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i, [title]');
+        if (direct && nativeActionLike(direct)) return direct;
+        const row = target.closest('.world_entry');
+        if (!row) return direct || null;
+        let node = target;
+        for (let depth = 0; depth < 3 && node instanceof Element && node !== row; depth += 1) {
+            if (nativeActionLike(node)) return node;
+            node = node.parentElement;
+        }
+        return direct || null;
+    } catch { return null; }
+}
+
+/**
+ * Computed style of the element and up to `max - 1` ancestors, up to the list. Covers the three
+ * silent blockers: a layer on top (position/z-index), a non-interactive tree (pointer-events /
+ * visibility / opacity) and an inert subtree (clicks are not even dispatched).
+ * @param {Element | null} el
+ * @param {Element | null} [stopAt]
+ * @param {number} [max]
+ * @returns {string[]}
+ */
+function styleChainOf(el, stopAt = null, max = 4) {
+    const out = [];
+    let node = el;
+    for (let depth = 0; depth < max && node instanceof Element; depth += 1) {
+        let style = null;
+        try { style = getComputedStyle(node); } catch { style = null; }
+        const inertFlag = node.hasAttribute?.('inert') ? 'inert' : '';
+        const ariaHidden = node.getAttribute?.('aria-hidden') === 'true' ? 'aria-hidden' : '';
+        out.push([
+            elTagClass(node, 18),
+            `pe=${style?.pointerEvents ?? '?'}`,
+            `vis=${style?.visibility ?? '?'}`,
+            `op=${style?.opacity ?? '?'}`,
+            `z=${style?.zIndex ?? '?'}`,
+            `pos=${style?.position ?? '?'}`,
+            `of=${style?.overflowY ?? style?.overflow ?? '?'}`,
+        ].join(',') + (inertFlag || ariaHidden ? `,${[inertFlag, ariaHidden].filter(Boolean).join('/')}` : ''));
+        if (stopAt && node === stopAt) break;
+        node = node.parentElement;
+    }
+    return out;
+}
+
+/**
+ * Three hit tests on one button: centre, top-left + 8px and bottom-right − 8px (a scrollbar or a
+ * right-hand overlay is exactly what the centre test alone misses).
+ * @param {Element | null} el
+ * @returns {{ points: string[], obscured: boolean }}
+ */
+function hitPointsOf(el) {
+    const report = { points: [], obscured: false };
+    if (!(el instanceof Element)) return report;
+    let rect = null;
+    try { rect = el.getBoundingClientRect(); } catch { rect = null; }
+    if (!rect) return report;
+    const spots = [
+        ['c', rect.left + rect.width / 2, rect.top + rect.height / 2],
+        ['tl8', rect.left + 8, rect.top + 8],
+        ['br8', rect.right - 8, rect.bottom - 8],
+    ];
+    for (const [name, x, y] of spots) {
+        const hit = describeHitAt(x, y, el);
+        report.points.push(`${name}=${hit}`);
+        if (hit !== 'n/a' && !hit.endsWith(':own')) report.obscured = true;
+    }
+    return report;
+}
+
+/**
+ * A short, name-free label of the render path currently in charge of the dropdowns.
+ * @returns {string}
+ */
+function nativeRenderPathHint() {
+    try {
+        if (typeof document === 'undefined') return 'none';
+        if (document.querySelector('[data-wbo-popover-role="global"]')) return 'enhanced:global';
+        if (document.querySelector('[data-wbo-popover-role="editor"]')) return 'enhanced:editor';
+        if (document.querySelector('.select2-dropdown')) return 'select2';
+        if (document.querySelector('#gr-global-dropdown-container, .gr-container-enhanced')) return 'enhanced-shell';
+        return _diag.lastRenderPath || 'native';
+    } catch { return 'err'; }
+}
+
 /**
  * Track the two environmental flips that make bug reports hard to compare: the compatible
  * dropdown script being toggled, and the SillyTavern theme being switched mid-session.
@@ -1294,6 +1522,262 @@ function pushDiagUi(kind, target) {
         _diag.ui.push(`+${seconds}s ${kind}:${describeDiagTarget(target)}`);
         if (_diag.ui.length > 40) _diag.ui.shift();
     } catch { /* logging must never break the UI */ }
+}
+
+/** @type {any | null} The gesture record currently being filled (read-only bookkeeping). */
+let _gestureActive = null;
+/** @type {Element | null} */
+let _gestureDownEl = null;
+/** @type {Element | null} */
+let _gestureDownList = null;
+let _gestureTailBound = false;
+/** @type {any} */
+let _gestureWatchdog = null;
+/** The event objects whose default we still have to read after the host handlers ran. */
+let _gestureDownEvent = null;
+let _gestureUpEvent = null;
+
+/**
+ * Summarise one gesture for the report. Everything here is structure only: tag/class names,
+ * flags and counts.
+ * @param {any} record
+ * @returns {Record<string, any> | null}
+ */
+function gestureSummary(record) {
+    if (!record) return null;
+    try {
+        const sequence = ['down'];
+        if (record.up) sequence.push('up');
+        if (record.up && record.up.sameAsDown === false) sequence.push('retargeted');
+        if (record.click) sequence.push('click');
+        if (!record.click && record.miss) sequence.push(record.miss === 'no-click' ? 'NO-CLICK' : 'NO-UP');
+        if (record.cancel) sequence.push('cancel');
+        return {
+            n: record.n,
+            at: record.at,
+            host: record.host,
+            sequence: sequence.join('>'),
+            miss: record.miss || '',
+            covered: Boolean(record.down?.covers),
+            down: record.down
+                ? `${record.down.desc}|hit=${record.down.hit}|conn=${record.down.connected ? 1 : 0}`
+                    + `|trusted=${record.down.trusted ? 1 : 0}|path=${record.down.path}`
+                    + `|preventedAfter=${record.down.preventedAfter ? 1 : 0}`
+                    + (record.down.area === 'by-point' ? '|area=by-point' : '')
+                    + (record.down.covers ? `|beneath=${record.down.beneath}` : '')
+                : 'none',
+            up: record.up
+                ? (record.up.error
+                    ? `err=${record.up.error}`
+                    : `${record.up.desc}|same=${record.up.sameAsDown ? 1 : 0}`
+                        + `|downConn=${record.up.downConnected ? 1 : 0}|list=${record.up.listSame}`
+                        + `|preventedAfter=${record.up.preventedAfter ? 1 : 0}`)
+                : 'none',
+            click: record.click
+                ? `${record.click.desc}|same=${record.click.sameAsDown ? 1 : 0}`
+                    + `|bubble=${record.click.bubble ? 1 : 0}|prevented=${record.click.prevented ? 1 : 0}`
+                    + `|trusted=${record.click.trusted ? 1 : 0}|upToClick=${record.click.upToClickMs}`
+                : 'none',
+            cancel: record.cancel || '',
+        };
+    } catch { return null; }
+}
+
+/**
+ * Register the tail of the gesture (pointerup / pointercancel / click). Created lazily on the first
+ * pointerdown inside a worldbook container: registering document listeners at boot would shift the
+ * host's observer/listener order that the mobile-picker contract depends on.
+ */
+function ensureGestureTailRecorders() {
+    if (_gestureTailBound || typeof document === 'undefined') return;
+    _gestureTailBound = true;
+    try {
+        // Bubble-phase reads: at capture time nobody has run yet, so `defaultPrevented` is always
+        // false there. A host that cancels `pointerdown` is exactly what suppresses the click.
+        document.addEventListener('pointerdown', recordGestureDownBubble, false);
+        document.addEventListener('pointerup', recordGestureUpBubble, false);
+        document.addEventListener('pointerup', recordGestureUp, true);
+        document.addEventListener('pointercancel', recordGestureCancel, true);
+        document.addEventListener('click', recordGestureClick, true);
+        // Bubble phase on document is the last stop of the dispatch: only there does
+        // `defaultPrevented` already include every handler that ran, and only there does reaching
+        // us prove nothing called stopPropagation on the way up.
+        document.addEventListener('click', recordGestureClickBubble, false);
+    } catch { /* diagnostics must never block the UI */ }
+}
+
+/**
+ * Read `pointerdown.defaultPrevented` after every handler on the path has run.
+ * @param {any} event
+ */
+function recordGestureDownBubble(event) {
+    const record = _gestureActive;
+    if (!record?.down || _gestureDownEvent !== event) return;
+    try { record.down.preventedAfter = event.defaultPrevented === true; } catch { /* ignore */ }
+}
+
+/**
+ * Same for `pointerup`.
+ * @param {any} event
+ */
+function recordGestureUpBubble(event) {
+    const record = _gestureActive;
+    if (!record?.up || _gestureUpEvent !== event) return;
+    try { record.up.preventedAfter = event.defaultPrevented === true; } catch { /* ignore */ }
+}
+
+function recordGestureUp(event) {
+    const record = _gestureActive;
+    if (!record || record.up) return;
+    // The tail recorders are session-wide once armed; a press from minutes ago must not borrow the
+    // release of a later, unrelated click.
+    if (diagNow() - record.at > 2500) return;
+    try {
+        _gestureUpEvent = event;
+        const target = event?.target instanceof Element ? event.target : null;
+        record.up = {
+            at: diagNow(),
+            desc: elChainText(target, 3),
+            sameAsDown: Boolean(target && target === _gestureDownEl),
+            // The decisive check behind "the button vanished between press and release".
+            downConnected: _gestureDownEl ? _gestureDownEl.isConnected !== false : false,
+            upConnected: target ? target.isConnected !== false : false,
+            listSame: listIdentitySame(),
+            prevented: event?.defaultPrevented === true,
+            path: diagPathLength(event),
+        };
+        pushDiagTrace(`native-gesture:up,n=${record.n},same=${record.up.sameAsDown ? 1 : 0},downConn=${record.up.downConnected ? 1 : 0}`);
+    } catch (error) {
+        record.up = { error: String(error?.message || error).slice(0, 40) };
+    }
+}
+
+function recordGestureCancel(event) {
+    const record = _gestureActive;
+    if (!record || record.cancel) return;
+    try {
+        record.cancel = `pointercancel|${elChainText(event?.target instanceof Element ? event.target : null, 2)}`;
+        pushDiagTrace(`native-gesture:cancel,n=${record.n}`);
+    } catch { /* ignore */ }
+}
+
+function recordGestureClick(event) {
+    const record = _gestureActive;
+    if (!record) return;
+    if (record.click) return;
+    if (diagNow() - record.at > 2500) return;
+    try {
+        const target = event?.target instanceof Element ? event.target : null;
+        record.click = {
+            at: diagNow(),
+            desc: elChainText(target, 3),
+            sameAsDown: Boolean(target && target === _gestureDownEl),
+            trusted: event?.isTrusted === true,
+            path: diagPathLength(event),
+            listSame: listIdentitySame(),
+            upToClickMs: record.up ? diagNow() - record.up.at : -1,
+            bubble: false,
+            prevented: false,
+        };
+        record.miss = '';
+    } catch { /* ignore */ }
+}
+
+function recordGestureClickBubble(event) {
+    const record = _gestureActive;
+    if (!record?.click) return;
+    try {
+        record.click.bubble = true;
+        record.click.prevented = event?.defaultPrevented === true;
+    } catch { /* ignore */ }
+}
+
+/**
+ * Is the entries list still the same node we pressed on? A host re-render replaces it, and a click
+ * on a detached row can never reach the host's delegated handler.
+ * @returns {string}
+ */
+function listIdentitySame() {
+    try {
+        const list = document.getElementById('world_popup_entries_list');
+        if (!list) return 'none';
+        return list === _gestureDownList ? 'same' : 'other';
+    } catch { return 'err'; }
+}
+
+/**
+ * Record one pointerdown inside the worldbook area and arm the rest of the sequence.
+ * Reads only: no preventDefault, no stopPropagation, no DOM writes.
+ *
+ * The area is matched twice: by the event target (normal case) and by the hit point (a layer on top
+ * of the list makes the target something else entirely — without the point check that click would
+ * leave no trace at all, which is exactly the report we have to explain).
+ * @param {any} event
+ */
+function noteNativeGestureDown(event) {
+    try {
+        const target = event?.target instanceof Element ? event.target : null;
+        if (!target) return;
+        const point = (() => {
+            const x = Number(event?.clientX);
+            const y = Number(event?.clientY);
+            return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+        })();
+        _gestureDownEvent = event;
+        const host = target.closest?.(NATIVE_WB_AREA_SELECTOR);
+        // A layer on top of the list makes the press target something else entirely. The press only
+        // counts as "meant for the worldbook UI" when the point is geometrically inside it, and then
+        // the hit stack tells us which native element it was covering.
+        let pointInArea = false;
+        let beneathEl = null;
+        if (!host && point) {
+            pointInArea = pointInsideWorldbookArea(point.x, point.y);
+            if (pointInArea) beneathEl = findBeneathInArea(point.x, point.y);
+        }
+        if (!host && !pointInArea) return;
+        const areaHost = host || (beneathEl ? beneathEl.closest?.(NATIVE_WB_AREA_SELECTOR) : null);
+        const record = {
+            n: _diag.gestureSeq + 1,
+            at: diagNow(),
+            host: areaHost?.id || elTagClass(areaHost, 18),
+            down: {
+                desc: elChainText(target, 3),
+                connected: target.isConnected !== false,
+                trusted: event?.isTrusted === true,
+                prevented: event?.defaultPrevented === true,
+                path: diagPathLength(event),
+                point: point ? `${Math.round(point.x)},${Math.round(point.y)}` : '-',
+                // `hit` is what the browser really delivered the press to; `beneath` is the worldbook
+                // element hidden under it (empty when the press landed on the UI itself).
+                hit: point ? describeHitAt(point.x, point.y, host ? target : beneathEl) : 'n/a',
+                area: host ? 'by-target' : 'by-point',
+                beneath: beneathEl ? elTagClass(beneathEl, 22) : 'none',
+                covers: Boolean(!host && beneathEl),
+            },
+            up: null,
+            click: null,
+            cancel: '',
+            miss: '',
+        };
+        _diag.gestureSeq = record.n;
+        _diag.nativeGestures.push(record);
+        while (_diag.nativeGestures.length > 6) _diag.nativeGestures.shift();
+        _gestureActive = record;
+        _gestureDownEl = target;
+        try { _gestureDownList = document.getElementById('world_popup_entries_list'); } catch { _gestureDownList = null; }
+        ensureGestureTailRecorders();
+        // A click that never comes is itself evidence (preventDefault, inert subtree, detached node).
+        try { if (_gestureWatchdog) clearTimeout(_gestureWatchdog); } catch { /* ignore */ }
+        _gestureWatchdog = setTimeout(() => {
+            try {
+                if (!record.click) record.miss = record.up ? 'no-click' : 'no-up-no-click';
+            } catch { /* ignore */ }
+        }, 1200);
+        if (typeof _gestureWatchdog?.unref === 'function') _gestureWatchdog.unref();
+        pushDiagTrace(`native-gesture:down,n=${record.n},conn=${record.down.connected ? 1 : 0}`
+            + `,hit=${record.down.hit},covers=${record.down.covers ? 1 : 0}`
+            + (record.down.covers ? `,beneath=${record.down.beneath}` : ''));
+    } catch { /* diagnostics only */ }
 }
 
 /**
@@ -1380,7 +1864,7 @@ function pushDiagTrace(label) {
     _diag.traceTotal += 1;
     // Key events must survive the ring buffer: a user may click a native action first and only then
     // open the panel to export, and ordinary breadcrumbs would have pushed it out.
-    if (/^(native-entry|drawer|ball|enh-sync):/.test(text)) {
+    if (/^(native-(?:entry|gesture)|drawer|ball|enh-sync):/.test(text)) {
         _diag.highlights.push(text);
         if (_diag.highlights.length > 12) _diag.highlights.shift();
     }
@@ -1396,116 +1880,184 @@ function snapshotNativeEntryState(stage) {
     try {
         const snapshot = collectNativeEntryDiagnostics();
         snapshot.stage = stage;
+        // The click that is being explained may be older than the report: carry its sequence along.
+        snapshot.gesture = gestureSummary(_gestureActive);
         _diag.nativeSnapshots.push(snapshot);
         if (_diag.nativeSnapshots.length > 4) _diag.nativeSnapshots.shift();
-    } catch { /* a snapshot must never break the UI */ }
+    } catch (error) {
+        // A collector that throws must still leave proof it ran and why it gave up.
+        _diag.nativeSnapshots.push({
+            stage,
+            collected: false,
+            error: String(error?.message || error).slice(0, 60),
+        });
+        if (_diag.nativeSnapshots.length > 4) _diag.nativeSnapshots.shift();
+    }
 }
 
 /**
  * Snapshot of the NATIVE worldbook entry list: whether 条目分组 is on, how many rows exist, which
  * buttons each row carries, and — the decisive part — which element actually receives a click at the
- * centre of the first row's button. If that is not the button, something covers it.
+ * centre of the first row's action button. If that is not the button, something covers it.
+ *
+ * Every section is collected on its own so one hostile DOM cannot empty the whole snapshot: the
+ * failures land in `errors[]` (see the per-section notes) instead of losing rows, buttons and the
+ * hit test together.
  * @returns {Record<string, any>}
  */
 function collectNativeEntryDiagnostics() {
-    const result = { available: false };
-    try {
-        result.at = Math.round(globalThis.performance?.now?.() || 0);
-        const settings = _latestSettings || {};
-        const popup = document.getElementById('world_popup');
-        const list = document.getElementById('world_popup_entries_list');
-        result.entryGroupsEnabled = settings.entryGroupsEnabled === true;
-        result.popupVisible = Boolean(popup && getComputedStyle(popup).display !== 'none');
-        result.listPresent = Boolean(list);
-        if (list) {
-            result.listClass = String(list.className || '').slice(0, 64);
-            result.decoratedByGroups = /weg-/.test(String(list.className || ''));
-            result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
-            // Row detection must not assume one ST layout: some rows carry `uid`, some are plain
-            // `.world_entry`, older builds use direct children of the list.
-            const rowCandidates = [
-                ...list.querySelectorAll('.world_entry[uid]'),
-                ...list.querySelectorAll('.world_entry'),
-                ...list.querySelectorAll(':scope > div'),
-            ];
-            const rows = [...new Set(rowCandidates)].filter((row) => row instanceof HTMLElement);
-            result.rowDetection = {
-                withUid: list.querySelectorAll('.world_entry[uid]').length,
-                worldEntry: list.querySelectorAll('.world_entry').length,
-                directChildren: list.querySelectorAll(':scope > div').length,
-                listChildTags: [...list.children].slice(0, 6)
-                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 24)}`),
-            };
-            result.rows = rows.length;
-            result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
-            // Whether any row is expanded right now (the user may or may not have opened an entry).
-            result.expandedRows = rows.filter((row) => row.querySelector('textarea, input[type="text"], select')).length;
-            result.drawerOpen = Boolean(document.getElementById('WorldInfo')?.classList.contains('openDrawer'));
-            const buttonSel = 'button, .menu_button, [data-action], [class*="copy" i], [class*="move" i], [class*="transfer" i], [class*="duplicate" i], i.fa-solid, i.fa-regular, [title]';
-            // Structural dump (tag/class only, never text) so an unknown ST version is still readable.
-            result.rowShape = rows.slice(0, 2).map((row) => ({
-                cls: String(row.className || '').slice(0, 48),
-                children: [...row.children].slice(0, 8)
-                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 26)}`),
-                buttons: [...row.querySelectorAll(buttonSel)].slice(0, 10)
-                    .map((btn) => `${btn.tagName.toLowerCase()}.${String(btn.className || '').slice(0, 26)}${btn.getAttribute('title') ? '[t]' : ''}`),
-            }));
-            result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
-                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || '').trim().slice(0, 8)}`));
-            const probeBtn = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat().find((btn) => btn.getClientRects().length > 0);
-            if (probeBtn) {
-                const rect = probeBtn.getBoundingClientRect();
-                const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-                result.probeButton = String(probeBtn.className || '').slice(0, 32);
-                result.probeRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(',');
-                result.hitTag = hit ? hit.tagName.toLowerCase() : 'none';
-                result.hitClass = String(hit?.className || '').slice(0, 48);
-                result.hitOwnsButton = Boolean(hit && (hit === probeBtn || probeBtn.contains(hit)));
-                result.probePointerEvents = getComputedStyle(probeBtn).pointerEvents;
-                result.probeDisabled = Boolean(probeBtn).valueOf() && (probeBtn.disabled === true || probeBtn.getAttribute('aria-disabled') === 'true');
-                const chain = [];
-                let node = hit;
-                for (let depth = 0; depth < 3 && node instanceof Element; depth += 1) {
-                    chain.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 24)}`);
-                    node = node.parentElement;
-                }
-                result.hitChain = chain;
-            }
-            // Layout context: a sticky header or a zero-height scroller explains a blocked hit too.
-            result.listScrollTop = Math.round(list.scrollTop || 0);
-            result.listClientHeight = Math.round(list.clientHeight || 0);
-            result.listScrollHeight = Math.round(list.scrollHeight || 0);
-            const sticky = list.querySelector('.weg-native-list-sticky, .weg-native-sticky-group');
-            if (sticky instanceof HTMLElement) {
-                result.stickyPointerEvents = getComputedStyle(sticky).pointerEvents;
-                result.stickyZIndex = getComputedStyle(sticky).zIndex;
-            }
-            const rowHit = (() => {
-                const row = rows.find((item) => item.getClientRects().length > 0);
-                if (!row) return null;
-                const r = row.getBoundingClientRect();
-                const hit = document.elementFromPoint(r.left + Math.min(24, r.width / 2), r.top + r.height / 2);
-                return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 20)}${row.contains(hit) ? ':row' : ':foreign'}` : 'none';
-            })();
-            result.rowCenterHit = rowHit;
-            if (popup) {
-                const pr = popup.getBoundingClientRect();
-                result.popupRect = [Math.round(pr.left), Math.round(pr.top), Math.round(pr.width), Math.round(pr.height)].join(',');
-                result.popupDisplay = getComputedStyle(popup).display;
-            }
+    const result = { available: false, errors: [] };
+    const noteError = (key, error) => {
+        if (result.errors.length < 8) {
+            result.errors.push(`${key}:${String(error?.message || error || 'error').slice(0, 40)}`);
         }
+    };
+    const section = (key, fn) => {
+        try { fn(); } catch (error) { noteError(key, error); }
+    };
+    const settings = _latestSettings || {};
+
+    section('clock', () => { result.at = diagNow(); });
+    section('groups', () => {
+        result.entryGroupsEnabled = settings.entryGroupsEnabled === true;
+    });
+    section('popup', () => {
+        const popup = document.getElementById('world_popup');
+        result.popupVisible = Boolean(popup && getComputedStyle(popup).display !== 'none');
+        if (!popup) return;
+        const rect = popup.getBoundingClientRect();
+        result.popupRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(',');
+        result.popupDisplay = getComputedStyle(popup).display;
+    });
+    // Rendering path: which pipeline drew the list, and whether both native selects coexist — the
+    // 复制 / 转移 actions read their target list from them.
+    section('render', () => {
+        result.renderPath = nativeRenderPathHint();
+        result.compatDropdownScript = Boolean(hasCompatibleDropdownScript?.());
+        result.surfaces = {
+            popup: Boolean(document.getElementById('world_popup')),
+            entriesList: Boolean(document.getElementById('world_popup_entries_list')),
+            worldInfo: Boolean(document.getElementById('WorldInfo')),
+            globalSelect: Boolean(document.getElementById('world_info')),
+            editorSelect: Boolean(document.getElementById('world_editor_select')),
+            bothSelects: Boolean(document.getElementById('world_info') && document.getElementById('world_editor_select')),
+            popupAndWorldInfo: Boolean(document.getElementById('world_popup') && document.getElementById('WorldInfo')),
+        };
+    });
+    section('list', () => {
+        const list = document.getElementById('world_popup_entries_list');
+        result.listPresent = Boolean(list);
+        if (!list) return;
+        result.listClass = String(list.className || '').slice(0, 64);
+        result.decoratedByGroups = /weg-/.test(String(list.className || ''));
+        result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
+        // Row detection must not assume one ST layout: some rows carry `uid`, some are plain
+        // `.world_entry`, older builds use direct children of the list.
+        const rowCandidates = [
+            ...list.querySelectorAll('.world_entry[uid]'),
+            ...list.querySelectorAll('.world_entry'),
+            ...list.querySelectorAll(':scope > div'),
+        ];
+        const rows = [...new Set(rowCandidates)].filter((row) => row instanceof HTMLElement);
+        result.rowDetection = {
+            withUid: list.querySelectorAll('.world_entry[uid]').length,
+            worldEntry: list.querySelectorAll('.world_entry').length,
+            directChildren: list.querySelectorAll(':scope > div').length,
+            listChildTags: [...list.children].slice(0, 6)
+                .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 24)}`),
+        };
+        result.rows = rows.length;
+        result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+        // Whether any row is expanded right now (the user may or may not have opened an entry).
+        result.expandedRows = rows.filter((row) => row.querySelector('textarea, input[type="text"], select')).length;
+        result.drawerOpen = Boolean(document.getElementById('WorldInfo')?.classList.contains('openDrawer'));
+        const buttonSel = 'button, .menu_button, [data-action], [class*="copy" i], [class*="move" i], [class*="transfer" i], [class*="duplicate" i], i.fa-solid, i.fa-regular, [title]';
+        // Structural dump (tag/class only, never text) so an unknown ST version is still readable.
+        result.rowShape = rows.slice(0, 2).map((row) => ({
+            cls: String(row.className || '').slice(0, 48),
+            children: [...row.children].slice(0, 8)
+                .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 26)}`),
+            buttons: [...row.querySelectorAll(buttonSel)].slice(0, 10)
+                .map((btn) => `${btn.tagName.toLowerCase()}.${String(btn.className || '').slice(0, 26)}${btn.getAttribute('title') ? '[t]' : ''}`),
+        }));
+        result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
+            .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || '').trim().slice(0, 8)}`));
+        const allButtons = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat();
+        // Cover all three actions, not "whatever button happens to be first": the probe must be the
+        // control the bug report is about (复制 / 转移 / 删除).
+        const actionButtons = allButtons.filter((btn) => nativeActionLike(btn));
+        const actionVisible = actionButtons.filter((btn) => btn.getClientRects().length > 0);
+        result.actionButtons = {
+            total: actionButtons.length,
+            visible: actionVisible.length,
+            hidden: actionButtons.length - actionVisible.length,
+            classes: actionButtons.slice(0, 6).map((btn) => elTagClass(btn, 24)),
+        };
+        const probeBtn = actionVisible[0] || allButtons.find((btn) => btn.getClientRects().length > 0);
+        result.probeKind = actionVisible.length > 0 ? 'action' : (probeBtn ? 'any' : 'none');
+        if (probeBtn) {
+            const rect = probeBtn.getBoundingClientRect();
+            const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            result.probeButton = String(probeBtn.className || '').slice(0, 32);
+            result.probeRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(',');
+            result.hitTag = hit ? hit.tagName.toLowerCase() : 'none';
+            result.hitClass = String(hit?.className || '').slice(0, 48);
+            result.hitOwnsButton = Boolean(hit && (hit === probeBtn || probeBtn.contains(hit)));
+            result.probePointerEvents = getComputedStyle(probeBtn).pointerEvents;
+            result.probeDisabled = Boolean(probeBtn).valueOf() && (probeBtn.disabled === true || probeBtn.getAttribute('aria-disabled') === 'true');
+            const chain = [];
+            let node = hit;
+            for (let depth = 0; depth < 3 && node instanceof Element; depth += 1) {
+                chain.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 24)}`);
+                node = node.parentElement;
+            }
+            result.hitChain = chain;
+            // Read-only interaction audit of the button and its tree (never mutates anything).
+            result.probeStyleChain = styleChainOf(probeBtn, list, 4);
+            const hits = hitPointsOf(probeBtn);
+            result.probeHitPoints = hits.points;
+            result.probeObscured = hits.obscured;
+            result.probeInert = Boolean(probeBtn.closest?.('[inert]'));
+        }
+        // Layout context: a sticky header or a zero-height scroller explains a blocked hit too.
+        result.listScrollTop = Math.round(list.scrollTop || 0);
+        result.listClientHeight = Math.round(list.clientHeight || 0);
+        result.listScrollHeight = Math.round(list.scrollHeight || 0);
+        const sticky = list.querySelector('.weg-native-list-sticky, .weg-native-sticky-group');
+        if (sticky instanceof HTMLElement) {
+            result.stickyPointerEvents = getComputedStyle(sticky).pointerEvents;
+            result.stickyZIndex = getComputedStyle(sticky).zIndex;
+        }
+        const rowHit = (() => {
+            const row = rows.find((item) => item.getClientRects().length > 0);
+            if (!row) return null;
+            const r = row.getBoundingClientRect();
+            const hit = document.elementFromPoint(r.left + Math.min(24, r.width / 2), r.top + r.height / 2);
+            return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 20)}${row.contains(hit) ? ':row' : ':foreign'}` : 'none';
+        })();
+        result.rowCenterHit = rowHit;
+    });
+    // The native actions build their target list from the <select>s. Recorded, never changed.
+    section('selects', () => {
         const editorSel = document.getElementById('world_editor_select');
         const globalSel = document.getElementById('world_info');
         result.editorOptions = editorSel instanceof HTMLSelectElement ? editorSel.options.length : -1;
         result.globalOptions = globalSel instanceof HTMLSelectElement ? globalSel.options.length : -1;
         result.detachedOptions = getDetachedWorldNames().length;
+        result.detachedGlobal = _globalDetachedMap.size;
+        result.detachedEditor = _editorDetachedMap.size;
+    });
+    section('ctx', () => {
         const ctx = getHostContext?.() || {};
         result.ctxWorlds = Array.isArray(ctx.world_names) ? ctx.world_names.length : -1;
-        result.recentActions = _diag.nativeActions;
-        result.available = true;
-    } catch (error) {
-        result.error = String(error?.message || error).slice(0, 60);
-    }
+    });
+    section('actions', () => { result.recentActions = _diag.nativeActions; });
+    section('gestures', () => {
+        result.gestures = _diag.nativeGestures.slice(-3).map((record) => gestureSummary(record));
+        result.lastGesture = gestureSummary(_diag.nativeGestures[_diag.nativeGestures.length - 1]);
+    });
+    result.partial = result.errors.length > 0;
+    result.available = true;
     return result;
 }
 
@@ -1799,6 +2351,10 @@ function buildDiagnosticReport(mode = 'short') {
             highlights: _diag.highlights,
             nativeEntries: collectNativeEntryDiagnostics(),
             nativeSnapshots: _diag.nativeSnapshots,
+            // The press → release → click sequence of the row buttons, oldest first. This is the
+            // only place that can prove a click was never dispatched at all.
+            nativeGestures: _diag.nativeGestures,
+            nativeGestureSeq: _diag.gestureSeq,
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -1826,15 +2382,26 @@ function buildDiagnosticReport(mode = 'short') {
         (() => {
             const native = collectNativeEntryDiagnostics();
             const lastAction = _diag.nativeActions[_diag.nativeActions.length - 1];
+            const lastGesture = gestureSummary(_diag.nativeGestures[_diag.nativeGestures.length - 1]);
             return `原生条目 分组${native.entryGroupsEnabled ? '开' : '关'}`
                 + ` 列表${native.listPresent ? '有' : '无'}行${native.rows ?? 0}`
                 + (native.rowDetection ? `(uid${native.rowDetection.withUid}/entry${native.rowDetection.worldEntry}/child${native.rowDetection.directChildren})` : '')
                 + ` 行按钮${(native.rowButtons?.[0] || []).length}`
+                + (native.actionButtons ? ` 动作钮${native.actionButtons.visible}/${native.actionButtons.total}` : '')
                 + ` 命中${native.hitOwnsButton === undefined ? '未测' : (native.hitOwnsButton ? '按钮' : native.hitClass || 'none')}`
+                + (native.probeKind === 'action' ? ` 遮挡${native.probeObscured ? 1 : 0}` : '')
                 + ` 已隐藏${native.detachedOptions ?? 0}`
+                // The gesture line is the fastest read: down>up>click means the host got the event,
+                // NO-CLICK means the browser never dispatched it (or the node was gone).
+                + (lastGesture ? ` 事件${lastGesture.sequence}` : '')
+                + (lastGesture?.covered ? ' 覆盖1' : '')
                 + (lastAction ? ` 最近动作${lastAction.label}(${lastAction.before}→${lastAction.after},${lastAction.changed ? '生效' : '无效'})` : '');
         })(),
-        `错误 ${errors.length}`,
+        `错误 ${errors.length}`
+            + (() => {
+                const partial = _diag.nativeSnapshots.filter((snap) => snap.partial || snap.error).length;
+                return partial ? ` 采集缺段${partial}` : '';
+            })(),
     ].join('\n');
 }
 
@@ -8874,7 +9441,12 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
         installDrawerWatcher();
         // Sanitized UI log: enough to replay a broken interaction, no names.
-        const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
+        const logDown = (event) => {
+            pushDiagUi('down', event.target instanceof Element ? event.target : null);
+            // Arm the pointer sequence of this gesture. The tail listeners (pointerup / click) are
+            // created here — on the first real press inside a worldbook area — and never at boot.
+            noteNativeGestureDown(event);
+        };
         const logKey = (event) => {
             const navigation = ['Tab', 'Enter', 'Escape', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Backspace', 'Delete'];
             pushDiagUi(`key:${navigation.includes(event.key) ? event.key : 'text'}`, event.target instanceof Element ? event.target : null);
@@ -8902,15 +9474,21 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 const target = event.target instanceof Element ? event.target : null;
                 // Never assume where the entry rows live: ST versions differ (drawer `#WorldInfo`,
                 // list `#world_popup_entries_list`, editor `#world_popup`). Cover all of them.
-                const host = target?.closest('#world_popup, #world_popup_entries_list, #WorldInfo, #world_info');
+                const host = target?.closest(NATIVE_WB_AREA_SELECTOR);
                 if (!host) return;
-                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal, #wbo-quick-diag')) return;
-                const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i, [title]');
+                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal')) return;
+                // Anything the plugin drew itself is never a native entry action.
+                if (target.closest('.wbo-btn, [data-wbo-ui], [data-wbo-popover-role], .gr-container-enhanced, .wbo-s2-item, #wbo-mobile-picker-overlay')) return;
+                // The gesture that produced this click stays referenced: its down/up/click flags are
+                // what separates "never dispatched" from "dispatched and dropped".
+                const gesture = _gestureActive;
+                const button = resolveNativeActionTarget(target);
                 const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
-                const cls = String(button?.className || '').slice(0, 32);
+                const cls = String(button?.getAttribute?.('class') ?? button?.className ?? '').slice(0, 32);
                 // Only instrument clicks that look like entry actions (复制 / 转移 / 删除 / 移动). Anything
                 // else — including our own triggers — must not create observers or snapshots.
-                const looksLikeEntryAction = /(copy|move|transfer|duplicate|trash|delete)/i.test(cls)
+                const looksLikeEntryAction = nativeActionLike(button)
+                    || /(copy|move|transfer|duplicate|trash|delete)/i.test(cls)
                     || /复制|转移|删除|移动/.test(`${label} ${button?.getAttribute?.('title') || ''}`);
                 if (!looksLikeEntryAction) return;
                 pushDiagTrace(`native-entry:click,cls=${cls},label=${label},host=${host.id || String(host.className || '').slice(0, 16)}`);
@@ -8923,7 +9501,28 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                     return uid || entries || list.querySelectorAll(':scope > div').length;
                 };
                 const countOptions = () => (document.getElementById('world_editor_select')?.options.length ?? -1);
-                const before = { rows: countRows(), options: countOptions() };
+                // The target list of 复制/转移 comes from these selects: their size must be stable.
+                const countGlobalOptions = () => {
+                    const select = document.getElementById('world_info');
+                    return select instanceof HTMLSelectElement ? select.options.length : -1;
+                };
+                const countCtxWorlds = () => {
+                    const names = (getHostContext?.() || {}).world_names;
+                    return Array.isArray(names) ? names.length : -1;
+                };
+                const countToast = () => document.querySelectorAll('.toast, .toast-body, .toast-title').length;
+                const countSelect2 = () => document.querySelectorAll('.select2-container--open, .select2-dropdown').length;
+                const listEl = document.getElementById('world_popup_entries_list');
+                const before = {
+                    rows: countRows(),
+                    options: countOptions(),
+                    globalOptions: countGlobalOptions(),
+                    detached: getDetachedWorldNames().length,
+                    ctxWorlds: countCtxWorlds(),
+                    toast: countToast(),
+                    select2: countSelect2(),
+                    errors: _diag.errors.length,
+                };
                 // Snapshot the state BEFORE the host reacts, so a report shows what the click landed on
                 // regardless of what happens afterwards.
                 snapshotNativeEntryState('click-' + (label || 'unknown'));
@@ -8946,6 +9545,26 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 });
                 try { deltaObserver.observe(document.body, { childList: true, subtree: false }); } catch { /* ignore */ }
                 setTimeout(() => { try { deltaObserver.disconnect(); } catch { /* ignore */ } }, 600);
+                // Row-level re-render counter. Also created only here: one action click, one observer,
+                // disconnected after the window closes.
+                const listWatch = { childList: 0, added: 0, removed: 0, attributes: 0 };
+                let listObserver = null;
+                if (listEl) {
+                    try {
+                        listObserver = new MutationObserver((mutations) => {
+                            for (const mutation of mutations) {
+                                if (mutation.type !== 'childList') {
+                                    listWatch.attributes += 1;
+                                    continue;
+                                }
+                                listWatch.childList += 1;
+                                listWatch.added += mutation.addedNodes.length;
+                                listWatch.removed += mutation.removedNodes.length;
+                            }
+                        });
+                        listObserver.observe(listEl, { childList: true, subtree: true });
+                    } catch { listObserver = null; }
+                }
                 const probeHit = (() => {
                     try {
                         const rect = button?.getBoundingClientRect?.();
@@ -8972,14 +9591,62 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                         domRemoved: delta.removed.slice(0, 4).join('|'),
                         toast: document.querySelectorAll('.toast, .toast-body, .toast-title').length,
                         select2Open: document.querySelectorAll('.select2-container--open, .select2-dropdown').length,
+                        // Which control was actually resolved, and the event sequence behind it.
+                        probeKind: nativeActionLike(button) ? 'action' : 'other',
+                        probeTarget: button ? `${button.tagName.toLowerCase()}.${String(button.className || '').slice(0, 24)}` : 'none',
+                        gesture: gestureSummary(gesture),
+                        gestureSeq: gesture?.n ?? 0,
+                        // Target-book candidates: were the hidden options really put back, and did the
+                        // host still see the same index → book mapping afterwards?
+                        globalOptionsBefore: before.globalOptions,
+                        globalOptionsAfter: countGlobalOptions(),
+                        detachedBefore: before.detached,
+                        detachedAfter: getDetachedWorldNames().length,
+                        ctxWorldsBefore: before.ctxWorlds,
+                        ctxWorldsAfter: countCtxWorlds(),
+                        // Non-zero means the host handler ran and threw (see `errors`).
+                        errorsGained: _diag.errors.length - before.errors,
+                        rowsAdded: listWatch.added,
+                        rowsRemoved: listWatch.removed,
+                        listReplaced: Boolean(listEl && document.getElementById('world_popup_entries_list') !== listEl),
                     };
                     _diag.nativeActions.push(entry);
                     if (_diag.nativeActions.length > 10) _diag.nativeActions.shift();
                     pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`
-                        + `,added=${entry.domAdded ? 1 : 0},toast=${entry.toast},s2=${entry.select2Open}`);
+                        + `,added=${entry.domAdded ? 1 : 0},toast=${entry.toast},s2=${entry.select2Open}`
+                        + `,muts=${listWatch.childList},det=${entry.detachedBefore}->${entry.detachedAfter},err=${entry.errorsGained}`);
                     snapshotNativeEntryState('after-' + (label || 'click'));
                     } catch { /* never let a diagnostic timer throw */ }
                 }, 500);
+                // 1s settle window: the host may react late (a picker opens, a confirm dialog appears,
+                // a toast lands). Only then can "silently ignored" be told from "slow".
+                const settleTimer = setTimeout(() => {
+                    if (typeof document === 'undefined') return;
+                    try {
+                        const entry = _diag.nativeActions[_diag.nativeActions.length - 1];
+                        const settled = {
+                            rows: countRows(),
+                            options: countOptions(),
+                            globalOptions: countGlobalOptions(),
+                            detached: getDetachedWorldNames().length,
+                            ctxWorlds: countCtxWorlds(),
+                            toast: countToast(),
+                            select2: countSelect2(),
+                            listMutations: listWatch.childList,
+                            rowsAdded: listWatch.added,
+                            rowsRemoved: listWatch.removed,
+                            errorsGained: _diag.errors.length - before.errors,
+                            listReplaced: Boolean(listEl && document.getElementById('world_popup_entries_list') !== listEl),
+                            gesture: gestureSummary(gesture),
+                        };
+                        // Attach to the entry this window belongs to, not to whatever landed last.
+                        if (entry && entry.label === label && entry.cls === cls) entry.settled = settled;
+                        else _diag.nativeActions.push({ label, cls, settled, late: true });
+                    } catch { /* never let a diagnostic timer throw */ } finally {
+                        try { listObserver?.disconnect(); } catch { /* ignore */ }
+                    }
+                }, 1000);
+                if (typeof settleTimer?.unref === 'function') settleTimer.unref();
             }, true);
             const popupWatcher = new MutationObserver(() => {
                 const popup = document.getElementById('world_popup');
