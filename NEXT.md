@@ -1,3 +1,52 @@
+### 方案A：按原索引恢复 + 诊断再补强（2026-11-28 · v2.35.117，dev 与 main 同步）
+- 方案A（顺序安全）：新增 `_globalDetachedIndex` / `_editorDetachedIndex`，detach 时记录 `<option>` 原索引；`restoreAllDetachedOptions()` 按索引**升序插回原位**（`insertBefore` 到 `select.options[index]`），不再 `appendChild` 到末尾。这样酒馆的「索引 ↔ world_names」映射不被打乱，风险与现状一致。
+- 诊断补强（一次性采齐，避免再打扰用户）：`collectNativeEntryDiagnostics()` 追加
+  - `probePointerEvents` / `probeDisabled`：探针按钮的 `pointer-events` 与禁用态；
+  - `hitChain`：命中元素起向上 3 层的 `tag.class`（定位“谁盖住了按钮”）；
+  - `listScrollTop / listClientHeight / listScrollHeight`：列表滚动与可视高度；
+  - `stickyPointerEvents / stickyZIndex`：条目分组吸顶栏的指针事件与层级；
+  - `rowCenterHit`：行中心点的命中元素，并标注是否属于该行（`:row` / `:foreign`）；
+  - `popupRect / popupDisplay`：原生条目弹窗的位置尺寸与显示状态。
+- 已有：`entryGroupsEnabled`、`decoratedByGroups`、`stickyHeadings`、`rowButtons`、`editorOptions/globalOptions/detachedOptions/ctxWorlds`、点击前后 `rows` 对比（`nativeActions`）。
+- 验证：单测 247/247；`native-editor-titles` 12/12。
+
+### 诊断新增「原生条目动作」专章（2026-11-28 · dev v2.35.116）
+- 背景：用户反馈**原生世界书界面里，条目列表每行（不展开也有）的「复制 / 转移」点不动**。只给一次诊断日志机会，所以这版把相关证据一次性采齐。
+- 新增 `collectNativeEntryDiagnostics()`（详细 JSON 的 `nativeEntries`）：
+  - `entryGroupsEnabled`：**是否开启条目分组功能**；`decoratedByGroups`（列表是否被我们的 `weg-*` 装饰）、`stickyHeadings`（吸顶标题数量）；
+  - `popupVisible` / `listPresent` / `rows` / `visibleRows` / `listClass`；
+  - `rowButtons`：前 3 行各自的按钮清单（`class|标题文字`）——用来确认「复制/转移」按钮到底有没有渲染；
+  - **命中归属探针**：取第一个可见行内按钮的中心坐标做 `elementFromPoint`，记录 `hitTag` / `hitClass` / `hitOwnsButton`。**这是判定“按钮被别的东西盖住”的决定性字段**；
+  - `editorOptions` / `globalOptions` / `detachedOptions` / `ctxWorlds`：判断“目标书列表是否因被隐藏而缺失”。
+- 点击行为对比：在 `#world_popup` 内点击时，记录点击前/后 500ms 的条目行数与选项数，写入 `_diag.nativeActions` 与 trace `native-entry:action,label=复制,rows=12->12,changed=0` —— **直接回答“点了有没有生效”**。
+- 短报告新增一行 `原生条目 分组开/关 列表有/无行N 行按钮N 命中按钮|被X覆盖 已隐藏N 最近动作…`。
+- 仅诊断，不改变任何交互行为。验证：单测 247/247；`native-editor-titles` 12/12。
+
+### 原生条目按钮「点了没反应」的判定探针（2026-11-28 · dev v2.35.114）
+- 用户提出另一种可能：不是“隐藏书导致目标缺失”，而是**点击本身没有反应**（事件没到宿主处理器）。
+- 代码审计结论：插件内所有 `stopImmediatePropagation` 都只作用于自绘星标按钮（`.wbo-gr-pin-btn` / `.wbo-s2-pin-btn`）且带 `closest()` 守卫；`bindDrawerSafeBubbleGuard()` 也只绑在插件自己的浮层容器上，**没有绑到 `#world_popup` / `#WorldInfo`**。所以“被我们全局拦截”在代码上缺乏依据。
+- 新增探针（仅 dev）：在 `#world_popup_entries_list` 上 capture 监听 `click`，记录 `native-entry:click,cls=<按钮 class 前 24 字>,label=<按钮文字前 12 字>`。
+  - 报告里**有**这行 → 点击到达页面，问题在宿主处理逻辑或它依赖的列表；
+  - 报告里**没有**这行 → 点击在到达条目列表前被吞（再去查其它脚本/上游监听）。
+- 该探针只记录不发散，不进 `highlights`（避免占位），仍需配合 `native-entry:options-restored@popup-open` 一起读。
+- 验证：单测 247/247。
+
+### 老版本用户的原生「移动 / 复制」失效：判定与免打扰修复（2026-11-28 · v2.35.112）
+- 背景：反馈者仍在用**旧 main（≈v2.35.16 及更早）**，且不希望被要求做诊断。
+- 代码核对（`git show 0893235:src/native-filter.js`）：老版本同样使用 `_globalDetachedMap` / `_editorDetachedMap` **把 `<option>` 从 select 里摘掉**来隐藏世界书；而酒馆原生「移动 / 复制」的目标书列表正是从这些 select 读取。**被隐藏的书不在列表里 → 目标选不到 → 按钮“点了没反应”**。这与反馈一致，且与用户机器无关，只与“隐藏了多少书”有关。
+- 修复（`src/native-filter.js`，v2.35.110 起，本版加强）：
+  - `restoreAllDetachedOptions()` 把隐藏的 option 全部放回；
+  - 触发时机从“点条目列表”扩展为：**原生条目面板（`#world_popup`）一打开**就恢复（`MutationObserver` 监听其 style/class），以及面板内任意 `pointerdown` 再兜一次；
+  - 恢复后下一次同步会按规则重新隐藏，插件视图不受影响；trace 记 `native-entry:options-restored@popup-open|pointerdown`。
+- 给运营/反馈者的口径（无需打扰用户）：**升级插件即可**，不需要跑诊断；临时规避办法是把「显示角色书」打开，被隐藏的书重新出现在候选里，移动/复制即可用。
+- 验证：单测 247/247。
+
+### 关键事件不再被 trace 环形缓冲挤掉（2026-11-28 · v2.35.111）
+- 用户提问：让反馈者“先点复制/移动，再打开插件面板导出诊断”，还能不能记录到？
+- 结论：能，trace 常驻内存、插件随页面加载就开始记录；但原来 `trace` 只保留最近 24 条，用户中间多点几次就可能把 `native-entry:options-restored` 挤掉。
+- 修复（`src/native-filter.js`）：新增 `_diag.highlights`（最多 12 条，单独环形），凡 `native-entry:` / `drawer:` / `ball:` / `enh-sync:` 前缀的面包屑**同步写入**该列表，永不被普通 trace 挤出；详细 JSON 增加 `highlights` 字段。
+- 验证：单测 247/247。
+
 ### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
 - 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
 - `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。

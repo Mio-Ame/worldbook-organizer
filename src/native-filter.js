@@ -317,6 +317,9 @@ function ensureSelect2RowsHavePinBtn(resultsList) {
 const _globalDetachedMap = new Map();
 /** @type {Map<string, HTMLOptionElement>} */
 const _editorDetachedMap = new Map();
+/** Original index of each detached option, so a restore keeps the host's index↔world_names mapping. */
+const _globalDetachedIndex = new Map();
+const _editorDetachedIndex = new Map();
 /** @type {WeakMap<HTMLSelectElement, { vw: number, multiple: boolean, metrics: Record<string, string> }>} */
 const _nativeAppearanceCache = new WeakMap();
 
@@ -999,6 +1002,40 @@ function escHtml(str) {
  * never loses track of hidden options if upstream modules aren't available).
  * @returns {string[]}
  */
+/**
+ * Put every option we hid back into its <select>.
+ * SillyTavern's native entry actions (移动 / 复制) build their target list from these selects, so a
+ * detached book made those actions fail silently.
+ */
+export function restoreAllDetachedOptions() {
+    let restored = false;
+    const putBack = (select, map, indexMap) => {
+        if (!(select instanceof HTMLSelectElement)) return;
+        // Reinsert by remembered index (ascending) so the host's index → world_names mapping survives.
+        const entries = [...map.entries()]
+            .map(([name, option]) => ({ name, option, index: indexMap.get(name) ?? Number.MAX_SAFE_INTEGER }))
+            .sort((a, b) => a.index - b.index);
+        for (const { name, option, index } of entries) {
+            if (option instanceof HTMLOptionElement) {
+                const anchor = select.options[Math.max(0, Math.min(index, select.options.length))] || null;
+                if (anchor && anchor !== option && anchor.parentElement === select) select.insertBefore(option, anchor);
+                else if (!anchor) select.appendChild(option);
+                else select.insertBefore(option, anchor);
+            }
+            map.delete(name);
+            indexMap.delete(name);
+            restored = true;
+        }
+    };
+    putBack(document.getElementById('world_info'), _globalDetachedMap, _globalDetachedIndex);
+    putBack(document.getElementById('world_editor_select'), _editorDetachedMap, _editorDetachedIndex);
+    if (restored) {
+        _lastGlobalSignature = null;
+        _lastEditorSignature = null;
+    }
+    return restored;
+}
+
 export function getDetachedWorldNames() {
     return [...new Set([..._globalDetachedMap.keys(), ..._editorDetachedMap.keys()])];
 }
@@ -1139,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.109';
+export const PLUGIN_VERSION = '2.35.117';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1172,6 +1209,10 @@ const _diag = {
     ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
     /** Which pin marker the host script actually used (detection evidence, class names only). */
     pinProbe: [],
+    /** Key breadcrumbs kept outside the ring buffer (native entry actions, drawer, ball, sync). */
+    highlights: [],
+    /** Clicks on native entry controls and whether the count changed afterwards. */
+    nativeActions: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1332,9 +1373,98 @@ function installDrawerOpenGuard() {
  * @param {string} label
  */
 function pushDiagTrace(label) {
-    _diag.trace.push(String(label).slice(0, 80));
+    const text = String(label).slice(0, 80);
+    _diag.trace.push(text);
     _diag.traceTotal += 1;
+    // Key events must survive the ring buffer: a user may click a native action first and only then
+    // open the panel to export, and ordinary breadcrumbs would have pushed it out.
+    if (/^(native-entry|drawer|ball|enh-sync):/.test(text)) {
+        _diag.highlights.push(text);
+        if (_diag.highlights.length > 12) _diag.highlights.shift();
+    }
     if (_diag.trace.length > 24) _diag.trace.shift();
+}
+
+/**
+ * Snapshot of the NATIVE worldbook entry list: whether 条目分组 is on, how many rows exist, which
+ * buttons each row carries, and — the decisive part — which element actually receives a click at the
+ * centre of the first row's button. If that is not the button, something covers it.
+ * @returns {Record<string, any>}
+ */
+function collectNativeEntryDiagnostics() {
+    const result = { available: false };
+    try {
+        const settings = _latestSettings || {};
+        const popup = document.getElementById('world_popup');
+        const list = document.getElementById('world_popup_entries_list');
+        result.entryGroupsEnabled = settings.entryGroupsEnabled === true;
+        result.popupVisible = Boolean(popup && getComputedStyle(popup).display !== 'none');
+        result.listPresent = Boolean(list);
+        if (list) {
+            result.listClass = String(list.className || '').slice(0, 64);
+            result.decoratedByGroups = /weg-/.test(String(list.className || ''));
+            result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
+            const rows = [...list.querySelectorAll('.world_entry[uid]')];
+            result.rows = rows.length;
+            result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+            const buttonSel = 'button, .menu_button, [class*="copy" i], [class*="move" i], [class*="transfer" i], [title*="复制"], [title*="转移"]';
+            result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
+                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || btn.textContent || '').trim().slice(0, 8)}`));
+            const probeBtn = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat().find((btn) => btn.getClientRects().length > 0);
+            if (probeBtn) {
+                const rect = probeBtn.getBoundingClientRect();
+                const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                result.probeButton = String(probeBtn.className || '').slice(0, 32);
+                result.probeRect = [Math.round(rect.left), Math.round(rect.top), Math.round(rect.width), Math.round(rect.height)].join(',');
+                result.hitTag = hit ? hit.tagName.toLowerCase() : 'none';
+                result.hitClass = String(hit?.className || '').slice(0, 48);
+                result.hitOwnsButton = Boolean(hit && (hit === probeBtn || probeBtn.contains(hit)));
+                result.probePointerEvents = getComputedStyle(probeBtn).pointerEvents;
+                result.probeDisabled = Boolean(probeBtn).valueOf() && (probeBtn.disabled === true || probeBtn.getAttribute('aria-disabled') === 'true');
+                const chain = [];
+                let node = hit;
+                for (let depth = 0; depth < 3 && node instanceof Element; depth += 1) {
+                    chain.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 24)}`);
+                    node = node.parentElement;
+                }
+                result.hitChain = chain;
+            }
+            // Layout context: a sticky header or a zero-height scroller explains a blocked hit too.
+            result.listScrollTop = Math.round(list.scrollTop || 0);
+            result.listClientHeight = Math.round(list.clientHeight || 0);
+            result.listScrollHeight = Math.round(list.scrollHeight || 0);
+            const sticky = list.querySelector('.weg-native-list-sticky, .weg-native-sticky-group');
+            if (sticky instanceof HTMLElement) {
+                result.stickyPointerEvents = getComputedStyle(sticky).pointerEvents;
+                result.stickyZIndex = getComputedStyle(sticky).zIndex;
+            }
+            const rowHit = (() => {
+                const row = rows.find((item) => item.getClientRects().length > 0);
+                if (!row) return null;
+                const r = row.getBoundingClientRect();
+                const hit = document.elementFromPoint(r.left + Math.min(24, r.width / 2), r.top + r.height / 2);
+                return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 20)}${row.contains(hit) ? ':row' : ':foreign'}` : 'none';
+            })();
+            result.rowCenterHit = rowHit;
+            if (popup) {
+                const pr = popup.getBoundingClientRect();
+                result.popupRect = [Math.round(pr.left), Math.round(pr.top), Math.round(pr.width), Math.round(pr.height)].join(',');
+                result.popupDisplay = getComputedStyle(popup).display;
+            }
+        }
+        const editorSel = document.getElementById('world_editor_select');
+        const globalSel = document.getElementById('world_info');
+        result.editorOptions = editorSel instanceof HTMLSelectElement ? editorSel.options.length : -1;
+        result.globalOptions = globalSel instanceof HTMLSelectElement ? globalSel.options.length : -1;
+        result.detachedOptions = getDetachedWorldNames().length;
+        const ctx = getHostContext?.() || {};
+        result.ctxWorlds = Array.isArray(ctx.world_names) ? ctx.world_names.length : -1;
+        result.recentActions = _diag.nativeActions;
+        result.available = true;
+    } catch (error) {
+        result.error = String(error?.message || error).slice(0, 60);
+    }
+    return result;
 }
 
 /**
@@ -1624,6 +1754,8 @@ function buildDiagnosticReport(mode = 'short') {
             stages: _diag.stages,
             consistency: diagConsistencyCheck(cls, settings),
             pinProbe: _diag.pinProbe,
+            highlights: _diag.highlights,
+            nativeEntries: collectNativeEntryDiagnostics(),
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -1648,6 +1780,16 @@ function buildDiagnosticReport(mode = 'short') {
             + ` 脚本${_diag.scriptFlips.length ? _diag.scriptFlips.join('→') : '稳定'}`
             + ` 主题切换${_diag.themeFlips.length}`,
         `最近操作 ${actions.slice(-4).join(' > ') || '无'}`,
+        (() => {
+            const native = collectNativeEntryDiagnostics();
+            const lastAction = _diag.nativeActions[_diag.nativeActions.length - 1];
+            return `原生条目 分组${native.entryGroupsEnabled ? '开' : '关'}`
+                + ` 列表${native.listPresent ? '有' : '无'}行${native.rows ?? 0}`
+                + ` 行按钮${(native.rowButtons?.[0] || []).length}`
+                + ` 命中${native.hitOwnsButton === undefined ? '未测' : (native.hitOwnsButton ? '按钮' : native.hitClass || 'none')}`
+                + ` 已隐藏${native.detachedOptions ?? 0}`
+                + (lastAction ? ` 最近动作${lastAction.label}(${lastAction.before}→${lastAction.after},${lastAction.changed ? '生效' : '无效'})` : '');
+        })(),
         `错误 ${errors.length}`,
     ].join('\n');
 }
@@ -2156,6 +2298,9 @@ function applyGlobalWorldSelectFilter(classification, settings) {
         if (visible) {
             visibleOpts.push(opt);
         } else {
+            // Remember the original index: SillyTavern maps option index ↔ world_names, so restoring
+            // must put the option back where it was instead of appending it at the end.
+            _globalDetachedIndex.set(realName, [...selectEl.options].indexOf(opt));
             opt.remove();
             _globalDetachedMap.set(realName, opt);
         }
@@ -2315,6 +2460,7 @@ function applyEditorWorldSelectFilter(classification, settings, { skipSelectionS
             }
         } else {
             delete opt.dataset.wboEditing;
+            _editorDetachedIndex.set(realName, [...selectEl.options].indexOf(opt));
             opt.remove();
             _editorDetachedMap.set(realName, opt);
         }
@@ -8690,6 +8836,75 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             pushDiagUi(`key:${navigation.includes(event.key) ? event.key : 'text'}`, event.target instanceof Element ? event.target : null);
         };
         document.addEventListener('pointerdown', logDown, true);
+        // Native entry actions (移动 / 复制) build their target list from the <select>s. Restore hidden
+        // options as soon as the native entry panel opens, and again right before any click inside it,
+        // so the target list is complete without the user doing anything special.
+        if (!globalThis.window.__wboNativeEntryRestoreBound) {
+            globalThis.window.__wboNativeEntryRestoreBound = true;
+            const restoreForNative = (stage) => {
+                try {
+                    if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored@' + stage);
+                } catch { /* never block the native UI */ }
+            };
+            document.addEventListener('pointerdown', (event) => {
+                const target = event.target instanceof Element ? event.target : null;
+                if (!target?.closest('#world_popup, #world_popup_entries_list')) return;
+                restoreForNative('pointerdown');
+            }, true);
+            // Probe: proves whether a click on the native entry controls reaches the page at all. If
+            // the line is missing from a report, something upstream swallowed it; if it is present,
+            // the host's own handler is the one doing nothing.
+            document.addEventListener('click', (event) => {
+                const target = event.target instanceof Element ? event.target : null;
+                // The entry editor (复制 / 转移 live there) is `#world_popup`; the entry list is only
+                // one part of it. Watch the whole popup so both get covered.
+                if (!target?.closest('#world_popup')) return;
+                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal')) return;
+                const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i');
+                const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
+                const cls = String(button?.className || '').slice(0, 32);
+                pushDiagTrace(`native-entry:click,cls=${cls},label=${label}`);
+                // Outcome: did the action actually change anything? 复制/转移 must change a row count.
+                const countRows = () => document.querySelectorAll('#world_popup_entries_list .world_entry[uid]').length;
+                const countOptions = () => (document.getElementById('world_editor_select')?.options.length ?? -1);
+                const before = { rows: countRows(), options: countOptions() };
+                const probeHit = (() => {
+                    try {
+                        const rect = button?.getBoundingClientRect?.();
+                        if (!rect) return 'none';
+                        const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+                        return hit ? `${hit.tagName.toLowerCase()}.${String(hit.className || '').slice(0, 24)}` : 'none';
+                    } catch { return 'none'; }
+                })();
+                setTimeout(() => {
+                    const after = { rows: countRows(), options: countOptions() };
+                    const entry = {
+                        label,
+                        cls,
+                        hit: probeHit,
+                        before: before.rows,
+                        after: after.rows,
+                        optionsBefore: before.options,
+                        optionsAfter: after.options,
+                        changed: before.rows !== after.rows || before.options !== after.options,
+                    };
+                    _diag.nativeActions.push(entry);
+                    if (_diag.nativeActions.length > 6) _diag.nativeActions.shift();
+                    pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`);
+                }, 500);
+            }, true);
+            const popupWatcher = new MutationObserver(() => {
+                const popup = document.getElementById('world_popup');
+                if (!popup || popup.style.display === 'none') return;
+                restoreForNative('popup-open');
+            });
+            const attachPopupWatcher = () => {
+                const popup = document.getElementById('world_popup');
+                if (popup) popupWatcher.observe(popup, { attributes: true, attributeFilter: ['style', 'class'] });
+            };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachPopupWatcher, { once: true });
+            else attachPopupWatcher();
+        }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
         // report can only be proven with composition + blur counters.
