@@ -2983,7 +2983,9 @@
 .gr-group-label.wbo-dd-group-head {
     position: sticky !important;
     top: 0 !important;
-    z-index: 4 !important;
+    /* No !important: JS raises this per head so the group being scrolled always paints on top of
+       the blocks above it (an !important here silently defeated that inline style). */
+    z-index: 4;
     display: flex !important;
     align-items: center !important;
     gap: 6px;
