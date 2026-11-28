@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.91';
+export const PLUGIN_VERSION = '2.35.92';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7838,6 +7838,17 @@ function enhanceCustomDropdownPopover(containerEl) {
         containerEl._wboSearchPanel = null;
         containerEl._wboSearchPanelMount = null;
         containerEl.classList.remove('wbo-enhanced-searching');
+        // A whitespace-only term made the host hide rows itself; clear every hiding artifact so the
+        // list comes back instead of showing a few blank lines.
+        optionsHost.querySelectorAll('.wbo-enhanced-search-hidden, .wbo-pop-search-hidden, .gr-option-hidden')
+            .forEach((el) => {
+                el.classList.remove('wbo-enhanced-search-hidden', 'wbo-pop-search-hidden', 'gr-option-hidden');
+                if (el instanceof HTMLElement && el.style.display === 'none') el.style.removeProperty('display');
+                if (el instanceof HTMLElement && el.hidden) el.hidden = false;
+            });
+        optionsHost.querySelectorAll('.wbo-enhanced-section-hidden, .wbo-pop-section.wbo-dd-group-hidden')
+            .forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
+        optionsHost.querySelectorAll('.wbo-enhanced-search-empty').forEach((el) => el.remove());
         containerEl._wboSearchPanelWatcher?.disconnect?.();
         containerEl._wboSearchPanelWatcher = null;
         for (const entry of searchPanelListeners.splice(0)) {

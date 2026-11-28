@@ -1,3 +1,10 @@
+### 空白搜索词不再留下空行（2026-11-28 · v2.35.92）
+- 用户验证（v2.35.91）：`enh-globals:char-book-pinned=1`、`enh-order:ph>charBook>globals>pinned>row>row>group>group` —— 当前角色书置顶与排列顺序均已正确；剩下「在搜索框敲一个空格 → 出现几行空白，删掉空格即恢复」。
+- 原因：纯空白词被拆成 0 个 token，我们直接走「清空搜索」分支，但**宿主自己**已按空格过滤并隐藏了若干行，而我们的清理只撤掉面板，没有回收行级隐藏。
+- 修复（`src/native-filter.js` `removeEnhancedSearchPanel()`）：撤面板的同时清理 `.wbo-enhanced-search-hidden`、`.wbo-pop-search-hidden`、`.gr-option-hidden` 及其内联 `display:none`/`hidden`，并清掉 `.wbo-enhanced-section-hidden` 与空态提示，列表立即复原。
+- 关于「自动滚到视野后有小幅回弹」：那是 `edited-revealed` 的居中滚动被宿主的滚动恢复逻辑纠回，属于正常收尾，不影响可用性；若希望完全不动，可在设置里关掉自动滚动（后续可加开关）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 当前角色书定位改从宿主上下文取 + 顺序指纹 + AGENT.md 补全（2026-11-28 · v2.35.91）
 - 用户 v2.35.90 诊断：`enh-globals:char-book-pinned=0` —— 两条查找路径（分类 `charOwners`、行文本匹配）都没命中，所以当前角色书仍未置顶。
 - 修复（`src/native-filter.js`）：
