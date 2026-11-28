@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.123';
+export const PLUGIN_VERSION = '2.35.124';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -5517,12 +5517,16 @@ export function attachGroupedSelectControl(
         };
 
         const fireSelectChange = () => {
-            const $ = globalThis.jQuery;
-            if ($ && !panelRoot) {
-                $(selectEl).trigger('change');
-            } else {
+            // A NATIVE bubbling change event is the only form every listener sees. jQuery's
+            // `.trigger('change')` runs jQuery handlers only and never dispatches a DOM event, so a
+            // host that tracks state with `select.addEventListener('change', …)` misses it
+            // completely — SillyTavern's 移动/复制条目 dialog does exactly that: it remembers the
+            // target in a closure (`selectedWorldIndex`) and then `return`s when it is still -1, so
+            // the popup closes and nothing is moved. jQuery-bound handlers receive native events
+            // too, so dispatching natively covers both cases without double-firing.
+            try {
                 selectEl.dispatchEvent(new Event('change', { bubbles: true }));
-            }
+            } catch { /* ignore */ }
             syncTriggerText();
         };
 
@@ -5649,10 +5653,13 @@ export function attachGroupedSelectControl(
                 selectEl.value = val;
                 fireSelectChange();
                 // Diagnostics only: a host dialog reads this value on confirm. If our write did not
-                // stick (value not in the option list) the host aborts silently — record that fact.
+                // stick (value not in the option list) the host aborts silently — record that fact,
+                // together with whether the element we just wrote to is still in the document.
                 _diag.lastPickerWrite = {
                     at: diagNow(),
                     applied: String(selectEl.value ?? '') === String(val) ? 'ok' : 'mismatch',
+                    connected: selectEl.isConnected !== false,
+                    native: typeof Event === 'function',
                     target: elTagClass(selectEl, 20),
                 };
                 closePopover();

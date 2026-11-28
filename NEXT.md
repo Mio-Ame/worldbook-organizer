@@ -1,3 +1,22 @@
+### 修复：移动/复制条目到其他世界书时目标书收不到条目（2026-11-28 · v2.35.124）
+- 真机定位（ST 1.19.0，`world-info.js` 的 `move_entry_button` 处理器）：
+  ```js
+  let selectedWorldIndex = -1;
+  select.addEventListener('change', function () {          // ← 原生监听
+      selectedWorldIndex = this.value === '' ? -1 : Number(this.value);
+  });
+  const popupConfirm = await popup.show();
+  if (selectedWorldIndex === -1) return;                   // ← 静默返回，不报错、不弹 toast
+  const selectedValue = world_names[selectedWorldIndex];
+  ```
+  宿主**只认 `change` 事件**（目标索引存在闭包里），确认时并不回读 `<select>`。
+- 根因：我们在「移动/复制条目目标世界书弹窗」里接管了 `#move_entry_target_select`，选书后走 `fireSelectChange()`——而那里写的是 `$(selectEl).trigger('change')`。**jQuery 的 `.trigger()` 只跑 jQuery 处理器，不派发 DOM 事件**，宿主的 `addEventListener('change')` 永远收不到 → `selectedWorldIndex` 停在 `-1` → 弹窗关闭、什么都不发生（源书不变、目标书没条目、无报错、无提示）。用原生下拉框时浏览器自己派发 `change`，所以一切正常。
+- 修复（`src/native-filter.js`，`attachGroupedSelectControl` 里的 `fireSelectChange`）：改为**始终派发原生冒泡 `change`**；jQuery 绑定的处理器本来就挂在 `addEventListener` 上，同样能收到，因此不需要也不应该再用 `.trigger()`（否则 jQuery 处理器会跑两次）。
+- 为什么自测没抓到：mock 宿主的 jQuery 是自写简化版（`3.7.1-mock`），它的 `.trigger()` **会**派发真实事件，恰好抹平了真 jQuery 的差异。验证方式因此改为“把 jQuery 换成只记录调用的桩，再点选目标书”：`jQueryTriggerCalls=0` 且原生监听收到 `change`（`targetIndex=1`）才算过。
+- 诊断补强（同一版）：`lastPickerWrite{applied:'ok'|'mismatch', connected, native, target}`——记录写值后回读是否成功、目标元素是否仍在文档里；`dialog.dialogSelects[].value` 在确认瞬间记录目标书值哈希（空/越界即宿主会静默返回）。
+- 结论：设置里「移动/复制条目目标世界书弹窗」现在可以保持开启；若仍想走原生下拉框，关掉它即可。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44；真机探针证明原生 `change` 已送达宿主监听器。
+
 ### 用真机日志补齐三处盲区：行身份、条目集合指纹、宿主弹窗（2026-11-28 · v2.35.123）
 - 触发原因：拿两份真机日志（ST 1.19.0）对照后发现三个问题**当时判不了**：
   1. 只有“行数”，`rowsAdded=384 / rowsRemoved=1134` 而行数不变时，分不清“集合没变”和“换了一行”；
