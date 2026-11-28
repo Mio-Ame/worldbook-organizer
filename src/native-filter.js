@@ -8890,10 +8890,14 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             // the host's own handler is the one doing nothing.
             document.addEventListener('click', (event) => {
                 const target = event.target instanceof Element ? event.target : null;
-                if (!target?.closest('#world_popup_entries_list')) return;
-                const button = target.closest('button, .menu_button, [data-action]');
-                const label = (button?.textContent || '').trim().slice(0, 12);
-                pushDiagTrace(`native-entry:click,cls=${String(button?.className || '').slice(0, 24)},label=${label}`);
+                // The entry editor (复制 / 转移 live there) is `#world_popup`; the entry list is only
+                // one part of it. Watch the whole popup so both get covered.
+                if (!target?.closest('#world_popup')) return;
+                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal')) return;
+                const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i');
+                const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
+                const cls = String(button?.className || '').slice(0, 32);
+                pushDiagTrace(`native-entry:click,cls=${cls},label=${label}`);
             }, true);
             const popupWatcher = new MutationObserver(() => {
                 const popup = document.getElementById('world_popup');
