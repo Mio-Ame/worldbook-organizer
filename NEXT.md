@@ -1,3 +1,15 @@
+### 置顶在全局下拉也生效、点置顶不再跳收藏、↻ 改为从 GitHub 更新插件（2026-11-28 · v2.35.106，待验证）
+- 用户澄清三点：① ↻ 要做的是**从 GitHub 更新插件**（不是页面刷新）；② 「全部 → 关闭 → 重开仍是全部」是他想要的行为，不要再改；③ 置顶书仍在全局分组里，且点置顶会跳到「★已收藏」。
+- 诊断证据（v2.35.105 报告）：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:block=1,count=3,pinnedMounted=3`（3 本置顶书全在全局块里）。
+- 修复（`src/native-filter.js`）：
+  - 置顶收集条件去掉 `!isGlobalPopover`：**全局下拉同样走裸行分支**；并在全局块插入后立刻把 `barePinnedOptions` 移到块**上方**（此前那段只有编辑器下拉才执行）。
+  - `_wboOnPinChanged` 不再调用 `syncPopoverPinnedPill()`：点置顶不再切到「★已收藏」，只 `delete wboPopoverReady/wboPinSig` + 就地重建。
+  - ↻ 按钮改语义：调用 SillyTavern 的 `POST /api/extensions/update`（`extensionName` 从自身 script 路径推导，形如 `third-party/worldbook-organizer`）；已是最新提示「已是最新版本」，否则提示「更新已下载，正在重载…」并 1.2s 后 `location.reload()`；失败提示截断的错误。
+  - 新增 `showInlineHint()`：右下角的短提示条（2.4s 自动消失），不用 alert/modal。
+- 另修（审查 agent 指出）：探测排除插件自己的星标（`.wbo-gr-pin-btn` / `[data-wbo-gr-pin]`），此前我们自己的 `is-pinned`/`aria-pressed` 会污染判定；`syncSpecialSections()` 回填时跳过 `barePinnedOptions`，避免置顶行被拖回全局块；收藏集合纳入渲染指纹 `pinSig`，收藏后浮层才会重建出「已收藏」块。
+- **未验证**：以上均通过单测与既有浏览器用例，但真机行为需用户确认；不再默认“已修好”。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
 ### 置顶优先于已全局、刷新按钮补动作（2026-11-28 · v2.35.105，**未验证**）
 - 用户指出：置顶与「已全局」同时成立时，置顶书仍被放进全局块。**这是优先级写反了**：原逻辑先判断 `isMounted`，置顶分支只在 `else if` 里。
 - 修复（`src/native-filter.js`）：脚本置顶**优先**——`if (scriptPinned && !isGlobalPopover) barePinnedOptions.push(...)` 放在最前，其次才是 mounted。因此置顶书一律裸行显示在全局块上方。

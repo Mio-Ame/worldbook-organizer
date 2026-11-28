@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.105';
+export const PLUGIN_VERSION = '2.35.106';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1367,20 +1367,67 @@ function installQuickDiagBall() {
     refresh.addEventListener('click', (event) => {
         event.stopPropagation();
         event.preventDefault();
-        pushDiagTrace('ball:rescan');
-        try {
-            startNativeObservers(() => {});
-            document.querySelectorAll('[data-wbo-popover-role]').forEach((el) => {
-                try { enhanceCustomDropdownPopover(el); } catch { /* ignore */ }
-            });
-            // A closed popover cannot be re-decorated, so also nudge the host to rebuild the list the
-            // next time it opens: re-apply the native-side decorations from scratch.
-            document.querySelectorAll('[data-wbo-popover-ready]').forEach((el) => delete el.dataset.wboPopoverReady);
-            pushDiagTrace('ball:rescan-done');
-        } catch { /* refresh must never break the UI */ }
+        pushDiagTrace('ball:update-plugin');
+        // Actually UPDATE the extension from GitHub through SillyTavern's own API, so the user does
+        // not have to open the Extensions panel and click "check for updates" by hand.
+        void (async () => {
+            const folder = (() => {
+                const script = [...document.querySelectorAll('script[src]')]
+                    .map((el) => el.getAttribute('src') || '')
+                    .find((src) => src.includes('worldbook-organizer'));
+                const match = script?.match(/(third-party\/[^/]+|scripts\/[^/]+|[^/]+)\/index\.js/);
+                return match ? match[1] : 'third-party/worldbook-organizer';
+            })();
+            try {
+                const response = await fetch('/api/extensions/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ extensionName: folder }),
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json().catch(() => ({}));
+                pushDiagTrace('ball:update-done,upToDate=' + (data?.isUpToDate ? 1 : 0));
+                if (data?.isUpToDate) {
+                    showInlineHint('已是最新版本');
+                } else {
+                    showInlineHint('更新已下载，正在重载…');
+                    setTimeout(() => globalThis.location?.reload?.(), 1200);
+                }
+            } catch (error) {
+                pushDiagTrace('ball:update-failed');
+                showInlineHint('更新失败：' + String(error?.message || error).slice(0, 40));
+            }
+        })();
         refresh.animate?.([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 420 });
     });
     document.body.append(refresh);
+}
+
+/**
+ * Small transient line near the buttons (no alert, no modal).
+ * @param {string} text
+ */
+function showInlineHint(text) {
+    try {
+        const hint = document.createElement('div');
+        hint.className = 'wbo-inline-hint';
+        hint.textContent = text;
+        Object.assign(hint.style, {
+            position: 'fixed',
+            right: '14px',
+            bottom: '206px',
+            maxWidth: '240px',
+            padding: '6px 10px',
+            borderRadius: '8px',
+            background: 'rgba(32, 34, 40, 0.92)',
+            color: '#fff',
+            fontSize: '12px',
+            zIndex: '100095',
+            pointerEvents: 'none',
+        });
+        document.body.append(hint);
+        setTimeout(() => hint.remove(), 2400);
+    } catch { /* ignore */ }
 }
 
 /**
@@ -7262,9 +7309,13 @@ function enhanceCustomDropdownPopover(containerEl) {
         })
         .join(',')}`;
     const editorGlobalSig = isGlobalPopover ? '' : [...getActiveGlobalWorldSet()].sort().join(',');
+    // The favourites set must be part of the signature: pinning a book changed nothing that was
+    // compared, so the popover never re-rendered and the 已收藏 block was never built.
+    const pinSig = isGlobalPopover ? '' : [...(_latestSettings.pinnedBooks || [])].sort().join(',');
     const stateChanged =
         (containerEl.dataset.wboTitleSig || '') !== titleSig ||
         (containerEl.dataset.wboGlobalSig || '') !== editorGlobalSig ||
+        (containerEl.dataset.wboPinSig || '') !== pinSig ||
         (!isGlobalPopover &&
             ((containerEl.dataset.wboEditingWorld || '') !== activeEditName ||
                 (containerEl.dataset.wboChatAvatar || '') !== (currentChatAvatar || '')));
@@ -7277,6 +7328,7 @@ function enhanceCustomDropdownPopover(containerEl) {
     containerEl.dataset.wboPopoverReady = '1';
     containerEl.dataset.wboTitleSig = titleSig;
     containerEl.dataset.wboGlobalSig = editorGlobalSig;
+    containerEl.dataset.wboPinSig = pinSig;
     if (isGlobalOpening) containerEl.dataset.wboGlobalOpen = '1';
     containerEl.dataset.wboEditingWorld = activeEditName;
     containerEl.dataset.wboChatAvatar = currentChatAvatar || '';
@@ -7681,24 +7733,29 @@ function enhanceCustomDropdownPopover(containerEl) {
         const name = getOptionText(optEl);
         const meta = _latestClassification?.byName?.get(name);
         const realName = meta?.realName || name;
-        // The compatible script has its own 「置顶」: those rows are NOT part of the mounted block.
-        // The marker differs between script builds, so probe several shapes and record which one hit
-        // (that trace is what makes the next fix deterministic).
-        const pinEl = optEl.querySelector('.gr-option-pin, .wbo-gr-pin-btn');
-        const pinState = [
-            pinEl?.classList.contains('pinned') ? 'cls:pinned' : '',
-            pinEl?.classList.contains('is-pinned') ? 'cls:is-pinned' : '',
-            pinEl?.classList.contains('is-active') ? 'cls:is-active' : '',
-            pinEl?.getAttribute('aria-pressed') === 'true' ? 'aria:true' : '',
-            optEl.classList?.contains('is-pinned') ? 'row:is-pinned' : '',
-            optEl.dataset?.pinned === '1' ? 'data:1' : '',
-        ].filter(Boolean);
+        // The compatible script has its own 「置顶」. CRITICAL: never look at our own star button — it
+        // carries is-pinned / aria-pressed, which made every plugin favourite look script-pinned and
+        // poisoned `pinProbe` with our own state instead of the script's.
+        const scriptPinEls = [...optEl.querySelectorAll('.gr-option-pin, [class*="pin"]')]
+            .filter((el) => el instanceof HTMLElement
+                && !el.classList.contains('wbo-gr-pin-btn')
+                && !el.hasAttribute('data-wbo-gr-pin')
+                && !el.closest('.wbo-gr-pin-btn'));
+        const pinState = scriptPinEls.flatMap((el) => [
+            el.classList.contains('pinned') ? 'cls:pinned' : '',
+            el.classList.contains('is-pinned') ? 'cls:is-pinned' : '',
+            el.classList.contains('is-active') ? 'cls:is-active' : '',
+            el.getAttribute('aria-pressed') === 'true' ? 'aria:true' : '',
+            el.dataset?.pinned === '1' ? 'data:1' : '',
+        ]).filter(Boolean);
         const scriptPinned = pinState.length > 0;
         if (scriptPinned && _diag.pinProbe.length < 6) _diag.pinProbe.push(pinState.join('+'));
         const isMounted = isActiveGlobalName(realName);
         // Script pin wins over "mounted": the user pinned it to keep it on top, so it belongs in the
         // bare rows above the globals block, never inside it.
-        if (scriptPinned && !isGlobalPopover) {
+        if (scriptPinned) {
+            // Applies to BOTH dropdowns: the global list was the one still showing pinned books
+            // inside 已开启的全局世界书.
             barePinnedOptions.push(optEl);
         } else if (isMounted) {
             mountedGlobalOptions.push(optEl);
@@ -7735,6 +7792,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         globalsSectionEl.append(headEl, bodyEl);
         // After the 「选择以编辑」 line, above every other section (native keeps that line first).
         optionsHost.insertBefore(globalsSectionEl, topAnchor && topAnchor.parentElement === optionsHost ? topAnchor : optionsHost.firstChild);
+        // Script-pinned rows go ABOVE the globals block in the global dropdown as well.
+        if (isGlobalPopover && barePinnedOptions.length > 0) {
+            for (const row of barePinnedOptions) optionsHost.insertBefore(row, globalsSectionEl);
+            pushDiagTrace('enh-globals:script-pinned-bare=' + barePinnedOptions.length);
+        }
         pushDiagTrace(`enh-globals:block=1,count=${mountedGlobalOptions.length},role=${isGlobalPopover ? 'global' : 'editor'}`
             + `,pinnedMounted=${mountedAndPinned.length}`);
     } else {
@@ -7954,6 +8016,9 @@ function enhanceCustomDropdownPopover(containerEl) {
             }
             const globalsBody = globalsSectionEl?.querySelector('.wbo-pop-group-body');
             for (const optEl of mountedAndPinned) {
+                // Script-pinned rows must never be pulled back into the globals block by a later
+                // syncSections() — that refill defeated the pin-priority ordering.
+                if (barePinnedOptions.includes(optEl)) continue;
                 if (globalsBody && optEl.parentElement !== globalsBody) globalsBody.appendChild(optEl);
             }
             // The 已收藏 block belongs to 「全部」 and its own pill only. Deriving this from the pill id
@@ -8647,13 +8712,11 @@ function enhanceCustomDropdownPopover(containerEl) {
         }
     };
     containerEl._wboOnPinChanged = () => {
-        if (isGlobalPopover) {
-            delete containerEl.dataset.wboPopoverReady;
-            enhanceCustomDropdownPopover(containerEl);
-            return;
-        }
-        syncPopoverPinnedPill();
-        syncSections();
+        // Never touch the pill here: jumping to ★已收藏 on every pin click was the "clicking pin
+        // switches to favourites" complaint. Just rebuild the list in place.
+        delete containerEl.dataset.wboPopoverReady;
+        delete containerEl.dataset.wboPinSig;
+        enhanceCustomDropdownPopover(containerEl);
     };
 
     syncSections();
