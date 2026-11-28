@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.119';
+export const PLUGIN_VERSION = '2.35.120';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1438,6 +1438,9 @@ function collectNativeEntryDiagnostics() {
             };
             result.rows = rows.length;
             result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+            // Whether any row is expanded right now (the user may or may not have opened an entry).
+            result.expandedRows = rows.filter((row) => row.querySelector('textarea, input[type="text"], select')).length;
+            result.drawerOpen = Boolean(document.getElementById('WorldInfo')?.classList.contains('openDrawer'));
             const buttonSel = 'button, .menu_button, [data-action], [class*="copy" i], [class*="move" i], [class*="transfer" i], [class*="duplicate" i], i.fa-solid, i.fa-regular, [title]';
             // Structural dump (tag/class only, never text) so an unknown ST version is still readable.
             result.rowShape = rows.slice(0, 2).map((row) => ({
@@ -8897,18 +8900,28 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             // the host's own handler is the one doing nothing.
             document.addEventListener('click', (event) => {
                 const target = event.target instanceof Element ? event.target : null;
-                // The entry editor (复制 / 转移 live there) is `#world_popup`; the entry list is only
-                // one part of it. Watch the whole popup so both get covered.
-                if (!target?.closest('#world_popup')) return;
-                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal')) return;
-                const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i');
+                // Never assume where the entry rows live: ST versions differ (drawer `#WorldInfo`,
+                // list `#world_popup_entries_list`, editor `#world_popup`). Cover all of them.
+                const host = target?.closest('#world_popup, #world_popup_entries_list, #WorldInfo, #world_info');
+                if (!host) return;
+                if (target.closest('.wbo-enhanced-search-panel, .wbo-pop-filter-bar, .wbo-modal, #wbo-quick-diag')) return;
+                const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i, [title]');
                 const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
                 const cls = String(button?.className || '').slice(0, 32);
-                pushDiagTrace(`native-entry:click,cls=${cls},label=${label}`);
+                pushDiagTrace(`native-entry:click,cls=${cls},label=${label},host=${host.id || String(host.className || '').slice(0, 16)}`);
                 // Outcome: did the action actually change anything? 复制/转移 must change a row count.
-                const countRows = () => document.querySelectorAll('#world_popup_entries_list .world_entry[uid]').length;
+                const countRows = () => {
+                    const list = document.getElementById('world_popup_entries_list');
+                    if (!list) return -1;
+                    const uid = list.querySelectorAll('.world_entry[uid]').length;
+                    const entries = list.querySelectorAll('.world_entry').length;
+                    return uid || entries || list.querySelectorAll(':scope > div').length;
+                };
                 const countOptions = () => (document.getElementById('world_editor_select')?.options.length ?? -1);
                 const before = { rows: countRows(), options: countOptions() };
+                // Snapshot the state BEFORE the host reacts, so a report shows what the click landed on
+                // regardless of what happens afterwards.
+                snapshotNativeEntryState('click-' + (label || 'unknown'));
                 const probeHit = (() => {
                     try {
                         const rect = button?.getBoundingClientRect?.();
@@ -8949,6 +8962,26 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             };
             if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachPopupWatcher, { once: true });
             else attachPopupWatcher();
+            // Row-level changes (expand an entry, re-render, delete) also refresh the snapshot, throttled
+            // so a long session cannot flood the buffer.
+            let lastSnapshotAt = 0;
+            const throttledSnapshot = () => {
+                const now = globalThis.performance?.now?.() || Date.now();
+                if (now - lastSnapshotAt < 900) return;
+                lastSnapshotAt = now;
+                const list = document.getElementById('world_popup_entries_list');
+                if (!list || !list.getClientRects().length) return;
+                snapshotNativeEntryState('list-change');
+            };
+            const listObserver = new MutationObserver(throttledSnapshot);
+            const attachListObserver = () => {
+                const list = document.getElementById('world_popup_entries_list');
+                if (!list) return;
+                listObserver.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
+                throttledSnapshot();
+            };
+            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachListObserver, { once: true });
+            else attachListObserver();
         }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"

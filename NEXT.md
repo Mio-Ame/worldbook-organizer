@@ -1,3 +1,14 @@
+### 探针不再假设容器与操作顺序（2026-11-28 · v2.35.120）
+- 用户约束：无法保证反馈者的操作顺序（可能展开过条目、可能中途切别处），只保证“点了复制和转移，然后打开诊断”。
+- 修复（`src/native-filter.js`）：
+  - 点击监听不再只认 `#world_popup`：改为 `#world_popup / #world_popup_entries_list / #WorldInfo / #world_info` 任一容器；trace 记录 `host=` 说明命中哪个容器。
+  - 行数统计不再只认 `.world_entry[uid]`：`uid → .world_entry → :scope > div` 三级回退，避免某版本读成 0。
+  - **点击瞬间就存一份快照**（`snapshotNativeEntryState("click-复制")`），再在 500ms 后存动作结果；不依赖条目是否展开。
+  - `#world_popup_entries_list` 上挂 900ms 节流的 `MutationObserver`（childList/subtree/class/style）：展开条目、重渲染、删除都会触发快照（`list-change`）。
+  - `collectNativeEntryDiagnostics()` 追加 `expandedRows`（当前有几行处于展开态）与 `drawerOpen`。
+- 结果：快照环形 4 份 → 覆盖「打开 → 点击复制 → 点击转移 → 可能展开/关闭」整个序列；导出时即使界面已关，`nativeSnapshots` 里仍有当时的行数、按钮、命中归属与动作结果。
+- 验证：单测 247/247；`native-editor-titles` 12/12。
+
 ### 行内按钮探针不再假设 ST 的行结构（2026-11-28 · v2.35.119）
 - 用户纠正：问题在世界书**界面**的条目**行**上（不展开条目也有「复制 / 转移 / 删除」），不是打开某条条目。
 - 之前 `collectNativeEntryDiagnostics()` 只认 `.world_entry[uid]`，若该 ST 版本的行不带 `uid`，就会误报 `rows=0`。
