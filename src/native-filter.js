@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.118';
+export const PLUGIN_VERSION = '2.35.119';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1421,12 +1421,34 @@ function collectNativeEntryDiagnostics() {
             result.listClass = String(list.className || '').slice(0, 64);
             result.decoratedByGroups = /weg-/.test(String(list.className || ''));
             result.stickyHeadings = list.querySelectorAll('.weg-native-list-sticky, .weg-native-sticky-group').length;
-            const rows = [...list.querySelectorAll('.world_entry[uid]')];
+            // Row detection must not assume one ST layout: some rows carry `uid`, some are plain
+            // `.world_entry`, older builds use direct children of the list.
+            const rowCandidates = [
+                ...list.querySelectorAll('.world_entry[uid]'),
+                ...list.querySelectorAll('.world_entry'),
+                ...list.querySelectorAll(':scope > div'),
+            ];
+            const rows = [...new Set(rowCandidates)].filter((row) => row instanceof HTMLElement);
+            result.rowDetection = {
+                withUid: list.querySelectorAll('.world_entry[uid]').length,
+                worldEntry: list.querySelectorAll('.world_entry').length,
+                directChildren: list.querySelectorAll(':scope > div').length,
+                listChildTags: [...list.children].slice(0, 6)
+                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 24)}`),
+            };
             result.rows = rows.length;
             result.visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
-            const buttonSel = 'button, .menu_button, [class*="copy" i], [class*="move" i], [class*="transfer" i], [title*="复制"], [title*="转移"]';
+            const buttonSel = 'button, .menu_button, [data-action], [class*="copy" i], [class*="move" i], [class*="transfer" i], [class*="duplicate" i], i.fa-solid, i.fa-regular, [title]';
+            // Structural dump (tag/class only, never text) so an unknown ST version is still readable.
+            result.rowShape = rows.slice(0, 2).map((row) => ({
+                cls: String(row.className || '').slice(0, 48),
+                children: [...row.children].slice(0, 8)
+                    .map((child) => `${child.tagName.toLowerCase()}.${String(child.className || '').slice(0, 26)}`),
+                buttons: [...row.querySelectorAll(buttonSel)].slice(0, 10)
+                    .map((btn) => `${btn.tagName.toLowerCase()}.${String(btn.className || '').slice(0, 26)}${btn.getAttribute('title') ? '[t]' : ''}`),
+            }));
             result.rowButtons = rows.slice(0, 3).map((row) => [...row.querySelectorAll(buttonSel)]
-                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || btn.textContent || '').trim().slice(0, 8)}`));
+                .map((btn) => `${String(btn.className || btn.tagName).slice(0, 28)}|${String(btn.getAttribute('title') || '').trim().slice(0, 8)}`));
             const probeBtn = rows.map((row) => [...row.querySelectorAll(buttonSel)]).flat().find((btn) => btn.getClientRects().length > 0);
             if (probeBtn) {
                 const rect = probeBtn.getBoundingClientRect();
@@ -1803,6 +1825,7 @@ function buildDiagnosticReport(mode = 'short') {
             const lastAction = _diag.nativeActions[_diag.nativeActions.length - 1];
             return `原生条目 分组${native.entryGroupsEnabled ? '开' : '关'}`
                 + ` 列表${native.listPresent ? '有' : '无'}行${native.rows ?? 0}`
+                + (native.rowDetection ? `(uid${native.rowDetection.withUid}/entry${native.rowDetection.worldEntry}/child${native.rowDetection.directChildren})` : '')
                 + ` 行按钮${(native.rowButtons?.[0] || []).length}`
                 + ` 命中${native.hitOwnsButton === undefined ? '未测' : (native.hitOwnsButton ? '按钮' : native.hitClass || 'none')}`
                 + ` 已隐藏${native.detachedOptions ?? 0}`

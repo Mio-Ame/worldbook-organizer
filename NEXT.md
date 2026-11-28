@@ -1,3 +1,13 @@
+### 行内按钮探针不再假设 ST 的行结构（2026-11-28 · v2.35.119）
+- 用户纠正：问题在世界书**界面**的条目**行**上（不展开条目也有「复制 / 转移 / 删除」），不是打开某条条目。
+- 之前 `collectNativeEntryDiagnostics()` 只认 `.world_entry[uid]`，若该 ST 版本的行不带 `uid`，就会误报 `rows=0`。
+- 修复（`src/native-filter.js`）：
+  - 行识别改为三路合并去重：`.world_entry[uid]` + `.world_entry` + `:scope > div`；新增 `rowDetection{withUid,worldEntry,directChildren,listChildTags}` 说明命中的是哪一路。
+  - 新增 `rowShape`：前 2 行的 `tag.class` 结构（子元素与按钮，**只记结构与 class，不记文字**），未知版本也能看懂行里有什么。
+  - 按钮选择器扩展：`button / .menu_button / [data-action] / [class*=copy|move|transfer|duplicate] / i.fa-solid / i.fa-regular / [title]`。
+  - 短报告的原生条目行追加 `(uidN/entryN/childN)`，一眼看出行是靠哪条规则识别到的。
+- 验证：单测 247/247；`native-editor-titles` 12/12。
+
 ### 原生条目诊断改成「现场快照」，长期使用后导出也不丢（2026-11-28 · v2.35.118）
 - 用户情况：反馈者可能在酒馆里用了很久才复现，且**点完复制/转移后关闭条目界面，再打开插件面板导出**。此时 `#world_popup` 已关闭，实时测量全是 0。
 - 修复（`src/native-filter.js`）：
