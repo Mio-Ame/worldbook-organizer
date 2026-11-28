@@ -1,3 +1,15 @@
+### 当前角色书定位改从宿主上下文取 + 顺序指纹 + AGENT.md 补全（2026-11-28 · v2.35.91）
+- 用户 v2.35.90 诊断：`enh-globals:char-book-pinned=0` —— 两条查找路径（分类 `charOwners`、行文本匹配）都没命中，所以当前角色书仍未置顶。
+- 修复（`src/native-filter.js`）：
+  - 优先直接从宿主上下文取绑定书：`getHostContext().characters` 里当前角色（`currentChatCharName()`）的 `data.extensions.world`；取不到才退回分类 `charOwners`。
+  - 行定位先走 `<option>` 值：按 option 的 `value` 直接找 `row.dataset.value`，避免行文本被改写后匹配失败；再退回 `resolveEnhancedRowMeta` / 前缀匹配。
+  - 新增**顺序指纹** trace：`enh-order:ph>charBook>globals>pinned>group`（前 8 项），顺序类问题可被直接证明。
+- `AGENT.md`（插件外通用 + 插件内同步）新增：
+  - 「必须覆盖的检测面」清单表（版本/环境抖动/渲染路径/排列顺序/元素定位/可见性/视口/交互流/状态机/失败面）；
+  - 「修复后必须交付重点检查清单」表格规范（检查项 / 操作 / 期望 / **判据**），没有判据不算完成；
+  - 升级机制写死：同一现象连续 2 轮修不好 → 立刻引入另一个 agent 只读审查，材料给文件路径 + diff + 最近 3 份诊断。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 修复整页被滚动 + 快检/脚本与主题切换检测（2026-11-28 · v2.35.90）
 - 用户反馈：v2.35.89 后**整个酒馆页面上移**、顶栏跑出视口无法点击（必须刷新），以及「当前角色世界书又按原名显示」。
 - 根因：`editedRow.scrollIntoView()` 会连带滚动**整页**（行不在可滚容器内或宿主布局用 body 滚动）。

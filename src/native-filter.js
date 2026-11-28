@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.90';
+export const PLUGIN_VERSION = '2.35.91';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7537,9 +7537,18 @@ function enhanceCustomDropdownPopover(containerEl) {
         const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
         const editedName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
         // The book bound to the current chat character is what native ST pins above everything.
+        // Read it straight from the host context first (the classification can lag or lack owners).
         let charBookName = '';
         const chatName = currentChatCharName?.();
-        if (chatName) {
+        const characters = Array.isArray(getHostContext?.()?.characters) ? getHostContext().characters : [];
+        const chatEntry = chatName
+            ? characters.find((entry) => String(entry?.name || entry?.data?.name || '').trim() === chatName)
+            : null;
+        const boundWorld = typeof chatEntry?.data?.extensions?.world === 'string'
+            ? chatEntry.data.extensions.world.trim()
+            : '';
+        if (boundWorld) charBookName = boundWorld;
+        if (!charBookName && chatName) {
             for (const meta of _latestClassification?.byName?.values?.() || []) {
                 if ((meta.charOwners || []).includes(chatName)) {
                     charBookName = meta.realName;
@@ -7551,6 +7560,15 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!name) return null;
             const meta = findMetaByAnyName(name);
             const target = meta?.realName || name;
+            // Match through the <option> value first: the row text may already be rewritten.
+            const option = select
+                ? [...select.options].find((item) => (item.dataset?.wboRealName || item.textContent || '').trim() === target
+                    || (item.textContent || '').trim() === target)
+                : null;
+            const byValue = option
+                ? realOptionNodes.find((row) => row.dataset?.value && row.dataset.value === option.value)
+                : null;
+            if (byValue) return byValue;
             return realOptionNodes.find((row) => {
                 const rowName = resolveEnhancedRowMeta(row)?.realName || getOptionText(row);
                 return rowName && (rowName === target || matchKnownWorldName(rowName) === target);
@@ -7568,6 +7586,15 @@ function enhanceCustomDropdownPopover(containerEl) {
         } else {
             pushDiagTrace('enh-globals:char-book-pinned=0');
         }
+        // Order fingerprint: lets a report show what actually leads the list.
+        const orderTokens = [...(optionsHost.children || [])].slice(0, 8).map((node) => {
+            if (node === charRow) return 'charBook';
+            const group = node.getAttribute?.('data-wbo-dd-group');
+            if (group) return group === EDITOR_GLOBALS_GROUP_ID ? 'globals' : group === SPECIAL_GROUPS.PINNED ? 'pinned' : 'group';
+            if (placeholders.includes(node)) return 'ph';
+            return node.classList?.contains('gr-option') ? 'row' : 'other';
+        });
+        pushDiagTrace('enh-order:' + orderTokens.join('>'));
         // If another book is being edited, bring it into view instead of moving it out of its group.
         const editedRow = editedName && editedName !== charBookName ? rowFor(editedName) : null;
         if (editedRow && editedRow !== charRow) {
