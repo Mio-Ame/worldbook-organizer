@@ -1,3 +1,17 @@
+### 诊断采纳外部审查意见（阶段快照 / 一致性校验 / trace 完整性）（2026-11-28 · v2.35.101）
+- 依据：`文案编写/世界书分组/其他agent没看到项目内容只看了两份检测日志给出的意见…txt`（只读两份日志做的外部审查，17 条）。
+- 已采纳并实现（`src/native-filter.js`）：
+  - **阶段快照**（意见 1/2/9）：新增 `snapshotDiagStage()`，在 `editor-rendered` / `global-rendered` / `search` 等阶段记录 `rows/visibleRows/hiddenRows/popoverH/listHostH/panelH/scrollTop/pageScroll/sections/drawerOpen`，保留最近 8 条并输出到详细 JSON 的 `stages`。关闭后再导出也能看到“打开时到底是什么样”。
+  - **一致性校验**（意见 6）：新增 `diagConsistencyCheck()`，对比 `pinned` vs `pinnedMounted`、`books` vs `rows`、`groups` vs `sections`、`collapsedMemory` vs 实际折叠数，并在 `mismatches` 里列出异常项。
+  - **trace 完整性**（意见 15）：新增 `traceTotal` 与 `traceTruncated`，可区分“没触发”和“被裁剪”。
+  - **运行状态**（意见 14）：新增 `runStats`（每类运行分别记 ok/skip/fail），与原有 `runs` 计数并存。
+  - （已在 v2.35.100 完成）意见 13 相关：抽屉开关带时间戳 `drawer:open@/closed@`，下拉类型写入 `env.renderPath: enhanced-script:global|editor`。
+- 未采纳（记录理由，避免以后重复讨论）：
+  - 意见 3（每本书标题来源明细）：会显著增大报告体积且含书名风险，改为保留 `enh-titles` 汇总；需要时再按需临时开。
+  - 意见 5（性能采样/帧率/内存）：成本高、噪声大，当前问题不是性能；如需再做独立开关。
+  - 意见 17（自动 diff 上一份日志）：需要持久化历史报告，超出插件职责，改由人读 `stages` 对比。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 并发偶发超时，单独通过）、`native-editor-titles` 12/12。
+
 ### 全局下拉实时同步角色书显隐、已收藏块彻底隔离、诊断补下拉类型（2026-11-28 · v2.35.100）
 - 用户反馈：① 全局下拉展开时点「小人」按钮切换角色书显隐，下拉里不同步，必须关掉重开；② 脚本全局下拉在「既收藏又属于某分组」的书上仍多出「已收藏」分组；③ 诊断想知道当前是全局下拉还是普通下拉。
 - 修复（`src/native-filter.js`）：

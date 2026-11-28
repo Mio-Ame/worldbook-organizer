@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.100';
+export const PLUGIN_VERSION = '2.35.101';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1151,6 +1151,20 @@ const _diag = {
     errors: [],
     /** Rare, short breadcrumbs of the render pipeline (never user text). @type {string[]} */
     trace: [],
+    /** Total breadcrumbs ever pushed, so a truncated `trace` can be told apart from "never ran". */
+    traceTotal: 0,
+    /**
+     * Staged snapshots. The final report is taken after the popover closed, when every count reads
+     * zero; these keep the numbers as they were while it was open.
+     * @type {Array<Record<string, any>>}
+     */
+    stages: [],
+    /** Run bookkeeping beyond a bare counter: skipped / failed paths are recorded too. */
+    runStats: {
+        decorate: { ok: 0, skip: 0 },
+        searchLayout: { ok: 0, skip: 0 },
+        panel: { ok: 0, fail: 0 },
+    },
     /** Last UI interactions, sanitized to tag/id/class/role plus a short hash. @type {string[]} */
     ui: [],
     /** IME / soft-keyboard signals (the "search box closes while typing, keyboard stays" bug). */
@@ -1370,7 +1384,75 @@ function installDrawerOpenGuard() {
  */
 function pushDiagTrace(label) {
     _diag.trace.push(String(label).slice(0, 80));
+    _diag.traceTotal += 1;
     if (_diag.trace.length > 24) _diag.trace.shift();
+}
+
+/**
+ * Cross-check the numbers a bug report usually disagrees with: pinned vs mounted, books vs rows,
+ * groups vs rendered sections, remembered folds vs actual folds.
+ * @param {any} cls
+ * @param {any} settings
+ * @returns {Record<string, any>}
+ */
+function diagConsistencyCheck(cls, settings) {
+    const result = { mismatches: [] };
+    try {
+        const byName = cls?.byName;
+        const pinned = (settings?.pinnedBooks || []).length;
+        let pinnedMounted = 0;
+        for (const meta of byName?.values?.() || []) {
+            if (meta?.isPinned && meta?.isMounted) pinnedMounted += 1;
+        }
+        result.pinned = pinned;
+        result.pinnedMounted = pinnedMounted;
+        const rows = document.querySelectorAll('.gr-option').length;
+        result.books = byName?.size || 0;
+        result.rows = rows;
+        const sections = document.querySelectorAll('.wbo-pop-section').length;
+        result.groups = (settings?.groups || []).length;
+        result.sections = sections;
+        const remembered = Object.keys(settings?.dropdownCollapsed || {}).filter((key) => settings.dropdownCollapsed[key]).length;
+        const collapsedNow = document.querySelectorAll('.wbo-pop-section.wbo-dd-collapsed').length;
+        result.collapsedMemory = remembered;
+        result.collapsedNow = collapsedNow;
+        if (rows > 0 && result.books > 0 && rows < result.books) result.mismatches.push('rows<books');
+        if (sections > 0 && result.groups > 0 && sections < result.groups) result.mismatches.push('sections<groups');
+        if (pinned > 0 && pinnedMounted > pinned) result.mismatches.push('pinnedMounted>pinned');
+    } catch { /* diagnostics must never throw */ }
+    return result;
+}
+
+/**
+ * Record a snapshot of the live dropdown metrics at a named stage (open / rendered / search /
+ * cleared). Cheap, and the only way to see values that vanish once the popover closes.
+ * @param {string} stage
+ * @param {Element | null} host
+ */
+function snapshotDiagStage(stage, host) {
+    try {
+        const listHost = host || document.querySelector('.gr-options, .gr-options-container');
+        const rows = listHost ? [...listHost.querySelectorAll('.gr-option')] : [];
+        const visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+        const popover = document.querySelector('[data-wbo-popover-role]');
+        const panel = document.querySelector('.wbo-enhanced-search-panel');
+        _diag.stages.push({
+            stage,
+            at: Math.round(globalThis.performance?.now?.() || 0),
+            role: popover?.getAttribute('data-wbo-popover-role') || '',
+            rows: rows.length,
+            visibleRows,
+            hiddenRows: rows.length - visibleRows,
+            popoverH: Math.round(popover?.getBoundingClientRect?.().height || 0),
+            listHostH: Math.round(listHost?.getBoundingClientRect?.().height || 0),
+            panelH: Math.round(panel?.getBoundingClientRect?.().height || 0),
+            scrollTop: Math.round(listHost?.scrollTop || 0),
+            pageScroll: Math.round(document.scrollingElement?.scrollTop || 0),
+            sections: document.querySelectorAll('.wbo-pop-section').length,
+            drawerOpen: Boolean(document.getElementById('WorldInfo')?.classList.contains('openDrawer')),
+        });
+        if (_diag.stages.length > 8) _diag.stages.shift();
+    } catch { /* a snapshot must never break rendering */ }
 }
 
 /**
@@ -1559,6 +1641,11 @@ function buildDiagnosticReport(mode = 'short') {
             themeFlips: _diag.themeFlips,
             dom: diagDomSnapshot(),
             trace: _diag.trace,
+            traceTotal: _diag.traceTotal,
+            traceTruncated: _diag.traceTotal > _diag.trace.length,
+            stages: _diag.stages,
+            consistency: diagConsistencyCheck(cls, settings),
+            runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
             ua: String(globalThis.navigator?.userAgent || ''),
@@ -7674,6 +7761,7 @@ function enhanceCustomDropdownPopover(containerEl) {
             return node.classList?.contains('gr-option') ? 'row' : 'other';
         });
         pushDiagTrace('enh-order:' + orderTokens.join('>'));
+        snapshotDiagStage(isGlobalPopover ? 'global-rendered' : 'editor-rendered', optionsHost);
         // If another book is being edited, bring it into view instead of moving it out of its group.
         const editedRow = editedName && editedName !== charBookName ? rowFor(editedName) : null;
         if (editedRow && editedRow !== charRow) {
@@ -8167,6 +8255,7 @@ function enhanceCustomDropdownPopover(containerEl) {
                 + ',panelH=' + Math.round(panel.getBoundingClientRect().height)
                 + ',pageScroll=' + Math.round(globalThis.document?.scrollingElement?.scrollTop || 0));
         } catch { /* metrics must never break the render */ }
+        snapshotDiagStage('search', optionsHost);
     };
     let _lastEnhancedSearchTerm = '';
     const syncEnhancedSearchBlock = (searching) => {
