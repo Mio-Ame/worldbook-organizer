@@ -63,6 +63,7 @@ import { configureEntryGroupingFeatureGate } from './src/entry-groups/feature-ga
 import { setNativeScrollEnabled } from './src/content-scroll.js';
 import { closeManagerModal } from './src/panel-manager.js';
 import { applyImportedWorldbookPlan, createWorldbookImportTracker, planImportedWorldbooks } from './src/import-organizer.js';
+import { STYLE_SHEETS } from './src/style-manifest.js';
 
 export const STYLE_ASSET_VERSION = '2.35.129';
 let _initialized = false;
@@ -116,29 +117,44 @@ function applyNewBookImportRules(settings, worldNames, characters, charLore) {
 }
 
 /**
- * Bust stale browser/WebView disk cache on `style.css` after an extension update
+ * Bust stale browser/WebView disk cache on the stylesheets after an extension update
  * without causing a flash of unstyled content.
+ *
+ * `style.css` is now an `@import` index over `STYLE_SHEETS`; here every sheet is linked
+ * individually, in manifest order, so the cascade order is exactly the order recorded in
+ * `src/style-manifest.js`. New links are appended before the stale ones are dropped, and only
+ * once all of them have loaded.
  */
 function ensureFreshStylesheet() {
     if (typeof document === 'undefined' || !document.head) return;
     try {
-        const targetHref = new URL(`./style.css?v=${STYLE_ASSET_VERSION}`, import.meta.url).href;
+        const targets = STYLE_SHEETS.map((rel) => new URL(`./${rel}?v=${STYLE_ASSET_VERSION}`, import.meta.url).href);
         const links = [...document.querySelectorAll('link[rel="stylesheet"]')];
-        const existing = links.filter((el) => {
+        const isOwnSheet = (el) => {
             const h = el.getAttribute('href') || '';
-            return h.includes('worldbook-organizer/style.css');
-        });
-        if (existing.some((el) => el.href === targetHref)) return;
-        const fresh = document.createElement('link');
-        fresh.rel = 'stylesheet';
-        fresh.href = targetHref;
-        fresh.setAttribute('data-wbo-style-ver', STYLE_ASSET_VERSION);
-        fresh.addEventListener('load', () => {
+            return h.includes('worldbook-organizer/style.css') || h.includes('worldbook-organizer/styles/');
+        };
+        const existing = links.filter(isOwnSheet);
+        if (targets.every((href) => existing.some((el) => el.href === href))) return;
+        const fresh = [];
+        let pending = targets.length;
+        const dropStale = () => {
+            pending -= 1;
+            if (pending > 0) return;
             for (const old of existing) {
-                if (old !== fresh) old.remove();
+                if (!fresh.includes(old)) old.remove();
             }
-        });
-        document.head.appendChild(fresh);
+        };
+        for (const href of targets) {
+            const link = document.createElement('link');
+            link.rel = 'stylesheet';
+            link.href = href;
+            link.setAttribute('data-wbo-style-ver', STYLE_ASSET_VERSION);
+            link.addEventListener('load', dropStale);
+            link.addEventListener('error', dropStale);
+            fresh.push(link);
+            document.head.appendChild(link);
+        }
     } catch {
         // Ignore in non-browser or restricted environments
     }

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { readStyleSource } from './style-source.mjs';
 
 const manager = readFileSync(new URL('../src/panel-manager.js', import.meta.url), 'utf8')
     + readFileSync(new URL('../src/manager-touch-drag.js', import.meta.url), 'utf8');
-const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+const css = readStyleSource();
 
 test('touch users get a visible drag handle and a pointer-driven group drop path', () => {
     const coarsePointerRule = css.match(/@media\s*\(max-width:\s*680px\),\s*\(pointer:\s*coarse\)\s*\{\s*\.wbo-drag-handle,\s*\.wbo-group-drag-handle\s*\{([^}]+)\}/);

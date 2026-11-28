@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import util from 'node:util';
+import { STYLE_SOURCE_FILES, readStyleSource } from './style-source.mjs';
 
 function getPanelSourcePaths() {
     const panelSources = readdirSync(new URL('../src/', import.meta.url))
@@ -1958,14 +1959,14 @@ test('Persistent UI preferences, legacy quick-action migration, and static CSS/s
 
     // Static guardrails: zero backdrop-filter/blur( in style.css, zero 3rd-party names,
     // spellcheck="false" on all text/search inputs and textareas, and zero unguarded .focus()
-    const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const cssSrc = readStyleSource();
     assert.equal(/backdrop-filter\s*:/i.test(cssSrc), false, 'style.css must not use backdrop-filter');
     assert.equal(/\bblur\s*\(/i.test(cssSrc), false, 'style.css must not use blur()');
     assert.equal(/wbo-modal-mini-btn|is-mini-window|wbo-modal-resize-handle/.test(cssSrc), false, 'style.css must not contain removed mini-window or corner-badge rules');
     assert.doesNotMatch(cssSrc, /\.wbo-book-more-btn\s*\{[^}]*display:\s*none/i);
 
     const forbiddenThirdPartyRe = /(?:baibai|st-baibai-tools|柏宝箱)/i;
-    for (const relPath of ['../style.css', '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', ...getPanelSourcePaths(), '../src/entry-accordion.js', '../src/native-filter.js']) {
+    for (const relPath of [...STYLE_SOURCE_FILES, '../index.js', '../README.md', '../NEXT.md', '../src/core.js', '../src/host.js', ...getPanelSourcePaths(), '../src/entry-accordion.js', '../src/native-filter.js']) {
         const txt = readFileSync(new URL(relPath, import.meta.url), 'utf8');
         assert.equal(forbiddenThirdPartyRe.test(txt), false, `Forbidden third-party reference found in ${relPath}`);
     }
@@ -3087,7 +3088,7 @@ test('R6.2 .gr-container-enhanced & #world_popup .gr-select2-display isolation +
 });
 
 test('R6.3 & Challenger R2 static CSS/JS guardrails (.wbo-vis-popover min-width, mobile >=16px inputs, no resize closePicker)', () => {
-    const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const cssSrc = readStyleSource();
     const nativeSrc = readFileSync(new URL('../src/native-filter.js', import.meta.url), 'utf8');
 
     const visBlock = cssSrc.match(/\.wbo-vis-popover\s*\{[\s\S]*?\}/);
@@ -3483,7 +3484,7 @@ test('R6.2 .wbo-mp-backdrop pointerdown over trigger rect suppresses trailing cl
 });
 
 test('narrow worldbook preview keeps the summary, sort picker and binding action readable', () => {
-    const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const css = readStyleSource();
     assert.match(css, /\.wbo-acc-summary\s*\{[^}]*white-space:\s*nowrap/s);
     assert.match(css, /\.wbo-preview-head\s*\{[^}]*flex-wrap:\s*wrap/s);
     assert.match(css, /@container\s+plugin-win\s*\(max-width:\s*600px\)[\s\S]*?\.wbo-book-preview\s+\.wbo-preview-head-actions\s*>\s*:not\(\.wbo-acc-sort-control\)\s*\{\s*display:\s*none\s*!important;/);
@@ -3493,7 +3494,7 @@ test('narrow worldbook preview keeps the summary, sort picker and binding action
 test('v2.35.1 polish: deleteWorldbookEntryDirect, gr-option pin stars across flat/grouped/re-rendered popovers, no duplicate scan status, and standard undo SVG', async () => {
     const panelSrc = readPanelSource();
     const accSrc = readFileSync(new URL('../src/entry-accordion.js', import.meta.url), 'utf8');
-    const cssSrc = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const cssSrc = readStyleSource();
 
     // 1. Zero ugly Unicode undo/redo arrows anywhere in panel.js or entry-accordion.js
     assert.ok(!panelSrc.includes('↶') && !panelSrc.includes('↷'), 'panel.js must not use ugly Unicode undo arrows');
@@ -6046,7 +6047,7 @@ test('M3 R2, R3 & R5 panel.js: 3-button+gear header, visibility-skipping moves, 
 });
 
 test('M3 R4 & R5 static CSS guardrails: switch capsule !important, footer alignment, floating overlay, and 3-button header grid', () => {
-    const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+    const css = readStyleSource();
     const panelSrc = readPanelSource();
 
     // Switch capsule isolation

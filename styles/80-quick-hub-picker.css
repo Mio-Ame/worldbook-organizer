@@ -1,0 +1,593 @@
+
+/* Native Quick Actions Active Highlight & Narrow Mobile Compact Mode */
+.wbo-wi-quick-btn.is-active {
+    border-color: var(--SmartThemeQuoteColor, #4c6ef5) !important;
+}
+
+@media (max-width: 410px) {
+    .wbo-wi-quick-actions {
+        gap: 4px;
+    }
+    .wbo-wi-quick-btn {
+        padding: 0 6px !important;
+        font-size: 11.5px !important;
+    }
+}
+
+/* 3-in-1 Quick Hub Popover (`全局组合 | 排除分组` + pinned footer) */
+.wbo-qhub-head {
+    padding: 7px 10px !important;
+}
+
+.wbo-qhub-single-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--wbo-fg);
+    padding: 2px 2px;
+}
+
+.wbo-qhub-tabs {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--wbo-surface);
+    border: 1px solid var(--wbo-border);
+}
+
+.wbo-qhub-tab {
+    height: 24px !important;
+    min-height: 24px !important;
+    padding: 0 10px !important;
+    margin: 0 !important;
+    border-radius: 5px !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg-muted) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-qhub-tab.is-active {
+    background: var(--wbo-accent) !important;
+    color: var(--wbo-accent-fg) !important;
+    font-weight: 600 !important;
+}
+
+.wbo-qhub-body {
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.wbo-qhub-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-qhub-pane[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-qhub-top-btns {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wbo-qhub-save-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+}
+
+.wbo-qhub-save-row[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-save-row > .wbo-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 26px !important;
+    min-height: 26px !important;
+    font-size: 12px !important;
+}
+
+.wbo-qhub-undo-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 8px;
+    border-radius: 7px;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+    background: rgba(34, 197, 94, 0.08);
+    font-size: 11.5px;
+}
+
+.wbo-qhub-undo-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-qhub-combo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-qhub-empty {
+    padding: 14px 12px !important;
+    font-size: 12px !important;
+    text-align: left !important;
+}
+
+.wbo-qhub-empty-title {
+    font-weight: 600;
+    color: var(--wbo-fg);
+    margin-bottom: 6px;
+}
+
+.wbo-qhub-empty-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    line-height: 1.45;
+    color: var(--wbo-fg-muted);
+}
+
+.wbo-exclude-tip {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    line-height: 1.4;
+}
+
+.wbo-exclude-block {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.wbo-exclude-head {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 8px !important;
+}
+
+.wbo-exclude-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--wbo-fg);
+}
+
+.wbo-exclude-quick-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+}
+
+.wbo-exclude-quick-row > .wbo-link-btn {
+    height: 22px !important;
+    min-height: 22px !important;
+    padding: 0 7px !important;
+    font-size: 11.5px !important;
+}
+
+.wbo-qhub-combo-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg);
+}
+
+.wbo-qhub-combo-row.is-active {
+    border-color: var(--wbo-accent);
+    background: var(--wbo-accent-soft);
+}
+
+.wbo-qhub-combo-row.is-selected:not(.is-active) {
+    border-color: var(--wbo-accent);
+}
+
+.wbo-qhub-combo-main {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 2px !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-qhub-combo-title {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.wbo-qhub-combo-sub {
+    font-size: 11px;
+    color: var(--wbo-fg-muted);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-qhub-combo-acts {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+@media (max-width: 420px) {
+    .wbo-qhub-combo-row {
+        flex-wrap: wrap;
+    }
+    .wbo-qhub-combo-main {
+        flex-basis: 100% !important;
+    }
+    .wbo-qhub-combo-acts {
+        margin-left: auto;
+    }
+}
+
+.wbo-qhub-mini-btn {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    padding: 0 7px !important;
+    font-size: 11.5px !important;
+}
+
+.wbo-qhub-sub-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+/* Group Manager 1-Row Quick Combo Strip & Full Global Combos Modal */
+.wbo-mgr-combo-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap !important;
+    overflow: hidden;
+}
+
+.wbo-mgr-combo-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-combo-pills-scroll {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.wbo-combo-pills-scroll::-webkit-scrollbar {
+    display: none;
+}
+
+.wbo-combo-quick-pill {
+    flex-shrink: 0;
+}
+
+.wbo-combo-undo-btn,
+.wbo-combo-manage-link {
+    flex-shrink: 0;
+}
+
+.wbo-tag.is-on-tag {
+    background: var(--wbo-accent-soft) !important;
+    border-color: var(--wbo-accent) !important;
+    color: var(--wbo-accent) !important;
+    font-weight: 600;
+}
+
+.wbo-cmb-topbar,
+.wbo-cmb-edit-top {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-cmb-live-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+    font-size: 12.5px;
+}
+
+.wbo-cmb-live-actions,
+.wbo-cmb-create-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
+.wbo-cmb-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.wbo-cmb-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-cmb-card.is-active-combo {
+    border-color: var(--wbo-accent) !important;
+}
+
+.wbo-cmb-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wbo-cmb-card-title-wrap {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.wbo-cmb-card-name {
+    font-size: 13.5px;
+    font-weight: 600;
+}
+
+.wbo-cmb-card-order {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.wbo-cmb-card-books {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.wbo-cmb-card-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-cmb-name-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-cmb-name-bar > .wbo-input {
+    flex: 1 1 200px;
+    min-width: 140px;
+}
+
+.wbo-cmb-pick-feedback {
+    color: var(--wbo-fg-muted);
+    font-size: 12px;
+}
+
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-right {
+    justify-content: flex-start;
+}
+
+.wbo-ai-footer.wbo-footer-confirm-first .wbo-ai-footer-left {
+    justify-content: flex-end;
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-ai-footer.wbo-ai-footer-single.wbo-footer-confirm-first .wbo-ai-footer-left {
+        flex: 1 1 0;
+    }
+}
+
+#wbo-cmb-step-edit > .wbo-step-scroll {
+    overflow: hidden !important;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list {
+    flex: 1 1 auto;
+    min-height: 96px;
+    max-height: none;
+}
+
+#wbo-cmb-step-edit .wbo-cmb-pick-list ~ .wbo-ai-status {
+    flex-shrink: 0;
+}
+
+/* Customizable AI Organize Presets Bar & Manager Cards */
+.wbo-ai-save-preset-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-bg-elevated);
+}
+
+.wbo-ai-save-preset-bar[hidden] {
+    display: none !important;
+}
+
+.wbo-ai-save-preset-bar > .wbo-input {
+    flex: 1 1 160px;
+    min-width: 120px;
+}
+
+.wbo-ai-presets-mgr-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-preset-mgr-card {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-preset-mgr-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.wbo-preset-mgr-top > .wbo-pm-label {
+    flex: 1 1 140px;
+    min-width: 110px;
+}
+
+.wbo-split-quick-checks {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-left: 4px;
+}
+
+.wbo-split-quick-checks[hidden] {
+    display: none !important;
+}
+
+@container plugin-win (max-width: 560px) {
+    .wbo-cmb-create-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        width: 100%;
+    }
+    .wbo-cmb-create-row > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+}
+
+/* Prevent iOS WebKit auto-zoom on native-picker searches and modal text editors. */
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-mp-popover .wbo-search-input,
+    .wbo-mp-popover input,
+    .wbo-modal .wbo-input:not([type="search"]),
+    .wbo-modal .wbo-textarea {
+        font-size: 16px !important;
+    }
+    .wbo-mp-popover .wbo-search-input {
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+    .wbo-mp-popover .wbo-mp-clear-btn,
+    .wbo-mp-popover .wbo-mp-done-btn {
+        height: 34px !important;
+        min-height: 34px !important;
+    }
+    .wbo-modal .wbo-input:not([type="search"]) {
+        min-height: 34px !important;
+    }
+}
+
+.wbo-mp-row-actions {
+    flex-wrap: nowrap !important;
+    min-width: 0;
+    margin-left: auto;
+}
+
+.wbo-mp-row-text {
+    min-width: 0;
+}
+
+.wbo-s2-badge.is-search-origin {
+    max-width: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* Search rows: badges must stay complete; only the book title may ellipsize. */
+.wbo-s2-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+}
+
+.wbo-s2-right .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}
+
+.wbo-s2-main {
+    min-width: 0;
+}
+
+.wbo-mp-row-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    margin-left: auto;
+    gap: 4px;
+}
+
+.wbo-mp-row-actions .wbo-s2-badge {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+}

@@ -1,0 +1,1072 @@
+
+.wbo-exclude-title-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wbo-exclude-count {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    font-weight: 400;
+}
+
+.wbo-scan-top-status {
+    margin-top: 6px;
+}
+
+/* Group Picker Filter Pills & Collapsed Other Groups */
+.wbo-gp-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.wbo-gp-pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+}
+
+.wbo-gp-pills.wbo-book-group-switcher {
+    flex-wrap: nowrap;
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: 3px;
+    scrollbar-width: thin;
+}
+
+/* Global combo editor: group pills on the first row, scopes on the second. */
+.wbo-cmb-pill-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* Foldable group headings inside the combo picker (all / non-character views). */
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    width: 100%;
+    background: var(--wbo-bg-elevated, #212226);
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 6px;
+    text-align: start;
+    color: inherit;
+    cursor: pointer;
+}
+
+.wbo-cmb-pick-list .wbo-cmb-sec-toggle:hover {
+    background: var(--wbo-surface-hover, #2c2e34);
+}
+
+.wbo-gp-sec.is-folded .wbo-gp-sec-body {
+    display: none !important;
+}
+
+.wbo-gp-sec.is-folded .wbo-cmb-sec-toggle .wbo-gp-chev {
+    transform: rotate(-90deg);
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle {
+    cursor: default;
+    pointer-events: none;
+}
+
+.wbo-gp-sec.is-static .wbo-cmb-sec-toggle .wbo-gp-chev {
+    visibility: hidden;
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis {
+    border-color: #7f2b2b !important;
+    background: #7f2b2b !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.wbo-cmb-pill-rows .wbo-pill.is-emphasis .wbo-pill-count {
+    opacity: 0.82;
+    color: #ffffff;
+}
+
+.wbo-book-group-switcher > .wbo-pill {
+    flex: 0 0 auto;
+    white-space: nowrap;
+}
+
+.wbo-gp-sec {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
+/* Combo picker: no boxed card around the rows, headings sit right under the search bar. */
+.wbo-cmb-pick-list .wbo-gp-sec {
+    margin-top: 2px;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 6px;
+    padding: 3px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-toggle:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-cmb-pick-list .wbo-gp-sec-body {
+    border: 0 !important;
+    background: transparent !important;
+    padding: 0 !important;
+    gap: 1px;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row {
+    border: 0 !important;
+    background: transparent !important;
+    border-radius: 4px !important;
+    padding: 2px 4px !important;
+}
+
+.wbo-cmb-pick-list .wbo-ai-pick-row:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+
+.wbo-gp-sec:first-child {
+    margin-top: 0;
+}
+
+.wbo-gp-sec-head {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--wbo-fg-muted);
+    padding: 2px 4px;
+}
+
+.wbo-gp-sec-toggle,
+.wbo-gp-sub-toggle {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: 100% !important;
+    padding: 6px 8px !important;
+    margin: 0 !important;
+    border-radius: 6px !important;
+    border: 1px solid var(--wbo-border) !important;
+    background: var(--wbo-surface) !important;
+    color: var(--wbo-fg) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-gp-sub {
+    margin-top: 4px;
+    padding-left: 8px;
+}
+
+.wbo-gp-sub-toggle {
+    border-color: transparent !important;
+    background: transparent !important;
+    padding: 4px 6px !important;
+    font-size: 11.5px !important;
+}
+
+.wbo-gp-sub-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-gp-sec-body,
+.wbo-gp-sub-body {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.wbo-group-pick-filter {
+    flex: 1 1 160px;
+    min-width: 120px;
+}
+
+.wbo-gp-other-details {
+    margin-top: 8px;
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    background: var(--wbo-bg);
+}
+
+.wbo-gp-other-summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+}
+
+.wbo-gp-other-summary::-webkit-details-marker {
+    display: none;
+}
+
+.wbo-gp-other-details[open] .wbo-details-chev {
+    transform: rotate(90deg);
+}
+
+.wbo-gp-other-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px 10px 10px;
+}
+
+.wbo-gp-other-sub {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.wbo-gp-other-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    padding: 4px 0 2px;
+}
+
+/* Sensitive Inline Confirm & Top Inline Undo Result Bar */
+.wbo-sens-confirm-bar,
+.wbo-sens-result-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    margin-top: 6px;
+    border-radius: 8px;
+    font-size: 12px;
+    border: 1px solid var(--wbo-border-strong);
+    background: var(--wbo-surface);
+}
+
+.wbo-sens-result-bar {
+    border-color: rgba(34, 197, 94, 0.45);
+    background: rgba(34, 197, 94, 0.08);
+}
+
+.wbo-sens-confirm-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Multi-Open Entry Accordion Inline Editor */
+.wbo-acc-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-acc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wbo-acc-head-controls {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.wbo-acc-sort-control {
+    display: inline-flex;
+    position: relative;
+    height: 24px;
+    font-size: 11.5px;
+}
+
+.wbo-acc-sort-size {
+    visibility: hidden;
+    white-space: nowrap;
+    padding-inline: 9px 23px;
+}
+
+.wbo-acc-sort-control::after {
+    content: '';
+    position: absolute;
+    inset-inline-end: 8px;
+    top: 50%;
+    width: 5px;
+    height: 5px;
+    border: solid var(--wbo-fg-muted);
+    border-width: 0 1.5px 1.5px 0;
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+}
+
+.wbo-acc-sort-control .wbo-acc-sort-select {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    width: 100% !important;
+    min-width: 0 !important;
+    height: 24px !important;
+    min-height: 24px !important;
+    padding: 0 20px 0 8px !important;
+    appearance: none !important;
+    font: inherit !important;
+}
+
+.wbo-acc-drag-handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    min-height: 24px;
+    color: var(--wbo-fg-muted);
+    opacity: 0.72;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.wbo-acc-drag-handle:hover {
+    opacity: 1;
+    color: var(--wbo-fg);
+}
+
+.wbo-acc-drag-handle:active {
+    cursor: grabbing;
+}
+
+.wbo-acc-drag-handle.is-sort-locked {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.wbo-acc-item.is-dragging {
+    opacity: 0.48;
+}
+
+.wbo-acc-item.wbo-drop-before {
+    box-shadow: inset 0 2px 0 0 var(--wbo-accent);
+}
+
+.wbo-acc-item.wbo-drop-after {
+    box-shadow: inset 0 -2px 0 0 var(--wbo-accent);
+}
+
+.wbo-acc-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.wbo-acc-search-wrap {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
+}
+
+.wbo-acc-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.wbo-acc-toolbar-actions > button {
+    height: 34px !important;
+    min-height: 34px !important;
+    max-height: 34px !important;
+    font-weight: 600 !important;
+    white-space: nowrap;
+}
+
+.wbo-btn.wbo-acc-group-btn {
+    background: var(--wbo-accent-soft) !important;
+    border-color: var(--wbo-accent) !important;
+}
+
+.wbo-btn.wbo-acc-group-btn:hover {
+    background: var(--wbo-surface-hover) !important;
+}
+.wbo-acc-list {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--wbo-bg);
+}
+
+.wbo-acc-item {
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-acc-item:last-child {
+    border-bottom: none;
+}
+
+.wbo-acc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: transparent;
+}
+
+.wbo-acc-item.is-expanded > .wbo-acc-row {
+    background: var(--wbo-bg-elevated);
+    border-bottom: 1px solid var(--wbo-border);
+}
+
+.wbo-acc-item.is-disabled .wbo-eb-row-title {
+    opacity: 0.6;
+}
+
+.wbo-acc-row-main {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    padding: 2px 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background: transparent !important;
+    color: var(--wbo-fg) !important;
+    text-align: left !important;
+    cursor: pointer !important;
+    box-shadow: none !important;
+}
+
+.wbo-acc-chev {
+    width: 12px;
+    font-size: 11px;
+    color: var(--wbo-fg-muted);
+    flex-shrink: 0;
+}
+
+.wbo-acc-dirty-dot {
+    font-size: 11px;
+    color: #d97706;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.wbo-acc-editor-slot {
+    padding: 10px 12px;
+    background: var(--wbo-bg);
+}
+
+.wbo-acc-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.wbo-acc-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.wbo-acc-editor-grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.wbo-acc-content-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.wbo-acc-editor-toolbar,
+.wbo-acc-content-tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.wbo-acc-toolbar-left {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.wbo-acc-toolbar-right,
+.wbo-acc-content-btns {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 5px;
+}
+
+.wbo-acc-toolbar-right > [data-acc-mono] > span {
+    min-inline-size: 6em;
+    text-align: center;
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-acc-toolbar-right > [data-acc-mono] {
+        display: none !important;
+    }
+}
+
+.wbo-acc-mini-btn,
+.wbo-acc-tool-btn {
+    height: 24px !important;
+    min-height: 24px !important;
+    max-height: 24px !important;
+    padding: 0 8px !important;
+    font-size: 11.5px !important;
+}
+
+.wbo-acc-mini-btn.is-active,
+.wbo-acc-tool-btn.is-active {
+    background: var(--wbo-accent-soft) !important;
+    border-color: var(--wbo-accent) !important;
+    color: var(--wbo-accent) !important;
+}
+
+.wbo-btn-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+}
+
+.wbo-undo-svg {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    vertical-align: -1px;
+}
+
+.wbo-acc-del-entry-btn {
+    color: #c53030 !important;
+    border-color: rgba(197, 48, 48, 0.32) !important;
+}
+
+.wbo-acc-del-entry-btn:hover {
+    background: rgba(197, 48, 48, 0.1) !important;
+    border-color: rgba(197, 48, 48, 0.55) !important;
+}
+
+.wbo-modal.wbo-theme-dark .wbo-acc-del-entry-btn {
+    color: #f38b8b !important;
+    border-color: rgba(243, 139, 139, 0.34) !important;
+}
+
+.wbo-acc-find-row,
+.wbo-acc-find-bar {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--wbo-border);
+    background: var(--wbo-surface);
+}
+
+.wbo-acc-find-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.wbo-acc-save-status {
+    font-size: 12px;
+    color: var(--wbo-fg-muted);
+    margin-left: auto;
+}
+
+.wbo-acc-find-input {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 26px !important;
+    min-height: 26px !important;
+    font-size: 12px !important;
+}
+
+.wbo-acc-ta-wrap {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.wbo-acc-ta-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    overflow: hidden;
+    box-sizing: border-box;
+    border: 1px solid transparent;
+    background: var(--wbo-surface);
+    color: transparent;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+}
+
+.wbo-acc-ta-backdrop[hidden] {
+    display: none !important;
+}
+
+.wbo-acc-ta-wrap.has-find-hl > .wbo-acc-textarea {
+    position: relative;
+    z-index: 1;
+    background: transparent !important;
+}
+
+.wbo-acc-hl-mark {
+    background: rgba(245, 158, 11, 0.28);
+    color: transparent;
+    border-radius: 3px;
+    box-shadow: 0 0 0 1px rgba(217, 119, 6, 0.45);
+}
+
+.wbo-acc-hl-mark.is-current {
+    background: rgba(245, 158, 11, 0.5);
+    box-shadow: 0 0 0 1.5px #d97706;
+}
+
+.wbo-acc-find-count {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    white-space: nowrap;
+}
+
+.wbo-acc-textarea {
+    min-height: 150px;
+    resize: vertical;
+    line-height: 1.5;
+    font-size: 12.5px;
+    transition: none;
+}
+
+.wbo-acc-textarea.is-mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace !important;
+    font-size: 12px;
+}
+
+.wbo-ee-textarea.wbo-acc-textarea.is-tall,
+.wbo-acc-textarea.is-tall {
+    min-height: clamp(380px, 58dvh, 560px) !important;
+}
+
+.wbo-acc-meta-details {
+    border: 1px solid var(--wbo-border);
+    border-radius: 8px;
+    background: var(--wbo-surface);
+}
+
+.wbo-acc-meta-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+    padding: 7px 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+}
+
+.wbo-acc-meta-title {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.wbo-acc-meta-brief {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: right;
+    font-size: 11px;
+    font-weight: 400;
+    color: var(--wbo-fg-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wbo-acc-meta-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--wbo-border);
+}
+
+.wbo-acc-stats {
+    font-size: 11.5px;
+    color: var(--wbo-fg-muted);
+    white-space: nowrap;
+}
+
+.wbo-acc-editor-footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.wbo-acc-editor-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.wbo-acc-more-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 8px;
+    border: 1px dashed var(--wbo-border-strong);
+    background: var(--wbo-surface);
+    font-size: 12px;
+}
+
+.wbo-acc-more-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+/* Container Queries (`@container plugin-win`) so desktop narrowed/resized windows adapt cleanly */
+@container plugin-win (max-width: 600px) {
+    .wbo-modal-header {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 12px;
+        gap: 8px;
+    }
+    .wbo-modal-header-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+    }
+    .wbo-modal-title {
+        order: unset;
+        margin-right: 0;
+    }
+    .wbo-modal-header-actions {
+        order: unset;
+    }
+    .wbo-mgr-header-tools {
+        order: unset;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-header-tools > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-mgr-groupbar,
+    .wbo-mgr-listbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-mgr-group-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-group-actions > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-mgr-search-row {
+        flex: 0 0 auto;
+        width: 100%;
+    }
+    .wbo-search-wrap {
+        flex: 1 1 auto;
+        max-width: none;
+    }
+    .wbo-book-actions .wbo-book-delete-btn {
+        display: none !important;
+    }
+    .wbo-mgr-drag-hint {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .wbo-book-preview {
+        margin: 0 4px 6px 8px;
+        padding: 8px 8px 10px 10px;
+    }
+    .wbo-book-preview .wbo-preview-head-actions > :not(.wbo-acc-sort-control) {
+        display: none !important;
+    }
+    .wbo-acc-editor-slot {
+        padding: 8px;
+    }
+    .wbo-acc-editor-toolbar,
+    .wbo-acc-content-tools {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-acc-toolbar-right,
+    .wbo-acc-content-btns {
+        gap: 4px;
+    }
+    .wbo-acc-mini-btn,
+    .wbo-acc-tool-btn {
+        min-width: 0 !important;
+        padding: 0 6px !important;
+    }
+    .wbo-preset-group {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+    .wbo-preset-label {
+        padding-top: 0;
+    }
+    .wbo-preset-chips-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .wbo-scope-grid,
+    .wbo-diff-grid,
+    .wbo-prop-grid {
+        grid-template-columns: 1fr;
+    }
+    .wbo-cov-table-head {
+        display: none;
+    }
+    .wbo-cov-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+        padding: 8px 10px;
+    }
+    .wbo-cov-subject,
+    .wbo-cov-targets {
+        padding: 0;
+        border-right: none;
+    }
+    .wbo-batch-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-batch-bar > .wbo-spacer {
+        display: none;
+    }
+    .wbo-batch-bar-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-batch-bar-actions > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-ai-footer:not(.wbo-ai-footer-single) {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left {
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left:has(> [hidden]:only-child) {
+        display: none;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        max-height: 30px !important;
+        padding: 0 10px !important;
+        font-size: 12px !important;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right {
+        display: flex;
+        flex: 1 1 0;
+        width: auto;
+        min-width: 0;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right:has(> .wbo-btn:nth-child(2)) {
+        flex: 2 1 0;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right > .wbo-btn {
+        flex: 1 1 0;
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        max-height: 30px !important;
+    }
+    .wbo-ai-footer:not(.wbo-ai-footer-single) .wbo-ai-footer-right,
+    .wbo-modal-footer.wbo-footer-pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        width: 100%;
+    }
+    .wbo-modal-footer.wbo-footer-pair > .wbo-spacer {
+        display: none !important;
+    }
+    .wbo-ai-footer:not(.wbo-ai-footer-single) .wbo-ai-footer-right > .wbo-btn,
+    .wbo-modal-footer.wbo-footer-pair > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-setting-inline-row > .wbo-select,
+    .wbo-setting-inline-row > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        flex: 1 1 100%;
+    }
+    .wbo-acc-editor-grid,
+    .wbo-acc-editor-grid-3,
+    .wbo-ee-row-2col,
+    .wbo-ee-row-3col {
+        grid-template-columns: 1fr;
+    }
+}
+
+@container plugin-win (max-width: 440px) {
+    .wbo-gm-help {
+        display: none;
+    }
+    .wbo-mgr-header-tools {
+        gap: 5px;
+    }
+    .wbo-mgr-header-tools > .wbo-tool-btn {
+        padding: 0 6px !important;
+        gap: 4px !important;
+        font-size: 12px !important;
+    }
+    .wbo-mgr-subbar {
+        padding: 7px 10px;
+        gap: 6px;
+    }
+    .wbo-groups-list.wbo-mgr-list {
+        padding: 8px 10px 12px;
+    }
+    .wbo-group-header {
+        top: -8px;
+        padding: 6px 8px;
+    }
+    .wbo-group-actions .wbo-icon-btn {
+        width: 26px !important;
+        height: 26px !important;
+    }
+    .wbo-acc-toolbar {
+        gap: 6px;
+    }
+    .wbo-acc-toolbar-actions > button {
+        padding: 0 10px !important;
+        font-size: 12px !important;
+    }
+    .wbo-clue-subrow {
+        padding-left: 0;
+    }
+}
+
+@container plugin-win (max-width: 310px) {
+    .wbo-acc-find-row {
+        flex-wrap: wrap;
+    }
+    .wbo-acc-find-input {
+        flex: 1 1 100%;
+    }
+    .wbo-acc-find-nav {
+        margin-left: auto;
+    }
+}
+
+@container plugin-win (max-width: 330px) {
+    .wbo-mgr-header-tools {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 4px;
+    }
+    .wbo-mgr-header-tools > .wbo-tool-btn {
+        padding: 0 4px !important;
+        gap: 4px !important;
+        font-size: 11.5px !important;
+    }
+    .wbo-acc-toolbar {
+        flex-wrap: wrap;
+    }
+    .wbo-acc-search-wrap,
+    .wbo-acc-toolbar-actions {
+        flex: 1 1 100%;
+    }
+    .wbo-acc-toolbar-actions > button {
+        flex: 1;
+    }
+}
+
+@media (pointer: coarse) {
+    .wbo-mgr-drag-hint {
+        display: none;
+    }
+}

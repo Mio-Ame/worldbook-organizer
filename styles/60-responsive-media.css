@@ -1,0 +1,776 @@
+
+@media (max-width: 680px) {
+    .wbo-modal-overlay:not(.wbo-floating-overlay) {
+        align-items: stretch;
+        justify-content: stretch;
+        padding: 0;
+        pointer-events: auto;
+    }
+    .wbo-modal-overlay.wbo-floating-overlay {
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        pointer-events: none;
+        background: transparent !important;
+    }
+    .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-modal.is-resized) {
+        padding: 8px;
+    }
+    .wbo-modal-overlay.wbo-floating-overlay:has(> .wbo-manager-modal.is-resized) {
+        padding:
+            max(8px, var(--tt-inset-top, env(safe-area-inset-top, 0px)))
+            max(8px, var(--tt-inset-right, env(safe-area-inset-right, 0px)))
+            max(8px, var(--tt-inset-bottom, env(safe-area-inset-bottom, 0px)))
+            max(8px, var(--tt-inset-left, env(safe-area-inset-left, 0px)));
+    }
+    .wbo-modal:not(.wbo-mp-popover):not(.wbo-vis-popover):not(.wbo-prompt-modal):not(.is-resized),
+    .wbo-modal.is-pinned-layout:not(.is-resized),
+    .wbo-modal.is-wide:not(.is-resized),
+    .wbo-modal.wbo-manager-modal:not(.is-resized) {
+        width: 100%;
+        max-width: 100%;
+        height: 100svh;
+        height: 100dvh;
+        min-height: 100%;
+        max-height: 100dvh;
+        left: 0 !important;
+        top: 0 !important;
+        border-radius: 0;
+        border: none;
+        box-shadow: none;
+        transform: none !important;
+        padding-top: var(--tt-inset-top, env(safe-area-inset-top, 0px));
+        padding-bottom: var(--tt-inset-bottom, env(safe-area-inset-bottom, 0px));
+        padding-left: var(--tt-inset-left, env(safe-area-inset-left, 0px));
+        padding-right: var(--tt-inset-right, env(safe-area-inset-right, 0px));
+    }
+    .wbo-modal.is-resized {
+        min-width: min(310px, calc(100vw - 16px));
+        min-height: 250px;
+        max-width: 96vw;
+        max-height: 92dvh;
+        border-radius: 14px;
+        border: 1px solid var(--wbo-border-strong);
+        box-shadow: 0 16px 48px rgba(15, 23, 42, 0.28), 0 4px 14px rgba(15, 23, 42, 0.14);
+        padding: 0;
+    }
+    .wbo-modal.wbo-manager-modal.is-resized {
+        min-width: 0;
+        min-height: 0;
+        max-width: none;
+        max-height: none;
+    }
+    .wbo-modal-header {
+        flex-direction: column;
+        align-items: stretch;
+        padding: 8px 12px;
+        gap: 8px;
+    }
+    .wbo-modal-header-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+    }
+    .wbo-modal-title {
+        order: unset;
+        margin-right: 0;
+        font-size: 15px;
+    }
+    .wbo-modal-header-actions {
+        order: unset;
+    }
+    .wbo-modal-header .wbo-modal-close,
+    .wbo-modal-header .wbo-modal-minimize-btn,
+    .wbo-modal-header .wbo-modal-settings-btn,
+    .wbo-modal-header .wbo-modal-fullscreen-btn,
+    .wbo-modal-header .wbo-mgr-floating-tools-btn {
+        width: 30px !important;
+        height: 30px !important;
+        font-size: 14px !important;
+    }
+    .wbo-preset-group {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+    .wbo-preset-label {
+        padding-top: 0;
+    }
+    .wbo-preset-chips-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .wbo-mgr-header-tools {
+        order: unset;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-header-tools > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 32px !important;
+        min-height: 32px !important;
+        max-height: 32px !important;
+    }
+    .wbo-mgr-subbar {
+        gap: 8px;
+        padding: 8px 12px;
+    }
+    .wbo-mgr-groupbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-mgr-group-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-mgr-group-actions > .wbo-tool-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-mgr-listbar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-mgr-search-row {
+        flex: 0 0 auto;
+        width: 100%;
+    }
+    .wbo-mgr-list-tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 6px;
+    }
+    .wbo-mgr-list-tools > .wbo-tool-switch {
+        margin-right: auto !important;
+    }
+    .wbo-scope-grid,
+    .wbo-diff-grid {
+        grid-template-columns: 1fr;
+    }
+    .wbo-pills {
+        flex: 1 1 auto;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        padding-bottom: 2px;
+    }
+    .wbo-pills::-webkit-scrollbar {
+        display: none;
+    }
+    .wbo-pill {
+        flex: 0 0 auto;
+    }
+    .wbo-search-wrap {
+        flex: 0 0 auto;
+        width: 100%;
+        max-width: none;
+    }
+    .wbo-book-row {
+        flex-wrap: nowrap;
+        align-items: center;
+        gap: 6px;
+        padding: 7px 10px;
+    }
+    .wbo-book-main {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+    .wbo-book-actions {
+        width: auto;
+        flex-shrink: 0;
+        justify-content: flex-end;
+        padding-left: 0;
+        gap: 4px;
+    }
+    .wbo-book-actions .wbo-book-delete-btn {
+        display: none !important;
+    }
+    .wbo-mgr-drag-hint {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .wbo-book-preview {
+        margin: 0 4px 6px 8px;
+        padding: 8px 8px 10px 10px;
+    }
+    .wbo-book-preview .wbo-preview-head-actions > :not(.wbo-acc-sort-control) {
+        display: none !important;
+    }
+    .wbo-acc-editor-slot {
+        padding: 8px;
+    }
+    .wbo-acc-editor-toolbar,
+    .wbo-acc-content-tools {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .wbo-acc-toolbar-right,
+    .wbo-acc-content-btns {
+        gap: 4px;
+    }
+    .wbo-acc-mini-btn,
+    .wbo-acc-tool-btn {
+        min-width: 0 !important;
+        padding: 0 6px !important;
+    }
+    .wbo-book-actions .wbo-global-pill {
+        height: 26px !important;
+        min-height: 26px !important;
+        max-height: 26px !important;
+        padding: 0 7px !important;
+        font-size: 11.5px !important;
+    }
+    .wbo-book-actions .wbo-icon-btn {
+        width: 28px !important;
+        height: 28px !important;
+    }
+    .wbo-prop-grid {
+        grid-template-columns: 1fr;
+    }
+    .wbo-cov-table-head {
+        display: none;
+    }
+    .wbo-cov-row {
+        grid-template-columns: 1fr;
+        gap: 6px;
+        padding: 8px 10px;
+    }
+    .wbo-cov-subject,
+    .wbo-cov-targets {
+        padding: 0;
+        border-right: none;
+    }
+    .wbo-icon-btn {
+        width: 30px !important;
+        height: 30px !important;
+    }
+    .wbo-pinned-tabs-bar {
+        padding: 8px 12px;
+    }
+    .wbo-tabs.wbo-pinned-tabs {
+        margin: 10px 12px 0;
+    }
+    .wbo-step-scroll {
+        padding: 10px 12px 12px;
+    }
+    .wbo-modal-footer.wbo-pinned-footer {
+        padding: 10px 12px 12px !important;
+    }
+    .wbo-ai-footer {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 8px;
+    }
+    .wbo-ai-footer-left {
+        display: flex;
+        flex-wrap: nowrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        width: 100%;
+        min-width: 0;
+    }
+    .wbo-ai-footer-left > .wbo-btn {
+        flex: 0 0 auto;
+        height: 28px !important;
+        min-height: 28px !important;
+        max-height: 28px !important;
+        padding: 0 10px !important;
+        font-size: 12px !important;
+    }
+    .wbo-ai-footer-left > .wbo-api-inline-info {
+        margin-left: auto;
+        min-width: 0;
+        justify-content: flex-end;
+        flex-wrap: nowrap;
+    }
+    .wbo-ai-footer-left > .wbo-api-inline-info > b {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        max-width: 128px;
+    }
+    .wbo-ai-footer-right {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        width: 100%;
+    }
+    .wbo-ai-footer-right > .wbo-btn {
+        min-width: 0 !important;
+        width: 100% !important;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single {
+        flex-direction: row;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left {
+        width: auto;
+        flex: 1 1 0;
+        min-width: 0;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left:has(> [hidden]:only-child) {
+        display: none;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-left > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        max-height: 30px !important;
+        padding: 0 10px !important;
+        font-size: 12px !important;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right {
+        display: flex;
+        flex: 1 1 0;
+        min-width: 0;
+        width: auto;
+        gap: 8px;
+        justify-content: flex-end;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right:has(> .wbo-btn:nth-child(2)) {
+        flex: 2 1 0;
+    }
+    .wbo-ai-footer.wbo-ai-footer-single .wbo-ai-footer-right > .wbo-btn {
+        flex: 1 1 0;
+        width: 100% !important;
+        min-width: 0 !important;
+        height: 30px !important;
+        min-height: 30px !important;
+        max-height: 30px !important;
+    }
+    .wbo-modal-footer.wbo-footer-pair {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+    }
+    .wbo-modal-footer.wbo-footer-pair > .wbo-btn {
+        min-width: 0 !important;
+        width: 100% !important;
+    }
+    .wbo-modal-footer:not(.wbo-ai-footer) {
+        display: flex;
+        flex-wrap: nowrap;
+        justify-content: stretch;
+        gap: 8px;
+    }
+    .wbo-modal-footer:not(.wbo-ai-footer) > .wbo-spacer {
+        display: none;
+    }
+    .wbo-modal-footer:not(.wbo-ai-footer):not(:has(> .wbo-subtle-tip)) > .wbo-btn {
+        flex: 1 1 0;
+        min-width: 0 !important;
+        width: 100% !important;
+    }
+    .wbo-modal-overlay.wbo-prompt-overlay {
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+    }
+    .wbo-prompt-modal {
+        width: min(360px, calc(100vw - 24px)) !important;
+        height: auto !important;
+        min-height: 0 !important;
+        max-height: calc(100dvh - 24px) !important;
+        border-radius: 14px !important;
+        border: 1px solid var(--wbo-border-strong) !important;
+        box-shadow: 0 16px 48px rgba(15, 23, 42, 0.28), 0 4px 14px rgba(15, 23, 42, 0.14) !important;
+        padding: 0 !important;
+    }
+    .wbo-pinned-top {
+        padding: 10px 12px 8px;
+    }
+    .wbo-es-results.wbo-es-results-pinned {
+        padding: 10px 12px;
+    }
+    .wbo-batch-bar {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 6px;
+        padding: 8px 12px;
+    }
+    .wbo-batch-bar > .wbo-spacer {
+        display: none;
+    }
+    .wbo-batch-bar-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+    }
+    .wbo-batch-bar-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+    }
+    .wbo-batch-bar-actions > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+    }
+    .wbo-prop-compact-line {
+        flex-wrap: wrap;
+        row-gap: 6px;
+    }
+    .wbo-prop-compact-text {
+        flex: 1 1 calc(100% - 30px);
+        min-width: 0;
+    }
+    .wbo-prop-group-select {
+        flex: 1 1 120px;
+        min-width: 0 !important;
+        max-width: none !important;
+        margin-left: 25px !important;
+    }
+    .wbo-preview-group-head {
+        flex-wrap: wrap;
+        gap: 6px 8px;
+    }
+    .wbo-preview-group-actions {
+        margin-left: auto;
+    }
+    .wbo-setting-inline-row > .wbo-select,
+    .wbo-setting-inline-row > .wbo-btn {
+        width: 100% !important;
+        min-width: 0 !important;
+        flex: 1 1 100%;
+    }
+    .wbo-mobile-editor-trigger {
+        min-width: 96px !important;
+    }
+    .wbo-ee-row-2col,
+    .wbo-ee-row-3col {
+        grid-template-columns: 1fr;
+    }
+    .wbo-eb-keys {
+        max-width: 180px;
+    }
+}
+
+@media (max-width: 680px), (pointer: coarse) {
+    .wbo-drag-handle,
+    .wbo-group-drag-handle {
+        display: inline-flex !important;
+        width: 28px;
+        height: 36px;
+        font-size: 14px;
+    }
+    .wbo-mgr-drag-hint {
+        display: none !important;
+    }
+}
+
+/* ==================== M3-R3 Performance Containment, Accordion Editor, Pinning, Group Picker & Container Queries ==================== */
+.wbo-groups-list,
+.wbo-acc-list {
+    contain: layout style;
+}
+
+.wbo-book-item:not(.is-preview-open),
+.wbo-acc-item:not(.is-expanded) {
+    contain: layout style;
+}
+
+.wbo-s2-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.wbo-s2-li-flex,
+.gr-option.wbo-has-pin {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 8px !important;
+}
+
+.wbo-s2-pin-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 25px !important;
+    height: 23px !important;
+    min-width: 25px !important;
+    padding: 0 !important;
+    margin: 0 0 0 auto !important;
+    border-radius: 5px !important;
+    border: 1px solid rgba(128, 128, 128, 0.22) !important;
+    background: rgba(128, 128, 128, 0.06) !important;
+    color: inherit !important;
+    opacity: 0.76 !important;
+    font-size: 13.5px !important;
+    line-height: 1 !important;
+    cursor: pointer !important;
+    flex-shrink: 0 !important;
+    box-shadow: none !important;
+    transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+.wbo-s2-pin-btn:hover {
+    opacity: 1 !important;
+    background: rgba(128, 128, 128, 0.18) !important;
+    border-color: rgba(128, 128, 128, 0.4) !important;
+}
+
+.wbo-s2-pin-btn.is-pinned {
+    opacity: 1 !important;
+    color: #d97706 !important;
+    background: rgba(217, 119, 6, 0.15) !important;
+    border-color: rgba(217, 119, 6, 0.42) !important;
+}
+
+.wbo-dd-pin-hidden,
+.gr-option.wbo-dd-pin-hidden,
+.gr-option.wbo-pop-search-hidden {
+    display: none !important;
+}
+
+[data-wbo-enhanced-style] .wbo-pop-filter-bar {
+    padding-inline: 8px;
+    border-color: rgba(120, 144, 156, 0.22);
+}
+
+[data-wbo-enhanced-style] .gr-options > .wbo-enhanced-sticky {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+}
+
+.gr-options > .wbo-enhanced-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 6;
+    background: inherit;
+    color: #2c3e50;
+}
+
+[data-wbo-enhanced-style] .wbo-enhanced-sticky > .gr-search-box {
+    position: static !important;
+    min-width: 0;
+    margin: 0;
+}
+
+[data-wbo-enhanced-style] .wbo-enhanced-sticky > .wbo-pop-filter-bar {
+    grid-column: 1 / -1;
+    margin: 0;
+}
+
+body.dark-mode .gr-options > .wbo-enhanced-sticky {
+    color: #f0eaf2;
+}
+
+.wbo-preset-group-hidden {
+    display: none !important;
+}
+
+:is([data-wbo-enhanced-style], .wbo-enhanced-sticky) .wbo-dd-pill {
+    border-radius: 6px !important;
+    background: rgba(120, 144, 156, 0.08) !important;
+    border-color: rgba(120, 144, 156, 0.24) !important;
+}
+
+:is([data-wbo-enhanced-style], .wbo-enhanced-sticky) .wbo-dd-pill.is-active {
+    color: #1565c0 !important;
+    background: #e3f2fd !important;
+    border-color: #90caf9 !important;
+}
+
+[data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
+    top: var(--wbo-enhanced-toolbar-height, 0px) !important;
+    margin: 3px 5px;
+    padding: 7px 8px;
+    border-radius: 6px;
+    background: #f3f6f8 !important;
+    color: #546e7a;
+    box-shadow: none;
+    letter-spacing: normal;
+    min-height: 44px;
+    font-weight: 750;
+    line-height: 1.4;
+    border-block-end: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+    border-inline-start: 3px solid currentColor;
+}
+
+.gr-option.wbo-enhanced-clear-option {
+    display: none !important;
+}
+
+.wbo-enhanced-picker-clear {
+    grid-column: 2;
+    grid-row: 1;
+    margin-inline-end: 8px;
+    padding: 2px 8px;
+    border: 1px solid color-mix(in srgb, currentColor 25%, transparent);
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+body.dark-mode :is([data-wbo-enhanced-style], .wbo-enhanced-sticky) .wbo-dd-pill.is-active {
+    color: #e1bee7 !important;
+    background: rgba(216, 168, 231, 0.18) !important;
+    border-color: rgba(216, 168, 231, 0.44) !important;
+}
+
+body.dark-mode [data-wbo-enhanced-style] .gr-group-label.wbo-dd-group-head {
+    background: #2a2a2d !important;
+    color: #cfd8dc;
+}
+
+/* The enhanced selector owns its colors unless its separate override is explicitly enabled. */
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    :is(.wbo-enhanced-sticky, .wbo-pop-filter-bar, .gr-group-label.wbo-dd-group-head) {
+    background: var(--wbo-script-bg) !important;
+    color: var(--wbo-script-fg) !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    .gr-group-label.wbo-dd-group-head {
+    color: var(--wbo-script-heading) !important;
+    font-size: max(15px, var(--wbo-script-heading-size, 12px)) !important;
+    text-transform: none;
+}
+
+[data-wbo-enhanced-style][data-wbo-enhanced-host-theme] .gr-group-label.wbo-dd-group-head {
+    font-size: 15px !important;
+}
+
+[data-wbo-enhanced-style] .wbo-dd-group-note {
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 1.4;
+}
+
+.wbo-global-search {
+    display: block;
+    box-sizing: border-box;
+    width: calc(100% - 16px);
+    margin: 8px;
+    min-height: 44px;
+    padding: 8px 10px;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    color: inherit;
+    background: inherit;
+    font: inherit;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-style]:not([data-wbo-enhanced-host-theme])
+    .wbo-dd-pill.is-active {
+    color: var(--wbo-script-active-fg) !important;
+    background: var(--wbo-script-active-bg) !important;
+    border-color: color-mix(in srgb, var(--wbo-script-active-fg) 35%, transparent) !important;
+}
+
+[data-wbo-enhanced-style] .gr-option.has-pin.wbo-has-pin {
+    padding-right: 8px !important;
+}
+
+[data-wbo-enhanced-style] .gr-option.wbo-has-pin > .gr-option-pin:not(.wbo-gr-pin-btn) {
+    position: static;
+    transform: none !important;
+    order: 1;
+    flex-shrink: 0;
+    margin-inline-start: auto;
+    min-width: 25px;
+    min-height: 23px;
+    justify-content: center;
+}
+
+[data-wbo-enhanced-style] .gr-option.has-pin.wbo-has-pin > .wbo-s2-right {
+    order: 2;
+    margin-inline-start: 0;
+}
+
+[data-wbo-enhanced-style] .wbo-gr-pin-btn {
+    position: static;
+    transform: none !important;
+}
+
+/* Optional host colors apply only to identified worldbook selectors. */
+:is(#gr-global-dropdown-container, .gr-container-enhanced, .gr-select2-display)[data-wbo-enhanced-host-theme] {
+    --wbo-enhanced-fg: var(--SmartThemeBodyColor, #dddddd);
+    --wbo-enhanced-bg: var(--SmartThemeBlurTintColor, #202328);
+    --wbo-enhanced-border: var(--SmartThemeBorderColor, #60656e);
+    --wbo-enhanced-base: #202328;
+    color: var(--wbo-enhanced-fg) !important;
+    background-color: var(--wbo-enhanced-base) !important;
+    background-image: linear-gradient(var(--wbo-enhanced-bg), var(--wbo-enhanced-bg)) !important;
+    border-color: var(--wbo-enhanced-border) !important;
+    box-shadow: 0 4px 12px -7px var(--SmartThemeShadowColor, #000000) !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced, .gr-select2-display)[data-wbo-enhanced-host-tone="light"] {
+    --wbo-enhanced-base: #fafafa;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-host-theme]
+    :is(.gr-options, .gr-options-container, .gr-search-box, .wbo-enhanced-sticky, .wbo-pop-filter-bar, .gr-group-label.wbo-dd-group-head) {
+    color: var(--wbo-enhanced-fg) !important;
+    background-color: var(--wbo-enhanced-base) !important;
+    background-image: linear-gradient(var(--wbo-enhanced-bg), var(--wbo-enhanced-bg)) !important;
+    border-color: var(--wbo-enhanced-border) !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-host-theme]
+    :is(.gr-option, input, .wbo-dd-pill, .gr-option-pin, .wbo-gr-pin-btn) {
+    color: var(--wbo-enhanced-fg) !important;
+    border-color: var(--wbo-enhanced-border) !important;
+    background: transparent !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-host-theme]
+    :is(.gr-option:hover, .gr-option.selected, .wbo-dd-pill.is-active) {
+    color: var(--wbo-enhanced-fg) !important;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor, currentColor) 18%, transparent) !important;
+}
+
+:is(#gr-global-dropdown-container, .gr-container-enhanced)[data-wbo-enhanced-host-theme] .gr-theme-toggle {
+    display: none !important;
+}
+
+.wbo-gr-world-title {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* Original row text is kept in the DOM (host search reads textContent) but never shown. */
+.wbo-orig-text {
+    display: none !important;
+}
+
+/* 角色名 + 原名 放在同一行，只有窄屏（手机）才允许折行 */
+.wbo-gr-world-title > small {
+    display: inline;
+    margin-inline-start: 6px;
+    font-size: 0.78em;
+    opacity: 0.72;
+    white-space: nowrap;
+}
+
+@media (max-width: 680px) {
+    .wbo-gr-world-title > small {
+        display: block;
+        margin-inline-start: 0;
+        white-space: normal;
+    }
+}
