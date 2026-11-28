@@ -1,8 +1,17 @@
-### 原生「移动 / 复制」失败的防御性修复（2026-11-28 · dev v2.35.110）
-- 用户转述他人反馈：原生世界书条目的「移动」「复制」用不了。维护者本人在 Edge 与 iOS TauriTavern 都无法复现。
-- 静态排查找到一条**真实可能**：本插件为了隐藏某些书（角色书默认不显示、去重行等）会把 `<option>` 从 `#world_info` / `#world_editor_select` 里 detach 并存进 `_globalDetachedMap` / `_editorDetachedMap`。而原生「移动 / 复制」的**目标世界书列表正是从这些 select 读取**，被隐藏的书就不在候选里，操作会“点了没反应”。
-- 修复（`src/native-filter.js`）：新增导出 `restoreAllDetachedOptions()`，在用户按下 `#world_popup_entries_list`（原生条目列表）内任意控件时**先**把所有 detached option 放回原位（capture 阶段，早于宿主自己的处理器），并 `pushDiagTrace("native-entry:options-restored")`；下一次同步会重新按规则隐藏，不影响插件视图。
-- 说明：这是**低成本、可自证**的防御性修复——只在原生条目区点击时触发，不改变插件面板行为；若那台机器上仍未恢复，说明另有原因（见 NEXT 里的其他假设：其它脚本冲突 / 版本过旧 / 书名特殊字符）。
+### 老版本用户的原生「移动 / 复制」失效：判定与免打扰修复（2026-11-28 · v2.35.112）
+- 背景：反馈者仍在用**旧 main（≈v2.35.16 及更早）**，且不希望被要求做诊断。
+- 代码核对（`git show 0893235:src/native-filter.js`）：老版本同样使用 `_globalDetachedMap` / `_editorDetachedMap` **把 `<option>` 从 select 里摘掉**来隐藏世界书；而酒馆原生「移动 / 复制」的目标书列表正是从这些 select 读取。**被隐藏的书不在列表里 → 目标选不到 → 按钮“点了没反应”**。这与反馈一致，且与用户机器无关，只与“隐藏了多少书”有关。
+- 修复（`src/native-filter.js`，v2.35.110 起，本版加强）：
+  - `restoreAllDetachedOptions()` 把隐藏的 option 全部放回；
+  - 触发时机从“点条目列表”扩展为：**原生条目面板（`#world_popup`）一打开**就恢复（`MutationObserver` 监听其 style/class），以及面板内任意 `pointerdown` 再兜一次；
+  - 恢复后下一次同步会按规则重新隐藏，插件视图不受影响；trace 记 `native-entry:options-restored@popup-open|pointerdown`。
+- 给运营/反馈者的口径（无需打扰用户）：**升级插件即可**，不需要跑诊断；临时规避办法是把「显示角色书」打开，被隐藏的书重新出现在候选里，移动/复制即可用。
+- 验证：单测 247/247。
+
+### 关键事件不再被 trace 环形缓冲挤掉（2026-11-28 · v2.35.111）
+- 用户提问：让反馈者“先点复制/移动，再打开插件面板导出诊断”，还能不能记录到？
+- 结论：能，trace 常驻内存、插件随页面加载就开始记录；但原来 `trace` 只保留最近 24 条，用户中间多点几次就可能把 `native-entry:options-restored` 挤掉。
+- 修复（`src/native-filter.js`）：新增 `_diag.highlights`（最多 12 条，单独环形），凡 `native-entry:` / `drawer:` / `ball:` / `enh-sync:` 前缀的面包屑**同步写入**该列表，永不被普通 trace 挤出；详细 JSON 增加 `highlights` 字段。
 - 验证：单测 247/247。
 
 ### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
