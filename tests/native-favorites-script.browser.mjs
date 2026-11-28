@@ -20,7 +20,7 @@ const bookRow = `${root} .gr-option:has([data-pin-world="测试书乙"])`;
 const scriptPin = `${bookRow} .gr-option-pin`;
 const pause = (ms) => new Promise((done) => setTimeout(done, ms));
 
-async function withScript(viewport, run) {
+async function withScript(viewport, run, extras = {}) {
     const server = createMockStServer();
     const baseUrl = await server.start();
     let cdp;
@@ -34,6 +34,7 @@ async function withScript(viewport, run) {
                 groups: [{ id: 'test-a', name: '测试分组甲' }, { id: 'test-b', name: '测试分组乙' }],
                 assignments: { '测试书甲': 'test-a', '测试书乙': 'test-b' },
             },
+            ...extras,
         }) });
         await cdp.evalFn((key, code) => {
             // Preserve the native wrapper that enables the reference script's own pin.
@@ -68,6 +69,12 @@ async function activate(cdp, selector, viewport, move = 0) {
     await cdp.evalFn((sel) => {
         const el = document.querySelector(sel);
         if (!el) throw new Error(`Missing action target: ${sel}`);
+        const pills = el.closest('.wbo-dd-pill-scroll');
+        if (pills) {
+            const r = el.getBoundingClientRect(), h = pills.getBoundingClientRect();
+            if (r.right > h.right) pills.scrollLeft += r.right - h.right + 4;
+            else if (r.left < h.left) pills.scrollLeft += r.left - h.left - 4;
+        }
         const host = el.closest('.gr-options');
         const r = el.getBoundingClientRect();
         const h = host.getBoundingClientRect();
@@ -113,6 +120,103 @@ async function state(cdp) {
 }
 
 for (const viewport of [VIEWPORTS.mobile, VIEWPORTS.desktop]) {
+    test(`${viewport.name}: script search requires explicit focus and keeps keyboard navigation`, async () => {
+        await withScript(viewport, async (cdp) => {
+            assert.equal(await cdp.evalFn(() => document.activeElement?.matches('input,textarea')), false);
+            const search = `${root} .gr-search-input`;
+            await cdp.clickSelector(search);
+            assert.equal(await cdp.evalFn(() => document.activeElement?.matches('#gr-global-dropdown-container .gr-search-input')), true);
+            await cdp.evalFn(() => {
+                const search = document.querySelector('#gr-global-dropdown-container .gr-search-input');
+                search.blur();
+                const before = document.createElement('button');
+                before.id = 'before-script-search'; before.textContent = 'Search next';
+                search.before(before); before.focus();
+            });
+            await cdp.pressKey('Tab', 'Tab', 9);
+            assert.equal(await cdp.evalFn(() => document.activeElement?.matches('#gr-global-dropdown-container .gr-search-input')), true,
+                'Tab must enter search without requiring a pointer');
+            await cdp.screenshot(`pin-favorite-headings-${viewport.name}`);
+        }, { worldbooks: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`测试书${i}`, { entries: {} }])) });
+    });
+
+    test(`${viewport.name}: regression all retains favorites and the current pill after favorite and host rebuild`, async () => {
+        await withScript(viewport, async (cdp) => {
+            await activate(cdp, `${root} [data-wbo-pill="__all__"]`, viewport);
+            await activate(cdp, favorite, viewport);
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-dd-pill.is-active')?.dataset.wboPill), '__all__');
+            const visibleFavorite = () => cdp.evalFn(() => {
+                const section = document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__pinned__"]');
+                return Boolean(section?.getBoundingClientRect().height && section.querySelector('[data-pin-world="测试书乙"]')?.getBoundingClientRect().height);
+            });
+            assert.equal(await visibleFavorite(), true, 'All must show the favorite instead of hiding its only home');
+            await cdp.screenshot(`pin-favorite-all-${viewport.name}`);
+            await activate(cdp, `${root} [data-wbo-pill="test-b"]`, viewport);
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container [data-pin-world="测试书乙"]')?.getBoundingClientRect().height > 0), true,
+                'moving favorites back to their group must clear stale hidden flags');
+            await activate(cdp, `${root} [data-wbo-pill="__all__"]`, viewport);
+            await activate(cdp, `${scriptPin} svg`, viewport);
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .gr-option-pin.pinned'));
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-dd-pill.is-active')?.dataset.wboPill), '__all__');
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container [data-pin-world="测试书乙"]').closest('.gr-option').parentElement.classList.contains('gr-options-container')), true,
+                'host pin wins over favorite placement');
+            await activate(cdp, `${root} [data-wbo-pill="__pinned__"]`, viewport);
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container [data-pin-world="测试书乙"]').getBoundingClientRect().height > 0), true);
+            await activate(cdp, `${root} [data-wbo-pill="__all__"]`, viewport);
+            await cdp.clickSelector('#host-outside-blank');
+            await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container'));
+            await cdp.clickSelector('#WI-SP-button .drawer-icon');
+            if (viewport.mobile) {
+                const point = await cdp.evalFn(() => {
+                    const r = document.querySelector('#WIMultiSelector .gr-select2-display').getBoundingClientRect();
+                    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+                });
+                // Continue the same touch gesture path used by the favorite and pin actions.
+                // Switching to mouse here falls into the script's synthetic-mouse suppression.
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+                await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+            } else await cdp.clickSelector('#WIMultiSelector .gr-select2-display');
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container[data-wbo-popover-ready="1"] .wbo-dd-pill.is-active'));
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-dd-pill.is-active')?.dataset.wboPill), '__all__');
+        });
+    });
+
+    test(`${viewport.name}: regression mounted host pin survives replacement without row flags and unpins cleanly`, async () => {
+        await withScript(viewport, async (cdp) => {
+            await activate(cdp, `${root} [data-wbo-pill="__all__"]`, viewport);
+            await activate(cdp, `${root} .gr-option:has([data-pin-world="测试书甲"]) .gr-option-pin svg`, viewport);
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .gr-option-pin.pinned'));
+            await cdp.evalFn(() => {
+                const pop = document.querySelector('#gr-global-dropdown-container');
+                const old = pop.querySelector('[data-pin-world="测试书甲"]').closest('.gr-option');
+                window.__wboOldPinnedRow = old;
+                const row = document.createElement('div');
+                row.className = 'gr-option has-pin';
+                row.dataset.value = old.dataset.value;
+                row.textContent = '测试书甲';
+                row.insertAdjacentHTML('beforeend', '<span class="gr-option-pin"></span>');
+                old.replaceWith(row);
+            });
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container [data-pin-world="测试书甲"]'));
+            assert.equal(await cdp.evalFn(() => {
+                const row = document.querySelector('#gr-global-dropdown-container [data-pin-world="测试书甲"]').closest('.gr-option');
+                return row !== window.__wboOldPinnedRow && row.parentElement.classList.contains('gr-options-container');
+            }), true, 'storage identity must survive a fresh row with no pin class or WBO dataset');
+            await cdp.evalFn((key) => {
+                const data = JSON.parse(localStorage.getItem(key));
+                data.pinned.world_info = [];
+                localStorage.setItem(key, JSON.stringify(data));
+                const pop = document.querySelector('#gr-global-dropdown-container');
+                const row = pop.querySelector('[data-pin-world="测试书甲"]').closest('.gr-option');
+                const fresh = document.createElement('div');
+                fresh.className = 'gr-option'; fresh.dataset.value = row.dataset.value; fresh.textContent = '测试书甲';
+                row.replaceWith(fresh);
+            }, storageKey);
+            await waitForCondition(cdp, () => document.querySelector('#gr-global-dropdown-container .wbo-pop-section[data-wbo-dd-group="__globals__"] [data-pin-world="测试书甲"]'));
+            assert.equal(await cdp.evalFn(() => document.querySelector('#gr-global-dropdown-container .wbo-dd-pill.is-active')?.dataset.wboPill), '__all__');
+        });
+    });
+
     test(`${viewport.name}: real script favorite creates its filter without enabling a global book or pinning it`, async (t) => {
         await withScript(viewport, async (cdp) => {
             await activate(cdp, favorite, viewport);
@@ -129,7 +233,7 @@ for (const viewport of [VIEWPORTS.mobile, VIEWPORTS.desktop]) {
             });
             await activate(cdp, `${root} [data-wbo-pill="__pinned__"]`, viewport);
             assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-gr-pin-btn')]
-                .filter((el) => el.getBoundingClientRect().height > 0).map((el) => el.dataset.pinWorld)), ['测试书乙']);
+                .filter((el) => el.getBoundingClientRect().height > 0).map((el) => el.dataset.pinWorld)), ['测试书甲', '测试书乙']);
             await activate(cdp, favorite, viewport);
             assert.deepEqual((await state(cdp)).favorites, [], 'second tap must cancel only once');
             assert.deepEqual((await state(cdp)).globals, ['测试书甲']);
@@ -168,7 +272,7 @@ for (const viewport of [VIEWPORTS.mobile, VIEWPORTS.desktop]) {
             assert.match((await state(cdp)).favoritePill, /已收藏.*1/);
             await activate(cdp, `${root} [data-wbo-pill="__pinned__"]`, viewport);
             assert.deepEqual(await cdp.evalFn(() => [...document.querySelectorAll('#gr-global-dropdown-container .wbo-gr-pin-btn')]
-                .filter((el) => el.getBoundingClientRect().height > 0).map((el) => el.dataset.pinWorld)), ['测试书乙'],
+                .filter((el) => el.getBoundingClientRect().height > 0).map((el) => el.dataset.pinWorld)), ['测试书乙', '测试书甲'],
             'a script-pinned book must still appear in our favorites filter');
             await activate(cdp, `${scriptPin} svg`, viewport);
             await waitForCondition(cdp, () => !document.querySelector('#gr-global-dropdown-container .gr-option-pin.pinned'));

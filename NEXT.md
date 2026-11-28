@@ -1,9 +1,135 @@
-### main 发布（2026-11-28 · v2.35.96）
-- 由 dev 合并（v2.35.95）而来，仅做发布态调整：
-  - `DEV_QUICK_DIAG_BALL = false`：诊断悬浮球**不在 main 渲染**（dev 仍为 true，便于随时导出诊断）。
-  - 版本号统一到 2.35.96（`manifest.json` / `index.js` STYLE_ASSET_VERSION / `PLUGIN_VERSION`）。
-- 内容与 dev 一致：美化脚本浮层搜索自绘面板、两个下拉的「已开启的全局世界书」置顶块、当前角色书置顶、已收藏可关全局并带内联说明、分组记忆、抽屉守卫、完整诊断（含快检/顺序指纹/几何与滚动/脚本与主题切换历史）。
-- 已知限制：搜索框只输入单个空格可能留少量空行（宿主过滤所致，不修）；U7（组合页默认进「已收藏」）未做。
+### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
+- 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
+- `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。
+- 两种美化下拉统一优先级：脚本置顶裸行 > 已挂载全局区域 > 未挂载收藏块 > 原分组。收藏与脚本置顶互不写对方状态；同步回填也不能收回裸行。没有全局块时同样保持裸行。
+- 数量规则：普通下拉 1–2 本挂载全局书裸显示、3 本起全局分组；全局下拉任何数量都进入全局分组。在全部、收藏、独立分组中均保留，折叠当前分组不隐藏全局区域。脚本置顶仍在全局区域上方。
+- 收藏集合、挂载集合、脚本置顶集合均参与重渲染判定；「全部」显示收藏块，隐藏角色收藏给数量提示。单分组路径不再跳过首次收藏更新。点收藏/置顶不主动换 pill，胶囊记忆只保存最终选择。
+- 用户后补授权：仅在「分开显示」中将全局搜索独立到下拉输入框，原挂载区 inline input 只读且不抢焦点，❌取消挂载后不唤起输入状态；切回模式/卸载会恢复属性。脚本下拉阻止自动聚焦，指针、触摸和 Tab 仍可明确进入搜索。
+- 样式：美化下拉分组标题至少 15px、加粗、44px 高度与侧边线；说明文字保持次要层级，继承宿主颜色。
+- 诊断：`enh-pin:rows/new/bare/store`、`enh-pin:misplaced=0`、`enh-pin:above=N,bare=N`、`enh-favorites:block/visible/visibleRows/collapsed`、`global-search:*`；global/editor 同步后均采阶段快照。键盘日志只记导航键或 `text`，不记录输入字符；折叠行按祖先统计。
+- 独立只读审查确认当前分组修复无新增阻断；另外发现既有搜索面板键盘组合输入缺口及监听清理问题，进入后续独立审计，不混入本轮提交。真实 ST、Tauri/iOS 输入法尚未验收，自动化不代表 driver-accepted。完整测试证据见本条末尾补录与 `本轮材料/本轮修复/`。
+
+- 提交前验证：node --test tests/*.test.mjs 247/247；formal-isolated-suite 下 native-picker-window 44、真实美化脚本 12、editor-titles 12、global-drawer 8，共 76/76 通过。日志 release-unit.log / release-browser.log；此前失败日志保留，最新全量通过。
+
+### 置顶标记落到行上、__all__ 永远合法（2026-11-28 · v2.35.107，待验证）
+- 用户报告（v2.35.106）：置顶书仍在全局分组下；点置顶跳到「★已收藏」。
+- 诊断证据：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:script-pinned-bare=3`（裸行移动**执行过**），但紧接着 `enh-globals:block=1,count=1,role=global,pinnedMounted=1` —— 说明**重渲染**又把它收进了全局块；`enh-pill:open=__pinned__,hasMemory=1,remembered=__all__` 说明保存的 `__all__` 被判为非法，回落到已收藏。
+- 修复（`src/native-filter.js`）：
+  - 置顶状态**写到行元素上** `data-wbo-script-pinned="1"`，并在收集与回填两处都以该属性为准；重渲染不会再把它当普通挂载行拖回全局块。`pinProbe` 追加 `dataset` 形态。
+  - `validGroupIds` 永远包含 `__all__`：此前某次渲染没有显式分组时会丢弃它，导致“记住全部却开在已收藏”。
+- **未验证**：仅通过单测 245/245 与 `native-picker-window` 36/36；真机行为待确认。
+
+### 置顶在全局下拉也生效、点置顶不再跳收藏、↻ 改为从 GitHub 更新插件（2026-11-28 · v2.35.106，待验证）
+- 用户澄清三点：① ↻ 要做的是**从 GitHub 更新插件**（不是页面刷新）；② 「全部 → 关闭 → 重开仍是全部」是他想要的行为，不要再改；③ 置顶书仍在全局分组里，且点置顶会跳到「★已收藏」。
+- 诊断证据（v2.35.105 报告）：`pinProbe: cls:pinned ×6`（探测正常）、`enh-globals:block=1,count=3,pinnedMounted=3`（3 本置顶书全在全局块里）。
+- 修复（`src/native-filter.js`）：
+  - 置顶收集条件去掉 `!isGlobalPopover`：**全局下拉同样走裸行分支**；并在全局块插入后立刻把 `barePinnedOptions` 移到块**上方**（此前那段只有编辑器下拉才执行）。
+  - `_wboOnPinChanged` 不再调用 `syncPopoverPinnedPill()`：点置顶不再切到「★已收藏」，只 `delete wboPopoverReady/wboPinSig` + 就地重建。
+  - ↻ 按钮改语义：调用 SillyTavern 的 `POST /api/extensions/update`（`extensionName` 从自身 script 路径推导，形如 `third-party/worldbook-organizer`）；已是最新提示「已是最新版本」，否则提示「更新已下载，正在重载…」并 1.2s 后 `location.reload()`；失败提示截断的错误。
+  - 新增 `showInlineHint()`：右下角的短提示条（2.4s 自动消失），不用 alert/modal。
+- 另修（审查 agent 指出）：探测排除插件自己的星标（`.wbo-gr-pin-btn` / `[data-wbo-gr-pin]`），此前我们自己的 `is-pinned`/`aria-pressed` 会污染判定；`syncSpecialSections()` 回填时跳过 `barePinnedOptions`，避免置顶行被拖回全局块；收藏集合纳入渲染指纹 `pinSig`，收藏后浮层才会重建出「已收藏」块。
+- **未验证**：以上均通过单测与既有浏览器用例，但真机行为需用户确认；不再默认“已修好”。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 置顶优先于已全局、刷新按钮补动作（2026-11-28 · v2.35.105，**未验证**）
+- 用户指出：置顶与「已全局」同时成立时，置顶书仍被放进全局块。**这是优先级写反了**：原逻辑先判断 `isMounted`，置顶分支只在 `else if` 里。
+- 修复（`src/native-filter.js`）：脚本置顶**优先**——`if (scriptPinned && !isGlobalPopover) barePinnedOptions.push(...)` 放在最前，其次才是 mounted。因此置顶书一律裸行显示在全局块上方。
+- 刷新按钮：原来只重跑 `startNativeObservers()` + 对已打开浮层重跑增强；浮层关闭时等于什么都没发生。现在额外清除 `data-wbo-popover-ready` 标记，使下次打开时强制重新装饰，并记 `ball:rescan-done`。
+- **未完成/未验证**：按用户要求不再默认“已修好”。本轮改动只做了代码与单测，需真机验证置顶位置与刷新效果。
+- 已按 AGENT.md 派只读审查 agent 复核「置顶 vs 全局」优先级、已收藏块缺失、刷新无效三处（结论回来后并入）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 置顶探测、已收藏块保底、隐藏收藏提示（2026-11-28 · v2.35.104）
+- 用户反馈：① 脚本置顶的世界书依旧出现在「已开启的全局世界书」里；② 「全部」里没有「已收藏」分组，收藏一本角色书后它从原分组消失又没有收藏块，看起来像丢了；③ 建议收藏后给一个短暂提示再消失。
+- 修复（`src/native-filter.js`）：
+  - **置顶探测**：脚本的置顶标记在不同版本里不一致，改为多形态探测（`.gr-option-pin`/`.wbo-gr-pin-btn` 上的 `pinned`/`is-pinned`/`is-active`、`aria-pressed=true`、行上的 `is-pinned`、`data-pinned=1`），命中的形态记入 `_diag.pinProbe`（最多 6 条）并输出到详细 JSON —— 下次报告能直接看出该脚本用的是哪种标记。
+  - **已收藏块保底**：只要 `pinnedBooks` 非空就创建该块（即使当前没有任何可渲染的收藏行），不再出现「收藏了却看不到任何收藏块」。
+  - **隐藏收藏提示**：块内出现 `另有 N 本已收藏的书当前被隐藏（角色书显示已关闭或未在列表中）` 的说明行，解释“书去哪儿了”。
+- 未完成（下一轮）：收藏动作后的「已收藏，已归入收藏分组」短提示行（占位 1.6s 后消失）；需要先确认置顶/收藏按钮的点击路径再插入，避免又和宿主抢 DOM。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 采纳第二份诊断意见 + 悬浮球加「刷新」+ AGENT.md 补章（2026-11-28 · v2.35.103）
+- 依据：`文案编写/世界书分组/其他agent诊断功能意见.txt`（针对 v2.35.101 的 14 条盲区）。
+- 已采纳：
+  - 意见 1/7（consistency 与 dom 在关闭后全 0、无法解释）：`diagConsistencyCheck()` 增加 `sampledFrom: live|stage:<名>`，关闭态自动回落到最后一份打开态快照，并输出 `mismatchDetail`（含期望与实际）。
+  - 意见 4/5（隐藏原因不明）：阶段快照新增 `hiddenBySearch / hiddenByPin / hiddenByDupe / collapsedRows`，把 `hiddenRows` 按原因拆开；快照函数支持第三个参数 `reason`。
+  - 意见 10（错误捕获不全）：补 `unhandledrejection` 监听，记作 `promise: …`。
+  - 意见 2（阶段名不全）：现有 `editor-rendered` / `global-rendered` / `search`，并支持 `reason` 标注触发原因。
+- 用户新增需求：悬浮球内要有「点一下就刷新」的入口，免去进酒馆原生面板。
+  - 已实现：悬浮球下方新增 `↻` 小按钮（`#wbo-quick-refresh`），点击即 `startNativeObservers()` 重新挂载 + 对当前打开的浮层重跑增强，并记 `ball:rescan`；带一次旋转动画反馈。
+  - `AGENT.md`（外部通用 + 插件内）新增第 8 节「悬浮球必须带立即刷新」、第 9 节「阶段快照与隐藏原因必填」。
+- 未采纳（记录理由）：意见 3（性能/帧率采样）成本高非当前瓶颈；意见 6（布局探针语义）已通过字段名与 `stages` 对齐，暂不加边界矩形；意见 9（分级导出）当前 `traceTruncated` 已够；意见 12（抽屉顺序）已带 `@+时间`，需真机再验；意见 14（自动 diff）超出职责。
+- 修复过程中的插曲：一次 PowerShell 行内改写把 `snapshotDiagStage` 打坏（`Unexpected token`），已用脚本重写该函数并单测确认恢复。
+- 验证：单测 245/245。
+
+### 已收藏块可展开、计数取总数、全部全局时文案强调（2026-11-28 · v2.35.102）
+- 用户反馈：① 点「全部」里的「已收藏」标题会被强制跳到已收藏胶囊，无法就地展开/折叠；② 计数应写**收藏总数**（6），而不是只算非全局的（3）；③ 全部收藏都已全局时文案要强调“全部”。
+- 修复（`src/native-filter.js`）：
+  - 移除「点标题即切胶囊」的特例，恢复普通展开/折叠；并在「全部」视图下把收藏行放进该块（`favoritesBody`），因此展开就能看到书，不再空壳。单一分组胶囊下这些行回到各自分组。
+  - 标题计数改为 `favoriteOptions.length + mountedAndPinned.length`（=收藏总数，与胶囊一致）。
+  - 文案分两种：`其中 N 本已全局，显示在上方`；当 N 等于总数时改为 **`全部 N 本已全局，均已显示在上方`**。
+- 测试：单测断言从「已收藏块在全部里为空」更新为「列出该书 1 行」（契约变更）。
+- 已知未处理：全局下拉点「小人」后列表未即时刷新（v2.35.100 的 world_info 监听未覆盖这条路径，下轮单独处理）。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 诊断采纳外部审查意见（阶段快照 / 一致性校验 / trace 完整性）（2026-11-28 · v2.35.101）
+- 依据：`文案编写/世界书分组/其他agent没看到项目内容只看了两份检测日志给出的意见…txt`（只读两份日志做的外部审查，17 条）。
+- 已采纳并实现（`src/native-filter.js`）：
+  - **阶段快照**（意见 1/2/9）：新增 `snapshotDiagStage()`，在 `editor-rendered` / `global-rendered` / `search` 等阶段记录 `rows/visibleRows/hiddenRows/popoverH/listHostH/panelH/scrollTop/pageScroll/sections/drawerOpen`，保留最近 8 条并输出到详细 JSON 的 `stages`。关闭后再导出也能看到“打开时到底是什么样”。
+  - **一致性校验**（意见 6）：新增 `diagConsistencyCheck()`，对比 `pinned` vs `pinnedMounted`、`books` vs `rows`、`groups` vs `sections`、`collapsedMemory` vs 实际折叠数，并在 `mismatches` 里列出异常项。
+  - **trace 完整性**（意见 15）：新增 `traceTotal` 与 `traceTruncated`，可区分“没触发”和“被裁剪”。
+  - **运行状态**（意见 14）：新增 `runStats`（每类运行分别记 ok/skip/fail），与原有 `runs` 计数并存。
+  - （已在 v2.35.100 完成）意见 13 相关：抽屉开关带时间戳 `drawer:open@/closed@`，下拉类型写入 `env.renderPath: enhanced-script:global|editor`。
+- 未采纳（记录理由，避免以后重复讨论）：
+  - 意见 3（每本书标题来源明细）：会显著增大报告体积且含书名风险，改为保留 `enh-titles` 汇总；需要时再按需临时开。
+  - 意见 5（性能采样/帧率/内存）：成本高、噪声大，当前问题不是性能；如需再做独立开关。
+  - 意见 17（自动 diff 上一份日志）：需要持久化历史报告，超出插件职责，改由人读 `stages` 对比。
+- 验证：单测 245/245；`native-picker-window` 36/36（`coexist` 并发偶发超时，单独通过）、`native-editor-titles` 12/12。
+
+### 全局下拉实时同步角色书显隐、已收藏块彻底隔离、诊断补下拉类型（2026-11-28 · v2.35.100）
+- 用户反馈：① 全局下拉展开时点「小人」按钮切换角色书显隐，下拉里不同步，必须关掉重开；② 脚本全局下拉在「既收藏又属于某分组」的书上仍多出「已收藏」分组；③ 诊断想知道当前是全局下拉还是普通下拉。
+- 修复（`src/native-filter.js`）：
+  - 全局下拉绑定 `#world_info` 的 `change` + `MutationObserver(childList/selected)`：角色书显隐一变就重新 `enhanceCustomDropdownPopover(containerEl)`，trace 记 `enh-sync:world-info-changed`；观察器挂在 `containerEl._wboGlobalSyncObserver`。
+  - 全局下拉里 `__pinned__` 分区块只在「★已收藏」胶囊激活时显示（`hidePinnedInGlobal`），其余胶囊一律隐藏，收藏书回到它自己的分组。
+  - 诊断 `env.renderPath` 细化为 `enhanced-script:global` / `enhanced-script:editor`；`enh-pill:open` 增加 `sections=`、`pinned=`，一眼看出下拉类型与规模。
+- 已知未处理：点脚本「置顶」偶尔关闭抽屉（宿主行为，需真机证据）；「角色世界书为 1」按用户要求搁置。
+- 验证：单测 245/245；`native-picker-window` 36/36。
+
+### 已收藏不再多出一个分组、脚本置顶裸行、诊断弹窗文案与主次（2026-11-28 · v2.35.99）
+- 用户反馈：① 已收藏的书若属于「文风」分组，仍会多出一个「已收藏」分组——原生行为应是**在原分组内置顶**；② 脚本置顶但未全局的书跑进了「已开启的全局世界书」，应像当前角色书那样**裸行显示在全局块上方**；③ 诊断弹窗要写明「可在 Discord 帖子反馈或私聊 niviskitten」，并把**下载详细诊断**做成显眼的主按钮；④ 点脚本置顶会关抽屉、要再点一次才展开。
+- 修复（`src/native-filter.js` + `style.css` + `src/panel-settings.js`）：
+  - 「已收藏」块的可见性改为按**胶囊 id**判断：只有「全部」与「★已收藏」显示，任何单一分组胶囊下都不显示（此前用 `isIsolated` 判断会漏，导致每个分组都多出一个块）。
+  - 新增 `barePinnedOptions`：脚本置顶但**未全局**的行，插到「已开启的全局世界书」块**之前**裸行展示（与当前角色书同层），trace 记 `enh-globals:script-pinned-bare=N`。
+  - 诊断菜单：`下载详细诊断` 移到首位并加 `is-primary`（强调色描边+底色+加粗），备注改为「反馈请发到 Discord 帖子，或私聊 **niviskitten**；诊断不含任何书名 / 角色名」。
+- 已知未处理：点脚本置顶偶尔关闭抽屉（宿主行为，守卫只覆盖下拉打开阶段）；「角色世界书为 1」按用户要求搁置。
+- 验证：单测 245/245；`native-picker-window` 36/36（诊断用例改为断言 `dev` 在前、`is-primary` 与反馈文案）、`native-editor-titles` 12/12。
+
+### 面板被自家清理关掉、已收藏块串组、脚本置顶书被搬走（2026-11-28 · v2.35.98）
+- 用户反馈：① 点普通下拉，插件面板**秒关闭**（仅第一次）；② 「已收藏」分组在**所有**分组胶囊里都出现；③ 脚本自己置顶的书跑进了「已开启的全局世界书」分组；④ 全局下拉里角色世界书显示 1（已知，先不管）。
+- 诊断证据：`drawer:popover-orphan=1` —— v2.35.97 的孤儿清理在宿主触发点击的**瞬时抖动**里把刚打开的面板关了。
+- 修复（`src/native-filter.js`）：
+  - 抽屉 watcher 改为**只观测不动作**：延迟 250ms 复查仍关闭时只记 `drawer:popover-orphan=1`，不再调用 `closeAllOpenWorldDropdowns()`（面板秒关的元凶）。
+  - 「已收藏」块只在「全部」与其自身胶囊显示：非胶囊视图（`isIsolated`）下加 `wbo-dd-group-hidden`，不再在每个分组里出现空块。
+  - 脚本置顶的书不再被搬进全局块：行上带 `has-pin` 且含 `.gr-option-pin.pinned/.is-active` 时视为脚本置顶，跳过收集，保持在脚本给它的位置。
+- 关于「角色世界书为 1」：用户已定位为此前全局启用过角色书、之后又隐藏角色书显示导致，确认**先不处理**。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-global-drawer` 8/8。
+
+### 世界书抽屉全程监控 + 孤儿面板自动清理（2026-11-28 · v2.35.97）
+- 用户反馈（v2.35.93 报告）：点全局位置 → 抽屉被关，但插件下拉**残留**在那里；并问诊断有没有监控抽屉。答：之前只在「打开下拉时」临时装了守卫，**没有全程监控**。
+- 修复（`src/native-filter.js`）：
+  - 新增 `installDrawerWatcher()`，启动时对 `#WorldInfo` 的 class 做**整会话**观察：每次开/关都写 `drawer:open@+12.3s` / `drawer:closed@+45.6s`；
+  - 抽屉从「开」变「关」后延迟 80ms 复查（避开「点开→宿主关→立刻重开」的瞬时抖动），若仍关闭且存在 `.gr-container-enhanced.open` / `#gr-global-dropdown-container.open`，记 `drawer:popover-orphan=1` 并 `closeAllOpenWorldDropdowns()` 清掉残留面板；
+  - `startNativeObservers()` 启动时安装一次（幂等，`drawer._wboDrawerWatcher` 去重）。
+- 验证：单测 245/245；`native-global-drawer` 8/8、`native-picker-window` 36/36。
+
+### 已收藏视图的计数/内容/说明三处错位修正（2026-11-28 · v2.35.96）
+- 用户反馈（v2.35.95）：① 胶囊标 3 本、「已收藏」分组内却有 5 本；② 在「全部」里展开已收藏分组看不到任何书；③ 说明写「其中 2 本已全局，显示在上方」，但那 2 本实际仍显示在已收藏里。
+- 根因：上一版为了让「已收藏」里也能关闭全局书，把 `mountedAndPinned` 追加进了已收藏列表，同时把计数改成 `favoriteOptions + mountedAndPinned`，但胶囊计数仍取非全局收藏数（3）；且已收藏分组体只在「已收藏」胶囊激活时填充，所以在「全部」里展开是空的。
+- 修复（`src/native-filter.js`）：
+  - 已收藏分组标题计数恢复为 `favoriteOptions.length`（只算真正列在该分组里的书），与胶囊计数一致（3/3）。
+  - 「已收藏」胶囊激活时**不再**把已全局的收藏书塞进列表；那颗「已开启的全局世界书」块保持可见并留在上方，所以说明文字「显示在上方」成立，且仍可在上方关闭全局。
+  - 在「全部」视图点击「★ 已收藏」标题时，直接切换到「已收藏」胶囊（并展开），不再展开一个空的分组体；trace 记 `enh-favorites:head-enters-pill`。
+- 验证：单测 245/245；`native-picker-window` 36/36。
 
 ### 手机窄屏设置面板按钮溢出修复 + HANDOFF 收尾（2026-11-28 · v2.35.95）
 - 用户反馈：手机端设置面板变窄时「导出配置」「导入配置」文字溢出按钮；并要求 main 版删除诊断悬浮球。
