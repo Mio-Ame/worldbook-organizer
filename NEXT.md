@@ -1,19 +1,3 @@
-### 老版本用户的原生「移动 / 复制」失效：判定与免打扰修复（2026-11-28 · v2.35.112）
-- 背景：反馈者仍在用**旧 main（≈v2.35.16 及更早）**，且不希望被要求做诊断。
-- 代码核对（`git show 0893235:src/native-filter.js`）：老版本同样使用 `_globalDetachedMap` / `_editorDetachedMap` **把 `<option>` 从 select 里摘掉**来隐藏世界书；而酒馆原生「移动 / 复制」的目标书列表正是从这些 select 读取。**被隐藏的书不在列表里 → 目标选不到 → 按钮“点了没反应”**。这与反馈一致，且与用户机器无关，只与“隐藏了多少书”有关。
-- 修复（`src/native-filter.js`，v2.35.110 起，本版加强）：
-  - `restoreAllDetachedOptions()` 把隐藏的 option 全部放回；
-  - 触发时机从“点条目列表”扩展为：**原生条目面板（`#world_popup`）一打开**就恢复（`MutationObserver` 监听其 style/class），以及面板内任意 `pointerdown` 再兜一次；
-  - 恢复后下一次同步会按规则重新隐藏，插件视图不受影响；trace 记 `native-entry:options-restored@popup-open|pointerdown`。
-- 给运营/反馈者的口径（无需打扰用户）：**升级插件即可**，不需要跑诊断；临时规避办法是把「显示角色书」打开，被隐藏的书重新出现在候选里，移动/复制即可用。
-- 验证：单测 247/247。
-
-### 关键事件不再被 trace 环形缓冲挤掉（2026-11-28 · v2.35.111）
-- 用户提问：让反馈者“先点复制/移动，再打开插件面板导出诊断”，还能不能记录到？
-- 结论：能，trace 常驻内存、插件随页面加载就开始记录；但原来 `trace` 只保留最近 24 条，用户中间多点几次就可能把 `native-entry:options-restored` 挤掉。
-- 修复（`src/native-filter.js`）：新增 `_diag.highlights`（最多 12 条，单独环形），凡 `native-entry:` / `drawer:` / `ball:` / `enh-sync:` 前缀的面包屑**同步写入**该列表，永不被普通 trace 挤出；详细 JSON 增加 `highlights` 字段。
-- 验证：单测 247/247。
-
 ### 置顶身份脱离行 DOM、收藏分区统一、分开显示搜索独立（2026-11-28 · v2.35.108，待真机验收）
 - 根因证据：参考仓库美化脚本 `handlePin` 写入自己的 storage 后 `closeDropdown(); openDropdown(originalSelect)`，确实重建整批行；写在行上的标记无法跨代。最近三份诊断的 count 随置顶增加而递减，不能据单条 count 推断“又回填增加”，该旧推论在本轮更正。
 - `src/enhanced-script-pins.js` 只读脚本的确切 storage key，按原生 option 身份匹配文本、value+文本及旧键；空数组是取消置顶的权威状态，不回退到旧行标记。storage 不可用才读脚本控件。未采用“第一个标题前就是置顶”，因为宿主也会把普通选中项排前。

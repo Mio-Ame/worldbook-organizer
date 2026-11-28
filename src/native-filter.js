@@ -999,30 +999,6 @@ function escHtml(str) {
  * never loses track of hidden options if upstream modules aren't available).
  * @returns {string[]}
  */
-/**
- * Put every option we hid back into its <select>.
- * SillyTavern's native entry actions (移动 / 复制) build their target list from these selects, so a
- * detached book made those actions fail silently.
- */
-export function restoreAllDetachedOptions() {
-    let restored = false;
-    const putBack = (select, map) => {
-        if (!(select instanceof HTMLSelectElement)) return;
-        for (const [name, option] of [...map.entries()]) {
-            if (option instanceof HTMLOptionElement) select.appendChild(option);
-            map.delete(name);
-            restored = true;
-        }
-    };
-    putBack(document.getElementById('world_info'), _globalDetachedMap);
-    putBack(document.getElementById('world_editor_select'), _editorDetachedMap);
-    if (restored) {
-        _lastGlobalSignature = null;
-        _lastEditorSignature = null;
-    }
-    return restored;
-}
-
 export function getDetachedWorldNames() {
     return [...new Set([..._globalDetachedMap.keys(), ..._editorDetachedMap.keys()])];
 }
@@ -1163,7 +1139,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.113';
+export const PLUGIN_VERSION = '2.35.109';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1196,8 +1172,6 @@ const _diag = {
     ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
     /** Which pin marker the host script actually used (detection evidence, class names only). */
     pinProbe: [],
-    /** Key breadcrumbs kept outside the ring buffer (native entry actions, drawer, ball, sync). */
-    highlights: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1358,15 +1332,8 @@ function installDrawerOpenGuard() {
  * @param {string} label
  */
 function pushDiagTrace(label) {
-    const text = String(label).slice(0, 80);
-    _diag.trace.push(text);
+    _diag.trace.push(String(label).slice(0, 80));
     _diag.traceTotal += 1;
-    // Key events must survive the ring buffer: a user may click a native action first and only then
-    // open the panel to export, and ordinary breadcrumbs would have pushed it out.
-    if (/^(native-entry|drawer|ball|enh-sync):/.test(text)) {
-        _diag.highlights.push(text);
-        if (_diag.highlights.length > 12) _diag.highlights.shift();
-    }
     if (_diag.trace.length > 24) _diag.trace.shift();
 }
 
@@ -1657,7 +1624,6 @@ function buildDiagnosticReport(mode = 'short') {
             stages: _diag.stages,
             consistency: diagConsistencyCheck(cls, settings),
             pinProbe: _diag.pinProbe,
-            highlights: _diag.highlights,
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -8724,33 +8690,6 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
             pushDiagUi(`key:${navigation.includes(event.key) ? event.key : 'text'}`, event.target instanceof Element ? event.target : null);
         };
         document.addEventListener('pointerdown', logDown, true);
-        // Native entry actions (移动 / 复制) build their target list from the <select>s. Restore hidden
-        // options as soon as the native entry panel opens, and again right before any click inside it,
-        // so the target list is complete without the user doing anything special.
-        if (!globalThis.window.__wboNativeEntryRestoreBound) {
-            globalThis.window.__wboNativeEntryRestoreBound = true;
-            const restoreForNative = (stage) => {
-                try {
-                    if (restoreAllDetachedOptions()) pushDiagTrace('native-entry:options-restored@' + stage);
-                } catch { /* never block the native UI */ }
-            };
-            document.addEventListener('pointerdown', (event) => {
-                const target = event.target instanceof Element ? event.target : null;
-                if (!target?.closest('#world_popup, #world_popup_entries_list')) return;
-                restoreForNative('pointerdown');
-            }, true);
-            const popupWatcher = new MutationObserver(() => {
-                const popup = document.getElementById('world_popup');
-                if (!popup || popup.style.display === 'none') return;
-                restoreForNative('popup-open');
-            });
-            const attachPopupWatcher = () => {
-                const popup = document.getElementById('world_popup');
-                if (popup) popupWatcher.observe(popup, { attributes: true, attributeFilter: ['style', 'class'] });
-            };
-            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachPopupWatcher, { once: true });
-            else attachPopupWatcher();
-        }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
         // report can only be proven with composition + blur counters.
