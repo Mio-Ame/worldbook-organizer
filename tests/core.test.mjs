@@ -3215,7 +3215,9 @@ test('R6.2 grouped enhanceCustomDropdownPopover works for global (★ 已置顶 
         // a badge) instead of repeating a group header per original group.
         const editorPinnedSection = editorEnhanced.querySelector('.wbo-pop-section[data-wbo-dd-group="__pinned__"]');
         assert.ok(editorPinnedSection, 'editor popover renders one flat favorites section');
-        assert.equal(editorPinnedSection.querySelectorAll('.gr-option').length, 0, 'flat favorites fill only while its pill is active');
+        // v2.35.102: the favorites block is also the visible home in 全部, so expanding its head
+        // shows the pinned books instead of an empty body.
+        assert.equal(editorPinnedSection.querySelectorAll('.gr-option').length, 1, 'favorites block lists the pinned book in 全部');
         const editorSections = editorOptionsHost.querySelectorAll('.wbo-pop-section');
         assert.equal(editorSections.length, 3, 'editor popover should render favorites, g1 and ungrouped sections');
         assert.equal(editorSections[0].getAttribute('data-wbo-dd-group'), '__pinned__');

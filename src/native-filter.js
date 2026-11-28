@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.101';
+export const PLUGIN_VERSION = '2.35.102';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -7660,14 +7660,16 @@ function enhanceCustomDropdownPopover(containerEl) {
             const headEl = document.createElement('div');
             headEl.className = `${ENHANCED_POPOVER_SELECTORS.groupLabelClass} wbo-dd-group-head`;
             headEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
-            // Count must match what the section actually lists (mounted favorites live above).
-            headEl.textContent = `★ 已收藏 (${favoriteOptions.length})`;
+            // Count is the TOTAL favourites; the note explains how many live in the globals block.
+            const totalPinned = favoriteOptions.length + mountedAndPinned.length;
+            headEl.textContent = `★ 已收藏 (${totalPinned})`;
             headEl.title = '点击展开或折叠该分组';
-            // The note native ST shows, inline with the head on wide screens.
             if (mountedAndPinned.length > 0) {
                 const noteEl = document.createElement('span');
                 noteEl.className = 'wbo-dd-group-note';
-                noteEl.textContent = `其中 ${mountedAndPinned.length} 本已全局，显示在上方`;
+                noteEl.textContent = mountedAndPinned.length >= totalPinned
+                    ? `全部 ${totalPinned} 本已全局，均已显示在上方`
+                    : `其中 ${mountedAndPinned.length} 本已全局，显示在上方`;
                 headEl.append(noteEl);
             }
             const bodyEl = document.createElement('div');
@@ -7834,7 +7836,16 @@ function enhanceCustomDropdownPopover(containerEl) {
                 favoritesSectionEl.classList.remove('wbo-dd-group-hidden');
             }
         } else if (favoritesSectionEl) {
+            const showFavoritesBlock = activePillGroupId === SPECIAL_GROUPS.ALL
+                || activePillGroupId === SPECIAL_GROUPS.PINNED;
+            const favoritesBody = favoritesSectionEl.querySelector('.wbo-pop-group-body');
             for (const optEl of favoriteOptions) {
+                if (showFavoritesBlock) {
+                    // In 全部 the block is the visible home of the favourites, so expanding it shows
+                    // the books instead of an empty body.
+                    if (favoritesBody && optEl.parentElement !== favoritesBody) favoritesBody.appendChild(optEl);
+                    continue;
+                }
                 // Home by group id: a captured node reference could point at the flat host list,
                 // which left the 已收藏 section empty after expanding it.
                 const gid = _latestClassification?.byName?.get(getOptionText(optEl))?.groupId;
@@ -7849,8 +7860,6 @@ function enhanceCustomDropdownPopover(containerEl) {
             // The 已收藏 block belongs to 「全部」 and its own pill only. Deriving this from the pill id
             // (not from `isIsolated`) keeps it out of every group view, which is what native does:
             // a favourited book stays pinned inside its own group instead of creating a block.
-            const showFavoritesBlock = activePillGroupId === SPECIAL_GROUPS.ALL
-                || activePillGroupId === SPECIAL_GROUPS.PINNED;
             favoritesSectionEl.classList.toggle('wbo-dd-group-hidden', !showFavoritesBlock);
         }
         // The origin badge only belongs to the flat favorites list.
@@ -8371,17 +8380,6 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (!st || !gid || head.classList.contains('is-isolated')) return;
             st.cancelRestore();
             const activePill = st.getActivePillId();
-            // The 已收藏 block is a flat mirror that only exists inside its own pill: clicking its
-            // head from 全部 switches to that pill instead of expanding an empty body.
-            if (gid === SPECIAL_GROUPS.PINNED && activePill !== SPECIAL_GROUPS.PINNED) {
-                activePillGroupId = SPECIAL_GROUPS.PINNED;
-                rememberPill(activePillGroupId);
-                _latestSettings.dropdownCollapsed[gid] = false;
-                syncPillButtons();
-                st.syncSections();
-                pushDiagTrace('enh-favorites:head-enters-pill');
-                return;
-            }
             const entered = !st.isSearching() && activePill === gid && gid !== SPECIAL_GROUPS.ALL;
             // Inside another group's pill the globals block is folded by default but stays
             // openable, so that click keeps its own override instead of the saved state.
