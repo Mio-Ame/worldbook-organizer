@@ -1,3 +1,19 @@
+### 修复：iOS/TauriTavern 上「点不开」编辑世界书触发按钮（2026-11-28 · v2.35.126）
+- 真机日志（TauriTavern 2.4.0 / iOS / 440×860 / `renderPath=mobile-picker`）里，连续 8 次点击 `#wbo-mobile-editor-trigger`，**只有 1 次产生了 `click`**，其余都是 `down>up` + `NO-CLICK`；而且凡是 `restores=1`（这次按压里把 82 个隐藏 `<option>` 塞回下拉框）的那几次，点击全部消失：
+  - 命中 `global 127`（还藏着 82 本）的那次 → 无 click；
+  - 命中 `global 209`（已经放回去了）的那次 → `upToClick=17ms`，click 正常。
+- 用户侧 A/B 也一致：**开启/关闭下拉美化脚本**会改变现象，打开「角色世界书分组显示」（不再隐藏 82 本）时稳定可用——三种配置的差别就是“两个 `<select>` 会不会在一次点击里被反复塞入/抽走 82 个选项”。
+- 根因：`pointerdown` 里那段“把隐藏选项放回去，好让原生 移动/复制 弹窗有完整目标列表”的恢复逻辑，对**每一次**世界书区域按压都生效。一次插入 82 个 `<option>` 会让面板当场重排（全局列表 127⇄209 可见闪动），iOS/Tauri 在布局位移超过阈值时会**取消这次点击**，于是按钮“点不开”、插件面板“点好几次才开”。
+- 修复：
+  1. 恢复动作从 `pointerdown`（每次按压）移到**点击原生动作按钮时的捕获阶段**（`restoreForNative('action-click')`），宿主在同一个 click 的处理器里建弹窗，仍能拿到完整列表；其余按压（触发器、滚动、展开、输入）一律不再动这两个 `<select>`，闪动与点击丢失随之消失。
+  2. 动作按钮之外不再有任何恢复：`native-entry:options-restored@action-click` / `@popup-open` 是报告里仅有的两条可能的恢复来源。
+- 诊断补强：
+  - 手势新增 `down.rect` / `up.rect` 与 `movedPx`（按下→抬起目标位移像素）；`movedPx` 大且没有 click = 被布局位移吃掉的点击，这是定案字段。
+  - 手势新增 `selectsMoved`：两个 `<select>` 的选项数是否在这一次手势内变过（闪动的量化指标）。
+  - 看门狗计时器改成**每条手势各自一个**：以前共用计时器被下一次按压清掉，连续快速点击时 `miss` 永远为空，看不到 `NO-CLICK`。
+- 另外两点已记录未改动：`enhancedScript.active=true`（`styleMarker`/`runtimeDom` 命中）但 `compatDropdownScript=false`，两条检测口径不一致；iOS 上条目列表 `pager.pageSize=5`，报告现在会写 `页N/每页5`。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44。
+
 ### 诊断收尾：分页认知、弹窗归属、按的是 Move 还是 Copy（2026-11-28 · v2.35.125）
 - 真机日志（v2.35.124，`移动/复制` 已修好：目标书 6→8 条、`lastPickerWrite.applied=ok`）暴露了三处读不懂：
   1. **25 条的书点「重复」看起来没反应**——其实是宿主**分页 25 条/页**，第 26 条落在第 2 页。`rowSetChanged=true`（uid 集合 `0e625b→d39ff9`）已经能证明集合变了，但报告没写“这是第几页/每页几条”，仍会误导。
