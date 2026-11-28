@@ -1,3 +1,12 @@
+### 空格搜索不再留白 + 搜索/显隐/像素检测（2026-11-28 · v2.35.93）
+- 用户补充：是**输入空格时**就出现几行空白（不是删掉空格后）；报告里只有 `key:Backspac`，说明空格那一下没有任何 trace，属于盲区。
+- 修复（`src/native-filter.js`）：
+  - `syncEnhancedSearchBlock()` 现在**无条件**记录输入状态：`enh-search:raw=<长度>,tokens=<n>,ws=<0|1>,role=…`；纯空白时追加 `enh-search:whitespace-restore`。
+  - 纯空白输入时，除了撤面板，还在 `requestAnimationFrame` 与 120ms 后各做一次行级清理（宿主自己的过滤在我们之后执行，只在同步阶段清理会被它覆盖），确保不残留空白行。
+  - 新增几何/显隐快照 trace：`enh-metrics:rows=,visible=,hostH=,panelH=,pageScroll=`。
+  - `diagDomSnapshot()` 增加像素与滚动字段：`pageScrollTop`、`bodyScrollTop`、`popoverH`、`listHostH`、`searchPanelH`、`hiddenRowsInline`、`sectionHidden`——「页面被滚动」「列表被压成 0 高」「行被内联隐藏」这三类问题可直接读出。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 空白搜索词不再留下空行（2026-11-28 · v2.35.92）
 - 用户验证（v2.35.91）：`enh-globals:char-book-pinned=1`、`enh-order:ph>charBook>globals>pinned>row>row>group>group` —— 当前角色书置顶与排列顺序均已正确；剩下「在搜索框敲一个空格 → 出现几行空白，删掉空格即恢复」。
 - 原因：纯空白词被拆成 0 个 token，我们直接走「清空搜索」分支，但**宿主自己**已按空格过滤并隐藏了若干行，而我们的清理只撤掉面板，没有回收行级隐藏。

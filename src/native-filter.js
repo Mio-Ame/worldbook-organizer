@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.92';
+export const PLUGIN_VERSION = '2.35.93';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1453,6 +1453,16 @@ function diagDomSnapshot() {
         collapsedGroups: count('.wbo-dd-collapsed'),
         dupHiddenRows: count('li.wbo-dd-dupe-hidden'),
         filterBars: count('.wbo-dd-filter-bar'),
+        // Geometry / scroll: the class of bug where the page itself got scrolled, or a list is
+        // present but collapsed to zero height.
+        pageScrollTop: Math.round(document.scrollingElement?.scrollTop || 0),
+        bodyScrollTop: Math.round(document.body?.scrollTop || 0),
+        popoverH: Math.round(document.querySelector('[data-wbo-popover-role]')?.getBoundingClientRect?.().height || 0),
+        listHostH: Math.round(document.querySelector('.gr-options, .gr-options-container')?.getBoundingClientRect?.().height || 0),
+        searchPanelH: Math.round(document.querySelector('.wbo-enhanced-search-panel')?.getBoundingClientRect?.().height || 0),
+        hiddenRowsInline: [...document.querySelectorAll('.gr-option')]
+            .filter((el) => el instanceof HTMLElement && el.style.display === 'none').length,
+        sectionHidden: count('.wbo-enhanced-section-hidden'),
     };
 }
 
@@ -8066,14 +8076,47 @@ function enhanceCustomDropdownPopover(containerEl) {
         panel.scrollTop = keepScroll;
         positionEnhancedSearchPanel();
         pushDiagTrace('enh-panel:matches=' + matches.length + ',shown=' + shown.length);
+        // Geometry/visibility snapshot: catches "rows exist but are 0px / clipped" regressions.
+        try {
+            const host = findScrollableListEl(optionsHost, containerEl);
+            const rows = [...optionsHost.querySelectorAll('.gr-option')];
+            const visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
+            pushDiagTrace('enh-metrics:rows=' + rows.length
+                + ',visible=' + visibleRows
+                + ',hostH=' + Math.round(host?.getBoundingClientRect?.().height || 0)
+                + ',panelH=' + Math.round(panel.getBoundingClientRect().height)
+                + ',pageScroll=' + Math.round(globalThis.document?.scrollingElement?.scrollTop || 0));
+        } catch { /* metrics must never break the render */ }
     };
     let _lastEnhancedSearchTerm = '';
     const syncEnhancedSearchBlock = (searching) => {
-        const term = searchInput instanceof HTMLInputElement ? searchInput.value.trim() : '';
+        const raw = searchInput instanceof HTMLInputElement ? searchInput.value : '';
+        const term = raw.trim();
         const tokens = term.toLowerCase().split(/\s+/).filter(Boolean);
+        const whitespaceOnly = !term && raw.length > 0;
+        // Always record the input state: an accidental space used to be invisible in the report.
+        pushDiagTrace(`enh-search:raw=${raw.length},tokens=${tokens.length},ws=${whitespaceOnly ? 1 : 0}`
+            + `,role=${isGlobalPopover ? 'global' : 'editor'}`);
         if (!searching || tokens.length === 0) {
             removeEnhancedSearchPanel();
             _lastEnhancedSearchTerm = '';
+            if (whitespaceOnly) {
+                // The host filters on its own input handler, which runs after ours: clean up once the
+                // frame settles so a lone space cannot leave blank rows behind.
+                const restore = () => {
+                    optionsHost.querySelectorAll('.wbo-enhanced-search-hidden, .wbo-pop-search-hidden, .gr-option-hidden')
+                        .forEach((el) => {
+                            el.classList.remove('wbo-enhanced-search-hidden', 'wbo-pop-search-hidden', 'gr-option-hidden');
+                            if (el instanceof HTMLElement && el.style.display === 'none') el.style.removeProperty('display');
+                            if (el instanceof HTMLElement && el.hidden) el.hidden = false;
+                        });
+                    optionsHost.querySelectorAll('.wbo-enhanced-section-hidden')
+                        .forEach((el) => el.classList.remove('wbo-enhanced-section-hidden'));
+                };
+                requestAnimationFrame(restore);
+                setTimeout(restore, 120);
+                pushDiagTrace('enh-search:whitespace-restore');
+            }
             return;
         }
         if (term === _lastEnhancedSearchTerm && getSearchPanel()) {
