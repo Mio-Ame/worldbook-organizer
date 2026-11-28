@@ -3,3 +3,4 @@ Thumbs.db
 node_modules/
 *.log
 /本轮材料/
+.tmp-split/
