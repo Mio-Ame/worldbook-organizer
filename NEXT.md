@@ -1,3 +1,25 @@
+### 事件序列取证：按下→抬起→点击三段是否齐全（2026-11-28 · v2.35.122）
+- 要回答的问题变成反过来的：“点了没反应”到底是**浏览器没派发点击**，还是**派发了但打在别的东西上**，还是**宿主收到了却不做事**。前两版只记录了“点击之后发生了什么”，缺的就是这一段。
+- 新增（全部只读：不 `preventDefault`、不 `stopPropagation`、不移动节点）：
+  - `nativeGestures[]`（保留最近 6 次）+ `nativeGestureSeq`：每次在世界书区域按下鼠标都留一条记录，字段是 `sequence`（`down>up>click` / `down>up>NO-CLICK` / `down>up>retargeted>NO-CLICK` / `down>NO-UP`）、`down`、`up`、`click`、`miss`。
+  - 每段都带时间戳、`trusted`（是否真实用户操作）、`composedPath` 长度、目标描述（`tag.class` 最多 3 层祖先）。`click.bubble` 表示点击是否冒泡到 document 底部（`0` = 被 `stopPropagation` 截断），`click.prevented` 在**冒泡阶段**读，才是宿主 `preventDefault` 之后的真值；`pointerdown` / `pointerup` 也各补一条冒泡阶段的 `preventedAfter`。
+  - `up.downConn`：按下时那个节点在抬起时是否仍在文档里（`0` = 宿主中途重渲染把它换掉了，这类点击永远不会触发）。
+  - `up.listSame` / `click.listSame`：`#world_popup_entries_list` 是否还是同一个节点（`other` = 列表被替换，点击落在旧树上）。
+  - **覆盖层判定**：按下的点若命中的不是世界书节点（例如浮层压在按钮上），记录仍然会生成——`down.area=by-point`、`down.beneath=被盖住的真实按钮`、`down.covers=1`、`down.hit=…:foreign`。旧逻辑只看事件 target，这种情况下整次点击会**完全不留痕**。
+  - 动作结果补 1s 结算窗 `settled`：`listMutations / rowsAdded / rowsRemoved / listReplaced / toast / select2 / detached / ctxWorlds / errorsGained`，另加 500ms 时的 `globalOptionsBefore→After`、`detachedBefore→After`、`ctxWorldsBefore→After`、`errorsGained`（非 0 = 宿主处理器跑了但抛错）、`gestureSeq`。
+  - `collectNativeEntryDiagnostics()` 改为**分段采集**：时间、分组、弹窗、渲染路径、列表、select、上下文、动作、手势各段独立 try/catch，失败写进快照的 `errors[]` 并置 `partial:true`，不再整段丢失；渲染段新增 `renderPath`、`compatDropdownScript`、`surfaces{bothSelects,popupAndWorldInfo,…}`；列表段新增 `actionButtons{total,visible,hidden,classes}`（只统计复制/转移/删除），探针改为**优先挑动作按钮**（`probeKind=action`），并新增 `probeStyleChain`（按钮到列表 4 层的 `pointer-events/visibility/opacity/z-index/position/overflow` + `inert`/`aria-hidden`）、`probeHitPoints`（中心/左上+8/右下−8 三点命中）、`probeObscured`、`probeInert`、`detachedGlobal`/`detachedEditor`。
+- 惰性创建：`pointerup` / `pointercancel` / `click` / 冒泡阶段监听器都**只在第一次在世界书区域按下时**注册（启动阶段一个都不建），观察器只在真正的动作点击里建、1s 后断开。所以宿主 observer 顺序与 `wiDrawerObserver` 契约不受影响。
+- 判读方法（一条一条对号）：
+  - `sequence=down>up>NO-CLICK` + `down.preventedAfter=1` → 有代码在 `pointerdown` 上 `preventDefault`（宿主或别的插件），点击根本没派发。
+  - `sequence=down>up>NO-CLICK` + `up.downConn=0` → 按下后节点被重渲染换掉（可能是我们恢复隐藏选项触发的重绘），点击自然消失。
+  - `sequence=down>up>click` + `click.bubble=0` → 点击派发了，但被中途 `stopPropagation` 吃掉了。
+  - `down.covers=1`（`beneath=…`）→ 有浮层压在按钮上，点的是浮层，不是按钮。
+  - `probeObscured=1` 或 `probeStyleChain` 里出现 `pe=none` / `vis=hidden` / `op=0` / `inert` → 静态不可点（遮挡或不可交互）。
+  - `sequence` 三段齐全 + `changed=false` + `listMutations=0` + `toast=0` + `errorsGained=0` → 事件与命中都正常，宿主自己的处理器没做事（问题不在插件侧，或在目标书候选上：看 `detachedBefore→After` 与 `globalOptionsBefore→After` 是否变化）。
+  - `errorsGained>0` → 宿主处理器抛错，错误正文在报告 `errors` 里。
+  - 短报告“原生条目”行新增 `动作钮可见/总数`、`遮挡0/1`、`事件down>up>click`、`覆盖1`；`错误` 行新增 `采集缺段N`。行数仍是 14 行。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44；另用临时探针在真机 mock 宿主里跑了四种情形（真实点击 / 抬起前节点被移除 / 浮层覆盖 / 宿主取消 pointerdown），字段与判定一致。
+
 ### 诊断再扩大：点击后 DOM 变化、提示条、select2、展开态（2026-11-28 · v2.35.121）
 - 新增（只记录，不改行为）：
   - **点击后 600ms 的 DOM 变化**：`domAdded` / `domRemoved`（只记 `tag.class`，最多 4 条）。可区分“宿主弹了选择器又关掉”与“宿主毫无反应”。
