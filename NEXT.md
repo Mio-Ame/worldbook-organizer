@@ -1,3 +1,29 @@
+### 用真机日志补齐三处盲区：行身份、条目集合指纹、宿主弹窗（2026-11-28 · v2.35.123）
+- 触发原因：拿两份真机日志（ST 1.19.0）对照后发现三个问题**当时判不了**：
+  1. 只有“行数”，`rowsAdded=384 / rowsRemoved=1134` 而行数不变时，分不清“集合没变”和“换了一行”；
+  2. 分不清点的是哪一行（同一次测试里两次点击 y 差 51px，却无法证明是同一条目）；
+  3. 移动/复制真正落在宿主 `dialog.popup` 里，确认按钮的点击**完全没被采样**，“点了确定到底有没有生效”无从判断。
+- 新增字段（全部只读，不改行为）：
+  - **行身份**：手势与动作条目都带 `rowUid` / `rowIndex`（宿主 `uid` + 列表内序号，不含任何文字），`gestureSummary` 里有 `row=1@1`。
+  - **条目集合指纹**：`rowIds{count,firstUid,lastUid,hash}`（`hash` 是 uid 序列的短哈希）；动作条目补 `uidsBefore/uidsAfter/rowSetChanged`，1s 结算窗里也有；`rowSetChanged=0` 才能说“条目集合真的没变”。
+  - **宿主弹窗跟进采样**：点击 `dialog.popup` 内的按钮（确定/取消/自定义）后开 1.8s 结算窗，挂到对应动作条目的 `dialog` 上：`start / after600 / end / mutations / rowsChanged / rowSetChanged / errorsGained`，外加
+    - `dialogSelects[]`：弹窗里每个 `<select>` 的 `options / index / value(哈希) / text(哈希) / numeric / inRange`——**这是“复制到目标书却没有条目”的定案字段**：确认瞬间值为空或越界，宿主就会静默什么都不做；
+    - `currentBook`：当前编辑书的哈希；`enhancedTrigger`：该弹窗里有几个我们自己的选择器触发器（>0 表示弹窗里的下拉被插件接管）。
+  - **动作打开弹窗时的原始状态** `openDialog{cls,selects,enhancedTrigger,buttons}`（在动作点击后 500ms 采，即宿主刚建好弹窗、我们还没写入时的样子）。
+  - **选择器写回结果** `lastPickerWrite{applied:'ok'|'mismatch',target}`：我们的目标书选择器往宿主 `<select>` 写值后立刻回读；`mismatch` = 写没进去（宿主确认时读到空值 → 静默失败）。
+  - `restoreRuns` + 手势里的 `restores`：点击期间“隐藏选项被放回去”发生了几次（真机日志里是 0↔69 抖动）。
+  - 手势 `selects`: `editor 139→208/global 138→207/det 69→0` —— 宿主处理器读取两个 `<select>` 期间它们有没有被我们改动。
+  - `nativeUnresolved[]`：行内点到了控件但**识别不出来**的点击（宿主改版/换语言时会出现在这里，短报告 `错误` 行显示 `漏识别N`）。
+  - 遮挡来源区分：`probeObscuredBy: none|self|foreign`，命中点分 `:own/:self/:foreign`；**自家面板压在列表上不再算“遮挡”**。短报告写成 `遮挡自家` / `遮挡外部`。
+  - 真机日志里 `ctxWorlds=-1`（ST 1.19 的 ctx 里没有 `world_names`）→ 增加兜底来源并记录 `ctxWorldsSource`（`ctx.world_names` / `global.world_names` / `getWorldInfoNames`）。
+  - 宿主弹窗内的点击不再记成“覆盖”（`area=dialog`），避免误报。
+- 缓冲区：快照 4 → **8**（三次动作 × 2 张不再挤掉第一组）；`trace` 24 → 40、`highlights` 12 → 18（`native-gesture` 行很密）。
+- 判读：
+  - `dialog.start.dialogSelects[0].value === ''`（或 `inRange=false`）→ 宿主确认时没有有效目标书，**动作静默失败**，条目不会出现在任何书里；配合 `lastPickerWrite.applied=mismatch` 即坐实是选择器写回失败。
+  - `dialog.start.dialogSelects[0].value` 有值 + `lastPickerWrite=ok`，但目标书里没有条目 → 问题在宿主写入侧（或写入的书不是你以为的那本：看 `currentBook` 与目标值哈希）。
+  - 行级动作：`rowSetChanged=0` 且 `rows=25→25` 才是“真的没变”；若 `rowSetChanged=1` 而行数不变 → 换了一行，不是没反应。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 44/44；临时探针在 mock 宿主里覆盖了四类情形（普通动作、宿主弹窗确认、自家面板遮挡、无法识别的行内控件），字段值符合预期。
+
 ### 事件序列取证：按下→抬起→点击三段是否齐全（2026-11-28 · v2.35.122）
 - 要回答的问题变成反过来的：“点了没反应”到底是**浏览器没派发点击**，还是**派发了但打在别的东西上**，还是**宿主收到了却不做事**。前两版只记录了“点击之后发生了什么”，缺的就是这一段。
 - 新增（全部只读：不 `preventDefault`、不 `stopPropagation`、不移动节点）：
