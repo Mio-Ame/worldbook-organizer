@@ -1,3 +1,15 @@
+### 诊断再扩大：点击后 DOM 变化、提示条、select2、展开态（2026-11-28 · v2.35.121）
+- 新增（只记录，不改行为）：
+  - **点击后 600ms 的 DOM 变化**：`domAdded` / `domRemoved`（只记 `tag.class`，最多 4 条）。可区分“宿主弹了选择器又关掉”与“宿主毫无反应”。
+  - `toast`：点击后是否出现酒馆提示条（成功/失败反馈信号）。
+  - `select2Open`：点击后是否有 select2 下拉打开（判断目标书选择器是否走 select2）。
+  - 快照新增 `expandedRows`（当前几行处于展开态）与 `drawerOpen`。
+  - 行识别三路合并 + `rowDetection{withUid,worldEntry,directChildren,listChildTags}`，未知 ST 版本也能读懂。
+- 修正两处自身隐患：
+  - 计时器与观察器在页面销毁后可能抛错 → 500ms 回调加 `document` 存在性判断 + try/catch；
+  - 点击埋点此前对**所有**世界书区域点击生效，会连带我们自己的触发器一起建观察器（打乱了宿主 observer 顺序、破坏测试契约）。现在只在**看起来像条目动作**时启用：class 含 `copy|move|transfer|duplicate|trash|delete`，或文字/标题含 `复制|转移|删除|移动`。
+- 验证：单测 247/247；`native-editor-titles` 12/12、`native-picker-window` 36/36。
+
 ### 探针不再假设容器与操作顺序（2026-11-28 · v2.35.120）
 - 用户约束：无法保证反馈者的操作顺序（可能展开过条目、可能中途切别处），只保证“点了复制和转移，然后打开诊断”。
 - 修复（`src/native-filter.js`）：

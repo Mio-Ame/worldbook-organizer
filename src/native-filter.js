@@ -1176,7 +1176,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.120';
+export const PLUGIN_VERSION = '2.35.121';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -8908,6 +8908,11 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 const button = target.closest('button, .menu_button, [data-action], .fa-copy, .world_entry_action, i, [title]');
                 const label = (button?.textContent || button?.getAttribute?.('title') || '').trim().slice(0, 16);
                 const cls = String(button?.className || '').slice(0, 32);
+                // Only instrument clicks that look like entry actions (复制 / 转移 / 删除 / 移动). Anything
+                // else — including our own triggers — must not create observers or snapshots.
+                const looksLikeEntryAction = /(copy|move|transfer|duplicate|trash|delete)/i.test(cls)
+                    || /复制|转移|删除|移动/.test(`${label} ${button?.getAttribute?.('title') || ''}`);
+                if (!looksLikeEntryAction) return;
                 pushDiagTrace(`native-entry:click,cls=${cls},label=${label},host=${host.id || String(host.className || '').slice(0, 16)}`);
                 // Outcome: did the action actually change anything? 复制/转移 must change a row count.
                 const countRows = () => {
@@ -8922,6 +8927,25 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 // Snapshot the state BEFORE the host reacts, so a report shows what the click landed on
                 // regardless of what happens afterwards.
                 snapshotNativeEntryState('click-' + (label || 'unknown'));
+                // Watch what the host adds/removes in the next 500ms: a picker that appears and closes,
+                // or nothing at all, is the difference between "no handler" and "handler failed".
+                const delta = { added: [], removed: [] };
+                const deltaObserver = new MutationObserver((mutations) => {
+                    for (const mutation of mutations) {
+                        for (const node of mutation.addedNodes) {
+                            if (node instanceof Element && delta.added.length < 6) {
+                                delta.added.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 20)}`);
+                            }
+                        }
+                        for (const node of mutation.removedNodes) {
+                            if (node instanceof Element && delta.removed.length < 6) {
+                                delta.removed.push(`${node.tagName.toLowerCase()}.${String(node.className || '').slice(0, 20)}`);
+                            }
+                        }
+                    }
+                });
+                try { deltaObserver.observe(document.body, { childList: true, subtree: false }); } catch { /* ignore */ }
+                setTimeout(() => { try { deltaObserver.disconnect(); } catch { /* ignore */ } }, 600);
                 const probeHit = (() => {
                     try {
                         const rect = button?.getBoundingClientRect?.();
@@ -8931,6 +8955,9 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                     } catch { return 'none'; }
                 })();
                 setTimeout(() => {
+                    // A timer may outlive the document (tests, page unload): never let it throw.
+                    if (typeof document === 'undefined') return;
+                    try {
                     const after = { rows: countRows(), options: countOptions() };
                     const entry = {
                         label,
@@ -8941,11 +8968,17 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                         optionsBefore: before.options,
                         optionsAfter: after.options,
                         changed: before.rows !== after.rows || before.options !== after.options,
+                        domAdded: delta.added.slice(0, 4).join('|'),
+                        domRemoved: delta.removed.slice(0, 4).join('|'),
+                        toast: document.querySelectorAll('.toast, .toast-body, .toast-title').length,
+                        select2Open: document.querySelectorAll('.select2-container--open, .select2-dropdown').length,
                     };
                     _diag.nativeActions.push(entry);
                     if (_diag.nativeActions.length > 10) _diag.nativeActions.shift();
-                    pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`);
+                    pushDiagTrace(`native-entry:action,label=${label},rows=${entry.before}->${entry.after},changed=${entry.changed ? 1 : 0}`
+                        + `,added=${entry.domAdded ? 1 : 0},toast=${entry.toast},s2=${entry.select2Open}`);
                     snapshotNativeEntryState('after-' + (label || 'click'));
+                    } catch { /* never let a diagnostic timer throw */ }
                 }, 500);
             }, true);
             const popupWatcher = new MutationObserver(() => {
@@ -8973,15 +9006,19 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
                 if (!list || !list.getClientRects().length) return;
                 snapshotNativeEntryState('list-change');
             };
-            const listObserver = new MutationObserver(throttledSnapshot);
-            const attachListObserver = () => {
+            // Created lazily: registering a MutationObserver at boot shifted the host observer order
+            // and broke the listener-cleanup contract the tests (and upstream) rely on.
+            /** @type {MutationObserver | null} */
+            let listObserver = null;
+            const ensureListObserver = () => {
+                if (listObserver) return;
                 const list = document.getElementById('world_popup_entries_list');
                 if (!list) return;
+                listObserver = new MutationObserver(throttledSnapshot);
                 listObserver.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style'] });
                 throttledSnapshot();
             };
-            if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', attachListObserver, { once: true });
-            else attachListObserver();
+            globalThis.window.__wboEnsureListObserver = ensureListObserver;
         }
         document.addEventListener('keydown', logKey, true);
         // IME / search-box lifecycle: the "typing closes the search box but the keyboard stays"
