@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.103';
+export const PLUGIN_VERSION = '2.35.104';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1167,8 +1167,10 @@ const _diag = {
     },
     /** Last UI interactions, sanitized to tag/id/class/role plus a short hash. @type {string[]} */
     ui: [],
-    /** IME / soft-keyboard signals (the "search box closes while typing, keyboard stays" bug). */
+    /** Hold and focus signals. */
     ime: { compositionStart: 0, compositionEnd: 0, blur: 0, focus: 0, blurDuringComposition: 0, searchBoxLost: 0 },
+    /** Which pin marker the host script actually used (detection evidence, class names only). */
+    pinProbe: [],
     /** Enable/disable flips of the compatible dropdown script, as `+12.3s on|off`. */
     scriptFlips: [],
     /** Theme switches, as `+12.3s <hash>`. */
@@ -1714,6 +1716,7 @@ function buildDiagnosticReport(mode = 'short') {
             traceTruncated: _diag.traceTotal > _diag.trace.length,
             stages: _diag.stages,
             consistency: diagConsistencyCheck(cls, settings),
+            pinProbe: _diag.pinProbe,
             runStats: _diag.runStats,
             runs: { decorate: _diag.decorateRuns, searchLayout: _diag.searchLayoutRuns, foreignRowsUpgraded: _diag.foreignRowsUpgraded },
             enhancedScript: { active: enhancedActive, mode: settings.enhancedScriptMode || 'auto', ...enhancedSignals },
@@ -7675,8 +7678,19 @@ function enhanceCustomDropdownPopover(containerEl) {
         const meta = _latestClassification?.byName?.get(name);
         const realName = meta?.realName || name;
         // The compatible script has its own 「置顶」: those rows are NOT part of the mounted block.
-        const scriptPinned = Boolean(optEl.classList?.contains('has-pin')
-            && optEl.querySelector('.gr-option-pin.pinned, .gr-option-pin.is-active, .gr-option-pin.pin-active'));
+        // The marker differs between script builds, so probe several shapes and record which one hit
+        // (that trace is what makes the next fix deterministic).
+        const pinEl = optEl.querySelector('.gr-option-pin, .wbo-gr-pin-btn');
+        const pinState = [
+            pinEl?.classList.contains('pinned') ? 'cls:pinned' : '',
+            pinEl?.classList.contains('is-pinned') ? 'cls:is-pinned' : '',
+            pinEl?.classList.contains('is-active') ? 'cls:is-active' : '',
+            pinEl?.getAttribute('aria-pressed') === 'true' ? 'aria:true' : '',
+            optEl.classList?.contains('is-pinned') ? 'row:is-pinned' : '',
+            optEl.dataset?.pinned === '1' ? 'data:1' : '',
+        ].filter(Boolean);
+        const scriptPinned = pinState.length > 0;
+        if (scriptPinned && _diag.pinProbe.length < 6) _diag.pinProbe.push(pinState.join('+'));
         const isMounted = isActiveGlobalName(realName);
         if (isMounted) {
             mountedGlobalOptions.push(optEl);
@@ -7722,7 +7736,10 @@ function enhanceCustomDropdownPopover(containerEl) {
     } else {
         pushDiagTrace(`enh-globals:block=0,count=0,role=${isGlobalPopover ? 'global' : 'editor'}`);
     }
-    if (!isGlobalPopover && (favoriteOptions.length > 0 || mountedAndPinned.length > 0)) {
+    // The block must exist whenever anything is pinned, even if no row is currently rendered (a
+    // pinned character book can be filtered out of its group) — otherwise it looks like it vanished.
+    const pinnedNamesFromSettings = new Set(_latestSettings?.pinnedBooks || []);
+    if (!isGlobalPopover && (favoriteOptions.length > 0 || mountedAndPinned.length > 0 || pinnedNamesFromSettings.size > 0)) {
             favoritesSectionEl = document.createElement('div');
             favoritesSectionEl.className = 'wbo-pop-section';
             favoritesSectionEl.setAttribute('data-wbo-dd-group', SPECIAL_GROUPS.PINNED);
@@ -7744,6 +7761,15 @@ function enhanceCustomDropdownPopover(containerEl) {
             const bodyEl = document.createElement('div');
             bodyEl.className = 'wbo-pop-group-body';
             favoritesSectionEl.append(headEl, bodyEl);
+            // Pinned books whose row is not rendered (e.g. a hidden character book) still need an
+            // explanation, otherwise 已收藏 looks broken.
+            const renderedPinned = favoriteOptions.length + mountedAndPinned.length;
+            if (pinnedNamesFromSettings.size > renderedPinned) {
+                const hintEl = document.createElement('div');
+                hintEl.className = 'wbo-dd-group-note wbo-favorites-hint';
+                hintEl.textContent = `另有 ${pinnedNamesFromSettings.size - renderedPinned} 本已收藏的书当前被隐藏（角色书显示已关闭或未在列表中）`;
+                bodyEl.append(hintEl);
+            }
             optionsHost.insertBefore(favoritesSectionEl, globalsSectionEl ? globalsSectionEl.nextElementSibling : optionsHost.firstChild);
             for (const optEl of favoriteOptions) {
                 const right = optEl.querySelector('.wbo-s2-right');
