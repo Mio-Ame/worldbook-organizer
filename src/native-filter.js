@@ -1178,7 +1178,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.124';
+export const PLUGIN_VERSION = '2.35.125';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1413,6 +1413,38 @@ function rowSetFingerprint(list) {
         result.firstUid = uids[0] || '-';
         result.lastUid = uids.length > 0 ? (uids[uids.length - 1] || '-') : '-';
         result.hash = hashDiagLabel(uids.join(','));
+    } catch { /* ignore */ }
+    return result;
+}
+
+/**
+ * Pager state next to the entry list. SillyTavern paginates the entry list (25/50/100 per page), so
+ * "rows stayed 25" can simply mean "the new entry is on page 2" — a report must say which it is.
+ * @param {Element | null} list
+ * @returns {Record<string, any>}
+ */
+function describePager(list) {
+    const result = { present: false, page: -1, pageSize: -1, pages: -1, nextDisabled: null };
+    try {
+        if (typeof document === 'undefined') return result;
+        const pager = document.querySelector('.paginationjs, .paginationjs-pages, [class*="pagination" i]');
+        const sizeSelect = document.querySelector('.paginationjs-size-changer select, [class*="pagination" i] select');
+        const active = document.querySelector('.paginationjs-pages .active, .paginationjs .active');
+        const pageItems = document.querySelectorAll('.paginationjs-pages li, .paginationjs-pages a');
+        const nextBtn = document.querySelector('.paginationjs-next');
+        result.present = Boolean(pager);
+        if (sizeSelect instanceof HTMLSelectElement) result.pageSize = Number(sizeSelect.value) || -1;
+        if (active) result.page = Number(String(active.textContent || '').trim()) || -1;
+        result.pages = pageItems.length > 0 ? pageItems.length : -1;
+        if (nextBtn) {
+            result.nextDisabled = nextBtn.classList.contains('disabled')
+                || nextBtn.getAttribute('aria-disabled') === 'true';
+        }
+        result.rowsOnPage = list instanceof Element ? list.querySelectorAll('.world_entry').length : 0;
+        // Right at the page size with a live "next" page = a duplicate may well be on the next page.
+        result.atPageBoundary = Boolean(
+            result.pageSize > 0 && result.rowsOnPage === result.pageSize && result.nextDisabled === false,
+        );
     } catch { /* ignore */ }
     return result;
 }
@@ -2040,8 +2072,13 @@ function noteNativeDialogFollowUp(dialogEl, target) {
     try {
         if (!(dialogEl instanceof Element)) return;
         const entries = _diag.nativeActions;
-        const entry = [...entries].reverse().find((item) => item && !item.dialogArmed && !item.dialog
-            && diagNow() - (item.gesture?.at || item.settled?.at || 0) < 30000);
+        const dialogCls = elTagClass(dialogEl, 20);
+        const recent = (item) => Boolean(item) && !item.dialogArmed && !item.dialog
+            && diagNow() - (item.gesture?.at || item.settled?.at || 0) < 30000;
+        // Prefer the action that opened THIS dialog (same class, recorded 500ms after the click);
+        // otherwise fall back to the newest un-armed action, so a fast confirm still gets sampled.
+        const entry = [...entries].reverse().find((item) => recent(item) && item.openDialog?.cls === dialogCls)
+            || [...entries].reverse().find(recent);
         if (!entry) return;
         entry.dialogArmed = true;
         const list = document.getElementById('world_popup_entries_list');
@@ -2073,6 +2110,11 @@ function noteNativeDialogFollowUp(dialogEl, target) {
             } catch { observer = null; }
         }
         const button = elTagClass(target, 22);
+        // Which button of the dialog was pressed: SillyTavern's move/copy dialog has two custom
+        // buttons (Move = 1st, Copy = 2nd), so the index is what tells them apart without text.
+        const dialogButtons = [...dialogEl.querySelectorAll('button, .menu_button')];
+        const pressed = target?.closest?.('button, .menu_button') || target;
+        const buttonIndex = dialogButtons.indexOf(pressed);
         const early = setTimeout(() => {
             try { entry.dialogEarly = sample(); } catch { /* ignore */ }
         }, 600);
@@ -2081,8 +2123,11 @@ function noteNativeDialogFollowUp(dialogEl, target) {
                 const end = sample();
                 entry.dialog = {
                     at: startAt,
-                    dialog: elTagClass(dialogEl, 20),
+                    dialog: dialogCls,
                     button,
+                    buttonIndex,
+                    buttonCount: dialogButtons.length,
+                    customCount: dialogEl.querySelectorAll('.popup-button-custom').length,
                     // `>0` means the plugin's own picker is mounted in this dialog.
                     enhancedTrigger: dialogEl.querySelectorAll('.wbo-popup-select-trigger, .wbo-mobile-editor-trigger').length,
                     start,
@@ -2094,7 +2139,8 @@ function noteNativeDialogFollowUp(dialogEl, target) {
                     errorsGained: end.errors - start.errors,
                 };
                 const targetSelect = (start.dialogSelects || [])[0];
-                pushDiagTrace(`native-entry:dialog,btn=${button},rows=${start.rows}->${end.rows}`
+                pushDiagTrace(`native-entry:dialog,btn=${button},i=${buttonIndex}/${dialogButtons.length}`
+                    + `,rows=${start.rows}->${end.rows}`
                     + `,set=${entry.dialog.rowSetChanged ? 1 : 0},muts=${mutations.childList},err=${entry.dialog.errorsGained}`
                     + `,tgt=${targetSelect ? `${targetSelect.value || 'EMPTY'}@${targetSelect.index}/${targetSelect.options}` : 'none'}`);
             } catch { /* ignore */ } finally {
@@ -2352,6 +2398,8 @@ function collectNativeEntryDiagnostics() {
         }
         // Identity of the entry set: a bare row count cannot tell "one row replaced" from "no change".
         result.rowIds = rowSetFingerprint(list);
+        // …and the pager explains "rows stayed at 25" without inventing a bug.
+        result.pager = describePager(list);
         // Layout context: a sticky header or a zero-height scroller explains a blocked hit too.
         result.listScrollTop = Math.round(list.scrollTop || 0);
         result.listClientHeight = Math.round(list.clientHeight || 0);
@@ -2753,6 +2801,7 @@ function buildDiagnosticReport(mode = 'short') {
                     ? ` 遮挡${native.probeObscuredBy === 'self' ? '自家' : '外部'}`
                     : '')
                 + (native.rowIds ? ` 行集${native.rowIds.count}#${native.rowIds.hash}` : '')
+                + (native.pager?.present ? ` 页${native.pager.page}/每页${native.pager.pageSize}` : '')
                 + ` 已隐藏${native.detachedOptions ?? 0}`
                 // The gesture line is the fastest read: down>up>click means the host got the event,
                 // NO-CLICK means the browser never dispatched it (or the node was gone).
