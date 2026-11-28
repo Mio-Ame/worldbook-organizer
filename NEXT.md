@@ -1,3 +1,17 @@
+### 采纳第二份诊断意见 + 悬浮球加「刷新」+ AGENT.md 补章（2026-11-28 · v2.35.103）
+- 依据：`文案编写/世界书分组/其他agent诊断功能意见.txt`（针对 v2.35.101 的 14 条盲区）。
+- 已采纳：
+  - 意见 1/7（consistency 与 dom 在关闭后全 0、无法解释）：`diagConsistencyCheck()` 增加 `sampledFrom: live|stage:<名>`，关闭态自动回落到最后一份打开态快照，并输出 `mismatchDetail`（含期望与实际）。
+  - 意见 4/5（隐藏原因不明）：阶段快照新增 `hiddenBySearch / hiddenByPin / hiddenByDupe / collapsedRows`，把 `hiddenRows` 按原因拆开；快照函数支持第三个参数 `reason`。
+  - 意见 10（错误捕获不全）：补 `unhandledrejection` 监听，记作 `promise: …`。
+  - 意见 2（阶段名不全）：现有 `editor-rendered` / `global-rendered` / `search`，并支持 `reason` 标注触发原因。
+- 用户新增需求：悬浮球内要有「点一下就刷新」的入口，免去进酒馆原生面板。
+  - 已实现：悬浮球下方新增 `↻` 小按钮（`#wbo-quick-refresh`），点击即 `startNativeObservers()` 重新挂载 + 对当前打开的浮层重跑增强，并记 `ball:rescan`；带一次旋转动画反馈。
+  - `AGENT.md`（外部通用 + 插件内）新增第 8 节「悬浮球必须带立即刷新」、第 9 节「阶段快照与隐藏原因必填」。
+- 未采纳（记录理由）：意见 3（性能/帧率采样）成本高非当前瓶颈；意见 6（布局探针语义）已通过字段名与 `stages` 对齐，暂不加边界矩形；意见 9（分级导出）当前 `traceTruncated` 已够；意见 12（抽屉顺序）已带 `@+时间`，需真机再验；意见 14（自动 diff）超出职责。
+- 修复过程中的插曲：一次 PowerShell 行内改写把 `snapshotDiagStage` 打坏（`Unexpected token`），已用脚本重写该函数并单测确认恢复。
+- 验证：单测 245/245。
+
 ### 已收藏块可展开、计数取总数、全部全局时文案强调（2026-11-28 · v2.35.102）
 - 用户反馈：① 点「全部」里的「已收藏」标题会被强制跳到已收藏胶囊，无法就地展开/折叠；② 计数应写**收藏总数**（6），而不是只算非全局的（3）；③ 全部收藏都已全局时文案要强调“全部”。
 - 修复（`src/native-filter.js`）：

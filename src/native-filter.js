@@ -1138,7 +1138,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.102';
+export const PLUGIN_VERSION = '2.35.103';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1335,6 +1335,46 @@ function installQuickDiagBall() {
         } catch { /* never break the UI for a diagnostic export */ }
     });
     document.body.append(btn);
+
+    // Second action: refresh the plugin without opening SillyTavern's own panel. Re-runs the
+    // observers and re-renders whatever popover is currently open.
+    const refresh = document.createElement('button');
+    refresh.id = 'wbo-quick-refresh';
+    refresh.type = 'button';
+    refresh.title = '重新扫描并刷新插件（无需打开酒馆设置）';
+    refresh.textContent = '↻';
+    Object.assign(refresh.style, {
+        position: 'fixed',
+        right: '16px',
+        bottom: '160px',
+        width: '38px',
+        height: '38px',
+        borderRadius: '50%',
+        border: '1px solid rgba(128, 128, 128, 0.45)',
+        background: 'rgba(32, 34, 40, 0.86)',
+        color: '#fff',
+        fontSize: '17px',
+        lineHeight: '1',
+        zIndex: '100095',
+        cursor: 'pointer',
+        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+    });
+    refresh.addEventListener('click', (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        pushDiagTrace('ball:rescan');
+        try {
+            startNativeObservers(() => {});
+            document.querySelectorAll('[data-wbo-popover-role]').forEach((el) => {
+                try { enhanceCustomDropdownPopover(el); } catch { /* ignore */ }
+            });
+        } catch { /* refresh must never break the UI */ }
+        refresh.animate?.([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 420 });
+    });
+    document.body.append(refresh);
 }
 
 /**
@@ -1419,6 +1459,28 @@ function diagConsistencyCheck(cls, settings) {
         if (rows > 0 && result.books > 0 && rows < result.books) result.mismatches.push('rows<books');
         if (sections > 0 && result.groups > 0 && sections < result.groups) result.mismatches.push('sections<groups');
         if (pinned > 0 && pinnedMounted > pinned) result.mismatches.push('pinnedMounted>pinned');
+        // The report is usually exported after the popover closed, when the DOM reads 0. Fall back to
+        // the last open-stage snapshot so the numbers are not silently meaningless.
+        if (rows === 0 && _diag.stages.length > 0) {
+            const lastStage = _diag.stages[_diag.stages.length - 1];
+            result.sampledFrom = 'stage:' + lastStage.stage;
+            result.rows = lastStage.rows;
+            result.sections = lastStage.sections;
+            result.collapsedNow = lastStage.collapsedRows;
+        } else {
+            result.sampledFrom = 'live';
+        }
+        // A mismatch must carry the numbers, otherwise it is not actionable.
+        result.mismatchDetail = {
+            pinned,
+            pinnedMounted,
+            books: result.books,
+            rows: result.rows,
+            groups: result.groups,
+            sections: result.sections,
+            collapsedMemory: remembered,
+            collapsedNow: result.collapsedNow,
+        };
     } catch { /* diagnostics must never throw */ }
     return result;
 }
@@ -1428,21 +1490,28 @@ function diagConsistencyCheck(cls, settings) {
  * cleared). Cheap, and the only way to see values that vanish once the popover closes.
  * @param {string} stage
  * @param {Element | null} host
+ * @param {string} [reason]
  */
-function snapshotDiagStage(stage, host) {
+function snapshotDiagStage(stage, host, reason = '') {
     try {
         const listHost = host || document.querySelector('.gr-options, .gr-options-container');
         const rows = listHost ? [...listHost.querySelectorAll('.gr-option')] : [];
         const visibleRows = rows.filter((row) => row.getClientRects().length > 0).length;
         const popover = document.querySelector('[data-wbo-popover-role]');
         const panel = document.querySelector('.wbo-enhanced-search-panel');
+        const hiddenCount = (cls) => rows.filter((row) => row.classList.contains(cls)).length;
         _diag.stages.push({
             stage,
+            reason,
             at: Math.round(globalThis.performance?.now?.() || 0),
             role: popover?.getAttribute('data-wbo-popover-role') || '',
             rows: rows.length,
             visibleRows,
             hiddenRows: rows.length - visibleRows,
+            hiddenBySearch: hiddenCount('wbo-enhanced-search-hidden') + hiddenCount('wbo-pop-search-hidden'),
+            hiddenByPin: hiddenCount('wbo-dd-pin-hidden'),
+            hiddenByDupe: hiddenCount('wbo-dd-dupe-hidden'),
+            collapsedRows: hiddenCount('wbo-dd-collapsed'),
             popoverH: Math.round(popover?.getBoundingClientRect?.().height || 0),
             listHostH: Math.round(listHost?.getBoundingClientRect?.().height || 0),
             panelH: Math.round(panel?.getBoundingClientRect?.().height || 0),
@@ -8650,6 +8719,13 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
         globalThis.window.addEventListener?.('error', (event) => {
             const message = String(event?.message || event?.error?.message || 'error');
             _diag.errors.push(sanitizeDiagText(message));
+            if (_diag.errors.length > 6) _diag.errors.shift();
+        });
+        // A rejected promise used to be invisible: `errors: []` then wrongly read as "nothing failed".
+        globalThis.window.addEventListener?.('unhandledrejection', (event) => {
+            const reason = event?.reason;
+            const message = String(reason?.message || reason || 'unhandled-rejection');
+            _diag.errors.push('promise: ' + sanitizeDiagText(message));
             if (_diag.errors.length > 6) _diag.errors.shift();
         });
         globalThis.window.wboTitleReport = () => {
