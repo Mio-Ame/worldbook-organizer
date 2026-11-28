@@ -1,3 +1,11 @@
+### 占位行承担当前书名、诊断时间戳、dev 悬浮球（2026-11-28 · v2.35.87）
+- 用户反馈：① 当前角色世界书又出现在「已收藏」下方，按脚本逻辑应当**替换**「选择以编辑」这一行而不是另起一行；② 希望 dev 版加一个悬浮球直接导出诊断（main 不需要）；③ 诊断里的操作要不要带时间。
+- 修复（`src/native-filter.js`）：
+  - 删除「额外置顶一行」的做法（`enh-globals:current-hoisted`）；改为把占位行的文案改成当前书名（有选中取选中，否则回退当前聊天角色绑定的书，用 `primaryTitle`），trace 记 `enh-globals:placeholder-titled=1`。列表里不再出现重复的当前书行。
+  - `pushDiagUi()` 每条记录前加 `+123.4s`（相对页面加载的 performance.now），报告可直接按时间线读；环形缓冲 30 → 40 条。
+  - 新增 `DEV_QUICK_DIAG_BALL`（当前 true）：右下角 🩺 悬浮球，单击导出**详细**诊断、双击导出简短版；`installQuickDiagBall()` 在诊断安装处调用，`main` 合并前把该常量改为 false 即可。
+- 验证：单测 245/245；`native-picker-window` 36/36、`native-editor-titles` 12/12。
+
 ### 全局下拉也登记全局胶囊 + 当前书置顶提到最前（2026-11-28 · v2.35.86）
 - 用户 v2.35.84 诊断关键行：`enh-pill:open=__pinned__,hasMemory=1,remembered=__globals__,role=global` —— 记忆里存的是 `__globals__`，但 `validGroupIds` 在**全局下拉**里没有这个 id，校验失败后回退到容器旧状态（已收藏）。
 - 修复（`src/native-filter.js`）：

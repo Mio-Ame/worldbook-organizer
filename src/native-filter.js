@@ -1130,7 +1130,7 @@ function matchKnownWorldName(raw) {
 }
 
 /** Bumped together with manifest.json by the release script. */
-export const PLUGIN_VERSION = '2.35.86';
+export const PLUGIN_VERSION = '2.35.87';
 
 /**
  * Tiny in-memory trace used by the diagnostic report. It only ever stores labels, counts and
@@ -1194,9 +1194,68 @@ function describeDiagTarget(el) {
  */
 function pushDiagUi(kind, target) {
     try {
-        _diag.ui.push(`${kind}:${describeDiagTarget(target)}`);
-        if (_diag.ui.length > 30) _diag.ui.shift();
+        // Timestamp every interaction so a report can be read as a timeline ("what happened in
+        // the last 10 seconds").
+        const seconds = ((globalThis.performance?.now?.() || Date.now()) / 1000).toFixed(1);
+        _diag.ui.push(`+${seconds}s ${kind}:${describeDiagTarget(target)}`);
+        if (_diag.ui.length > 40) _diag.ui.shift();
     } catch { /* logging must never break the UI */ }
+}
+
+/**
+ * DEV ONLY: a floating button that exports the detailed diagnostic in one tap, so a report does
+ * not require opening the settings panel. Flip to false before merging into main.
+ */
+const DEV_QUICK_DIAG_BALL = true;
+
+function installQuickDiagBall() {
+    if (!DEV_QUICK_DIAG_BALL || typeof document === 'undefined') return;
+    if (document.getElementById('wbo-quick-diag')) return;
+    const btn = document.createElement('button');
+    btn.id = 'wbo-quick-diag';
+    btn.type = 'button';
+    btn.title = '导出世界书插件诊断（单击=详细，双击=简短）';
+    btn.textContent = '🩺';
+    Object.assign(btn.style, {
+        position: 'fixed',
+        right: '14px',
+        bottom: '110px',
+        width: '44px',
+        height: '44px',
+        borderRadius: '50%',
+        border: '1px solid rgba(128, 128, 128, 0.45)',
+        background: 'rgba(32, 34, 40, 0.86)',
+        color: '#fff',
+        fontSize: '20px',
+        lineHeight: '1',
+        zIndex: '100095',
+        cursor: 'pointer',
+        boxShadow: '0 6px 18px rgba(0, 0, 0, 0.35)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+    });
+    let lastTap = 0;
+    btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        event.preventDefault();
+        const now = Date.now();
+        const mode = now - lastTap < 600 ? 'short' : 'dev';
+        lastTap = now;
+        try {
+            const report = buildDiagnosticReport(mode);
+            const blob = new Blob([report], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `wbo-diagnostic-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
+            document.body.append(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        } catch { /* never break the UI for a diagnostic export */ }
+    });
+    document.body.append(btn);
 }
 
 /**
@@ -7427,9 +7486,9 @@ function enhanceCustomDropdownPopover(containerEl) {
     for (const ph of [...placeholders].reverse()) {
         optionsHost.insertBefore(ph, optionsHost.firstChild);
     }
-    // The book being edited (or the current character's book) sits right below that row, so it is
-    // never buried under the 已收藏 note or the globals block.
-    if (!isGlobalPopover) {
+    // No extra hoisted row: the script replaces the 「选择以编辑」 line with the book being edited,
+    // so we only make sure that line shows the current title instead of duplicating the book.
+    if (!isGlobalPopover && placeholders.length > 0) {
         const select = document.getElementById('world_editor_select');
         const currentOption = select ? [...select.options].find((item) => item.value === select.value) : null;
         let currentName = (currentOption?.dataset?.wboRealName || currentOption?.textContent || '').trim();
@@ -7438,19 +7497,18 @@ function enhanceCustomDropdownPopover(containerEl) {
             if (chatName) {
                 for (const meta of _latestClassification?.byName?.values?.() || []) {
                     if ((meta.charOwners || []).includes(chatName)) {
-                        currentName = meta.realName;
+                        currentName = meta.primaryTitle || meta.realName;
                         break;
                     }
                 }
             }
         }
-        const currentRow = currentName
-            ? realOptionNodes.find((row) => (getOptionText(row) || '') === currentName)
-            : null;
-        if (currentRow) {
-            const anchor = optionsHost.children[placeholders.length] || null;
-            optionsHost.insertBefore(currentRow, anchor);
-            pushDiagTrace('enh-globals:current-hoisted=1');
+        if (currentName) {
+            for (const ph of placeholders) {
+                if ((ph.textContent || '').includes(currentName)) continue;
+                ph.textContent = currentName;
+            }
+            pushDiagTrace('enh-globals:placeholder-titled=1');
         }
     }
 
@@ -8225,6 +8283,7 @@ export function startNativeObservers(onUpstreamWorldListChanged) {
     // through the settings panel (both never emit a book, character or group name).
     if (typeof globalThis.window !== 'undefined') {
         globalThis.window.wboBuildDiagnostic = (mode = 'short') => buildDiagnosticReport(mode);
+        installQuickDiagBall();
         // Sanitized UI log: enough to replay a broken interaction, no names.
         const logDown = (event) => pushDiagUi('down', event.target instanceof Element ? event.target : null);
         const logKey = (event) => pushDiagUi(`key:${String(event.key || '').slice(0, 8)}`, event.target instanceof Element ? event.target : null);
